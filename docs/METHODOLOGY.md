@@ -1,0 +1,93 @@
+# Methodology
+
+## Progress tiers
+
+Every discovered function sits in exactly one tier, recorded in
+`config/functions.csv`. The tiers exist because "decompiled" is not a single
+thing, and collapsing them into one percentage is how decompilation projects end
+up lying to themselves.
+
+### `undecompiled`
+
+The analysis pass found the function and knows its address range. Nothing else
+is known. Every function starts here.
+
+### `analyzed`
+
+Someone has read the disassembly and written down what the function does - its
+argument count, the structure offsets it touches, its role. No source exists
+yet. This tier captures understanding, which is genuinely valuable and is often
+the hard part, but it is not code.
+
+### `identified`
+
+C++ source exists and is believed to be behaviourally correct: it should do what
+the original does. It has **not** been proven to compile to the same machine
+code. Source at this tier is a hypothesis.
+
+### `matched`
+
+The source recompiles to byte-identical machine code against the original
+image. This is objective and machine-checkable - no judgement involved.
+
+**Only `matched` is real progress.** The headline figure in
+[PROGRESS.md](PROGRESS.md) reports matched bytes and nothing else.
+
+## Why "matched" is the bar
+
+It is easy to produce C that looks like a plausible decompilation of a function.
+It is easy to produce thousands of such functions automatically. None of it is
+worth anything, for a concrete reason: without byte-verification there is no way
+to distinguish source that is correct from source that is subtly wrong, and
+subtly-wrong source in a physics or rendering path produces a game that
+misbehaves in ways nobody can trace back.
+
+A matching decompilation is self-proving. If the bytes agree, the source is
+right, and you can then refactor it into readable code while re-checking that
+the bytes still agree.
+
+## The per-function workflow
+
+1. **Read the disassembly.** `python tools/disasm.py build/<db>.json --addr 0x...`
+   The listing resolves branch targets to local labels, names called functions,
+   and annotates materialised addresses with the strings or tables they point
+   at.
+2. **Recover the signature.** Which of `$a0..$a3` are read before being written?
+   Is `$v0` set on return? Are `$f12..` used, indicating float arguments?
+3. **Recover the types.** Structure layout has to be inferred from the load and
+   store offsets. Record the layout in a header as you go - the same structure
+   will show up in dozens of other functions, and this is where most of the
+   lasting value accumulates.
+4. **Write candidate source.**
+5. **Compile and diff.** Requires the matching toolchain (see below). Adjust the
+   source until the assembly agrees.
+6. **Promote the tier** in `config/functions.csv` and commit.
+
+## The toolchain problem
+
+Step 5 is blocked on an unsolved prerequisite: nobody has established which
+compiler and which flags reproduce this binary's code generation.
+
+Criterion's 2004 PS2 builds would have used either SN Systems ProDG or
+Metrowerks CodeWarrior for the EE, and the specific version and optimisation
+settings matter down to instruction scheduling. Determining this is done by
+taking a handful of functions whose source is obvious - the kernel stubs in
+`src/kernel/syscalls.cpp` are deliberately chosen for this - and trying
+candidate compilers until one reproduces the exact instruction sequence,
+including register allocation and delay-slot filling.
+
+Until that is settled, **no function can reach `matched`**, and the project's
+verified-complete figure stays at zero no matter how much source is written.
+This is the single highest-value open problem.
+
+## Conventions for reconstructed source
+
+* C++17, since the original is C++ (with RenderWare 3.6 underneath in C).
+* Fixed-width types from `include/b3/types.h`.
+* Every reconstructed function carries a comment naming the address it came
+  from and its current tier.
+* Names that are recovered from evidence (a string, an RTTI entry, a RenderWare
+  API signature) are used as-is. Names that are inferred get a comment saying so.
+  Never silently invent a name that looks authoritative.
+* Structure layouts live in headers, with offsets documented, because they are
+  the reusable product of the work.

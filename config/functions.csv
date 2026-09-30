@@ -1,0 +1,5 @@
+address,name,status,source,notes
+0x0010BE40,ps2::SignalSema,identified,src/kernel/syscalls.cpp,EE kernel syscall 0x42 stub
+0x00114EB8,ps2::EnableIntr,identified,src/kernel/syscalls.cpp,reads COP0 Status EIE bit then ei
+0x0010FEA0,ps2::SignalSemaGlobal,identified,,tail-calls SignalSema with a global semaphore id at 0x00484204
+0x003B88E0,unknown::AdvanceBufferCursor,analyzed,,adds (arg1 << 1) to the word at +0x1800 of arg0
