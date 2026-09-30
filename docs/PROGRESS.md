@@ -1,6 +1,6 @@
 # Decompilation progress
 
-_Generated 2026-09-30 21:51 from `SLUS_210.50`._
+_Generated 2026-09-30 21:52 from `SLUS_210.50`._
 
 ## Headline number
 
@@ -27,8 +27,8 @@ This is the only number that means anything on its own. The tiers below track wo
 
 | tier | functions | share | code bytes | share |
 | --- | ---: | ---: | ---: | ---: |
-| `undecompiled` | 7,419 | 99.95% | 3,484,032 | 100.00% |
-| `analyzed` | 1 | 0.01% | 20 | 0.00% |
+| `undecompiled` | 7,354 | 99.07% | 3,482,992 | 99.97% |
+| `analyzed` | 66 | 0.89% | 1,060 | 0.03% |
 | `identified` | 3 | 0.04% | 52 | 0.00% |
 | `matched` | 0 | 0.00% | 0 | 0.00% |
 
