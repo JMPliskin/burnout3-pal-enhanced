@@ -1,4 +1,6 @@
 address,name,status,source,notes
+0x00101FC0,generated::func_00101FC0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00102510,generated::func_00102510,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x00102628,ps2::RFU080,analyzed,,EE kernel service 0x80 (documented ABI); 1 callers
 0x00102EA0,sceGsSyncPath,reconstructed,,Sony SDK; named by its own diagnostic string
 0x00103488,sceGsExecStoreImage,reconstructed,,Sony SDK; named by its own diagnostic string
@@ -69,17 +71,80 @@ address,name,status,source,notes
 0x00115580,ps2::SetSyscall,analyzed,,EE kernel service 0x74 (documented ABI); 3 callers
 0x00115590,ps2::MachineType_or_rfu,analyzed,,EE kernel service 0x5A (documented ABI); 2 callers
 0x001155D8,ps2::GetMemorySize_or_rfu,analyzed,,EE kernel service 0x5B (documented ABI); 1 callers
+0x001213A8,generated::func_001213A8,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x00126EC8,runtime::StringAppend,verified,src/runtime/string.cpp,"SIMD strcat; verified, 180 cases across 3 prefixes x 5 alignments"
 0x001272D0,runtime::StringCopy,verified,src/runtime/string.cpp,"SIMD strcpy; verified, 60 cases across 5 alignments"
 0x001273E8,runtime::StringLength,verified,src/runtime/string.cpp,"SIMD strlen; verified, 32 cases + all 16 pointer alignments"
+0x0013A5B0,generated::func_0013A5B0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A600,generated::func_0013A600,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0013A620,generated::func_0013A620,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A630,generated::func_0013A630,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0013A650,generated::func_0013A650,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A7D0,generated::func_0013A7D0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A7F0,generated::func_0013A7F0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A800,generated::func_0013A800,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0013A880,generated::func_0013A880,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013A890,generated::func_0013A890,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013ACF0,generated::func_0013ACF0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013AD00,generated::func_0013AD00,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0013AD10,generated::func_0013AD10,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001A87D0,generated::func_001A87D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D7560,,analyzed,,"tail-calls func_002B6CA0 with (arg0->field2C + arg1*16 + 4, arg2 - 8); 331 callers"
+0x001D8B88,generated::func_001D8B88,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001DB798,generated::func_001DB798,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001FF360,generated::func_001FF360,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001FF3C8,generated::func_001FF3C8,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0020E310,generated::func_0020E310,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x00216A58,sceDbcSendData2,reconstructed,,Sony SDK (DBC/controller); named by its own diagnostic string
 0x0021B9B0,valuedb::LookupVariantC,analyzed,,third lookup entry point; 17 tuning-string call sites
 0x0021BB60,valuedb::LookupByPath,analyzed,,"assembles a slash-separated path from 3 parts, hashes it, then searches 32-byte records; 613 callers"
 0x0021BD80,valuedb::LookupVariantB,analyzed,,second lookup entry point; 31 tuning-string call sites
 0x0021BFA0,valuedb::HashName,verified,src/valuedb/hash.cpp,"differential-tested against the original, 32 cases, 0 mismatches"
+0x0022E6B0,generated::func_0022E6B0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x002366D0,,analyzed,,"returns *(u32*)(arg0 + arg1*4 + 8); array accessor, 101 callers. Not named: needs the struct layout"
+0x002372F8,generated::func_002372F8,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00237320,generated::func_00237320,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0024FDF0,valuedb::HashNameAlias,reconstructed,src/valuedb/hash.cpp,forwarder: hashes a bare name with no path assembly
+0x0026C8B0,generated::func_0026C8B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0026CCA8,generated::func_0026CCA8,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0026D250,generated::func_0026D250,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00276C10,generated::func_00276C10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00278820,generated::func_00278820,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00299550,runtime::FindFirstSet,verified,src/runtime/bits.cpp,"lowest set bit, 32 if zero; verified over 192 inputs"
+0x002AC600,generated::func_002AC600,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x002C0380,generated::func_002C0380,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0030ED60,generated::func_0030ED60,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00324F10,generated::func_00324F10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00353960,generated::func_00353960,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00361590,generated::func_00361590,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x003615A0,generated::func_003615A0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00369200,generated::func_00369200,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00374440,generated::func_00374440,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00374450,generated::func_00374450,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003744B0,generated::func_003744B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00385FD0,generated::func_00385FD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00386010,generated::func_00386010,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003A70B0,generated::func_003A70B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B88E0,unknown::AdvanceBufferCursor,analyzed,,adds (arg1 << 1) to the word at +0x1800 of arg0
+0x003C2940,generated::func_003C2940,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003D0B60,generated::func_003D0B60,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x003E8DD0,generated::func_003E8DD0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x003E8DE0,generated::func_003E8DE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003E96E0,generated::func_003E96E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003EA070,generated::func_003EA070,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003F5DE0,generated::func_003F5DE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003F86F0,generated::func_003F86F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0040A4A0,,analyzed,,null-safe load: returns arg1 ? *(u32*)arg1 : 0
+0x0040C4D0,generated::func_0040C4D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0041BFB0,generated::func_0041BFB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0043C8E0,generated::func_0043C8E0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x0043C950,generated::func_0043C950,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00446F90,generated::func_00446F90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00446FA0,generated::func_00446FA0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00446FB0,generated::func_00446FB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00446FC0,generated::func_00446FC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00446FE0,generated::func_00446FE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00458960,generated::func_00458960,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00469540,generated::func_00469540,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x004697C0,generated::func_004697C0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00469950,generated::func_00469950,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
