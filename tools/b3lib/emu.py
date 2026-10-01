@@ -219,14 +219,18 @@ class Machine:
              stack_top: int = DEFAULT_STACK_TOP) -> int:
         """Run the function at `addr` and return its $v0 as a signed 32-bit value.
 
-        Arguments are placed in $a0..$a3; passing more than four is rejected
-        rather than silently mishandled, since stack arguments need the caller's
-        frame layout.
+        `args` follows the register calling convention: entries 0..7 go to $a0..$a3
+        and $t0..$t3, entries 8..15 are float bit patterns for $f12..$f19. More than
+        that is rejected rather than silently mishandled, since stack arguments need
+        the caller's frame layout.
         """
-        if len(args) > 4:
-            raise EmulationError("only register arguments ($a0..$a3) are supported")
+        if len(args) > 16:
+            raise EmulationError("only register arguments are supported")
         for i, value in enumerate(args):
-            self.set(4 + i, value & MASK64)
+            if i < 8:
+                self.set((4, 5, 6, 7, 8, 9, 10, 11)[i], value & MASK64)
+            else:
+                self.fpr[12 + i - 8] = value & 0xFFFFFFFF
         self.set(28, GP_VALUE)            # $gp
         self.set(29, stack_top)           # $sp
         self.set(31, RETURN_SENTINEL)     # $ra

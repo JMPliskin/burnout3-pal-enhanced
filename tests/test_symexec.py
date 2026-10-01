@@ -25,6 +25,7 @@ from b3lib.symexec import (
     SignExtend32,
     Unsupported,
     derive,
+    low32,
     simplify,
 )
 
@@ -214,6 +215,50 @@ class TestReroll(unittest.TestCase):
         self.assertEqual(self.reroll(statements), statements)
 
 
+class TestWordSignExtension(unittest.TestCase):
+    """Word operations sign-extend their 32-bit result into the 64-bit register.
+
+    The model used to keep the full 64-bit sum, which only shows where upper bits
+    are observed - a comparison - and was found when an `sllv` result reached an
+    `slt` with arguments other than small pointers.
+    """
+
+    def test_word_add_overflow_is_sign_extended(self):
+        from b3lib.symexec import SignExtend32
+
+        expr = simplify(SignExtend32(Binary("add", Arg(0), Const(1))))
+        self.assertEqual(expr.evaluate((0x7FFFFFFF,) + (0,) * 15, None),
+                         0xFFFFFFFF80000000)
+
+    def test_extension_is_dropped_where_only_low_bits_are_used(self):
+        from b3lib.symexec import SignExtend32, address_of
+
+        inner = SignExtend32(Binary("add", Arg(0), Const(0x1E4)))
+        address = address_of(Binary("add", inner, Const(0x20)))
+        self.assertEqual(address.render(), "arg0 + 0x204")
+
+    def test_extension_is_dropped_when_the_value_fits(self):
+        from b3lib.symexec import SignExtend32
+
+        byte_plus_one = Binary("add", Load(Arg(0), 1, False), Const(1))
+        self.assertEqual(simplify(SignExtend32(byte_plus_one)), byte_plus_one)
+
+    def test_extension_is_kept_in_a_comparison(self):
+        from b3lib.symexec import Predicate, SignExtend32
+
+        compare = simplify(Predicate("lt", SignExtend32(Binary("add", Arg(0), Arg(1))),
+                                     Const(0)))
+        self.assertEqual(compare.render(), "(s32)(arg0 + arg1) < 0")
+
+    def test_unrolled_counter_folds(self):
+        """sext(sext(i + 1) + 1) must become i + 2, or unrolled loops grow."""
+        from b3lib.symexec import SignExtend32
+
+        i = Load(Arg(0), 1, False)
+        twice = SignExtend32(Binary("add", SignExtend32(Binary("add", i, Const(1))), Const(1)))
+        self.assertEqual(simplify(twice).render(), "*(u8*)(arg0) + 2")
+
+
 class TestEvaluation(unittest.TestCase):
     def _read(self, addr, size, signed):
         # A predictable stand-in: each address reads back as itself.
@@ -276,7 +321,8 @@ class TestDerive(unittest.TestCase):
         words = [JR_RA, enc_i(0x09, 4, 2, 5)]  # jr $ra ; addiu $v0, $a0, 5
         image = assemble(words)
         result = derive(image, BASE, BASE, BASE + len(image))
-        self.assertEqual(simplify(result.expression).render(), "arg0 + 5")
+        # addiu sign-extends its result; only the low 32 bits are returned.
+        self.assertEqual(simplify(low32(simplify(result.expression))).render(), "arg0 + 5")
 
     def test_refuses_a_branch(self):
         words = [enc_i(0x04, 4, 5, 2), 0, JR_RA, 0]  # beq

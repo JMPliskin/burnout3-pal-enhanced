@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from .paths import _split_address
 from .structs import GLOBALS, Catalog, _offset_name
-from .symexec import (Arg, Binary, Const, Load, arg_renderer, children, load_renderer,
+from .symexec import (Arg, Binary, Const, Load, address_of, arg_name, arg_renderer,
+                      children,
+                      load_renderer,
                       simplify)
 
 READERS = {
@@ -43,6 +45,8 @@ def _hex(value: int, signed: bool = False) -> str:
 
 
 MAX_STRIDE = 0x10000
+# Global arrays live in the program's data; anything outside is not one.
+IMAGE_START, IMAGE_END = 0x00100000, 0x02000000
 MASK64 = (1 << 64) - 1
 
 
@@ -184,7 +188,7 @@ class Typing:
         and subtractions by constants are exact in the 64-bit model, so
         `arg0 + 0x10 + ((i << 2) + i << 4)` is arg0 + 0x10 + 0x50 * i.
         """
-        terms = list(_sum_terms(simplify(address)))
+        terms = list(_sum_terms(address_of(address)))
         base, root = None, self.catalog.globals
         rest = []
         for term in terms:
@@ -205,6 +209,10 @@ class Typing:
                 return None
         coefficient, index, constant = form
         if index is None or not 1 <= coefficient <= MAX_STRIDE:
+            return None
+        if base is None and not IMAGE_START <= constant & 0xFFFFFFFF < IMAGE_END:
+            # A "global array" at 0x20 indexed by a pointer is exact arithmetic but
+            # a false description: the pointer is the base, not an index.
             return None
         return base, root, _signed_offset(constant), coefficient, index
 
@@ -284,7 +292,7 @@ class Typing:
         assert root is not None
         self.used.add(root)
         if isinstance(expr, Arg):
-            return "arg%d" % expr.index
+            return arg_name(expr.index)
         base, path, owner, local, index = self.access(expr)
         self.used.add(owner)
         return self.read(base, path, local, index)
@@ -297,8 +305,8 @@ class Typing:
     def render_arg(self, node) -> str:
         if self.type_of(node) is not None:
             self.used.add(self.type_of(node))
-            return "arg%d.address" % node.index
-        return "arg%d" % node.index
+            return "%s.address" % arg_name(node.index)
+        return arg_name(node.index)
 
     def render_load(self, node, render_child) -> str:
         access = self.access(node)
@@ -530,7 +538,7 @@ def _accesses(derivation):
 def _untyped_indexed(typing, func, address, graph):
     """Like Typing.decompose, for an indexed access through an argument with no
     type yet - which then gets one. None if the address is not of that shape."""
-    terms = list(_sum_terms(simplify(address)))
+    terms = list(_sum_terms(address_of(address)))
     for term in terms:
         if isinstance(term, Arg) and typing.type_of(term) is None:
             rest = [t for t in terms if t is not term]

@@ -456,6 +456,16 @@ for 252 reads and 2,054 writes, scalar globals for 510 reads and 431 writes, and
 global arrays for 211 reads and 459 writes. 43 reads and 82 writes are still done by
 address.
 
+## Calling convention
+
+The game follows the EE's register calling convention: eight integer arguments in
+`$a0..$a3` and then `$t0..$t3`, and eight float arguments in `$f12..$f19`. The
+deriver originally modelled only `$a0..$a3`. Asked for its own refusal reasons
+(`tools/refusals.py`), it named "reads uninitialised register" as the first
+obstacle in 958 functions: 582 reading `$t0..$t3` (more than four arguments) and
+294 reading `$f12..$f14` (float arguments). With the full argument vector that
+falls to 86.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

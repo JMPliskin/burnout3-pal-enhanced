@@ -24,6 +24,12 @@ import struct
 
 from .r5900 import DISASM
 from .symexec import (
+    ARG_COUNT,
+    address_of,
+    low32,
+    FLOAT_ARG_BASE,
+    FLOAT_ARG_REGS,
+    INT_ARG_REGS,
     MASK32,
     MASK64,
     Arg,
@@ -284,7 +290,7 @@ ADDRESS_SPACE = 1 << 32
 
 def _split_address(address):
     """Split an address into (base expression or None, offset modulo 2^32)."""
-    folded = simplify(address)
+    folded = address_of(address)
     if isinstance(folded, Const):
         return None, folded.value % ADDRESS_SPACE
     if isinstance(folded, Binary) and folded.op == "add":
@@ -385,7 +391,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
         return
 
     if m == "swc1":
-        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         value = get(fpr(ins.rt))
         if _is_frame_address(target):
             frame[(simplify(target).value & MASK64, 4)] = value
@@ -395,7 +401,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
         return
 
     if m == "lwc1":
-        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target):
             key = (simplify(target).value & MASK64, 4)
             if key not in frame:
@@ -408,7 +414,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
 
     if m in _STORE_SIZES:
         size = _STORE_SIZES[m]
-        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target):
             # A spill. Record the full value regardless of width: a 128-bit `sq`
             # of a callee-saved register is reloaded by a matching `lq`, and the
@@ -425,7 +431,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
 
     if m in _LOAD_SIZES:
         size, signed_load = _LOAD_SIZES[m]
-        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target):
             key = (simplify(target).value & MASK64, size)
             if key not in frame:
@@ -451,8 +457,13 @@ CALLER_SAVED = tuple(range(2, 4)) + tuple(range(4, 8)) + tuple(range(8, 16)) + (
 
 
 def _call_arguments(regs: dict) -> dict:
-    """The expressions sitting in $a0..$a3, as a substitution map for a callee."""
-    return {index: regs[4 + index] for index in range(4) if 4 + index in regs}
+    """The expressions in the argument registers, as a substitution map for a callee:
+    $a0..$a3 and $t0..$t3 for the integer arguments, $f12..$f19 for the float ones."""
+    arguments = {index: regs[reg] for index, reg in enumerate(INT_ARG_REGS) if reg in regs}
+    for k, reg in enumerate(FLOAT_ARG_REGS):
+        if fpr(reg) in regs:
+            arguments[FLOAT_ARG_BASE + k] = regs[fpr(reg)]
+    return arguments
 
 
 def _contains_load(expr) -> bool:
@@ -507,7 +518,10 @@ def _apply_callee_path(callee_path, arguments, stores: list, memory: dict) -> tu
     """Fold one callee path into the caller, returning its conditions."""
     for store in callee_path.stores:
         moved = Store(
-            simplify(substitute(store.address, arguments)),
+            # The canonical address form, as for the caller's own stores: the
+            # argument substituted in may be a sign-extended word result, and left
+            # in place that extension hides the base from everything downstream.
+            address_of(substitute(store.address, arguments)),
             simplify(substitute(store.value, arguments)),
             store.size,
         )
@@ -650,7 +664,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # are common in thunks and were previously all refused as "control
                 # flow leaves the function".
                 if ins.target not in known:
-                    raise Unsupported("tail-calls an underived function")
+                    raise Unsupported("tail-calls an underived function: 0x%08X" % ins.target)
                 callee = known[ins.target]
                 arguments = _call_arguments(regs)
                 _check_callee_loads_are_safe(callee, arguments, memory)
@@ -674,8 +688,10 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 return
 
             if ins.is_call:
-                if ins.target < 0 or ins.target not in known:
-                    raise Unsupported("calls another function")
+                if ins.target < 0:
+                    raise Unsupported("calls through a register")
+                if ins.target not in known:
+                    raise Unsupported("calls an underived function: 0x%08X" % ins.target)
                 callee = known[ins.target]
 
                 # The delay slot runs before the call, and often sets the last
@@ -736,13 +752,15 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     # $f20..$f31 are callee-saved, so they are spilled and reloaded for exactly the
     # same reason the integer saved registers are, and were blocking 123 functions
     # for exactly the same reason: the prologue reads them in order to save them.
-    # Float *arguments* ($f12..$f14) are deliberately left unseeded - seeding those
-    # with zero would make the differential test pass vacuously, since the
-    # interpreter starts them at zero too.
     for index in range(20, 32):
         regs[fpr(index)] = Const(0)
-    for i in range(4):
-        regs[4 + i] = Arg(i)
+    # Eight integer and eight float arguments. $t0..$t3 and $f12..$f19 used to be
+    # left unseeded, and reading one refused 876 functions - most of them simply
+    # taking more than four arguments, or a float.
+    for i, reg in enumerate(INT_ARG_REGS):
+        regs[reg] = Arg(i)
+    for k, reg in enumerate(FLOAT_ARG_REGS):
+        regs[fpr(reg)] = Arg(FLOAT_ARG_BASE + k)
     walk(start, regs, [], {}, {}, (), {})
 
     if not paths:

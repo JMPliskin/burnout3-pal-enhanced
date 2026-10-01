@@ -60,13 +60,31 @@ class TestProfiles(unittest.TestCase):
         with self.assertRaises(ValueError):
             testmem._build("nonsense", 0)
 
-    def test_arguments_point_into_the_first_half(self):
+    def test_integer_arguments_point_into_the_first_half(self):
         import random
 
-        for value in testmem.arguments(random.Random(1)):
+        for value in testmem.arguments(random.Random(1))[:8]:
             self.assertTrue(
                 testmem.SCRATCH <= value < testmem.SCRATCH + testmem.SCRATCH_SIZE // 2
             )
+
+    def test_float_arguments_are_ordinary_floats(self):
+        """Random bits would be mostly NaNs and denormals; these must be real values."""
+        import math
+        import random
+
+        for bits in testmem.arguments(random.Random(1))[8:]:
+            value = struct.unpack("<f", struct.pack("<I", bits))[0]
+            self.assertTrue(math.isfinite(value) and abs(value) <= 1000.0)
+
+    def test_first_four_arguments_are_unchanged(self):
+        """Earlier functions keep the exact cases they were verified on."""
+        import random
+
+        rng = random.Random(7)
+        before = tuple(testmem.SCRATCH + rng.randrange(0, testmem.SCRATCH_SIZE // 2, 16)
+                       for _ in range(4))
+        self.assertEqual(testmem.arguments(random.Random(7))[:4], before)
 
 
 if __name__ == "__main__":

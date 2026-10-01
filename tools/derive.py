@@ -45,10 +45,13 @@ from b3lib.symexec import (
     Load,
     Predicate,
     Unsupported,
+    FLOAT_ARG_BASE,
+    arg_name,
     arg_renderer,
     arguments_used,
     children,
     load_renderer,
+    low32,
     simplify,
 )
 
@@ -133,6 +136,9 @@ _TYPING = None
 def _store_value(store) -> str:
     """A store's value, with a constant narrowed to the width actually written."""
     value = simplify(store.value)
+    if store.size <= 4:
+        # Only the bytes written matter, so a sign extension is noise here.
+        value = simplify(low32(value))
     if isinstance(value, Const) and store.size < 8:
         return Const(value.value & ((1 << (8 * store.size)) - 1)).render()
     return render_cpp(value)
@@ -140,7 +146,8 @@ def _store_value(store) -> str:
 
 def _result(expression) -> str:
     """A returned value; a constant is shown as the s32 the caller receives."""
-    value = simplify(expression)
+    # The return type is s32, so only the low 32 bits are returned.
+    value = simplify(low32(simplify(expression)))
     if isinstance(value, Const):
         low = value.value & 0xFFFFFFFF
         return str(low - (1 << 32) if low & 0x80000000 else low)
@@ -453,7 +460,8 @@ def test_plan(func, machine):
     # pass-dependent result would be impossible to reproduce.
     local_rng = random.Random(func["addr"])
     arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
-    arg_sets.append((SCRATCH, SCRATCH + 16, SCRATCH + 32, SCRATCH + 48))
+    arg_sets.append(tuple(SCRATCH + 16 * i for i in range(8))
+                    + tuple(testmem.float_bits(local_rng) for _ in range(8)))
     profile = _choose_profile(machine, func, arg_sets[0])
     if profile is None:
         return None
@@ -552,6 +560,7 @@ def _attempt(func, image, base, machine, read, known, rejected):
         # and so reported every disagreement twice.
         if outcome == "mismatch":
             rejected["mismatch"] += 1
+            rejected.setdefault("mismatched", []).append(func["addr"])
             return None
         if outcome == "failed" or tested < 5:
             rejected["untestable"] += 1
@@ -623,11 +632,17 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
         params = []
         for index in args:
             root = catalog.slot(func["addr"], index) if catalog is not None else None
-            if root is None:
-                params.append("u64 arg%d" % index)
+            if index >= FLOAT_ARG_BASE:
+                # A float argument holds a 32-bit pattern, but is declared u64 like
+                # every other value: as a u32, `farg0 & 0x7FFFFFFF` + -127 wrapped
+                # at 32 bits instead of going negative, and the compiled check
+                # caught two functions disagreeing.
+                params.append("u64 %s" % arg_name(index))
+            elif root is None:
+                params.append("u64 %s" % arg_name(index))
             else:
                 _TYPING.used.add(root)
-                params.append("%s arg%d" % (catalog.names[root], index))
+                params.append("%s %s" % (catalog.names[root], arg_name(index)))
         params = ", ".join(params) or "void"
         try:
             body_lines = render_body(derivation)
@@ -688,14 +703,11 @@ def check_signatures(text: str) -> None:
     )
     for match in pattern.finditer(text):
         name, signature, body = match.groups()
-        declared = set(re.findall(r"arg(\d)", signature))
-        used = set(re.findall(r"arg(\d)", body))
+        declared = set(re.findall(r"\bf?arg\d+\b", signature))
+        used = set(re.findall(r"\bf?arg\d+\b", body))
         missing = sorted(used - declared)
         if missing:
-            problems.append(
-                "%s uses undeclared %s"
-                % (name, ", ".join("arg" + index for index in missing))
-            )
+            problems.append("%s uses undeclared %s" % (name, ", ".join(missing)))
     if problems:
         raise SystemExit(
             "refusing to write generated source:\n  " + "\n  ".join(problems)
@@ -780,7 +792,10 @@ def main(argv=None) -> int:
     print("symbolically derived and verified : %d functions" % len(verified))
     print("  rejected, not derivable         : %d" % rejected["unsupported"])
     print("  rejected, could not be tested   : %d" % rejected["untestable"])
-    print("  rejected, derivation disagreed  : %d" % rejected["mismatch"])
+    print("  rejected, derivation disagreed  : %d%s" % (
+        rejected["mismatch"],
+        "  (%s)" % ", ".join("0x%08X" % a for a in rejected.get("mismatched", [])[:8])
+        if rejected.get("mismatched") else ""))
     print("  elapsed                         : %.1fs" % (time.time() - started))
 
     strong = [item for item in verified if item[3]]

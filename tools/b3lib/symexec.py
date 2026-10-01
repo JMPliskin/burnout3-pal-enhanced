@@ -32,6 +32,27 @@ class Unsupported(Exception):
     """Raised when a function is outside what can be derived symbolically."""
 
 
+def _cached(name):
+    """Memoise a function of one expression on the (immutable) node itself.
+
+    Unrolled loops build expressions that share subtrees, so a plain recursive
+    walk is exponential in the tree's depth - the first version of these turned a
+    15-second derivation run into one that did not finish in ten minutes.
+    """
+    def wrap(function):
+        def cached(expr):
+            try:
+                return object.__getattribute__(expr, name)
+            except AttributeError:
+                result = function(expr)
+                object.__setattr__(expr, name, result)
+                return result
+        cached.__doc__ = function.__doc__
+        cached.__name__ = function.__name__
+        return cached
+    return wrap
+
+
 # -- expression tree -----------------------------------------------------
 
 class Expr:
@@ -71,14 +92,30 @@ class Expr:
         return self.render()
 
 
+# The EE calling convention passes eight integer arguments in registers - $a0..$a3
+# and then $t0..$t3 - and eight float arguments in $f12..$f19. The model numbers
+# them as one vector: 0..7 are the integer arguments, 8..15 the float ones.
+INT_ARG_REGS = (4, 5, 6, 7, 8, 9, 10, 11)
+FLOAT_ARG_BASE = 8
+FLOAT_ARG_REGS = tuple(range(12, 20))
+ARG_COUNT = 16
+
+
+def arg_name(index: int) -> str:
+    """`arg0`..`arg7` for integer arguments, `farg0`..`farg7` for float ones."""
+    if index >= FLOAT_ARG_BASE:
+        return "farg%d" % (index - FLOAT_ARG_BASE)
+    return "arg%d" % index
+
+
 @dataclasses.dataclass(frozen=True)
 class Arg(Expr):
-    index: int  # 0..3 for $a0..$a3
+    index: int  # see INT_ARG_REGS and FLOAT_ARG_REGS
 
     def render(self) -> str:
         if _ARG_RENDERER is not None:
             return _ARG_RENDERER(self)
-        return "arg%d" % self.index
+        return arg_name(self.index)
 
     def evaluate(self, args, read) -> int:
         return args[self.index] & MASK64
@@ -785,6 +822,27 @@ def substitute(expr: Expr, arguments) -> Expr:
 
 
 def simplify(expr: Expr) -> Expr:
+    """Fold constants and drop identities; see `_simplify`.
+
+    Memoised on the node, and the result is marked as its own simplification.
+    Without that mark every simplified node was new and uncached, so simplifying
+    it again - which `address_of` does - recomputed everything beneath it, doubling
+    the work at each level of a pointer chain.
+    """
+    try:
+        return object.__getattribute__(expr, "_simplified")
+    except AttributeError:
+        pass
+    result = _simplify(expr)
+    object.__setattr__(expr, "_simplified", result)
+    try:
+        object.__getattribute__(result, "_simplified")
+    except AttributeError:
+        object.__setattr__(result, "_simplified", result)
+    return result
+
+
+def _simplify(expr: Expr) -> Expr:
     """Fold constants and drop identities, so the output reads like source.
 
     Every rule here preserves meaning exactly.  The derived code is
@@ -819,11 +877,24 @@ def simplify(expr: Expr) -> Expr:
             )
         return Binary(expr.op, left, right)
     if isinstance(expr, Load):
-        return Load(simplify(expr.address), expr.size, expr.signed)
+        return Load(address_of(expr.address), expr.size, expr.signed)
     if isinstance(expr, Compare):
         return Compare(expr.op, simplify(expr.left), simplify(expr.right))
+    if isinstance(expr, SignExtend32):
+        simplified = simplify(expr.value)
+        inner = low32(simplified)
+        if inner is not simplified:
+            # Removing an inner extension can expose folds it was blocking: an
+            # unrolled counter is sext(sext(i + 1) + 1), which must become i + 2 or
+            # it grows with every iteration.
+            inner = simplify(inner)
+        if isinstance(inner, Const):
+            return Const(_sign32(inner.value) & MASK64)
+        if isinstance(inner, SignExtend32) or fits_s32(inner):
+            return inner
+        return SignExtend32(inner)
     if isinstance(expr, (FloatOp, IntToFloat, FloatToInt, FloatPredicate, Not1,
-                         Not, Select, SignExtend32)):
+                         Not, Select)):
         kids = children(expr)
         return rebuild(expr, [simplify(child) for child in kids]) if kids else expr
     if isinstance(expr, Predicate):
@@ -843,6 +914,126 @@ def simplify(expr: Expr) -> Expr:
                 return inner.negate()
         return Predicate(expr.op, left, right)
     return expr
+
+
+# -- sign extension ----------------------------------------------------------
+#
+# Word operations produce a 32-bit result sign-extended to 64 bits, modelled as a
+# SignExtend32 around them. Most consumers only ever look at the low 32 bits - an
+# address, a store of four bytes or fewer, a returned value, the operands of
+# another word operation - and for those the extension is noise, so `low32`
+# removes it. Where all 64 bits matter (a comparison, a doubleword shift) it
+# stays, unless `fits_s32` shows the value is in range anyway.
+
+# Operations whose low 32 result bits depend only on the low 32 bits of their
+# operands.
+_LOW_BITS_ONLY = ("add", "sub", "mul", "shl", "and", "or", "xor", "shr", "sar")
+S32_MIN, S32_MAX = -(1 << 31), (1 << 31) - 1
+
+
+@_cached("_low32")
+def low32(expr: Expr) -> Expr:
+    """`expr` with sign extensions removed where only its low 32 bits are used."""
+    if isinstance(expr, SignExtend32):
+        return low32(expr.value)
+    if isinstance(expr, Binary) and expr.op in _LOW_BITS_ONLY:
+        left = low32(expr.left)
+        # A shift amount is masked by the hardware, so its low bits suffice too.
+        right = low32(expr.right)
+        if left is expr.left and right is expr.right:
+            return expr
+        return Binary(expr.op, left, right)
+    if isinstance(expr, Not):
+        inner = low32(expr.value)
+        return expr if inner is expr.value else Not(inner)
+    return expr
+
+
+def address_of(expr: Expr) -> Expr:
+    """An address expression in canonical form: only its low 32 bits are used."""
+    return simplify(low32(simplify(expr)))
+
+
+@_cached("_range")
+def value_range(expr: Expr):
+    """(low, high) bounds on the value as a signed 64-bit number, or None."""
+    if isinstance(expr, Const):
+        value = _signed(expr.value)
+        return value, value
+    if isinstance(expr, Load):
+        bits = 8 * expr.size
+        if expr.size > 4:
+            return None
+        if expr.signed:
+            return -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+        return 0, (1 << bits) - 1
+    if isinstance(expr, SignExtend32):
+        return S32_MIN, S32_MAX
+    if isinstance(expr, (Compare, Predicate, FloatPredicate, Not1)):
+        return 0, 1
+    if isinstance(expr, (FloatOp, IntToFloat, FloatToInt)):
+        return 0, MASK32
+    if isinstance(expr, Arg) and expr.index >= FLOAT_ARG_BASE:
+        return 0, MASK32
+    if isinstance(expr, Select):
+        a, b = value_range(expr.when_true), value_range(expr.when_false)
+        if a is None or b is None:
+            return None
+        return min(a[0], b[0]), max(a[1], b[1])
+    if isinstance(expr, Not):
+        inner = value_range(expr.value)
+        return None if inner is None else (-inner[1] - 1, -inner[0] - 1)
+    if not isinstance(expr, Binary):
+        return None
+    if expr.op == "shr":
+        if isinstance(expr.right, Const):
+            return 0, MASK32 >> (expr.right.value & 0x1F)
+        return 0, MASK32
+    if expr.op == "sar":
+        return S32_MIN, S32_MAX
+    if expr.op == "dshr" and isinstance(expr.right, Const) and expr.right.value & 0x3F:
+        return 0, ((1 << 64) - 1) >> (expr.right.value & 0x3F)
+    a, b = value_range(expr.left), value_range(expr.right)
+    if expr.op == "and":
+        bounds = [r for r in (a, b) if r is not None and r[0] >= 0]
+        if bounds:
+            return 0, min(r[1] for r in bounds)
+        if a is not None and b is not None and _within_s32(a) and _within_s32(b):
+            return S32_MIN, S32_MAX
+        return None
+    if a is None or b is None:
+        return None
+    if expr.op in ("or", "xor"):
+        if a[0] >= 0 and b[0] >= 0:
+            return 0, (1 << max(a[1], b[1]).bit_length()) - 1
+        if _within_s32(a) and _within_s32(b):
+            return S32_MIN, S32_MAX
+        return None
+    if expr.op == "add":
+        result = a[0] + b[0], a[1] + b[1]
+    elif expr.op == "sub":
+        result = a[0] - b[1], a[1] - b[0]
+    elif expr.op == "mul":
+        products = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]
+        result = min(products), max(products)
+    elif expr.op in ("shl", "dshl") and isinstance(expr.right, Const):
+        factor = 1 << (expr.right.value & (0x1F if expr.op == "shl" else 0x3F))
+        result = a[0] * factor, a[1] * factor
+    else:
+        return None
+    # Outside the signed 64-bit range the value would have wrapped.
+    if result[0] < -(1 << 63) or result[1] >= (1 << 63):
+        return None
+    return result
+
+
+def _within_s32(bounds) -> bool:
+    return bounds is not None and S32_MIN <= bounds[0] and bounds[1] <= S32_MAX
+
+
+def fits_s32(expr: Expr) -> bool:
+    """True when sign-extending the value's low 32 bits would not change it."""
+    return _within_s32(value_range(expr))
 
 
 # -- the symbolic machine ------------------------------------------------
@@ -940,8 +1131,8 @@ def derive(image: bytes, base: int, start: int, end: int,
 
         gp_value = GP_VALUE
     regs = {0: Const(0), 28: Const(gp_value)}
-    for i in range(4):
-        regs[4 + i] = Arg(i)
+    for i, reg in enumerate(INT_ARG_REGS):
+        regs[reg] = Arg(i)
     stores = []
 
     def get(index: int) -> Expr:
@@ -992,7 +1183,7 @@ def derive(image: bytes, base: int, start: int, end: int,
                 # A quadword store needs the upper half of the register, which the
                 # expression model does not carry.
                 raise Unsupported("128-bit store")
-            target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+            target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
             stores.append(Store(target, get(ins.rt), size))
             addr += 4
             continue
@@ -1015,7 +1206,7 @@ def _apply(regs: dict, ins, get) -> None:
 
     if m in _LOAD_SIZES:
         size, signed = _LOAD_SIZES[m]
-        address = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        address = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         regs[ins.rt] = Load(address, size, signed)
         return
 
@@ -1026,7 +1217,10 @@ def _apply(regs: dict, ins, get) -> None:
         # sign-extension produced exactly that wrong mask.
         regs[ins.rt] = Const(_sign32((ins.imm & 0xFFFF) << 16) & MASK64)
         return
-    if m in ("addiu", "addi", "daddiu", "daddi"):
+    if m in ("addiu", "addi"):
+        regs[ins.rt] = SignExtend32(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        return
+    if m in ("daddiu", "daddi"):
         regs[ins.rt] = Binary("add", get(ins.rs), Const(ins.imm & MASK64))
         return
     if m == "andi":
@@ -1045,10 +1239,22 @@ def _apply(regs: dict, ins, get) -> None:
         regs[ins.rt] = Compare("lt", get(ins.rs), Const(ins.imm & MASK64))
         return
 
-    if m in ("addu", "add", "daddu", "dadd"):
+    # Word operations sign-extend their 32-bit result into the 64-bit register;
+    # the doubleword forms keep all 64 bits. The model used to give both the
+    # 64-bit result, which only shows where upper bits are observed - a `slt` on
+    # the result of an `sllv` - and so went unnoticed until arguments other than
+    # small pointers reached the tests. `simplify` removes the extension again
+    # wherever upper bits cannot matter.
+    if m in ("addu", "add"):
+        regs[ins.rd] = SignExtend32(Binary("add", get(ins.rs), get(ins.rt)))
+        return
+    if m in ("daddu", "dadd"):
         regs[ins.rd] = Binary("add", get(ins.rs), get(ins.rt))
         return
-    if m in ("subu", "sub", "dsubu", "dsub"):
+    if m in ("subu", "sub"):
+        regs[ins.rd] = SignExtend32(Binary("sub", get(ins.rs), get(ins.rt)))
+        return
+    if m in ("dsubu", "dsub"):
         regs[ins.rd] = Binary("sub", get(ins.rs), get(ins.rt))
         return
     if m == "and":
@@ -1068,10 +1274,10 @@ def _apply(regs: dict, ins, get) -> None:
         return
 
     if m == "sll":
-        regs[ins.rd] = Binary("shl", get(ins.rt), Const(ins.imm))
+        regs[ins.rd] = SignExtend32(Binary("shl", get(ins.rt), Const(ins.imm)))
         return
     if m == "srl":
-        regs[ins.rd] = Binary("shr", get(ins.rt), Const(ins.imm))
+        regs[ins.rd] = SignExtend32(Binary("shr", get(ins.rt), Const(ins.imm)))
         return
     if m == "sra":
         regs[ins.rd] = Binary("sar", get(ins.rt), Const(ins.imm))
@@ -1097,10 +1303,10 @@ def _apply(regs: dict, ins, get) -> None:
         return
     # Variable shifts take their amount from a register.
     if m == "sllv":
-        regs[ins.rd] = Binary("shl", get(ins.rt), get(ins.rs))
+        regs[ins.rd] = SignExtend32(Binary("shl", get(ins.rt), get(ins.rs)))
         return
     if m == "srlv":
-        regs[ins.rd] = Binary("shr", get(ins.rt), get(ins.rs))
+        regs[ins.rd] = SignExtend32(Binary("shr", get(ins.rt), get(ins.rs)))
         return
     if m == "srav":
         regs[ins.rd] = Binary("sar", get(ins.rt), get(ins.rs))

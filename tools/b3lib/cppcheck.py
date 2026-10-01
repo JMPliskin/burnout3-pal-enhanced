@@ -71,7 +71,9 @@ def functions_in(source: str) -> list:
     found = []
     for match in SIGNATURE.finditer(source):
         return_type, name, address, params = match.groups()
-        indices = [int(i) for i in re.findall(r"arg(\d)", params)]
+        # arg0..arg7 are vector entries 0..7, farg0..farg7 entries 8..15.
+        indices = [int(n) + (8 if f else 0)
+                   for f, n in re.findall(r"\b(f?)arg(\d+)\b", params)]
         found.append((int(address, 16), name, return_type, indices, params))
     return found
 
@@ -196,7 +198,8 @@ class CompiledFunctions:
         def evaluate(args):
             self.writes = []
             self.error = None
-            values = (ctypes.c_uint64 * 4)(*[(a & MASK64) for a in (list(args) + [0] * 4)[:4]])
+            values = (ctypes.c_uint64 * 16)(
+                *[(a & MASK64) for a in (list(args) + [0] * 16)[:16]])
             result = ctypes.c_int32(0)
             kind = self.library.b3_call(address, values, ctypes.byref(result))
             if self.error is not None:

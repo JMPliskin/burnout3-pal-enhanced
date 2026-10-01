@@ -164,6 +164,16 @@ inspection, and several were in the *verifier* rather than the reconstruction:
   early path, so it fell through into the later paths' stores. Their multi-store
   paths were also not captured before writing. Compiling and running the output
   found 12 such functions, all of which had passed as trees.
+* Word operations (`addu`, `addiu`, `sll`, `sllv`, ...) sign-extend their 32-bit
+  result into the 64-bit register; the model kept the full 64-bit value. That is
+  invisible unless upper bits are observed, and with only small positive pointers
+  as arguments they never were. Passing $t0..$t3 arguments exposed it: an `sllv`
+  result reached an `slt`. Word results are now wrapped in a sign extension that
+  the simplifier removes wherever only the low 32 bits are used or the value
+  provably fits. The first version of that simplification was exponential on the
+  shared subtrees of unrolled loops; it is memoised on the (immutable) nodes.
+* Declaring float arguments `u32` instead of `u64` made `farg0 & 0x7FFFFFFF` plus
+  -127 wrap at 32 bits. The compiled check caught both affected functions.
 
 ## The original toolchain, for the record
 

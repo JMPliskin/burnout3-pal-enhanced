@@ -57,7 +57,8 @@ ACCESSES = {
 }
 STORES = {"sb", "sh", "sw", "sd", "sq", "swc1"}
 MOVES = {"daddu", "addu", "or", "dadd"}
-ARG_REGS = (4, 5, 6, 7)
+# All eight integer argument registers: $a0..$a3, then $t0..$t3.
+ARG_REGS = (4, 5, 6, 7, 8, 9, 10, 11)
 CALLER_SAVED = set(range(1, 16)) | {24, 25, 31}
 # 16-byte accesses are block copies (`lq`/`sq` move a struct 16 bytes at a time),
 # not fields; they say nothing about the layout inside the block.

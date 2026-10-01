@@ -89,5 +89,25 @@ def _build(kind: str, seed: int) -> bytes:
 
 
 def arguments(rng: random.Random) -> tuple:
-    """Four argument words, each a 16-aligned pointer into the first half of scratch."""
-    return tuple(SCRATCH + rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(4))
+    """A full register argument vector: eight integers, then eight floats.
+
+    The integers are 16-aligned pointers into the first half of scratch. The first
+    four are drawn exactly as they were when only four arguments existed, so the
+    cases every earlier function was verified on are unchanged. The floats are bit
+    patterns of ordinary values - a mix of small exact ones and random magnitudes -
+    rather than random bits, which would be mostly NaNs and denormals.
+    """
+    integers = [SCRATCH + rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(8)]
+    return tuple(integers) + tuple(float_bits(rng) for _ in range(8))
+
+
+FLOAT_CASES = (0.0, 1.0, -1.0, 0.5, 2.0, -0.25, 100.0, 3.5)
+
+
+def float_bits(rng: random.Random) -> int:
+    """The bit pattern of a plausible float argument."""
+    if rng.random() < 0.5:
+        value = rng.choice(FLOAT_CASES)
+    else:
+        value = rng.uniform(-1000.0, 1000.0)
+    return struct.unpack("<I", struct.pack("<f", value))[0]
