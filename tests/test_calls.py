@@ -172,5 +172,46 @@ class TestOpaqueCalls(unittest.TestCase):
         self.assertIn("t1", lines[-1])
 
 
+
+class TestSharedCode(unittest.TestCase):
+    """A jump into the middle of another function continues there; it is not a call.
+
+    func_A is `j shared; nop`, where `shared` is the tail of func_B: `lw $v0,
+    4($a0); jr $ra; nop`. func_A returns the field at 4, exactly as func_B's tail
+    does.
+    """
+
+    def setUp(self):
+        self.words = [
+            lw(V0, 0, A0),                       # func_B starts here
+            (2 << 26) | ((BASE + 8) >> 2),       # j shared (stands in for B's body)
+            lw(V0, 4, A0),                       # shared: B's tail
+            JR_RA,
+            NOP,
+            (2 << 26) | ((BASE + 8) >> 2),       # func_A: j shared
+            NOP,
+        ]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+        self.func_a = BASE + 20
+
+    def test_jump_into_shared_code_is_followed(self):
+        derivation = derive_paths(self.image, BASE, self.func_a, self.func_a + 8,
+                                  known={}, parameters={BASE: (0,), self.func_a: (0,)})
+        self.assertFalse(derivation.has_calls)
+        self.assertEqual(derivation.paths[0].expression.render(), "*(s32*)(arg0 + 4)")
+
+    def test_jump_to_a_function_start_is_still_a_tail_call(self):
+        derivation = derive_paths(self.image, BASE, self.func_a, self.func_a + 8,
+                                  known={}, parameters={BASE: (0,), BASE + 8: (0,),
+                                                        self.func_a: (0,)})
+        self.assertTrue(derivation.has_calls)
+
+    def test_without_function_starts_nothing_is_shared(self):
+        from b3lib.symexec import Unsupported
+
+        with self.assertRaises(Unsupported):
+            derive_paths(self.image, BASE, self.func_a, self.func_a + 8, known={})
+
+
 if __name__ == "__main__":
     unittest.main()

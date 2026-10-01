@@ -789,6 +789,19 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     # Shared by every fork of this function's walk, so the cap is on total work.
     budget = [MAX_TOTAL_STEPS]
 
+    def shared_code(address: int) -> bool:
+        """True for code outside this function that the walk may simply continue into.
+
+        Compilers share tails between functions: a short function often ends by
+        jumping into the middle of another one, to a sequence they both finish
+        with. That is not a call - nothing returns to the jump - so the walk carries
+        on there as though the code were this function's own. A jump to a known
+        function *start* is different, a tail call, and stays one. Without the list
+        of function starts (no `parameters`), nothing outside counts as shared.
+        """
+        return (parameters is not None and address not in parameters
+                and address not in known and base <= address < base + len(image) - 3)
+
     def opaque_call(target: int, regs: dict, stores: list, marks: tuple, epoch: int):
         """Record a call to an underived function; returns (marks, new epoch).
 
@@ -844,7 +857,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             for value in regs.values():
                 if value.tree_size > MAX_EXPR_SIZE:
                     raise Unsupported("expression too large")
-            if not (start <= addr < end):
+            if not (start <= addr < end) and not shared_code(addr):
                 raise Unsupported("control flow leaves the function")
             visited[addr] = count
             visited[STEPS] = steps
@@ -916,7 +929,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if m in ("b", "j"):
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
-                if start <= ins.target < end:
+                if start <= ins.target < end or shared_code(ins.target):
                     addr = ins.target
                     continue
                 # A jump out of the function is a tail call: the callee's result

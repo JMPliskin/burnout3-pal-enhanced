@@ -498,6 +498,18 @@ to 2.52% of code bytes. The calls still refused for "not a known function start"
 are now tail jumps into the middle of other functions - shared code - which is
 also what "control flow leaves the function" is.
 
+### Shared tails
+
+Metrowerks shares code between functions: a short function often ends by jumping
+into the middle of another, to a tail they both finish with. The deriver now
+follows such a jump and carries on as though the tail were its own - nothing
+returns to the jump, so it is not a call - while a jump to a known function start
+stays a tail call. That took derived-and-verified functions from 1,612 to 1,835
+(verified code 2.52% to 2.60%), with all 1,794 emitted ones agreeing when
+compiled. Many of the rest now get as far as a shared *epilogue*, which restores
+registers from a stack frame the jumping function did not lay out itself; "reads
+an unwritten stack slot" rose from 398 to 1,281 accordingly.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
