@@ -268,6 +268,9 @@ _MEM = {
     0x30: ("lwc0", False, False),
     0x31: ("lwc1", False, True),
     0x33: ("pref", False, False),
+    # The EE's cache-maintenance instruction. The `rt` field is an operation
+    # selector rather than a register, so it is rendered numerically.
+    0x2F: ("cache", False, False),
     0x36: ("lqc2", False, False),
     0x37: ("ld", False, False),
     0x39: ("swc1", True, True),
@@ -739,8 +742,9 @@ class Disassembler:
             reg = FPR[rt]
         elif mnem in ("lqc2", "sqc2"):
             reg = VF[rt]
-        elif mnem == "pref":
-            reg = str(rt)
+        elif mnem in ("pref", "cache"):
+            # These encode an operation selector in `rt`, not a register.
+            reg = str(rt) if mnem == "pref" else _hex(rt)
         else:
             reg = GPR[rt]
         flags = Flags.STORE if is_store else Flags.LOAD

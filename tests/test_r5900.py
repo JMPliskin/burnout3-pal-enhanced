@@ -197,6 +197,18 @@ class TestEmotionEngineExtensions(unittest.TestCase):
         self.assertEqual(ins.mnemonic, "psllw")
         self.assertEqual(ins.operands, ("$v0", "$a0", 5))
 
+    def test_cache_instruction(self):
+        """Opcode 0x2F is the EE cache-maintenance instruction.
+
+        A generic MIPS decoder leaves this undecoded; it appears in the real
+        binary inside sync-wrapped cache loops.
+        """
+        ins = decode(0xBD180000, 0x0010E808)
+        self.assertTrue(ins.is_valid)
+        self.assertEqual(ins.mnemonic, "cache")
+        # The rt field selects the cache operation rather than naming a register.
+        self.assertEqual(ins.operands, ("0x18", "0x0($t0)"))
+
     def test_mfsa_mtsa(self):
         self.assertEqual(decode(enc_r(0, 0, 0, 2, 0, 0x28), 0).mnemonic, "mfsa")
         self.assertEqual(decode(enc_r(0, 4, 0, 0, 0, 0x29), 0).mnemonic, "mtsa")

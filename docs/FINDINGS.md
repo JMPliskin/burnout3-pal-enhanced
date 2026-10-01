@@ -39,15 +39,17 @@ consecutive `padduw` instructions zeroing the 128-bit general registers, then
 
 | metric | value |
 | --- | ---: |
-| Functions discovered | 9,203 |
-| - proven by a direct `jal` | 5,676 |
-| - found via pointer tables (vtables/callbacks) | 2,637 |
-| - found by prologue scan | 889 |
+| Functions discovered | 9,163 |
+| - proven by a direct `jal` | 5,677 |
+| - found via pointer tables (vtables/callbacks) | 2,597 |
+| - found by prologue scan | 888 |
+| Pointer candidates rejected (no return) | 37 |
 | Direct call sites | 40,430 |
-| Image proven to be code | 3,511,240 bytes (86.2%) |
-| Code attributed to a function | 3,258,392 bytes |
-| Code not yet attributed | 252,848 bytes |
-| Functions ending in `jr $ra` | 9,134 (99.3%) |
+| Image proven to be code | 3,511,260 bytes (86.2%) |
+| Code attributed to a function | 3,254,964 bytes |
+| Code not yet attributed | 256,296 bytes |
+| Functions ending in `jr $ra` | 9,133 (99.67%) |
+| Instructions failing to decode | 0 of 813,741 |
 | Functions using VU0 macro mode | 796 |
 | Strings | 5,556 |
 | Address cross-references | 8,159 |

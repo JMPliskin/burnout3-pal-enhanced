@@ -127,8 +127,16 @@ class ImageAnalyzer:
     # -- stage 2: recursive control-flow traversal ---------------------
 
     def _looks_like_code(self, addr: int, probe: int = 8) -> bool:
-        """Cheap sanity check that `addr` begins a decodable instruction run."""
+        """Cheap sanity check that `addr` begins a decodable instruction run.
+
+        Decoding successfully is not enough on its own: a zero word decodes as a
+        perfectly valid `nop`, so a run of zeroes in read-only data passes any
+        test that only asks "does this decode?".  Real code therefore also has to
+        carry some actual work - at least two non-`nop` instructions, and not be
+        mostly padding.
+        """
         valid = 0
+        meaningful = 0
         for k in range(probe):
             a = addr + k * 4
             if not self.contains(a):
@@ -137,9 +145,14 @@ class ImageAnalyzer:
             if not ins.is_valid:
                 return False
             valid += 1
+            if not ins.is_nop:
+                meaningful += 1
             if ins.ends_block:
                 break
-        return valid >= 2
+        if valid < 2 or meaningful < 2:
+            return False
+        # Padding-dominated windows are data, not a function body.
+        return meaningful * 2 > valid
 
     def traverse(self, start: int, func: Function) -> set:
         """Walk one function's control-flow graph, marking reachable bytes.
@@ -330,8 +343,17 @@ class ImageAnalyzer:
             if addr in self.functions:
                 continue
             func = Function(start=addr, confidence=CONF_POINTER)
-            self.functions[addr] = func
             visited = self.traverse(addr, func)
+            # A pointer-table entry is a real function - a virtual method or a
+            # callback - so it has to return. Without a `jr $ra` the candidate is
+            # almost always data that merely decodes: tables of small integers
+            # read as instructions on $zero, or pointer arrays pointing at
+            # themselves. Requiring a return discards those without needing a
+            # hand-maintained list of data ranges.
+            if not func.has_return:
+                self.stats["pointer_rejected_no_return"] += 1
+                continue
+            self.functions[addr] = func
             func.end = self.extent_from(addr, visited)
             func.instruction_count = sum(
                 1 for a in visited if func.start <= a < func.end
