@@ -80,6 +80,57 @@ Two consequences:
 Neither of the other two executables on the disc retains a `.comment` section,
 so their toolchains are unknown.
 
+## The ValueDB name hash
+
+Parameters are addressed by a 32-bit hash of their full slash-separated path, not
+by string comparison. The hash is `func_0021BFA0`, a table-driven reflected
+CRC32 over the path, with the 256-entry table at `0x0049B110`. That table was
+checked against a freshly generated reflected-CRC32 table for polynomial
+`0xEDB88320` and all 256 words agree exactly (covered by a test).
+
+It is **not** interchangeable with a standard CRC32, for two reasons visible in
+the disassembly:
+
+* the accumulator is a *signed* int and the shift is `sra`, so the vacated high
+  bits are filled with the sign bit rather than zeroes - what a compiler emits
+  for `int crc`, almost certainly not intentional, but it is what the game
+  computes;
+* there is no final `^ 0xFFFFFFFF`.
+
+The byte load is `lb`, not `lbu`, so a character above `0x7F` would sign-extend
+and index outside the table. Every name in the database is plain ASCII, so this
+never fires - worth recording so a port does not "fix" it blindly.
+
+### How a key is built
+
+`func_0021BB60` (613 callers, and the callee at 67 of the tuning-string sites)
+assembles the path before hashing it:
+
+1. `StringAssign(buf, part1)`
+2. `StringAppend(buf, part2)`
+3. `StringLength(buf)`, then compare the last character against `0x2F` (`/`)
+4. if it is not already a separator, append the `"/"` at `0x004B9C88`
+5. `StringAppend(buf, part3)`
+6. `HashName(buf)` - the result drives a search over 32-byte records
+
+`func_0024FDF0` is a thin forwarder that hashes a bare name with no path
+assembly, so not every lookup takes the path-building route.
+
+### Status of the match against the database file
+
+The hash is recovered and implemented (`tools/b3lib/vdbhash.py`,
+`src/valuedb/hash.cpp`), but it has **not** yet been confirmed against the 7,525
+keys in `DATA/VDB.XML`, because the keys are hashes of *full* paths and the path
+prefixes are not yet known. Hashing the bare leaf names recovered from the
+executable produces zero matches, which is the expected result given the path
+assembly above rather than evidence against the algorithm.
+
+Supporting evidence that the algorithm is right: the two tables in the database
+split 3,775 / 3,750 on bit 31 of the key, within 0.2% of an even split, which is
+what a uniform 32-bit hash produces. The remaining work is recovering the path
+hierarchy - the unparsed 10,424-byte tail of the database file is the obvious
+place to look, as are `DATA/STAGEHED.BIN` and `DATA/GLOBALUS.BIN`.
+
 ## Middleware: RenderWare 3.6
 
 The binary retains RCS `$Id:` tags naming the exact SDK sources linked in:

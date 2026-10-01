@@ -67,4 +67,12 @@ address,name,status,source,notes
 0x00115580,ps2::SetSyscall,analyzed,,EE kernel service 0x74 (documented ABI); 3 callers
 0x00115590,ps2::MachineType_or_rfu,analyzed,,EE kernel service 0x5A (documented ABI); 2 callers
 0x001155D8,ps2::GetMemorySize_or_rfu,analyzed,,EE kernel service 0x5B (documented ABI); 1 callers
+0x00126EC8,runtime::StringAppend,analyzed,,strcat-like; used to build ValueDB paths
+0x001272D0,runtime::StringAssign,analyzed,,strcpy/init-like; first call in the path builder
+0x001273E8,valuedb::StringLength,analyzed,,returns string length; the hash loop takes its iteration count from this
+0x0021B9B0,valuedb::LookupVariantC,analyzed,,third lookup entry point; 17 tuning-string call sites
+0x0021BB60,valuedb::LookupByPath,analyzed,,"assembles a slash-separated path from 3 parts, hashes it, then searches 32-byte records; 613 callers"
+0x0021BD80,valuedb::LookupVariantB,analyzed,,second lookup entry point; 31 tuning-string call sites
+0x0021BFA0,valuedb::HashName,identified,src/valuedb/hash.cpp,"table-driven reflected CRC32, signed accumulator (sra), no final XOR; table at 0x0049B110"
+0x0024FDF0,valuedb::HashNameAlias,identified,src/valuedb/hash.cpp,forwarder: hashes a bare name with no path assembly
 0x003B88E0,unknown::AdvanceBufferCursor,analyzed,,adds (arg1 << 1) to the word at +0x1800 of arg0
