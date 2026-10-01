@@ -99,6 +99,7 @@ PRECEDENCE = {
     "mul": 10,
     "add": 9, "sub": 9,
     "shl": 8, "shr": 8, "sar": 8,
+    "dshl": 8, "dshr": 8, "dsar": 8,
     "ltu": 6, "lt": 6,
     # Relational and equality operators, for branch conditions.
     "eq": 5, "ne": 5, "le": 6, "gt": 6, "ge": 6,
@@ -167,6 +168,7 @@ class Binary(Expr):
     _SYMBOL = {
         "add": "+", "sub": "-", "mul": "*", "shl": "<<",
         "shr": ">>", "sar": ">>", "and": "&", "or": "|", "xor": "^",
+        "dshl": "<<", "dshr": ">>", "dsar": ">>",
     }
 
     def render(self) -> str:
@@ -180,7 +182,7 @@ class Binary(Expr):
         # it, so wrapping unconditionally cannot double up. Testing the rendered
         # text for a leading "(" would be wrong: `(a << 3) - b` starts with one
         # without being parenthesised as a whole.
-        if self.op in ("shl", "shr", "sar") and isinstance(self.left, Binary):
+        if self.op in ("shl", "shr", "sar", "dshl", "dshr", "dsar") and isinstance(self.left, Binary):
             if self.left.op in ("add", "sub"):
                 left = "(%s)" % left
         # The right operand of a left-associative operator needs a parenthesis at
@@ -196,12 +198,22 @@ class Binary(Expr):
             return (a - b) & MASK64
         if self.op == "mul":
             return (a * b) & MASK64
+        # Word shifts mask the amount to 5 bits, doubleword shifts to 6. Using the
+        # 5-bit mask for both silently turns a shift of 32 into a shift of zero,
+        # which is how `dsll32`/`dsra32` and the HI half of a multiply came out
+        # wrong - caught by the differential tests rather than by reading.
         if self.op == "shl":
             return (a << (b & 0x1F)) & MASK64
         if self.op == "shr":
             return (a & MASK32) >> (b & 0x1F)
         if self.op == "sar":
-            return (_signed(a) >> (b & 0x1F)) & MASK64
+            return (_sign32(a) >> (b & 0x1F)) & MASK64
+        if self.op == "dshl":
+            return (a << (b & 0x3F)) & MASK64
+        if self.op == "dshr":
+            return (a & MASK64) >> (b & 0x3F)
+        if self.op == "dsar":
+            return (_signed(a) >> (b & 0x3F)) & MASK64
         if self.op == "and":
             return a & b
         if self.op == "or":
@@ -230,6 +242,62 @@ class Compare(Expr):
         if self.op == "ltu":
             return 1 if (a & MASK64) < (b & MASK64) else 0
         return 1 if _signed(a) < _signed(b) else 0
+
+
+@dataclasses.dataclass(frozen=True)
+class SignExtend32(Expr):
+    """Narrow to 32 bits and sign-extend, as every 32-bit MIPS result is.
+
+    Needed to model `mult` faithfully: it multiplies the low words of its operands
+    as signed values, so the raw 64-bit register contents must not be used.
+    """
+
+    value: Expr
+
+    def render(self) -> str:
+        return "(s32)%s" % _wrap(self.value, ATOM_PRECEDENCE)
+
+    def evaluate(self, args, read) -> int:
+        return _sign32(self.value.evaluate(args, read)) & MASK64
+
+
+@dataclasses.dataclass(frozen=True)
+class Not(Expr):
+    """Bitwise complement, used to express `nor` as `~(a | b)`."""
+
+    value: Expr
+
+    def render(self) -> str:
+        return "~%s" % _wrap(self.value, ATOM_PRECEDENCE)
+
+    def evaluate(self, args, read) -> int:
+        return ~self.value.evaluate(args, read) & MASK64
+
+
+@dataclasses.dataclass(frozen=True)
+class Select(Expr):
+    """A ternary: the shape of a conditional move.
+
+    `movz`/`movn` write their destination only when a condition holds, so the
+    result depends on what the destination already contained - which is why the
+    previous value is part of the expression rather than discarded.
+    """
+
+    condition: Expr
+    when_true: Expr
+    when_false: Expr
+
+    def render(self) -> str:
+        return "%s ? %s : %s" % (
+            _wrap(self.condition, 7),
+            _wrap(self.when_true, 7),
+            _wrap(self.when_false, 7),
+        )
+
+    def evaluate(self, args, read) -> int:
+        taken = self.condition.evaluate(args, read)
+        branch = self.when_true if taken else self.when_false
+        return branch.evaluate(args, read) & MASK64
 
 
 @dataclasses.dataclass(frozen=True)
@@ -270,6 +338,61 @@ def _sign32(value: int) -> int:
     return value - (1 << 32) if value & 0x80000000 else value
 
 
+def children(expr: Expr) -> tuple:
+    """Every subexpression of a node.
+
+    Deliberately fail-closed: an unrecognised node type raises rather than
+    returning nothing. Every traversal in the project is built on this, and the
+    silent-empty version of it caused a real bug - `Not`, `Select` and
+    `SignExtend32` were added without updating the argument scan, so arguments
+    nested inside them became invisible and the emitter produced functions
+    referencing undeclared parameters. A traversal that cannot see a new node type
+    must break loudly, not quietly skip it.
+    """
+    if isinstance(expr, (Arg, Const)):
+        return ()
+    if isinstance(expr, Load):
+        return (expr.address,)
+    if isinstance(expr, (Not, SignExtend32)):
+        return (expr.value,)
+    if isinstance(expr, Select):
+        return (expr.condition, expr.when_true, expr.when_false)
+    if isinstance(expr, (Binary, Compare, Predicate)):
+        return (expr.left, expr.right)
+    raise Unsupported("no traversal rule for %s" % type(expr).__name__)
+
+
+def rebuild(expr: Expr, new_children) -> Expr:
+    """Reconstruct a node with replaced subexpressions, preserving its type."""
+    if isinstance(expr, (Arg, Const)):
+        return expr
+    if isinstance(expr, Load):
+        return Load(new_children[0], expr.size, expr.signed)
+    if isinstance(expr, Not):
+        return Not(new_children[0])
+    if isinstance(expr, SignExtend32):
+        return SignExtend32(new_children[0])
+    if isinstance(expr, Select):
+        return Select(*new_children)
+    if isinstance(expr, Binary):
+        return Binary(expr.op, *new_children)
+    if isinstance(expr, Compare):
+        return Compare(expr.op, *new_children)
+    if isinstance(expr, Predicate):
+        return Predicate(expr.op, *new_children)
+    raise Unsupported("no rebuild rule for %s" % type(expr).__name__)
+
+
+def arguments_used(expr: Expr) -> set:
+    """Indices of every `Arg` anywhere in an expression."""
+    if isinstance(expr, Arg):
+        return {expr.index}
+    found = set()
+    for child in children(expr):
+        found |= arguments_used(child)
+    return found
+
+
 def substitute(expr: Expr, arguments) -> Expr:
     """Rewrite a derivation's `Arg` nodes with the caller's actual expressions.
 
@@ -281,30 +404,17 @@ def substitute(expr: Expr, arguments) -> Expr:
     left as-is, which keeps the result honest: if a callee reads an argument the
     caller never set, that shows up as a stray `argN` rather than silently becoming
     zero.
+
+    Built on `children`/`rebuild` so that a new node type cannot be silently
+    skipped - the earlier hand-written version missed three and substituted nothing
+    inside them.
     """
     if isinstance(expr, Arg):
         return arguments.get(expr.index, expr)
-    if isinstance(expr, Load):
-        return Load(substitute(expr.address, arguments), expr.size, expr.signed)
-    if isinstance(expr, Binary):
-        return Binary(
-            expr.op,
-            substitute(expr.left, arguments),
-            substitute(expr.right, arguments),
-        )
-    if isinstance(expr, Compare):
-        return Compare(
-            expr.op,
-            substitute(expr.left, arguments),
-            substitute(expr.right, arguments),
-        )
-    if isinstance(expr, Predicate):
-        return Predicate(
-            expr.op,
-            substitute(expr.left, arguments),
-            substitute(expr.right, arguments),
-        )
-    return expr
+    kids = children(expr)
+    if not kids:
+        return expr
+    return rebuild(expr, [substitute(child, arguments) for child in kids])
 
 
 def simplify(expr: Expr) -> Expr:
@@ -374,6 +484,12 @@ _LOAD_SIZES = {
 
 
 _STORE_SIZES = {"sb": 1, "sh": 2, "sw": 4, "sd": 8, "sq": 16}
+
+# The multiplier result registers. They are kept in the same dict as the general
+# registers under indices the hardware cannot name, which avoids threading a second
+# piece of state through every caller.
+REG_HI = 64
+REG_LO = 65
 
 
 @dataclasses.dataclass(frozen=True)
@@ -514,7 +630,11 @@ def _apply(regs: dict, ins, get) -> None:
         return
 
     if m == "lui":
-        regs[ins.rt] = Const((ins.imm & 0xFFFF) << 16)
+        # The result is a 32-bit value sign-extended into the 64-bit register, which
+        # matters as soon as anything manipulates it 64 bits wide: `lui 0xFFFF`
+        # followed by `dsrl32 ..., 32` yields 0xFFFFFFFF, not 0. Dropping the
+        # sign-extension produced exactly that wrong mask.
+        regs[ins.rt] = Const(_sign32((ins.imm & 0xFFFF) << 16) & MASK64)
         return
     if m in ("addiu", "addi", "daddiu", "daddi"):
         regs[ins.rt] = Binary("add", get(ins.rs), Const(ins.imm & MASK64))
@@ -557,14 +677,104 @@ def _apply(regs: dict, ins, get) -> None:
         regs[ins.rd] = Compare("lt", get(ins.rs), get(ins.rt))
         return
 
-    if m in ("sll", "dsll"):
+    if m == "sll":
         regs[ins.rd] = Binary("shl", get(ins.rt), Const(ins.imm))
         return
-    if m in ("srl", "dsrl"):
+    if m == "srl":
         regs[ins.rd] = Binary("shr", get(ins.rt), Const(ins.imm))
         return
-    if m in ("sra", "dsra"):
+    if m == "sra":
         regs[ins.rd] = Binary("sar", get(ins.rt), Const(ins.imm))
+        return
+    if m == "dsll":
+        regs[ins.rd] = Binary("dshl", get(ins.rt), Const(ins.imm))
+        return
+    if m == "dsrl":
+        regs[ins.rd] = Binary("dshr", get(ins.rt), Const(ins.imm))
+        return
+    if m == "dsra":
+        regs[ins.rd] = Binary("dsar", get(ins.rt), Const(ins.imm))
+        return
+    # The 32-prefixed forms add 32 to the shift amount.
+    if m == "dsll32":
+        regs[ins.rd] = Binary("dshl", get(ins.rt), Const(ins.imm + 32))
+        return
+    if m == "dsrl32":
+        regs[ins.rd] = Binary("dshr", get(ins.rt), Const(ins.imm + 32))
+        return
+    if m == "dsra32":
+        regs[ins.rd] = Binary("dsar", get(ins.rt), Const(ins.imm + 32))
+        return
+    # Variable shifts take their amount from a register.
+    if m == "sllv":
+        regs[ins.rd] = Binary("shl", get(ins.rt), get(ins.rs))
+        return
+    if m == "srlv":
+        regs[ins.rd] = Binary("shr", get(ins.rt), get(ins.rs))
+        return
+    if m == "srav":
+        regs[ins.rd] = Binary("sar", get(ins.rt), get(ins.rs))
+        return
+    if m == "dsllv":
+        regs[ins.rd] = Binary("dshl", get(ins.rt), get(ins.rs))
+        return
+    if m == "dsrlv":
+        regs[ins.rd] = Binary("dshr", get(ins.rt), get(ins.rs))
+        return
+    if m == "dsrav":
+        regs[ins.rd] = Binary("dsar", get(ins.rt), get(ins.rs))
+        return
+
+    if m == "nor":
+        regs[ins.rd] = Not(Binary("or", get(ins.rs), get(ins.rt)))
+        return
+
+    # Conditional moves leave the destination untouched when the condition fails,
+    # so the previous value is part of the result. Without it there is nothing to
+    # express, hence the refusal rather than a guess.
+    if m in ("movz", "movn"):
+        if ins.rd not in regs:
+            raise Unsupported("conditional move over an uninitialised destination")
+        op = "eq" if m == "movz" else "ne"
+        regs[ins.rd] = Select(
+            Predicate(op, get(ins.rt), Const(0)), get(ins.rs), regs[ins.rd]
+        )
+        return
+
+    # Multiply and divide deposit their results in HI/LO, which `mfhi`/`mflo` then
+    # read. Modelling the pair keeps the common "multiply then mflo" sequence
+    # derivable.
+    if m == "mult":
+        # A signed 32x32 -> 64 multiply. Multiplying the raw 64-bit register values
+        # would be wrong whenever an operand has its high bits set, so both are
+        # narrowed to 32 bits and sign-extended first. LO holds the low word
+        # sign-extended; HI the high word.
+        product = Binary("mul", SignExtend32(get(ins.rs)), SignExtend32(get(ins.rt)))
+        regs[REG_LO] = SignExtend32(product)
+        regs[REG_HI] = SignExtend32(Binary("dsar", product, Const(32)))
+        if ins.rd:
+            regs[ins.rd] = regs[REG_LO]
+        return
+    if m == "multu":
+        # The unsigned form needs a zero-extending narrow, which the expression set
+        # does not have; refuse rather than reuse the signed one.
+        raise Unsupported("unsigned multiply")
+    if m in ("div", "divu"):
+        # Division by zero leaves HI/LO undefined on the hardware, so a derivation
+        # would not be faithful for every input. Refuse rather than describe only
+        # the well-defined half.
+        raise Unsupported("division: result undefined for a zero divisor")
+    if m == "mfhi":
+        regs[ins.rd] = get(REG_HI)
+        return
+    if m == "mflo":
+        regs[ins.rd] = get(REG_LO)
+        return
+    if m == "mthi":
+        regs[REG_HI] = get(ins.rs)
+        return
+    if m == "mtlo":
+        regs[REG_LO] = get(ins.rs)
         return
 
     raise Unsupported("no symbolic rule for %s" % m)

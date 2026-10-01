@@ -44,11 +44,18 @@ from b3lib.symexec import (
     Load,
     Predicate,
     Unsupported,
+    arguments_used,
     load_renderer,
     simplify,
 )
 
+from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
+
 MAX_INSTRUCTIONS = 24
+# The callee's own frame. Writes here are not observable effects, so they are
+# excluded when comparing what the original and the derivation did to memory.
+STACK_LOW = DEFAULT_STACK_TOP - DEFAULT_STACK_SIZE
+STACK_HIGH = DEFAULT_STACK_TOP + 0x10
 SCRATCH = 0x01800000
 SCRATCH_SIZE = 0x20000
 ARG_SETS = 8
@@ -66,14 +73,10 @@ READERS = {
 WRITERS = {1: "Write8", 2: "Write16", 4: "Write32", 8: "Write64"}
 
 
-def used_args(expr) -> set:
-    if isinstance(expr, Arg):
-        return {expr.index}
-    if isinstance(expr, Load):
-        return used_args(expr.address)
-    if isinstance(expr, (Binary, Compare, Predicate)):
-        return used_args(expr.left) | used_args(expr.right)
-    return set()
+# Delegated to symexec rather than reimplemented here. The local version missed
+# the Not/Select/SignExtend32 node types when they were added, so arguments nested
+# inside them went undeclared and the signature self-check rejected the output.
+used_args = arguments_used
 
 
 def derivation_args(derivation) -> set:
@@ -214,6 +217,30 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     return verified, rejected
 
 
+def _journal_effects(memory) -> dict:
+    """Collapse a write journal into a net address -> byte map.
+
+    Comparing journals directly would be wrong: the original and the derivation may
+    write the same bytes in a different order, or write one location twice. What has
+    to match is the resulting memory, so the journal is reduced to final values.
+
+    Writes into the callee's own stack frame are excluded. They are not observable
+    effects - the frame is dead the moment the function returns - and the original
+    makes plenty of them spilling registers while a derived expression makes none,
+    so counting them would fail every function that has a prologue.
+    """
+    frame_low = STACK_LOW - memory.base
+    frame_high = STACK_HIGH - memory.base
+    effects = {}
+    for offset, previous in getattr(memory, "_journal", None) or ():
+        for index in range(len(previous)):
+            position = offset + index
+            if frame_low <= position <= frame_high:
+                continue
+            effects[position] = memory.bytes[position]
+    return effects
+
+
 def _attempt(func, image, base, machine, read, known, rejected):
     """Try to derive and verify one function; returns the record or None."""
     if True:
@@ -245,36 +272,42 @@ def _attempt(func, image, base, machine, read, known, rejected):
             # too, so snapshot the scratch region, let the original run, and then
             # check that applying the derived stores to the same starting state
             # reproduces exactly what the original produced.
-            before = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
+            # Journalling rather than snapshotting a region: these functions write
+            # to globals well outside the scratch area, and restoring only scratch
+            # left those changes in place - which both corrupted later cases and
+            # made correct derivations look wrong.
+            machine.memory.begin_journal()
             try:
                 expected = machine.call(func["addr"], args)
             except (EmulationError, Exception):
-                machine.memory.write(SCRATCH, before)
+                machine.memory.rollback()
                 failed = True
                 break
-            after = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
+            effects = _journal_effects(machine.memory)
+            machine.memory.rollback()
 
-            machine.memory.write(SCRATCH, before)
             try:
                 actual = derivation.evaluate(args, read)
                 writes = derivation.evaluate_stores(args, read)
             except Exception:
-                machine.memory.write(SCRATCH, before)
+                machine.memory.rollback()
                 failed = True
                 break
+            machine.memory.begin_journal()
             for address, value, size in writes:
                 try:
                     machine.memory.write_int(address, value, size)
                 except Exception:
                     failed = True
                     break
-            replayed = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
-            machine.memory.write(SCRATCH, before)
+            replayed = _journal_effects(machine.memory)
+            machine.memory.rollback()
+            machine.memory.end_journal()
             if failed:
                 break
 
             tested += 1
-            if expected != actual or replayed != after:
+            if expected != actual or replayed != effects:
                 rejected["mismatch"] += 1
                 failed = True
                 break

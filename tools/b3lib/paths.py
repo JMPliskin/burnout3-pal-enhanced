@@ -181,13 +181,19 @@ def _condition_for(ins, get) -> Predicate:
     return Predicate(op, get(ins.rs), right)
 
 
-def _step(regs: dict, stores: list, frame: dict, ins, get) -> None:
+def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None:
     """Apply one non-control instruction.
 
     Accesses that land in the stack frame are routed to `frame` rather than being
     recorded as real memory effects, so a prologue's register spills and the
     matching epilogue reloads cancel instead of appearing as writes the caller
     could observe.
+
+    `memory` tracks what the function has already written to real memory. Loads
+    consult it first, because the derived expressions all refer to memory as it
+    stood on entry: a function that stores a value and then reads the same location
+    back - a setter returning the field it just set is the common shape - would
+    otherwise be derived against stale contents.
     """
     m = ins.mnemonic
     if m in ("nop", "sync"):
@@ -205,7 +211,9 @@ def _step(regs: dict, stores: list, frame: dict, ins, get) -> None:
             return
         if size == 16:
             raise Unsupported("128-bit store to real memory")
-        stores.append(Store(target, get(ins.rt), size))
+        value = get(ins.rt)
+        stores.append(Store(target, value, size))
+        memory[(target, size)] = value
         return
 
     if m in _LOAD_SIZES:
@@ -220,6 +228,19 @@ def _step(regs: dict, stores: list, frame: dict, ins, get) -> None:
                 raise Unsupported("reads an unwritten stack slot")
             regs[ins.rt] = frame[key]
             return
+        if memory:
+            if (target, size) in memory:
+                # Exactly the location that was written: forward the stored value.
+                regs[ins.rt] = memory[(target, size)]
+                return
+            # Otherwise the load might or might not alias an earlier store. Proving
+            # it does not requires both addresses to be constants that differ;
+            # anything else is refused rather than assumed independent.
+            if not isinstance(target, Const) or not all(
+                isinstance(addr, Const) and addr.value != target.value
+                for addr, _size in memory
+            ):
+                raise Unsupported("load may alias an earlier store")
 
     if ins.is_branch or ins.is_jump or ins.is_call:
         raise Unsupported("branch in a delay slot")
@@ -255,7 +276,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
     paths = []
 
-    def walk(addr: int, regs: dict, stores: list, frame: dict,
+    def walk(addr: int, regs: dict, stores: list, frame: dict, memory: dict,
              conditions: tuple, visited: frozenset):
         if len(paths) > MAX_PATHS:
             raise Unsupported("too many paths")
@@ -279,7 +300,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if m == "jr":
                 if not ins.is_return:
                     raise Unsupported("indirect jump")
-                _step(regs, stores, frame,
+                _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get)
                 paths.append(Path(conditions, _getter(regs)(2), tuple(stores)))
                 return
@@ -290,25 +311,54 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
-                taken_frame = dict(frame)
-                _step(taken_regs, taken_stores, taken_frame, slot, _getter(taken_regs))
-                walk(ins.target, taken_regs, taken_stores, taken_frame,
+                taken_frame, taken_memory = dict(frame), dict(memory)
+                _step(taken_regs, taken_stores, taken_frame, taken_memory,
+                      slot, _getter(taken_regs))
+                walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
                      conditions + (predicate,), visited)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
-                fall_frame = dict(frame)
+                fall_frame, fall_memory = dict(frame), dict(memory)
                 if not ins.is_likely:
-                    _step(fall_regs, fall_stores, fall_frame, slot, _getter(fall_regs))
-                walk(addr + 8, fall_regs, fall_stores, fall_frame,
+                    _step(fall_regs, fall_stores, fall_frame, fall_memory,
+                          slot, _getter(fall_regs))
+                walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
                      conditions + (predicate.negate(),), visited)
                 return
 
             if m in ("b", "j"):
-                _step(regs, stores, frame,
+                _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get)
-                addr = ins.target
-                continue
+                if start <= ins.target < end:
+                    addr = ins.target
+                    continue
+                # A jump out of the function is a tail call: the callee's result
+                # becomes this function's result, with no return of our own. These
+                # are common in thunks and were previously all refused as "control
+                # flow leaves the function".
+                if ins.target not in known:
+                    raise Unsupported("tail-calls an underived function")
+                callee = known[ins.target]
+                if not callee.is_straight_line:
+                    raise Unsupported("tail-calls a conditional function")
+                get = _getter(regs)
+                arguments = {
+                    index: regs[4 + index] for index in range(4) if 4 + index in regs
+                }
+                inlined = callee.paths[0]
+                for store in inlined.stores:
+                    stores.append(Store(
+                        simplify(substitute(store.address, arguments)),
+                        simplify(substitute(store.value, arguments)),
+                        store.size,
+                    ))
+                paths.append(Path(
+                    conditions,
+                    simplify(substitute(inlined.expression, arguments)),
+                    tuple(stores),
+                ))
+                return
 
             if ins.is_call:
                 if ins.target < 0 or ins.target not in known:
@@ -319,7 +369,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
                 # The delay slot runs before the call, and often sets the last
                 # argument, so apply it first.
-                _step(regs, stores, frame,
+                _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get)
                 get = _getter(regs)
 
@@ -329,11 +379,13 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                         arguments[index] = regs[4 + index]
                 inlined = callee.paths[0]
                 for store in inlined.stores:
-                    stores.append(Store(
+                    moved = Store(
                         simplify(substitute(store.address, arguments)),
                         simplify(substitute(store.value, arguments)),
                         store.size,
-                    ))
+                    )
+                    stores.append(moved)
+                    memory[(moved.address, moved.size)] = moved.value
                 result = simplify(substitute(inlined.expression, arguments))
                 for index in CALLER_SAVED:
                     regs.pop(index, None)
@@ -344,7 +396,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if ins.is_jump:
                 raise Unsupported("unhandled jump")
 
-            _step(regs, stores, frame, ins, get)
+            _step(regs, stores, frame, memory, ins, get)
             addr += 4
 
     # Seed the registers to exactly the state the interpreter starts a call in, so
@@ -369,7 +421,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     regs[31] = Const(RETURN_SENTINEL)          # $ra
     for i in range(4):
         regs[4 + i] = Arg(i)
-    walk(start, regs, [], {}, (), frozenset())
+    walk(start, regs, [], {}, {}, (), frozenset())
 
     if not paths:
         raise Unsupported("no return reached")

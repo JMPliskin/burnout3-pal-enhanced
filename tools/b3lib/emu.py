@@ -90,6 +90,7 @@ class Memory:
         self.size = total_size
         self.bytes = bytearray(total_size)
         self.bytes[: len(data)] = data
+        self._journal = None
 
     def _offset(self, addr: int, size: int, store: bool) -> int:
         off = addr - self.base
@@ -97,12 +98,38 @@ class Memory:
             raise MemoryFault(addr, size, store)
         return off
 
+    # -- journalling ---------------------------------------------------
+    #
+    # Differential testing has to undo whatever a function wrote before the next
+    # case runs. Snapshotting a chosen region is not enough: a function that writes
+    # to a global outside that region leaves the change in place, which both
+    # corrupts later cases and makes the derivation appear to disagree when it was
+    # the harness that moved. Journalling every write makes the undo exact and
+    # cheap, whatever the function touches.
+
+    def begin_journal(self) -> None:
+        self._journal = []
+
+    def rollback(self) -> None:
+        """Undo every write since `begin_journal`, most recent first."""
+        journal = getattr(self, "_journal", None)
+        if journal is None:
+            return
+        for offset, previous in reversed(journal):
+            self.bytes[offset : offset + len(previous)] = previous
+        self._journal = []
+
+    def end_journal(self) -> None:
+        self._journal = None
+
     def read(self, addr: int, size: int) -> bytes:
         off = self._offset(addr, size, False)
         return bytes(self.bytes[off : off + size])
 
     def write(self, addr: int, payload: bytes) -> None:
         off = self._offset(addr, len(payload), True)
+        if self._journal is not None:
+            self._journal.append((off, bytes(self.bytes[off : off + len(payload)])))
         self.bytes[off : off + len(payload)] = payload
 
     def read_int(self, addr: int, size: int, signed: bool) -> int:
