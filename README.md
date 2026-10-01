@@ -22,6 +22,13 @@ games/
   burnout3/        one game: game.json, its sources, docs, game-specific tools
 ```
 
+## Using it with Claude Code
+
+`.claude/skills/ps2-decomp/SKILL.md` is a Claude Code skill. It covers the
+workflow: adding a game, the improvement loop, the rules verification depends
+on, and the R5900 details that have caused silent bugs. Claude Code loads it when
+working in this repository.
+
 ## Requirements
 
 * Python 3.10+, standard library only
