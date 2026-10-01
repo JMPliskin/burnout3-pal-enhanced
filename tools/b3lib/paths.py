@@ -126,6 +126,9 @@ class Call:
     index: int
     target: int
     arguments: tuple
+    # For a call through a register - a function pointer or a virtual method - the
+    # expression the target address is taken from; `target` is then -1.
+    pointer: Expr = None
 
 
 @dataclasses.dataclass
@@ -361,7 +364,10 @@ def _run_tree(statements, args, execution):
             vector = [0] * ARG_COUNT
             for index, expr in call.arguments:
                 vector[index] = simplify(expr).evaluate(args, execution)
-            execution.call(call.index, call.target, vector)
+            target = call.target
+            if call.pointer is not None:
+                target = simplify(call.pointer).evaluate(args, execution) & MASK32
+            execution.call(call.index, target, vector)
         elif kind == "barrier":
             execution.barrier(statement[1].index)
         elif kind == "if":
@@ -708,6 +714,13 @@ def _symbolic_frame(frame, target, size: int) -> bool:
     return frame.symbolic(simplify(target).value & MASK64, size)
 
 
+def _arg_register(index: int) -> int:
+    """The register an argument-vector index lives in."""
+    if index < FLOAT_ARG_BASE:
+        return INT_ARG_REGS[index]
+    return fpr(FLOAT_ARG_REGS[index - FLOAT_ARG_BASE])
+
+
 def _drain(memory, marks: tuple) -> tuple:
     """Marks with any barriers the last step raised appended, in order."""
     if isinstance(memory, Overlay) and memory.raised:
@@ -980,19 +993,35 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 and address not in known and base <= address < base + len(image) - 3)
 
     def opaque_call(target: int, regs: dict, stores: list, marks: tuple, epoch: int,
-                    frame=None, memory=None):
+                    frame=None, memory=None, pointer=None):
         """Record a call to an underived function; returns (marks, new epoch).
 
         Only the arguments the callee reads are passed, and each must be known. A
         stack address cannot be passed: the callee could write through it into this
         function's frame, which the frame model would not see.
         """
-        if target not in parameters:
+        if pointer is not None:
+            # Which function a pointer reaches is not known, so neither is what it
+            # reads. Every argument register still holds *something* - this
+            # function's own incoming arguments, if nothing else - so passing all
+            # of them would give every function with a virtual call sixteen
+            # parameters. Instead pass the integer arguments up to the highest one
+            # this function set (and always $a0, the object of a method call), and
+            # the float arguments it set. A callee that reads more disagrees in
+            # testing and the function is dropped.
+            def changed(i):
+                reg = _arg_register(i)
+                return reg in regs and regs[reg] != Arg(i)
+            highest = max([i for i in range(FLOAT_ARG_BASE) if changed(i)] + [0])
+            indices = [i for i in range(highest + 1) if _arg_register(i) in regs]
+            indices += [i for i in range(FLOAT_ARG_BASE, ARG_COUNT) if changed(i)]
+        elif target not in parameters:
             raise Unsupported("calls an address that is not a known function start")
+        else:
+            indices = parameters[target]
         arguments = []
-        for index in parameters[target]:
-            reg = (INT_ARG_REGS[index] if index < FLOAT_ARG_BASE
-                   else fpr(FLOAT_ARG_REGS[index - FLOAT_ARG_BASE]))
+        for index in indices:
+            reg = _arg_register(index)
             if reg not in regs:
                 raise Unsupported("passes an argument it never set")
             if _is_frame_address(regs[reg]):
@@ -1002,7 +1031,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     raise Unsupported("passes a stack address to an underived function")
                 frame.escape(stores, memory)
             arguments.append((index, regs[reg]))
-        call = Call(epoch + 1, target, tuple(arguments))
+        call = Call(epoch + 1, target, tuple(arguments), pointer)
         for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
             regs.pop(index, None)
         for index in range(20):                 # $f0..$f19 are caller-saved
@@ -1162,7 +1191,18 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
             if ins.is_call:
                 if ins.target < 0:
-                    raise Unsupported("calls through a register")
+                    if parameters is None or ins.mnemonic != "jalr":
+                        raise Unsupported("calls through a register")
+                    # The target is read before the delay slot runs.
+                    pointer = get(ins.rs)
+                    _step(regs, stores, frame, memory,
+                          DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
+                    marks = _drain(memory, marks)
+                    marks, epoch = opaque_call(-1, regs, stores, marks, memory.epoch,
+                                               frame, memory, pointer)
+                    memory = Overlay(epoch=epoch)
+                    addr += 8
+                    continue
                 if ins.target not in known:
                     if parameters is None:
                         raise Unsupported(

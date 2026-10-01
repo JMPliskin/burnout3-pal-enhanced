@@ -113,6 +113,8 @@ def derivation_args(derivation) -> set:
         for call in path.calls:
             for _index, expr in call.arguments:
                 args |= used_args(expr)
+            if call.pointer is not None:
+                args |= used_args(call.pointer)
     return args
 
 
@@ -399,6 +401,8 @@ class StatementEmitter:
                 found += [statement[1].address, statement[1].value]
             elif kind == "call":
                 found += [expr for _index, expr in statement[1].arguments]
+                if statement[1].pointer is not None:
+                    found.append(statement[1].pointer)
             elif kind == "if":
                 found.append(statement[1])
                 found += StatementEmitter._expressions(statement[2])
@@ -504,6 +508,13 @@ class StatementEmitter:
                     lines.append("return %s;" % _result(self._apply(statement[1])))
         return lines
 
+    def _pointer_call(self, call, passed, later) -> str:
+        """A call through a function pointer or virtual method table."""
+        text = _pointer_call_text(self, call, passed)
+        if not any(_mentions_call(expr, call.index) for expr in later):
+            return "%s;" % text
+        return "const u64 r%d = %s;" % (call.index, text)
+
     def _store(self, store) -> list:
         address = self._apply(store.address)
         moved = type(store)(address, self._apply(store.value), store.size)
@@ -518,6 +529,8 @@ class StatementEmitter:
 
     def _call(self, call, later) -> str:
         passed = dict(call.arguments)
+        if call.pointer is not None:
+            return self._pointer_call(call, passed, later)
         signature = _SIGNATURES.get(call.target)
         if signature is None:
             indices = [index for index, _expr in call.arguments]
@@ -576,6 +589,14 @@ def _frame_size(expressions) -> int:
     if lowest is None or lowest >= STACK_TOP:
         return 0
     return (STACK_TOP - lowest + 15) & ~15
+
+
+def _pointer_call_text(emitter, call, passed) -> str:
+    last = max(passed) if passed else -1
+    arguments = [render_cpp(emitter._apply(call.pointer))]
+    for index in range(last + 1):
+        arguments.append(render_cpp(emitter._apply(passed[index])) if index in passed else "0")
+    return "CallPointer(%s)" % ", ".join(arguments)
 
 
 def _beyond(node, epoch: int) -> bool:

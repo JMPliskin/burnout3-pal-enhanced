@@ -558,6 +558,25 @@ compiled) agree when run alone; their callees most likely read a register the
 parameter analysis did not attribute to them, which then holds whatever the
 interpreter last left there. Verification catches such cases and drops them.
 
+## Calls through function pointers
+
+A call through a register - a function pointer or a virtual method - is now an
+opaque call whose target is an expression: verification evaluates it and runs
+whatever original code it points at, and the emitted C++ calls
+`CallPointer(address, args...)`, which a port maps from guest addresses to its
+own functions and the compiled check links back to the interpreter. Which
+function is reached, and so what it reads, is unknown, so the call passes the
+integer arguments up to the highest one the function set (always `$a0`, the
+object of a method call) and the float arguments it set; passing every register
+that still held something would have given every such function sixteen
+parameters. Derived and verified rose from 2,157 to 2,223 functions, verified
+code from 3.86% to 4.24%.
+
+"Could not be tested" rose by about 300 at the same time. Test memory is random,
+so a function pointer loaded from it points nowhere and the call faults. Test
+memory that holds real function addresses where code expects them is the obvious
+next improvement to the harness.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

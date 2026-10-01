@@ -309,5 +309,56 @@ class TestOutParameters(unittest.TestCase):
         self.assertFalse(any("0xDEAD0000" in line for line in lines), lines)
 
 
+
+class TestPointerCalls(unittest.TestCase):
+    """f(obj): return obj->method(obj)  - a call through a function pointer.
+
+    method(p) returns p + 1. The pointer is read from obj, and obj itself is passed
+    on unchanged in $a0, the shape of a virtual call.
+    """
+
+    def setUp(self):
+        method = [JR_RA, addiu(V0, A0, 1)]
+        jalr_v0 = r_type(V0, 0, RA, 0x09)
+        caller = [
+            addiu(SP, SP, -32),
+            sd(RA, 16, SP),
+            lw(V0, 0, A0),
+            jalr_v0,
+            NOP,
+            ld(RA, 16, SP),
+            JR_RA,
+            addiu(SP, SP, 32),
+        ]
+        self.words = method + caller
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+        self.caller = BASE + 4 * len(method)
+        self.parameters = {BASE: (0,), self.caller: (0,)}
+
+    def derive(self):
+        return derive_paths(self.image, BASE, self.caller, BASE + 4 * len(self.words),
+                            known={}, parameters=self.parameters)
+
+    def test_call_through_a_pointer_runs_what_it_points_at(self):
+        derivation = self.derive()
+        machine = Machine(BASE, self.image, 0x02000000 - BASE)
+        obj = 0x01800000
+        machine.memory.write_int(obj, BASE, 4)
+        self.assertEqual(machine.call(self.caller, (obj,)), obj + 1)
+        machine.memory.begin_journal()
+        result = derivation.run((obj,) + (0,) * 15, Execution(machine))
+        machine.memory.rollback()
+        machine.memory.end_journal()
+        self.assertEqual(result, obj + 1)
+
+    def test_pointer_call_passes_the_object_and_nothing_else(self):
+        import derive
+
+        derive._SIGNATURES.clear()
+        derive._EXTERNS.clear()
+        lines = derive.render_body(self.derive())
+        self.assertIn("const u64 r1 = CallPointer(ReadS32(arg0), arg0);", lines)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -122,6 +122,15 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "",
         "namespace generated {",
         "u64 StackEnter(u32 size) { g_sp -= size; return g_sp; }",
+        "u64 CallPointer(u32 address, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5,",
+        "                u64 a6, u64 a7, u64 f0, u64 f1, u64 f2, u64 f3, u64 f4, u64 f5,",
+        "                u64 f6, u64 f7) {",
+        "    u64 vector[16] = {a0, a1, a2, a3, a4, a5, a6, a7,",
+        "                      f0, f1, f2, f3, f4, f5, f6, f7};",
+        "    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
+        % (CALLEE_GAP, CALLEE_STACK_TOP, CALLEE_GAP, CALLEE_STACK_TOP),
+        "    return g_call(address, vector, top);",
+        "}",
         "void StackLeave(u32 size) { g_sp += size; }",
     ]
     # A callee that was not derived runs as the original machine code.
