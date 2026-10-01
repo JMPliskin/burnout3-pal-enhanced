@@ -1,138 +1,80 @@
-# Burnout 3: Takedown - decompilation project
+# PS2 decompilation by functional reconstruction
 
-Reverse-engineering the PlayStation 2 release of *Burnout 3: Takedown*
-(`SLUS_21050`, Criterion Games / Electronic Arts, 2004), working toward a
-readable source reconstruction and eventually a native PC port.
+A toolchain for decompiling PlayStation 2 games into readable C++ when the
+original compiler is unavailable. Byte-matching is not possible without that
+compiler, so this checks **behaviour** instead. An R5900 interpreter runs the
+original machine code. Each function is derived symbolically, emitted as C++,
+compiled, and run on the same inputs. A function counts only when every form
+agrees.
 
-**Status: tooling and static analysis complete; source reconstruction barely
-begun.** See [Honest scope](#honest-scope) before reading anything else.
+The engine was built on *Burnout 3: Takedown*, the first game here. Its code is
+game-independent: a game is a directory with a `game.json`.
 
----
-
-## What exists today
-
-A working analysis toolchain, a complete static map of the executable, and an
-objective way to verify reconstructed functions without the original compiler.
-
-| | |
-| --- | ---: |
-| Executable analysed | `SLUS_210.50`, 4,073,088 bytes |
-| Functions discovered | 9,163 |
-| Image proven to be MIPS code | 86.2% |
-| VU microcode located | 108,096 bytes (~173 microprograms) |
-| Instructions failing to decode | 0 of 814,598 |
-| Functions executable in the interpreter | 7,771 (84.8%) |
-| Functions derived and verified automatically | 327 |
-| **Verified reconstructions** | **285 functions, 0.5539% of code bytes** |
-
-See [docs/PROGRESS.md](docs/PROGRESS.md) for live numbers.
-
-## Approach: functional reconstruction
-
-The original compiler is known - `MW MIPS C Compiler (2.4.1.01)`, Metrowerks
-CodeWarrior, named in the executable's own `.comment` section - but it is
-abandoned proprietary software and could not be obtained. Byte-matching is
-therefore off the table: Metrowerks and GCC differ systematically in register
-allocation and scheduling, so chasing a match with GCC would stall short and never
-close.
-
-So the project verifies **behaviour** instead of bytes. An R5900 interpreter runs
-the original machine code, the reconstruction runs on the same inputs, and the two
-are compared. A function is `verified` only when that test passes.
-
-This is a weaker guarantee than byte-matching and the docs say so plainly: a
-passing test shows agreement *on the inputs tested*, not equivalence in general.
-What it buys is an automated check that fails loudly on a regression, which
-untested source does not. It also caught a real interpreter bug - `beql`/`bnel`
-nullify their delay slot when not taken - that inspection and synthetic unit tests
-both missed.
-
-For scale: comparable finished projects (Ocarina of Time ~3 years and 100+
-contributors, Metroid Prime ~5 years) had *more* symbol information than this
-fully stripped binary. This remains a multi-year effort, and the project reports
-verified bytes rather than a flattering headline.
+```
+engine/            the game-independent toolchain
+  ps2decomp/       library: ELF/ISO readers, R5900 + VU disassemblers, analysis,
+                   interpreter, symbolic derivation, struct recovery, C++ check
+  tools/           command-line drivers (analyze, derive, progress, ...)
+  runtime/         headers and sources the generated C++ compiles against
+  tests/           unit tests
+  docs/            METHODOLOGY (what "verified" means), ARCHITECTURE
+games/
+  burnout3/        one game: game.json, its sources, docs, game-specific tools
+```
 
 ## Requirements
 
-* Python 3.10+ (standard library only - no third-party packages)
-* Your own legally-obtained disc image
+* Python 3.10+, standard library only
+* MSVC (found through `vswhere`) for the compiled check; without it, derived
+  functions are verified as expression trees only, and the run says so
+* A disc image you own, for each game
 
-## Usage
+## Adding a game
+
+1. Make `games/<name>/game.json`:
+
+   ```json
+   {
+     "name": "Some Game (NTSC-U)",
+     "iso": "../../Some Game.iso",
+     "executable": "SLUS_123.45"
+   }
+   ```
+
+   Paths are relative to the game's directory. The defaults are `extracted/`,
+   `build/functions.json`, `src/generated/` and `config/functions.csv`. The
+   global pointer is detected from the entry code, and the image bounds come from
+   the ELF. Optional `layout` overrides set the test memory layout (`scratch`,
+   `stack_top`, ...; see `engine/ps2decomp/layout.py`), and `vu_regions` lists VU
+   microcode ranges as `[start, end]` pairs.
+
+2. Extract the executable, analyse it, and derive:
+
+   ```sh
+   python engine/tools/isotool.py extract "Some Game.iso" SLUS_123.45 -o games/<name>/extracted/
+   python engine/tools/analyze.py --game games/<name>
+   python engine/tools/derive.py --game games/<name> --emit --csv
+   python engine/tools/progress.py --game games/<name>
+   ```
+
+Every tool takes `--game`. Without it, a tool uses `$PS2_GAME`, or the only game
+under `games/`.
+
+## Tests
 
 ```sh
-# Inspect and extract from the disc
-python tools/isotool.py info "Burnout 3 - Takedown.iso"
-python tools/isotool.py list "Burnout 3 - Takedown.iso" --by-size
-python tools/isotool.py extract "Burnout 3 - Takedown.iso" SLUS_210.50 -o extracted/
-
-# Static analysis -> function/string/xref database
-python tools/analyze.py extracted/SLUS_210.50 -o build/slus_210_50.json
-
-# Annotated disassembly
-python tools/disasm.py build/slus_210_50.json --addr 0x00100008
-python tools/disasm.py build/slus_210_50.json --all -o asm/
-
-# Progress accounting
-python tools/progress.py build/slus_210_50.json
-python tools/progress.py build/slus_210_50.json --markdown > docs/PROGRESS.md
-
-# Verification: derive accessors, differential-test them, emit C++
-python tools/candidates.py build/slus_210_50.json --pure
-python tools/derive.py build/slus_210_50.json --emit src/generated
-
-# VU microcode and the ValueDB container
-python tools/vudis.py extracted/SLUS_210.50 --range 0x00469D90 0x004843D0 --stats
-python tools/vdb.py extracted/DATA/VDB.XML
-
-# Byte-level accounting of the executable
-python tools/layout.py build/slus_210_50.json
-
-# Tests (includes differential tests when extracted/ is present)
-python -m unittest discover -s tests -v
+python -m unittest discover -s engine/tests
+python -m unittest discover -s games/burnout3/tests   # skips without extracted files
 ```
-
-## Repository layout
-
-```
-tools/           analysis toolchain (Python)
-  b3lib/         library: iso9660, elf, r5900/vu disassemblers, analysis,
-                 symbols, vdbhash, emu (R5900 interpreter), symexec + paths
-                 (symbolic derivation), difftest
-  isotool.py     disc inspection and extraction
-  analyze.py     full static-analysis pipeline
-  disasm.py      annotated assembly emitter
-  vudis.py       VU microcode disassembler
-  vdb.py         ValueDB container reader
-  layout.py      byte-level accounting of the image
-  candidates.py  ranks functions by reconstructability
-  derive.py      derives, verifies and emits accessor functions
-  progress.py    progress accounting
-tests/           unit tests, plus differential tests against the original code
-include/         headers for the reconstructed sources
-src/             reconstructed C++ sources
-asm/             generated per-function assembly (not committed)
-config/          function status table
-docs/            plan, methodology, architecture, progress
-extracted/       files pulled off the disc (not committed)
-build/           analysis database (not committed)
-```
-
-## Documentation
-
-* [docs/PLAN.md](docs/PLAN.md) - phased roadmap and what each phase requires
-* [docs/METHODOLOGY.md](docs/METHODOLOGY.md) - progress tiers and how a function advances
-* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - how the toolchain works
-* [docs/FINDINGS.md](docs/FINDINGS.md) - what the binary has revealed so far
-* [docs/PROGRESS.md](docs/PROGRESS.md) - generated progress report
 
 ## Legal
 
-This repository contains **no game code, assets, or binaries**. It contains
-original analysis tooling and reverse-engineered documentation. Running any of
-it requires a disc image you already own, which you supply yourself and which is
+This repository contains **no game code, assets or binaries**. It contains
+original tooling and reverse-engineered documentation. Running it requires a disc
+image you already own. That image, and anything extracted or derived from it, is
 excluded from version control.
 
 Reverse engineering for interoperability and preservation is protected in many
-jurisdictions, and this follows the conventions established by the wider game
-preservation community: no redistribution of copyrighted material, and no
-attempt to substitute for the commercial product.
+jurisdictions. This project follows the conventions of the wider game
+preservation community: it redistributes no copyrighted material and does not
+try to substitute for the commercial product.
