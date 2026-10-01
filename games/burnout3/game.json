@@ -1,0 +1,16 @@
+{
+  "name": "Burnout 3: Takedown (NTSC-U)",
+  "iso": "../../Burnout 3 - Takedown.iso",
+  "executable": "SLUS_210.50",
+  "extracted": "../../extracted",
+  "database": "../../build/slus_210_50.json",
+  "generated": "../../src/generated",
+  "status": "../../config/functions.csv",
+  "layout": {
+    "image_end": "0x02000000",
+    "scratch": "0x01800000",
+    "scratch_size": "0x20000",
+    "stack_top": "0x01F00000",
+    "stack_size": "0x10000"
+  }
+}

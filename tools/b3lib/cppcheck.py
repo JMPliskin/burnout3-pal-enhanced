@@ -48,10 +48,10 @@ CALL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32,
 
 _BUILDS = 0
 
-from .emu import DEFAULT_STACK_TOP as STACK_TOP
+from . import layout
 # Room left between the derived function's guest stack and a callee's.
 CALLEE_GAP = 0x100
-from .paths import CALLEE_STACK_TOP
+from .paths import callee_stack_top
 
 
 class CompilerUnavailable(Exception):
@@ -121,7 +121,8 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "static ReadFn g_read;",
         "static WriteFn g_write;",
         "static CallFn g_call;",
-        "static u32 g_sp = 0x%08X;  /* the interpreter's default stack top */" % STACK_TOP,
+        "static u32 g_sp = 0x%08X;  /* the interpreter's default stack top */"
+        % layout.CURRENT.stack_top,
         "",
         "namespace generated {",
         "u64 StackEnter(u32 size) { g_sp -= size; return g_sp; }",
@@ -131,7 +132,7 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "    u64 vector[16] = {a0, a1, a2, a3, a4, a5, a6, a7,",
         "                      f0, f1, f2, f3, f4, f5, f6, f7};",
         "    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
-        % (CALLEE_GAP, CALLEE_STACK_TOP, CALLEE_GAP, CALLEE_STACK_TOP),
+        % (CALLEE_GAP, callee_stack_top(), CALLEE_GAP, callee_stack_top()),
         "    return g_call(address, vector, top);",
         "}",
         "void StackLeave(u32 size) { g_sp += size; }",
@@ -146,7 +147,7 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         # Callees run where the model runs them, or lower if nested derived
         # functions have already used more guest stack than that.
         lines.append("    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
-                     % (CALLEE_GAP, CALLEE_STACK_TOP, CALLEE_GAP, CALLEE_STACK_TOP))
+                     % (CALLEE_GAP, callee_stack_top(), CALLEE_GAP, callee_stack_top()))
         lines.append("    return g_call(0x%08X, vector, top);" % address)
         lines.append("}")
     for name, size, signed in READERS:

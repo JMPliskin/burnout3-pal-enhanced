@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from b3lib import testmem
+from b3lib import layout, testmem
 from b3lib.emu import EmulationError, Machine
 
 BASE = 0x00100000
@@ -75,7 +75,7 @@ class TestGlobalPointerSeeding(unittest.TestCase):
         seeded = testmem.seed_global_pointers(m.memory, {null_global, set_global})
         self.assertEqual(seeded, 1)
         pointer = m.memory.read_int(null_global, 4, False)
-        self.assertTrue(testmem.SCRATCH <= pointer < testmem.SCRATCH + testmem.SCRATCH_SIZE)
+        self.assertTrue(layout.CURRENT.scratch <= pointer < layout.CURRENT.scratch + layout.CURRENT.scratch_size)
         self.assertEqual(m.memory.read_int(set_global, 4, False), 0x12345678)
 
 

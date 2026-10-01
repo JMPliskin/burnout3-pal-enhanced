@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
 from b3lib.elf import ElfFile
 from b3lib.emu import SUPPORTED_MNEMONICS
 from b3lib.r5900 import DISASM, Flags
@@ -112,8 +113,7 @@ def score(row: dict) -> float:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
-    parser.add_argument("--elf", default=None)
+    game_config.add_argument(parser)
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--leaf-only", action="store_true")
     parser.add_argument("--pure", action="store_true",
@@ -121,10 +121,9 @@ def main(argv=None) -> int:
     parser.add_argument("--status", default="config/functions.csv")
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    elf_path = args.elf or os.path.join("extracted", database["meta"]["source"])
-    elf = ElfFile.load(elf_path)
+    game = game_config.from_args(args)
+    database = game.load_database()
+    elf = game.load_elf()
     section = elf.exec_sections[0]
     image = elf.section_data(section)
 

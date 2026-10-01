@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
 from b3lib.elf import ElfFile
 from b3lib.r5900 import DISASM, Flags
 
@@ -152,8 +153,7 @@ def load_image(database: dict, elf_path: str) -> bytes:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
-    parser.add_argument("--elf", default=None, help="defaults to extracted/<meta.source>")
+    game_config.add_argument(parser)
     parser.add_argument("--addr", help="render a single function at this address")
     parser.add_argument("--all", action="store_true", help="render every function")
     parser.add_argument("--top", type=int, help="render the N largest functions")
@@ -163,9 +163,9 @@ def main(argv=None) -> int:
     parser.add_argument("--bytes", action="store_true", help="show raw encodings")
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    elf_path = args.elf or os.path.join("extracted", database["meta"]["source"])
+    game = game_config.from_args(args)
+    database = game.load_database()
+    elf_path = game.elf_path
     image = load_image(database, elf_path)
     writer = AsmWriter(database, image)
 

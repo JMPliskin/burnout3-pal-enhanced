@@ -35,6 +35,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
 from b3lib.elf import ElfFile
 from b3lib.r5900 import DISASM
 
@@ -165,9 +166,8 @@ def render(result: dict, show_all: bool) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
+    game_config.add_argument(parser)
     parser.add_argument("addr", help="address of the function in the original image")
-    parser.add_argument("--elf", default=None)
     parser.add_argument("--asm", help="candidate as a flat hex word list")
     parser.add_argument("--object", help="candidate as a compiled ELF object")
     parser.add_argument("--symbol", help="symbol to extract from --object")
@@ -177,15 +177,15 @@ def main(argv=None) -> int:
     if not args.asm and not args.object:
         parser.error("supply either --asm or --object")
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
+    game = game_config.from_args(args)
+    database = game.load_database()
     addr = int(args.addr, 0)
     func = next((f for f in database["functions"] if f["addr"] == addr), None)
     if func is None:
         print("no function at 0x%08x in the database" % addr, file=sys.stderr)
         return 1
 
-    elf_path = args.elf or os.path.join("extracted", database["meta"]["source"])
+    elf_path = game.elf_path
     original = load_original(database, elf_path, addr, func["size"])
     candidate = (
         load_candidate_asm(args.asm)

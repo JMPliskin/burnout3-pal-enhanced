@@ -19,6 +19,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
 from b3lib.elf import ElfFile
 from b3lib.analysis import ImageAnalyzer
 from b3lib.symbols import SymbolRecovery
@@ -134,15 +135,16 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("elf")
-    parser.add_argument("-o", "--output", default=None)
+    game_config.add_argument(parser)
+    parser.add_argument("-o", "--output", default=None,
+                        help="the database to write (default: the game's)")
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args(argv)
 
-    output = args.output or os.path.join(
-        "build", os.path.basename(args.elf).lower().replace(".", "_") + ".json"
-    )
-    database = build_database(args.elf, verbose=not args.quiet)
+    game = game_config.from_args(args)
+    output = args.output or game.database_path
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    database = build_database(game.elf_path, verbose=not args.quiet)
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
     with open(output, "w", encoding="utf-8") as handle:
         json.dump(database, handle, indent=1)

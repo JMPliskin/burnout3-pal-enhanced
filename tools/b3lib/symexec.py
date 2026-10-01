@@ -1231,9 +1231,9 @@ def derive(image: bytes, base: int, start: int, end: int,
     simple functions.
     """
     if gp_value is None:
-        from .emu import GP_VALUE
+        from .layout import CURRENT
 
-        gp_value = GP_VALUE
+        gp_value = CURRENT.gp
     regs = {0: Const(0), 28: Const(gp_value)}
     for i, reg in enumerate(INT_ARG_REGS):
         regs[reg] = Arg(i)

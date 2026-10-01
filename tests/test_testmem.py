@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from b3lib import testmem
+from b3lib import layout, testmem
 
 
 def words(buffer):
@@ -22,7 +22,7 @@ def words(buffer):
 class TestProfiles(unittest.TestCase):
     def test_every_profile_fills_the_whole_region(self):
         for kind in testmem.PROFILES:
-            self.assertEqual(len(testmem.build(kind, 0)), testmem.SCRATCH_SIZE, kind)
+            self.assertEqual(len(testmem.build(kind, 0)), layout.CURRENT.scratch_size, kind)
 
     def test_build_is_deterministic(self):
         """The same profile and seed must always give the same bytes.
@@ -39,8 +39,8 @@ class TestProfiles(unittest.TestCase):
             self.assertNotEqual(testmem.build(kind, 0), testmem.build(kind, 1), kind)
 
     def test_pointer_words_stay_inside_the_region(self):
-        low = testmem.SCRATCH
-        high = testmem.SCRATCH + testmem.SCRATCH_SIZE
+        low = layout.CURRENT.scratch
+        high = layout.CURRENT.scratch + layout.CURRENT.scratch_size
         for value in words(testmem.build("pointers", 0)):
             self.assertTrue(low <= value < high)
             self.assertEqual(value % 16, 0)
@@ -53,7 +53,7 @@ class TestProfiles(unittest.TestCase):
 
     def test_mixed_alternates_pointers_and_small_values(self):
         values = words(testmem.build("mixed", 0))
-        self.assertTrue(all(v >= testmem.SCRATCH for v in values[0::2]))
+        self.assertTrue(all(v >= layout.CURRENT.scratch for v in values[0::2]))
         self.assertTrue(all(v < testmem.SMALL_LIMIT for v in values[1::2]))
 
     def test_unknown_profile_is_rejected(self):
@@ -65,7 +65,7 @@ class TestProfiles(unittest.TestCase):
 
         for value in testmem.arguments(random.Random(1))[:8]:
             self.assertTrue(
-                testmem.SCRATCH <= value < testmem.SCRATCH + testmem.SCRATCH_SIZE // 2
+                layout.CURRENT.scratch <= value < layout.CURRENT.scratch + layout.CURRENT.scratch_size // 2
             )
 
     def test_float_arguments_are_ordinary_floats(self):
@@ -82,7 +82,7 @@ class TestProfiles(unittest.TestCase):
         import random
 
         rng = random.Random(7)
-        before = tuple(testmem.SCRATCH + rng.randrange(0, testmem.SCRATCH_SIZE // 2, 16)
+        before = tuple(layout.CURRENT.scratch + rng.randrange(0, layout.CURRENT.scratch_size // 2, 16)
                        for _ in range(4))
         self.assertEqual(testmem.arguments(random.Random(7))[:4], before)
 

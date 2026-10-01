@@ -36,13 +36,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
+from b3lib import layout
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
 from b3lib.r5900 import DISASM
 from b3lib import testmem
 
-SCRATCH = 0x01800000
-SCRATCH_SIZE = 0x20000
 TRIALS = 6
 INSTRUCTION_BUDGET = 20_000
 
@@ -68,7 +68,8 @@ def trip_counts(machine, func, headers, trial, profile="noise") -> dict:
     # profile chosen per function - see b3lib/testmem.py for why random bytes alone
     # left most looping functions untestable.
     machine.memory.begin_journal()
-    machine.memory.write(SCRATCH, testmem.build(profile, (func["addr"] << 4) + trial))
+    machine.memory.write(layout.CURRENT.scratch,
+                         testmem.build(profile, (func["addr"] << 4) + trial))
     args = testmem.arguments(rng)
 
     machine.visit_counts = {}
@@ -119,8 +120,7 @@ def classify(machine, func, headers) -> tuple:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
-    parser.add_argument("--elf", default=None)
+    game_config.add_argument(parser)
     parser.add_argument("--list", action="store_true",
                         help="list the constant-trip-count functions")
     parser.add_argument("--limit", type=int, default=20)
@@ -128,10 +128,9 @@ def main(argv=None) -> int:
                         help="skip functions larger than this many bytes")
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    elf_path = args.elf or os.path.join("extracted", database["meta"]["source"])
-    elf = ElfFile.load(elf_path)
+    game = game_config.from_args(args)
+    database = game.load_database()
+    elf = game.load_elf()
     section = elf.exec_sections[0]
     image = elf.section_data(section)
     machine = Machine.from_elf(elf)

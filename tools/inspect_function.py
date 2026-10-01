@@ -20,7 +20,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import derive
-from b3lib import calls, cppcheck, testmem
+from b3lib import game as game_config
+from b3lib import calls, cppcheck, layout, testmem
 from b3lib.elf import ElfFile
 from b3lib.emu import Machine
 from b3lib.paths import Execution, derive_paths
@@ -29,14 +30,13 @@ from b3lib.symexec import Unsupported
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
+    game_config.add_argument(parser)
     parser.add_argument("address", type=lambda text: int(text, 16))
-    parser.add_argument("--elf", default=None)
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    elf = ElfFile.load(args.elf or os.path.join("extracted", database["meta"]["source"]))
+    game = game_config.from_args(args)
+    database = game.load_database()
+    elf = game.load_elf()
     section = elf.exec_sections[0]
     image = elf.section_data(section)
     machine = Machine.from_elf(elf)
@@ -67,7 +67,8 @@ def main(argv=None) -> int:
         outcomes = []
         for name in ("original", "model", "compiled"):
             machine.memory.end_journal()
-            machine.memory.write(testmem.SCRATCH, testmem.build(profile, func["addr"] + case))
+            machine.memory.write(layout.CURRENT.scratch,
+                                 testmem.build(profile, func["addr"] + case))
             machine.memory.begin_journal()
             try:
                 if name == "original":

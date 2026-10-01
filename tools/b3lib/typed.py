@@ -17,6 +17,7 @@ compiled-code check runs every function in this form.
 
 from __future__ import annotations
 
+from . import layout
 from .paths import _split_address
 from .structs import GLOBALS, Catalog, _offset_name
 from .symexec import (Arg, Binary, Const, Load, address_of, arg_name, arg_renderer,
@@ -45,8 +46,7 @@ def _hex(value: int, signed: bool = False) -> str:
 
 
 MAX_STRIDE = 0x10000
-# Global arrays live in the program's data; anything outside is not one.
-IMAGE_START, IMAGE_END = 0x00100000, 0x02000000
+# Global arrays live in the program's data (layout.image_start..image_end).
 MASK64 = (1 << 64) - 1
 
 
@@ -210,7 +210,8 @@ class Typing:
         coefficient, index, constant = form
         if index is None or not 1 <= coefficient <= MAX_STRIDE:
             return None
-        if base is None and not IMAGE_START <= constant & 0xFFFFFFFF < IMAGE_END:
+        if base is None and not (layout.CURRENT.image_start <= constant & 0xFFFFFFFF
+                                 < layout.CURRENT.image_end):
             # A "global array" at 0x20 indexed by a pointer is exact arithmetic but
             # a false description: the pointer is the base, not an index.
             return None

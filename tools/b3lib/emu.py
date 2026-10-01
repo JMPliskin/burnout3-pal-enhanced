@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import struct
 
+from . import layout
 from .r5900 import DISASM, GPR
 
 MASK64 = (1 << 64) - 1
@@ -27,20 +28,13 @@ MASK32 = 0xFFFFFFFF
 
 # Where the interpreter puts the stack. Chosen above the loaded image and its BSS
 # so it cannot collide with real data.
-DEFAULT_STACK_TOP = 0x01F00000
-DEFAULT_STACK_SIZE = 64 * 1024
-
-# Writing this to $ra before a call lets the interpreter spot the return.
+# The return address planted in $ra: reaching it means the called function returned.
 RETURN_SENTINEL = 0xDEAD0000
 
-# The global pointer, as the startup code establishes it. Recovered from the entry
-# function: `lui $a0, 0x4F` then `addiu $a0, $a0, -0x7990` gives 0x004E8670, which
-# is then copied into $gp at 0x001001C0. It lands just past the loaded image, in
-# the BSS, which is where a small-data pointer belongs.
-#
-# This matters for execution: a great many functions reach globals as an offset
-# from $gp, and leaving the register zero makes every one of them fault.
-GP_VALUE = 0x004E8670
+# Where the stack is, what $gp holds and the rest of the guest memory layout are
+# per game; see layout.py. $gp matters for execution in particular: a great many
+# functions reach globals as an offset from it, and leaving the register zero
+# makes every one of them fault.
 
 
 class EmulationError(Exception):
@@ -159,7 +153,7 @@ class Machine:
 
     def __init__(self, base: int, data: bytes, total_size: int = None) -> None:
         if total_size is None:
-            total_size = max(len(data), DEFAULT_STACK_TOP + DEFAULT_STACK_SIZE - base)
+            total_size = max(len(data), layout.CURRENT.stack_top + layout.CURRENT.stack_size - base)
         self.memory = Memory(base, data, total_size)
         self.regs = [0] * 32
         # The EE's registers are 128 bits wide. Full SIMD arithmetic is out of
@@ -216,13 +210,14 @@ class Machine:
         memsz = max(
             (p.memsz for p in elf.segments if p.vaddr == section.addr), default=len(data)
         )
-        total = max(len(data), memsz, DEFAULT_STACK_TOP + DEFAULT_STACK_SIZE - section.addr)
+        total = max(len(data), memsz,
+                    layout.CURRENT.stack_top + layout.CURRENT.stack_size - section.addr)
         return cls(section.addr, data, total)
 
     # -- execution -----------------------------------------------------
 
     def call(self, addr: int, args=(), max_instructions: int = 2_000_000,
-             stack_top: int = DEFAULT_STACK_TOP) -> int:
+             stack_top: int = None) -> int:
         """Run the function at `addr` and return its $v0 as a signed 32-bit value.
 
         `args` follows the register calling convention: entries 0..7 go to $a0..$a3
@@ -247,8 +242,8 @@ class Machine:
                 self.set((4, 5, 6, 7, 8, 9, 10, 11)[i], value & MASK64)
             else:
                 self.fpr[12 + i - 8] = value & 0xFFFFFFFF
-        self.set(28, GP_VALUE)            # $gp
-        self.set(29, stack_top)           # $sp
+        self.set(28, layout.CURRENT.gp)   # $gp
+        self.set(29, layout.CURRENT.stack_top if stack_top is None else stack_top)
         self.set(31, RETURN_SENTINEL)     # $ra
         self.pc = addr
         self.instructions_executed = 0

@@ -98,14 +98,15 @@ STEPS = -1
 # reading `$sp`, because they have an ordinary prologue: reserve a frame, spill the
 # callee-saved registers, do the work, reload them, return. Modelling the frame makes
 # those spill/reload pairs cancel out, leaving the function's actual behaviour.
-from .emu import DEFAULT_STACK_TOP as STACK_TOP
+from . import layout
 
 # How far below the stack top a reference is still considered part of the frame. A
 # function's own frame is far smaller than this; the bound exists so a wild address
 # is treated as real memory rather than silently absorbed into the frame model.
 MAX_FRAME_SIZE = 0x4000
 # Where callees of a derived function run, clear of the function's own frame.
-CALLEE_STACK_TOP = STACK_TOP - MAX_FRAME_SIZE
+def callee_stack_top() -> int:
+    return layout.CURRENT.stack_top - MAX_FRAME_SIZE
 
 
 def _is_frame_address(expr) -> bool:
@@ -114,7 +115,8 @@ def _is_frame_address(expr) -> bool:
     if not isinstance(folded, Const):
         return False
     value = folded.value & MASK64
-    return STACK_TOP - MAX_FRAME_SIZE <= value <= STACK_TOP + 0x10
+    top = layout.CURRENT.stack_top
+    return top - MAX_FRAME_SIZE <= value <= top + 0x10
 
 
 @dataclasses.dataclass(frozen=True)
@@ -535,7 +537,7 @@ class Execution:
         # Below this function's frame, which may hold an out-parameter the callee
         # writes - running the callee at the usual stack top would trample it.
         self.machine.call(target, vector, max_instructions=self.budget,
-                          stack_top=CALLEE_STACK_TOP)
+                          stack_top=callee_stack_top())
         self.results[index] = self.machine.get(2) & MASK64
         self.markers[index] = len(self.memory._journal)
 
@@ -1112,9 +1114,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     """
     known = known or {}
     if gp_value is None:
-        from .emu import GP_VALUE
-
-        gp_value = GP_VALUE
+        gp_value = layout.CURRENT.gp
 
     def word_at(addr: int) -> int:
         if not (base <= addr < base + len(image) - 3):
@@ -1553,7 +1553,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     # arise in compiled code - but it is an assumption, not something proven here.
     from .emu import RETURN_SENTINEL
 
-    regs = {0: Const(0), 28: Const(gp_value), 29: Const(STACK_TOP)}
+    regs = {0: Const(0), 28: Const(gp_value), 29: Const(layout.CURRENT.stack_top)}
     for index in list(range(16, 24)) + [30]:   # $s0..$s7 and $fp
         regs[index] = Const(0)
     regs[31] = Const(RETURN_SENTINEL)          # $ra

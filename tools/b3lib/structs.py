@@ -43,7 +43,7 @@ import struct
 
 import re
 
-from .emu import GP_VALUE
+from . import layout
 from .r5900 import DISASM, GPR
 
 # mnemonic -> (width, kind, signed); signed is None for stores
@@ -222,7 +222,7 @@ def scan(func, image, base, functions, used):
     )
     state = {reg: (("arg", start, index), 0) for index, reg in enumerate(ARG_REGS)}
     # $gp is fixed for the whole program, so small-data accesses are globals too.
-    state[GP] = (GLOBALS, GP_VALUE)
+    state[GP] = (GLOBALS, layout.CURRENT.gp)
     reachable = True
 
     # A register holds (term, displacement): the value `term` plus a constant. The

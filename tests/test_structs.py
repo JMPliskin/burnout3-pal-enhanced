@@ -215,10 +215,18 @@ class TestGlobals(unittest.TestCase):
         self.assertIn(0x490000 - 0x1234, catalog.roots[catalog.globals])
 
     def test_gp_relative_access_is_a_global(self):
-        program = Program()
-        program.add(lambda here: [lw(V0, -0x7FF0, GP), JR_RA, NOP])
-        catalog = structs.Catalog(program.recover())
-        self.assertIn(0x004E8670 - 0x7FF0, catalog.roots[catalog.globals])
+        """$gp comes from the game's layout; an access off it is a global."""
+        from b3lib import layout
+
+        saved = layout.CURRENT.gp
+        layout.configure(gp=0x004E8670)
+        try:
+            program = Program()
+            program.add(lambda here: [lw(V0, -0x7FF0, GP), JR_RA, NOP])
+            catalog = structs.Catalog(program.recover())
+            self.assertIn(0x004E8670 - 0x7FF0, catalog.roots[catalog.globals])
+        finally:
+            layout.configure(gp=saved)
 
     def test_pointer_held_in_a_global_gets_a_type(self):
         program = Program()

@@ -16,8 +16,8 @@ Step 2 is the point.  A derivation nobody checked is a guess with good
 presentation, so anything that fails or cannot be executed is dropped rather than
 emitted with a caveat.
 
-    python tools/derive.py build/slus_210_50.json
-    python tools/derive.py build/slus_210_50.json --emit src/generated
+    python tools/derive.py
+    python tools/derive.py --emit --csv
 """
 
 from __future__ import annotations
@@ -33,10 +33,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from b3lib import game as game_config
 from b3lib.elf import ElfFile
 from b3lib.r5900 import DISASM
 from b3lib.emu import EmulationError, Machine
-from b3lib.paths import (STACK_TOP, Execution, PathDerivation, _is_frame_address,
+from b3lib.paths import (Execution, PathDerivation, _is_frame_address,
                          tree_expressions,
                          _relation, derive_paths)
 from b3lib import calls, structs, testmem, typed
@@ -65,7 +66,7 @@ from b3lib.symexec import (
     simplify,
 )
 
-from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
+from b3lib import layout
 
 # Longer functions are not attempted. The limit was 96 while a full run took half
 # an hour; with the pipeline fast, 256 added 114 functions and 1.6% of the code,
@@ -82,10 +83,8 @@ LOOP_SHAPED = {"loop", "too many paths", "exploration budget exhausted",
 VERIFY_BUDGET = 100_000
 # The callee's own frame. Writes here are not observable effects, so they are
 # excluded when comparing what the original and the derivation did to memory.
-STACK_LOW = DEFAULT_STACK_TOP - DEFAULT_STACK_SIZE
-STACK_HIGH = DEFAULT_STACK_TOP + 0x10
-SCRATCH = 0x01800000
-SCRATCH_SIZE = 0x20000
+# The stack, scratch memory and the rest of the layout come from the game; see
+# b3lib/layout.py.
 ARG_SETS = 8
 
 # Loads become calls on these helpers rather than raw pointer casts, so the
@@ -635,7 +634,8 @@ def _relative_to_sp(expr, frame_size: int):
         kids = children(node)
         if not kids and isinstance(node, Const) and _is_frame_address(node):
             new = Binary("add", Temp("sp"),
-                         Const((node.value & MASK64) - (STACK_TOP - frame_size)))
+                         Const((node.value & MASK64)
+                               - (layout.CURRENT.stack_top - frame_size)))
         else:
             new = rebuild(node, [walk(child) for child in kids]) if kids else node
         memo[key] = new
@@ -657,9 +657,9 @@ def _frame_size(expressions) -> int:
             address = node.value & MASK64
             lowest = address if lowest is None else min(lowest, address)
         stack.extend(children(node))
-    if lowest is None or lowest >= STACK_TOP:
+    if lowest is None or lowest >= layout.CURRENT.stack_top:
         return 0
-    return (STACK_TOP - lowest + 15) & ~15
+    return (layout.CURRENT.stack_top - lowest + 15) & ~15
 
 
 def _pointer_call_text(emitter, call, passed) -> str:
@@ -819,7 +819,8 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     the whole point of the pipeline is that nothing unchecked gets used.
     """
     rng = random.Random(0xB3)
-    machine.memory.write(SCRATCH, bytes(rng.randrange(256) for _ in range(SCRATCH_SIZE)))
+    machine.memory.write(layout.CURRENT.scratch,
+                         bytes(rng.randrange(256) for _ in range(layout.CURRENT.scratch_size)))
 
     def read(addr, size, signed):
         return machine.memory.read_int(addr, size, signed)
@@ -912,8 +913,8 @@ def _journal_effects(memory) -> dict:
     makes plenty of them spilling registers while a derived expression makes none,
     so counting them would fail every function that has a prologue.
     """
-    frame_low = STACK_LOW - memory.base
-    frame_high = STACK_HIGH - memory.base
+    frame_low = layout.CURRENT.stack_low - memory.base
+    frame_high = layout.CURRENT.stack_top + 0x10 - memory.base
     effects = {}
     for offset, previous in getattr(memory, "_journal", None) or ():
         for index in range(len(previous)):
@@ -932,7 +933,7 @@ def _choose_profile(machine, func, args):
     """
     for profile in testmem.PROFILES:
         machine.memory.end_journal()
-        machine.memory.write(SCRATCH, testmem.build(profile, func["addr"]))
+        machine.memory.write(layout.CURRENT.scratch, testmem.build(profile, func["addr"]))
         machine.memory.begin_journal()
         try:
             machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
@@ -956,7 +957,7 @@ def test_plan(func, machine):
     # pass-dependent result would be impossible to reproduce.
     local_rng = random.Random(func["addr"])
     arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
-    arg_sets.append(tuple(SCRATCH + 16 * i for i in range(8))
+    arg_sets.append(tuple(layout.CURRENT.scratch + 16 * i for i in range(8))
                     + tuple(testmem.float_bits(local_rng) for _ in range(8)))
     profile = _choose_profile(machine, func, arg_sets[0])
     if profile is None:
@@ -984,7 +985,8 @@ def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=
         # the journal does not nest, and this region is rewritten before every
         # case anyway, so nothing leaks between them.
         machine.memory.end_journal()
-        machine.memory.write(SCRATCH, testmem.build(profile, func["addr"] + case))
+        machine.memory.write(layout.CURRENT.scratch,
+                             testmem.build(profile, func["addr"] + case))
         # A function with stores is only verified if its *memory effects* match
         # too, so let the original run under a journal, and then check that
         # applying the candidate's stores to the same starting state reproduces
@@ -1114,7 +1116,7 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     lines.append(" * name invented now would read as a finding later.")
     lines.append(" *")
     lines.append(" * Regenerate with:")
-    lines.append(" *     python tools/derive.py build/slus_210_50.json --emit src/generated")
+    lines.append(" *     python tools/derive.py --emit --csv")
     lines.append(" */")
     lines.append("")
     lines.append('#include "b3/generated.h"')
@@ -1363,10 +1365,11 @@ def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
-    parser.add_argument("--elf", default=None)
-    parser.add_argument("--emit", help="directory to write generated C++ into")
-    parser.add_argument("--csv", help="append verified rows to this status table")
+    game_config.add_argument(parser)
+    parser.add_argument("--emit", nargs="?", const="",
+                        help="write generated C++ (default: the game's generated directory)")
+    parser.add_argument("--csv", nargs="?", const="",
+                        help="update the status table (default: the game's)")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--untyped", action="store_true",
                         help="emit plain addresses instead of recovered struct types")
@@ -1374,10 +1377,9 @@ def main(argv=None) -> int:
                         help="skip compiling the emitted C++ and running it")
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    elf_path = args.elf or os.path.join("extracted", database["meta"]["source"])
-    elf = ElfFile.load(elf_path)
+    game = game_config.from_args(args)
+    database = game.load_database()
+    elf = game.load_elf()
     section = elf.exec_sections[0]
     image = elf.section_data(section)
     machine = Machine.from_elf(elf)
@@ -1420,6 +1422,10 @@ def main(argv=None) -> int:
         print("  0x%08X (%3d callers)%s  %s"
               % (func["addr"], len(func["callers"]), shape, summary[:96]))
 
+    if args.emit == "":
+        args.emit = game.path(game.generated)
+    if args.csv == "":
+        args.csv = game.path(game.status)
     if args.emit:
         catalog = None
         if not args.untyped:

@@ -32,8 +32,9 @@ import random
 import struct
 import zlib
 
-SCRATCH = 0x01800000
-SCRATCH_SIZE = 0x20000
+from . import layout
+
+# The scratch region's place and size come from the game's layout (layout.py).
 
 # Order matters: the first profile under which a function executes is the one it is
 # tested with, so the most generally useful shapes come first.
@@ -53,7 +54,7 @@ _POOL = {}
 
 def build(kind: str, seed: int) -> bytes:
     """One profile's contents for the scratch region, deterministic in `seed`."""
-    key = (kind, seed % POOL_SIZE)
+    key = (kind, seed % POOL_SIZE, layout.CURRENT.scratch, layout.CURRENT.scratch_size)
     buffer = _POOL.get(key)
     if buffer is None:
         buffer = _build(kind, key[1])
@@ -67,6 +68,7 @@ def _build(kind: str, seed: int) -> bytes:
     # which would give different "deterministic" memory on every run and make a
     # failing test impossible to reproduce.
     rng = random.Random((zlib.crc32(kind.encode("ascii")) << 16) ^ seed)
+    SCRATCH, SCRATCH_SIZE = layout.CURRENT.scratch, layout.CURRENT.scratch_size
     count = SCRATCH_SIZE // 4
 
     def pointer() -> int:
@@ -97,7 +99,8 @@ def arguments(rng: random.Random) -> tuple:
     patterns of ordinary values - a mix of small exact ones and random magnitudes -
     rather than random bits, which would be mostly NaNs and denormals.
     """
-    integers = [SCRATCH + rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(8)]
+    scratch, size = layout.CURRENT.scratch, layout.CURRENT.scratch_size
+    integers = [scratch + rng.randrange(0, size // 2, 16) for _ in range(8)]
     return tuple(integers) + tuple(float_bits(rng) for _ in range(8))
 
 
@@ -133,7 +136,8 @@ def seed_global_pointers(memory, addresses) -> int:
                 continue
         except Exception:
             continue
-        offset = (zlib.crc32(address.to_bytes(4, "little")) % (SCRATCH_SIZE // 2)) & ~15
-        memory.write_int(address, SCRATCH + offset, 4)
+        size = layout.CURRENT.scratch_size
+        offset = (zlib.crc32(address.to_bytes(4, "little")) % (size // 2)) & ~15
+        memory.write_int(address, layout.CURRENT.scratch + offset, 4)
         seeded += 1
     return seeded

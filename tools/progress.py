@@ -29,6 +29,11 @@ import csv
 import json
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from b3lib import game as game_config
+import sys
 import time
 
 TIERS = ["undecompiled", "analyzed", "reconstructed", "verified"]
@@ -183,14 +188,15 @@ def render_markdown(summary: dict) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("database")
-    parser.add_argument("--status", default="config/functions.csv")
+    game_config.add_argument(parser)
+    parser.add_argument("--status", default=None,
+                        help="the status table (default: the game's)")
     parser.add_argument("--markdown", action="store_true")
     args = parser.parse_args(argv)
 
-    with open(args.database, encoding="utf-8") as handle:
-        database = json.load(handle)
-    summary = summarise(database, load_status(args.status))
+    game = game_config.from_args(args)
+    database = game.load_database()
+    summary = summarise(database, load_status(args.status or game.path(game.status)))
     sys.stdout.write(
         render_markdown(summary) if args.markdown else render_text(summary) + "\n"
     )
