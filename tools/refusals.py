@@ -75,17 +75,7 @@ def main(argv=None) -> int:
             continue
         long = func["size"] // 4 > derive.MAX_INSTRUCTIONS
         try:
-            try:
-                derive_paths(image, section.addr, func["addr"], func["end"], known=known,
-                             parameters=parameters)
-            except Unsupported as exc:
-                # Retry in loop mode exactly as the pipeline does, so what is reported
-                # is the obstacle that actually remains.
-                if str(exc) not in derive.LOOP_SHAPED or not derive.has_loop(
-                        image, section.addr, func):
-                    raise
-                derive_paths(image, section.addr, func["addr"], func["end"], known=known,
-                             parameters=parameters, loops=True)
+            derive.derive_function(image, section.addr, func, known, parameters)
             # Derivable, yet not verified: too long for the deriver's size limit, or
             # its test could not run or did not agree.
             reasons[func["addr"]] = ("derives, but over the size limit" if long

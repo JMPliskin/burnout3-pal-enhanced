@@ -450,5 +450,59 @@ class TestLoops(unittest.TestCase):
         self.assertIn("continue;", text)
 
 
+
+class TestBranchMerging(unittest.TestCase):
+    """Two independent if/else assignments merge into one path.
+
+        x = (a0 == 0) ? 2 : 1;  y = (a1 == 0) ? 20 : 10;  return x + y;
+
+    Enumerated, each such branch doubles the paths; merged, the walk carries one.
+    """
+
+    def setUp(self):
+        def beq(rs, rt, here, target):
+            return i_type(0x04, rs, rt, (target - (here + 4)) // 4)
+
+        b = lambda here, target: beq(0, 0, here, target)
+        self.words = [
+            beq(A0, 0, BASE + 0, BASE + 20),        # 0
+            NOP,                                    # 4
+            addiu(V0, 0, 1),                        # 8
+            b(BASE + 12, BASE + 24),                # 12
+            NOP,                                    # 16
+            addiu(V0, 0, 2),                        # 20
+            beq(A1, 0, BASE + 24, BASE + 44),       # 24
+            NOP,                                    # 28
+            addiu(V1, 0, 10),                       # 32
+            b(BASE + 36, BASE + 48),                # 36
+            NOP,                                    # 40
+            addiu(V1, 0, 20),                       # 44
+            JR_RA,                                  # 48
+            addu(V0, V0, V1),                       # 52
+        ]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+
+    def derive(self, merge):
+        return derive_paths(self.image, BASE, BASE, BASE + 4 * len(self.words),
+                            known={}, merge=merge)
+
+    def test_join_points_are_found(self):
+        from b3lib.paths import _join_points
+
+        joins = _join_points(self.image, BASE, BASE, BASE + 4 * len(self.words))
+        self.assertEqual(joins.get(BASE), BASE + 24)
+        self.assertEqual(joins.get(BASE + 24), BASE + 48)
+
+    def test_merging_gives_one_path_with_the_same_values(self):
+        self.assertEqual(len(self.derive(False).paths), 4)
+        merged = self.derive(True)
+        self.assertEqual(len(merged.paths), 1)
+        machine = Machine(BASE, self.image, 0x02000000 - BASE)
+        read = lambda a, size, signed: machine.memory.read_int(a, size, signed)
+        for a0, a1 in ((0, 0), (0, 5), (3, 0), (3, 5)):
+            self.assertEqual(merged.evaluate((a0, a1) + (0,) * 14, read),
+                             machine.call(BASE, (a0, a1)))
+
+
 if __name__ == "__main__":
     unittest.main()

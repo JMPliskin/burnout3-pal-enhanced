@@ -44,6 +44,7 @@ from .symexec import (
     REG_LO,
     rebuild,
     Predicate,
+    Select,
     SignExtend32,
     Store,
     Unsupported,
@@ -1099,7 +1100,8 @@ def _apply_callee_path(callee_path, arguments, stores: list, memory: dict,
 
 def derive_paths(image: bytes, base: int, start: int, end: int,
                  gp_value: int = None, known: dict = None,
-                 parameters: dict = None, loops: bool = False) -> PathDerivation:
+                 parameters: dict = None, loops: bool = False,
+                 merge: bool = False) -> PathDerivation:
     """Derive a function as guarded paths, handling acyclic control flow.
 
     `known` maps an address to an already-derived `PathDerivation`. A call to one of
@@ -1125,6 +1127,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     epochs = [0]
     loop_ids = [0]
     loop_info = _loop_info(image, base, start, end) if loops else {}
+    joins = _join_points(image, base, start, end) if merge else {}
 
     def shared_code(address: int) -> bool:
         """True for code outside this function that the walk may simply continue into.
@@ -1240,9 +1243,52 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                  marks + (loop_mark,) + tuple((len(stores), "cond", g) for g in guards),
                  loop=outer, sink=sink)
 
+    def merge_branch(addr, ins, predicate, slot, regs, stores, frame, memory,
+                     conditions, visited, marks, loop):
+        """Walk both sides of a branch to where they meet; merged registers or None.
+
+        When neither side stores, calls or touches the frame - the branch only
+        decides what some registers hold - the two routes need not stay apart:
+        each differing register becomes `predicate ? taken : untaken` and the walk
+        carries on once. Enumerating them instead doubles the paths at every such
+        branch, which is what refused functions for having too many.
+        """
+        join = joins.get(addr)
+        if join is None:
+            return None
+        region = []
+        sides = []
+        for taken in (True, False):
+            side_regs = dict(regs)
+            side_stores = list(stores)
+            side_frame, side_memory = frame.fork(), memory.fork()
+            if taken or not ins.is_likely:
+                _step(side_regs, side_stores, side_frame, side_memory, slot,
+                      _getter(side_regs), memory.epoch)
+            sides.append((side_regs, side_stores, side_frame, side_memory))
+            try:
+                walk(ins.target if taken else addr + 8, side_regs, side_stores,
+                     side_frame, side_memory, conditions, visited, marks,
+                     loop=loop, sink=region, stop=join)
+            except Unsupported:
+                return None
+        if len(region) != 2 or not all(isinstance(r, _JoinState) for r in region):
+            return None
+        for state in region:
+            if (len(state.stores) != len(stores) or state.marks != marks
+                    or state.memory.epoch != memory.epoch or len(state.memory) != len(memory)
+                    or dict(state.frame) != dict(frame)):
+                return None
+        taken_regs, untaken_regs = region[0].regs, region[1].regs
+        merged = {}
+        for register in set(taken_regs) & set(untaken_regs):
+            a, b = taken_regs[register], untaken_regs[register]
+            merged[register] = a if (a is b or a == b) else Select(predicate, a, b)
+        return join, merged
+
     def walk(addr: int, regs: dict, stores: list, frame: dict, memory: dict,
              conditions: tuple, visited: dict, marks: tuple = (), epoch: int = 0,
-             loop=None, sink=None):
+             loop=None, sink=None, stop=None):
         sink = paths if sink is None else sink
         if len(sink) > MAX_PATHS:
             raise Unsupported("too many paths")
@@ -1250,6 +1296,10 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         visited = dict(visited)
 
         while True:
+            if stop is not None and addr == stop:
+                # The end of a branch's region: hand the state back for merging.
+                sink.append(_JoinState(regs, stores, frame, memory, marks))
+                return
             # Loops are unrolled rather than refused. A loop whose trip count is
             # constant needs no special handling: its exit condition folds to a
             # constant on every iteration (see _constant_truth), so the walk follows
@@ -1339,6 +1389,13 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     addr += 8
                     continue
 
+                if joins:
+                    merged = merge_branch(addr, ins, predicate, slot, regs, stores, frame,
+                                          memory, conditions, visited, marks, loop)
+                    if merged is not None:
+                        addr, regs = merged
+                        continue
+
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
                 taken_frame, taken_memory = frame.fork(), memory.fork()
@@ -1347,7 +1404,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
                      conditions + (predicate,), visited,
                      _drain(taken_memory, marks + ((len(stores), "cond", predicate),)),
-                     loop=loop, sink=sink)
+                     loop=loop, sink=sink, stop=stop)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
@@ -1359,7 +1416,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
                      conditions + (negated,), visited,
                      _drain(fall_memory, marks + ((len(stores), "cond", negated),)),
-                     loop=loop, sink=sink)
+                     loop=loop, sink=sink, stop=stop)
                 return
 
             if m in ("b", "j"):
@@ -1470,7 +1527,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     walk(addr + 8, branch_regs, branch_stores, branch_frame,
                          branch_memory, conditions + extra, visited,
                          marks + tuple((before, "cond", c) for c in extra),
-                         loop=loop, sink=sink)
+                         loop=loop, sink=sink, stop=stop)
                 return
 
             if ins.is_jump:
@@ -1606,6 +1663,87 @@ def _prune_loop_variables(identity, carried, tree, exits) -> tuple:
         keep &= used
     kept = tuple(register for register in carried if register in keep)
     return kept, rewrite(tree, set(kept))
+
+
+@dataclasses.dataclass
+class _JoinState:
+    """A walk's state on reaching the join point of the branch being merged."""
+
+    regs: dict
+    stores: list
+    frame: object
+    memory: object
+    marks: tuple
+
+
+def _join_points(image, base, start, end) -> dict:
+    """{branch address: the address where its two routes meet again}.
+
+    That is the branch's immediate post-dominator in the function's control-flow
+    graph - the first instruction every route from the branch must pass through.
+    A delay slot belongs to both routes, so for an ordinary branch the routes part
+    after the slot; a "likely" branch parts at the branch itself.
+    """
+    EXIT = -1
+
+    def decode(address):
+        return DISASM.decode(struct.unpack_from("<I", image, address - base)[0], address)
+
+    successors, slots, branches = {}, set(), {}
+    for address in range(start, end, 4):
+        if address in slots:
+            continue
+        ins = decode(address)
+        if not ins.has_delay_slot or address + 4 >= end:
+            successors[address] = [address + 4 if address + 4 < end else EXIT]
+            continue
+        slot, after, target = address + 4, address + 8, ins.target
+        slots.add(slot)
+        inside = start <= target < end
+        if ins.is_call:
+            successors[address], successors[slot] = [slot], [after]
+        elif ins.is_return or ins.mnemonic in ("jr", "j", "b") or (ins.is_jump and not ins.is_branch):
+            successors[address] = [slot]
+            successors[slot] = [target] if (ins.mnemonic in ("j", "b") and inside) else [EXIT]
+        elif ins.is_branch:
+            to_target = [target] if inside else [EXIT]
+            if ins.is_likely:
+                successors[address] = [slot, after]
+                successors[slot] = to_target
+                branches[address] = address
+            else:
+                successors[address] = [slot]
+                successors[slot] = to_target + [after]
+                branches[address] = slot
+        else:
+            successors[address], successors[slot] = [slot], [after]
+    for node, targets in successors.items():
+        successors[node] = [t if (t == EXIT or start <= t < end) else EXIT for t in targets]
+    nodes = sorted(successors) + [EXIT]
+    index = {node: i for i, node in enumerate(nodes)}
+    full = (1 << len(nodes)) - 1
+    pdom = {node: full for node in nodes}
+    pdom[EXIT] = 1 << index[EXIT]
+    changed = True
+    while changed:
+        changed = False
+        for node in reversed(nodes[:-1]):
+            meet = full
+            for successor in successors[node]:
+                meet &= pdom.get(successor, 1 << index[EXIT])
+            value = meet | (1 << index[node])
+            if value != pdom[node]:
+                pdom[node] = value
+                changed = True
+    joins = {}
+    for branch, parting in branches.items():
+        strict = pdom[parting] & ~(1 << index[parting])
+        for candidate in nodes:
+            if strict >> index[candidate] & 1 and pdom[candidate] == strict:
+                if candidate != EXIT:
+                    joins[branch] = candidate
+                break
+    return joins
 
 
 def _returned_values(paths):

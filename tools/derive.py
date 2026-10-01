@@ -748,6 +748,28 @@ def render_body(derivation) -> list:
 EXPECTATIONS = {}
 
 
+def derive_function(image, base, func, known, parameters):
+    """Derive one function, escalating only when the plain derivation explodes.
+
+    First as enumerated paths with constant loops unrolled - the form everything
+    derived so far takes. A refusal from enumeration is retried with loops derived
+    as loops (if the function has one), and then with branches merged where both
+    sides meet again. The escalations only ever run where plain derivation failed,
+    so they cannot change a function it already handles.
+    """
+    attempts = [{}]
+    if has_loop(image, base, func):
+        attempts.append({"loops": True})
+    attempts.append({"loops": has_loop(image, base, func), "merge": True})
+    for number, options in enumerate(attempts):
+        try:
+            return derive_paths(image, base, func["addr"], func["end"], known=known,
+                                parameters=parameters, **options)
+        except Unsupported as exc:
+            if str(exc) not in LOOP_SHAPED or number == len(attempts) - 1:
+                raise
+
+
 def has_loop(image, base, func) -> bool:
     """Whether a function has a backward branch, i.e. a loop to derive as one."""
     for address in range(func["addr"], func["end"], 4):
@@ -1022,20 +1044,7 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
     """Try to derive and verify one function; returns the record or None."""
     if True:
         try:
-            try:
-                derivation = derive_paths(
-                    image, base, func["addr"], func["end"], known=known,
-                    parameters=parameters,
-                )
-            except Unsupported as exc:
-                # A loop whose trip count depends on the input can neither be
-                # unrolled nor enumerated as paths; derive it as a real loop.
-                if str(exc) not in LOOP_SHAPED or not has_loop(image, base, func):
-                    raise
-                derivation = derive_paths(
-                    image, base, func["addr"], func["end"], known=known,
-                    parameters=parameters, loops=True,
-                )
+            derivation = derive_function(image, base, func, known, parameters)
         except Unsupported:
             rejected["unsupported"] += 1
             return None

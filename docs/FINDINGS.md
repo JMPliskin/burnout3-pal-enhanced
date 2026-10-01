@@ -674,6 +674,20 @@ finding the covering objects by binary search, took emission to 8 seconds and
 type recovery from 95 seconds to under one. A full run now takes five minutes,
 four and a half of them derivation.
 
+## Merging branches where they meet
+
+Path enumeration doubles at every branch, so a function with a run of independent
+`if`s is refused for having too many paths (659 functions, 509 KB). As a last
+escalation, a branch whose two routes meet again - at its immediate
+post-dominator in the function's control-flow graph - and which on both routes
+only computes register values is merged: each differing register becomes
+`cond ? a : b`, and the walk carries on once. Sides that store, call or touch the
+frame still fork. That recovered 21 functions (verified code 7.87% -> 8.06%), at
+a real cost: derivation went from 392 to 676 seconds, since every function that
+explodes now has its branch regions walked again. Merging sides that store - as
+guarded stores - is the natural extension, and where most of the remaining
+"too many paths" functions are.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
