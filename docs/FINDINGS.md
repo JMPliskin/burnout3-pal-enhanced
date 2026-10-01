@@ -376,6 +376,36 @@ two slots as the same object. Linked slots form candidate types.
   cutoff, 723 at 20 callers, 163 at 10 and 94 at 5. Struct recovery must treat
   widely shared functions as generic rather than as evidence of one type.
 
+## Recovered struct types
+
+The recovery (`tools/b3lib/structs.py`, reported by `tools/structtypes.py`) finds
+5,321 types with at least one field across the binary, 779 of them used by two or
+more functions. It recovers 3,069 pointer fields that lead to another recovered
+type and 1,220 embedded types. The largest type spans 90 functions. The conflict
+guard made 10,997 joins and refused 911.
+
+The two checks the guard does not influence: at the 3,148 offsets used by several
+functions, 93.9% are used consistently as either float or integer, and 97.2% are
+loaded with consistent signedness. With the guard disabled, one type absorbs 1,422
+functions and both figures drop (to 91.8% and 95.1% on an earlier run).
+
+Three things the recovery taught about the code:
+
+* About half of all apparent argument links were not arguments at all. A register
+  that still holds a value at a call is passed only if the callee reads it, and
+  the compiler leaves `$a1..$a3` untouched across many calls to one-argument
+  functions.
+* Objects embed sub-objects and hand them to functions directly: `func_001219D8`
+  initialises three embedded records at +0x1E4, +0x23C and +0x294 (0x58 apart) by
+  passing interior pointers to one initialiser.
+* Arrays of records are cleared by indexed loops (`func_0013D4D0` zeroes 24 records
+  of 0x50 bytes). The scan cannot follow a variable index; the unrolled derivations
+  can, and their accesses are fed back as evidence.
+
+In the emitted source, 471 of the 647 derived functions take at least one typed
+argument. Field accessors account for about 2,750 reads and 4,600 writes, against
+about 870 reads and 700 writes still done by address, most of those on globals.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

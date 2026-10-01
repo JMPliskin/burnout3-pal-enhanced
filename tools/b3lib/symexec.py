@@ -76,6 +76,8 @@ class Arg(Expr):
     index: int  # 0..3 for $a0..$a3
 
     def render(self) -> str:
+        if _ARG_RENDERER is not None:
+            return _ARG_RENDERER(self)
         return "arg%d" % self.index
 
     def evaluate(self, args, read) -> int:
@@ -262,6 +264,29 @@ def set_load_renderer(renderer):
     previous = _LOAD_RENDERER
     _LOAD_RENDERER = renderer
     return previous
+
+
+# The second and last hook: how an argument prints. A typed argument is a view
+# object in the emitted C++, so in a value context it has to read `arg0.address`.
+_ARG_RENDERER = None
+
+
+class arg_renderer:
+    """Install a renderer for `Arg` nodes for the duration of a block."""
+
+    def __init__(self, renderer):
+        self._renderer = renderer
+        self._previous = None
+
+    def __enter__(self):
+        global _ARG_RENDERER
+        self._previous, _ARG_RENDERER = _ARG_RENDERER, self._renderer
+        return self
+
+    def __exit__(self, *exc):
+        global _ARG_RENDERER
+        _ARG_RENDERER = self._previous
+        return False
 
 
 class load_renderer:

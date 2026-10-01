@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Recover struct types across the whole binary and report on them.
+
+    python tools/structtypes.py build/slus_210_50.json
+    python tools/structtypes.py build/slus_210_50.json --show S_0011FE00_a0
+
+The recovery itself lives in tools/b3lib/structs.py; derive.py uses it to type
+the code it emits. This reports how much it found and how trustworthy it looks.
+The join guard compares field widths, so width agreement says nothing; the two
+independent checks are whether an offset shared by several functions is used as
+float *or* integer, and loaded signed *or* unsigned, consistently.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from b3lib import structs
+from b3lib.elf import ElfFile
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("database")
+    parser.add_argument("--elf", default=None)
+    parser.add_argument("--show", help="print the layout of the named type")
+    parser.add_argument("--largest", type=int, default=8)
+    args = parser.parse_args(argv)
+
+    with open(args.database, encoding="utf-8") as handle:
+        database = json.load(handle)
+    elf = ElfFile.load(args.elf or os.path.join("extracted", database["meta"]["source"]))
+    section = elf.exec_sections[0]
+
+    started = time.time()
+    graph = structs.recover(database, elf.section_data(section), section.addr)
+    catalog = structs.Catalog(graph)
+    elapsed = time.time() - started
+
+    if args.show:
+        by_name = {name: root for root, name in catalog.names.items()}
+        root = by_name.get(args.show)
+        if root is None:
+            print("no type named %s" % args.show)
+            return 1
+        print("%s: %d function(s)" % (args.show, len(catalog.functions(root))))
+        for offset in sorted(catalog.roots[root]):
+            field = catalog.roots[root][offset]
+            target = catalog.pointee(root, offset)
+            print("  %+6X  read %-10s write %-4s %-6s %3d fn  %s"
+                  % (offset, catalog.read_flavour(field), catalog.write_width(field),
+                     catalog.kind(field), len(field.functions),
+                     ("-> " + catalog.names[target]) if target is not None else ""))
+        for offset, inner in sorted(catalog.embedded(root).items()):
+            print("  %+6X  embedded %s" % (offset, catalog.names[inner]))
+        return 0
+
+    sizes = sorted((len(catalog.functions(root)) for root in catalog.roots), reverse=True)
+    pointers = sum(1 for root in catalog.roots for offset in catalog.roots[root]
+                   if catalog.pointee(root, offset) is not None)
+    embeds = sum(len(catalog.embedded(root)) for root in catalog.roots)
+    quality = structs.quality(graph)
+    print("recovered in %.1fs" % elapsed)
+    print("types with at least one field         : %s" % format(len(catalog.roots), ","))
+    print("  ...used by two or more functions    : %s"
+          % format(sum(1 for size in sizes if size >= 2), ","))
+    print("pointer fields (to a recovered type)  : %s" % format(pointers, ","))
+    print("embedded types                        : %s" % format(embeds, ","))
+    print("joins made / refused by the guard     : %s / %s"
+          % (format(graph.joined, ","), format(graph.refused, ",")))
+    print("functions per type, largest           : %s" % sizes[:args.largest])
+    print("offsets used by 2+ functions          : %s" % format(quality["shared offsets"], ","))
+    print("  ...used consistently as float or int: %.1f%%"
+          % (100 * quality["float/int agreement"]))
+    print("  ...loaded with consistent signedness: %.1f%%"
+          % (100 * quality["signedness agreement"]))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

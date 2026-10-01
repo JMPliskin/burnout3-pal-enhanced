@@ -104,9 +104,13 @@ Two honesty rules apply to that output:
 * A function counts as `verified` only if the test varied something. A constant or a
   fixed-global read ignores its arguments, so eight argument sets exercise one input
   eight times; those land a tier lower.
-* Generated functions keep placeholder `func_XXXXXXXX` names. The behaviour is
-  verified but no struct types are recovered yet, and a descriptive name invented now
-  would read as a finding later.
+* Generated functions keep placeholder `func_XXXXXXXX` names, and recovered types
+  placeholder `S_XXXXXXXX_aN` names. The behaviour and the layouts are evidence;
+  what a function or type is *for* has not been worked out, and a descriptive name
+  invented now would read as a finding later.
+* Recovered types are presentation, never trusted for meaning. A memory access is
+  shown as a field only when it matches the field exactly, and the compiled form of
+  every typed function is run against the original.
 
 ### The emitted source is compiled and run too
 

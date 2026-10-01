@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
 from b3lib.paths import PathDerivation, derive_paths
-from b3lib import testmem
+from b3lib import structs, testmem, typed
 from b3lib.symexec import (
     Arg,
     Binary,
@@ -45,7 +45,9 @@ from b3lib.symexec import (
     Load,
     Predicate,
     Unsupported,
+    arg_renderer,
     arguments_used,
+    children,
     load_renderer,
     simplify,
 )
@@ -115,8 +117,17 @@ def render_cpp(expr) -> str:
     drifted: a clarity rule added to symexec never reached the generated source, so
     the emitted C differed from what the tests were checking.
     """
+    if _TYPING is not None:
+        with load_renderer(_TYPING.render_load), arg_renderer(_TYPING.render_arg):
+            return simplify(expr).render()
     with load_renderer(_render_load_as_helper):
         return simplify(expr).render()
+
+
+# The recovered types for the function being emitted, or None to emit untyped.
+# Module state rather than a parameter because it has to reach the renderer's
+# hooks, several calls deep.
+_TYPING = None
 
 
 def _store_value(store) -> str:
@@ -156,11 +167,16 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
     if path.expression is None and len(path.stores) <= 1:
         # A single store reads memory before writing anything, so there is nothing
         # it could disturb and no need for temporaries.
-        lines = [
-            "%s(%s, %s);"
-            % (WRITERS[store.size], render_cpp(store.address), _store_value(store))
-            for store in path.stores
-        ]
+        lines = []
+        for store in path.stores:
+            target = _TYPING.store_target(store) if _TYPING is not None else None
+            if target is not None:
+                base, embeds, _owner, offset = target
+                lines.append("%s.set_%s(%s);" % (
+                    _TYPING.object(base, embeds), typed.accessor(offset), _store_value(store)))
+            else:
+                lines.append("%s(%s, %s);" % (
+                    WRITERS[store.size], render_cpp(store.address), _store_value(store)))
         if not final:
             lines.append("return;")
         return lines or ["/* no observable effect */"]
@@ -168,22 +184,58 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
     if path.expression is not None and not path.stores:
         return ["return %s;" % _result(path.expression)]
 
-    lines = [
-        "/* Captured before any store: every expression below refers to",
-        "   memory as it stood on entry. */",
-    ]
+    # Only what reads memory needs capturing: a constant or an argument cannot be
+    # changed by a store, so those are written straight into the statement that
+    # uses them, and the source says `arg0.set_f_10(0)` rather than routing a zero
+    # through a temporary.
+    lines = []
     if path.expression is not None:
-        lines.append("const s32 %sresult = %s;" % (prefix, _result(path.expression)))
+        if _reads_memory(path.expression):
+            lines.append("const s32 %sresult = %s;" % (prefix, _result(path.expression)))
+            returned = "%sresult" % prefix
+        else:
+            returned = _result(path.expression)
+    writes = []
     for index, store in enumerate(path.stores):
-        lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
-        lines.append("const u64 %sval%d = %s;" % (prefix, index, _store_value(store)))
-    for index, store in enumerate(path.stores):
-        lines.append("%s(%saddr%d, %sval%d);" % (WRITERS[store.size], prefix, index, prefix, index))
+        if _reads_memory(store.value):
+            lines.append("const u64 %sval%d = %s;" % (prefix, index, _store_value(store)))
+            value = "%sval%d" % (prefix, index)
+        else:
+            value = _store_value(store)
+        target = _TYPING.store_target(store) if _TYPING is not None else None
+        if target is not None:
+            base, embeds, owner, offset = target
+            if isinstance(base, Arg):
+                where = _TYPING.object(base, embeds)
+            else:
+                where = "%sobj%d" % (prefix, index)
+                lines.append("const %s %s = %s;" % (
+                    _TYPING.type_name(owner), where, _TYPING.object(base, embeds)))
+            writes.append("%s.set_%s(%s);" % (where, typed.accessor(offset), value))
+        elif _reads_memory(store.address):
+            lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
+            writes.append("%s(%saddr%d, %s);" % (WRITERS[store.size], prefix, index, value))
+        else:
+            writes.append("%s(%s, %s);"
+                          % (WRITERS[store.size], render_cpp(store.address), value))
+    if lines:
+        lines = [
+            "/* Captured before any store: every expression below refers to",
+            "   memory as it stood on entry. */",
+        ] + lines
+    lines.extend(writes)
     if path.expression is not None:
-        lines.append("return %sresult;" % prefix)
+        lines.append("return %s;" % returned)
     elif not final:
         lines.append("return;")
     return lines
+
+
+def _reads_memory(expr) -> bool:
+    """Whether evaluating an expression loads from memory."""
+    if isinstance(expr, Load):
+        return True
+    return any(_reads_memory(child) for child in children(expr))
 
 
 def render_body(derivation) -> list:
@@ -431,7 +483,7 @@ def _attempt(func, image, base, machine, read, known, rejected):
         return (func, derivation, tested, argument_dependent)
 
 
-def emit(verified, out_dir: str, source_name: str) -> None:
+def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "accessors.cpp")
     verified = sorted(verified, key=lambda item: item[0]["addr"])
@@ -445,15 +497,22 @@ def emit(verified, out_dir: str, source_name: str) -> None:
     lines.append(" * then differential-tested against it in the R5900 interpreter; only")
     lines.append(" * derivations that agreed on every argument set appear here.")
     lines.append(" *")
-    lines.append(" * The names are placeholders. These are genuine, verified behaviour but no")
-    lines.append(" * struct types have been recovered yet, so a descriptive name would be an")
-    lines.append(" * invention dressed as a finding. Renaming belongs with the type work.")
+    lines.append(" * Pointer arguments are typed with the struct types recovered in types.h, so")
+    lines.append(" * field reads and writes go through named accessors; anything the recovery")
+    lines.append(" * could not place stays a plain Read*/Write* on the address. The compiled")
+    lines.append(" * form of every function is run against the original as well.")
+    lines.append(" *")
+    lines.append(" * The names are placeholders. The behaviour is verified, but what each")
+    lines.append(" * function and field is *for* has not been worked out, and a descriptive")
+    lines.append(" * name invented now would read as a finding later.")
     lines.append(" *")
     lines.append(" * Regenerate with:")
     lines.append(" *     python tools/derive.py build/slus_210_50.json --emit src/generated")
     lines.append(" */")
     lines.append("")
     lines.append('#include "b3/generated.h"')
+    if catalog is not None:
+        lines.append('#include "types.h"')
     lines.append("")
     lines.append("/* Every value here is a u64 register image, so narrowing one to a u32 address")
     lines.append("   or float word is the intended truncation, not an accident; MSVC warns about")
@@ -465,16 +524,31 @@ def emit(verified, out_dir: str, source_name: str) -> None:
     lines.append("namespace generated {")
     lines.append("")
 
+    global _TYPING
+    used_types = set()
     for func, derivation, tested, strong in verified:
         # Arguments can appear only inside a store, so the signature has to be
         # built from the stores as well as the return expression - otherwise the
         # emitted function references an undeclared parameter and will not compile.
         args = sorted(derivation_args(derivation))
-        params = ", ".join("u64 arg%d" % i for i in args) or "void"
+        _TYPING = typed.Typing(catalog, func["addr"]) if catalog is not None else None
+        params = []
+        for index in args:
+            root = catalog.slot(func["addr"], index) if catalog is not None else None
+            if root is None:
+                params.append("u64 arg%d" % index)
+            else:
+                _TYPING.used.add(root)
+                params.append("%s arg%d" % (catalog.names[root], index))
+        params = ", ".join(params) or "void"
         try:
             body_lines = render_body(derivation)
         except Unsupported:
+            _TYPING = None
             continue
+        if _TYPING is not None:
+            used_types |= _TYPING.used
+        _TYPING = None
         lines.append(
             "/* 0x%08X  %d caller(s)  %s */"
             % (
@@ -495,6 +569,13 @@ def emit(verified, out_dir: str, source_name: str) -> None:
     check_signatures(text)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
+    types_path = os.path.join(out_dir, "types.h")
+    if catalog is not None:
+        with open(types_path, "w", encoding="utf-8") as handle:
+            handle.write(typed.header(catalog, used_types, source_name))
+        print("wrote %s (%d recovered types)" % (types_path, len(used_types)))
+    elif os.path.exists(types_path):
+        os.remove(types_path)
     print("wrote %s (%d functions, signature self-check passed)"
           % (path, len(verified)))
 
@@ -529,7 +610,7 @@ def check_signatures(text: str) -> None:
         )
 
 
-def check_compiled(verified, machine, out_dir: str, database: dict) -> list:
+def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None) -> list:
     """Compile the emitted C++, run it on every function's cases, keep what agrees.
 
     The derivations were verified as expression trees; this verifies the source
@@ -577,7 +658,7 @@ def check_compiled(verified, machine, out_dir: str, database: dict) -> list:
     for address in untestable[:20]:
         print("  could not run: func_%08X" % address)
     if len(kept) != len(verified):
-        emit(kept, out_dir, database["meta"]["source"])
+        emit(kept, out_dir, database["meta"]["source"], catalog)
     return kept
 
 
@@ -588,6 +669,8 @@ def main(argv=None) -> int:
     parser.add_argument("--emit", help="directory to write generated C++ into")
     parser.add_argument("--csv", help="append verified rows to this status table")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--untyped", action="store_true",
+                        help="emit plain addresses instead of recovered struct types")
     parser.add_argument("--no-compile", action="store_true",
                         help="skip compiling the emitted C++ and running it")
     args = parser.parse_args(argv)
@@ -636,9 +719,17 @@ def main(argv=None) -> int:
               % (func["addr"], len(func["callers"]), shape, summary[:96]))
 
     if args.emit:
-        emit(verified, args.emit, database["meta"]["source"])
+        catalog = None
+        if not args.untyped:
+            started = time.time()
+            graph = structs.recover(database, image, section.addr)
+            evidence = typed.add_derived_evidence(graph, verified)
+            catalog = structs.Catalog(graph)
+            print("recovered %d struct types in %.1fs (%d fields added from derivations)"
+                  % (len(catalog.roots), time.time() - started, evidence))
+        emit(verified, args.emit, database["meta"]["source"], catalog)
         if not args.no_compile:
-            verified = check_compiled(verified, machine, args.emit, database)
+            verified = check_compiled(verified, machine, args.emit, database, catalog)
     if args.csv:
         import csv
 

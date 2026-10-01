@@ -28,6 +28,10 @@ tools/b3lib/
   vdbhash.py   the recovered ValueDB name hash
   emu.py       R5900 interpreter, for verification
   symexec.py   symbolic execution of branch-free functions
+  paths.py     acyclic control flow, frames, memory, inlining, unrolling
+  structs.py   struct type recovery (type unification over the whole binary)
+  typed.py     renders derived code against recovered types
+  cppcheck.py  compiles emitted C++ and runs it against the interpreter
   difftest.py  differential-test harness
 
 tools/
@@ -39,6 +43,8 @@ tools/
   layout.py     byte-level accounting of the image
   candidates.py ranks functions by reconstructability
   derive.py     derives, verifies and emits accessor functions
+  structtypes.py reports on the recovered struct types
+  fields.py     measures field-offset consistency (the groundwork for structs.py)
   matchdiff.py  byte-comparison, kept for if the compiler is ever obtained
   progress.py   progress accounting
 ```
@@ -122,7 +128,10 @@ so the function becomes an ordered list of guarded results.
 ### `derive.py` - verification and emission
 
 Each derivation is differential-tested against the original machine code before any
-source is written, and only the ones that agreed are emitted.
+source is written, and only the ones that agreed are emitted. The emitted C++ is then
+compiled (`cppcheck.py`) and run on the same cases, because what is verified is a
+tree and what ships is its rendering; a function whose compiled form disagrees is
+dropped.
 
 Memory effects are compared, not just return values. Writes are **journalled and
 rolled back** rather than restored from a snapshot of a chosen region: these
@@ -156,6 +165,47 @@ reading the code:
   `lui 0xFFFF` then `dsrl32 32` is `0xFFFFFFFF`, not 0.
 * **Float bit moves.** Holding float registers as host doubles canonicalises NaN
   payloads, altering values a copy must preserve.
+
+## `structs.py` and `typed.py` - struct types
+
+Types are recovered by unification in the style of Steensgaard's points-to
+analysis, with field offsets. A *type node* stands for every value that is
+dereferenced: function arguments, return values, and the contents of pointer
+fields. Nodes collect the offsets and widths they are accessed at. Evidence that
+two values are the same object joins their nodes: an argument passed into a call,
+a returned value, a pointer stored into a field. A displaced pointer passed into a
+call (`base + 0x1E4`) records an *embedded* type instead.
+
+What keeps this from collapsing into one type:
+
+* **A conflict guard.** Two nodes join only if every offset both use has the same
+  set of widths, checked recursively through pointer fields and embedded types.
+  Generic routines - memcpy and the like - are refused at the first type they
+  disagree with. A subset rule was tried first and let a node that already mixed
+  widths absorb everything.
+* **Specific links first.** Links are applied in order of how many callers the
+  callee has, so generic routines meet established types and are refused rather
+  than fusing types before their own evidence arrives.
+* **Only arguments the callee reads.** A register that merely still holds a value
+  at a call is not an argument. Linking those was half of all links, and joined
+  the arguments of unrelated functions.
+* **A flow-aware scan.** Register meanings are carried along paths and intersected
+  where paths join; loop heads drop whatever the loop overwrites; code after a
+  return is unreachable until a branch reaches it.
+
+The guard compares widths, so width agreement is no evidence of quality. The
+independent checks (`tools/structtypes.py`) are float-versus-integer use and
+signedness at offsets shared by several functions; without the guard both drop
+and one type absorbs 1,422 functions.
+
+The emitter (`typed.py`) renders a typed value as a *view*: a thin object over a
+guest address with an accessor per field, a pointer field returning the view of
+its target. A load or store becomes a field access only when it matches the field
+exactly - offset, width and signedness - so a wrong type can make the source less
+tidy but cannot change its meaning, and the compiled check runs it regardless.
+Before emitting, the derived functions' own accesses are added to the graph as
+evidence: the scan cannot follow a variable index, but an unrolled loop shows
+every concrete access it makes, each already verified.
 
 ## `r5900.py` - the disassembler
 

@@ -72,19 +72,19 @@ def functions_in(source: str) -> list:
     for match in SIGNATURE.finditer(source):
         return_type, name, address, params = match.groups()
         indices = [int(i) for i in re.findall(r"arg(\d)", params)]
-        found.append((int(address, 16), name, return_type, indices))
+        found.append((int(address, 16), name, return_type, indices, params))
     return found
 
 
-def harness_source(functions) -> str:
+def harness_source(functions, typed: bool) -> str:
     """A dispatch table plus memory helpers that forward to Python callbacks."""
-    lines = [
-        '#include "b3/generated.h"',
-        "",
-        "namespace generated {",
-    ]
-    for _address, name, return_type, indices in functions:
-        params = ", ".join("u64" for _ in indices) or "void"
+    lines = ['#include "b3/generated.h"']
+    if typed:
+        lines.append('#include "types.h"')
+    lines += ["", "namespace generated {"]
+    for _address, name, return_type, _indices, params in functions:
+        # The declaration repeats the definition's own parameter list, typed views
+        # included; the u64 arguments below convert to them implicitly.
         lines.append("%s %s(%s);" % (return_type, name, params))
     lines += [
         "}",
@@ -112,7 +112,7 @@ def harness_source(functions) -> str:
         'extern "C" __declspec(dllexport) int b3_call(u32 address, const u64* args, s32* result) {',
         "    switch (address) {",
     ]
-    for address, name, return_type, indices in functions:
+    for address, name, return_type, indices, _params in functions:
         call = "generated::%s(%s)" % (name, ", ".join("args[%d]" % i for i in indices))
         if return_type == "void":
             lines.append("    case 0x%08X: %s; return 2;" % (address, call))
@@ -129,8 +129,10 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
     with open(generated_path, encoding="utf-8") as handle:
         functions = functions_in(handle.read())
     harness = os.path.join(work_dir, "harness.cpp")
+    generated_dir = os.path.dirname(os.path.abspath(generated_path))
+    typed = os.path.exists(os.path.join(generated_dir, "types.h"))
     with open(harness, "w", encoding="utf-8") as handle:
-        handle.write(harness_source(functions))
+        handle.write(harness_source(functions, typed))
 
     # A fresh name per build: Windows keeps a loaded DLL locked, so rebuilding in
     # the same process under the same name would fail.
@@ -148,8 +150,8 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
         handle.write("@echo off\n")
         handle.write('call "%s" >nul\n' % vcvars)
         handle.write('cd /d "%s"\n' % work_dir)
-        handle.write('cl /nologo /std:c++17 /O2 /W3 /LD /I"%s" %s /Fe"%s" >build.log 2>&1\n'
-                     % (os.path.abspath(include_dir),
+        handle.write('cl /nologo /std:c++17 /O2 /W3 /LD /I"%s" /I"%s" %s /Fe"%s" >build.log 2>&1\n'
+                     % (os.path.abspath(include_dir), generated_dir,
                         " ".join('"%s"' % path for path in sources), dll))
         handle.write("exit /b %errorlevel%\n")
     result = subprocess.run(["cmd", "/c", script], capture_output=True, text=True)
