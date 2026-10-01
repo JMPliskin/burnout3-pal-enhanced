@@ -357,6 +357,25 @@ These are deliberately the first targets: they are short enough that the mapping
 from machine code to source is unambiguous, which makes them the right test
 cases for identifying the original compiler.
 
+## How consistent struct field offsets are
+
+`tools/fields.py` measures this before any struct recovery is attempted. Each
+function's pointer arguments are scanned for the offsets and widths they are
+dereferenced at, and a caller's argument passed unchanged into a callee links the
+two slots as the same object. Linked slots form candidate types.
+
+* 6,623 argument slots are dereferenced; 4,094 of them at two or more offsets.
+  16,685 pass-through links connect them.
+* Where two or more functions touch the same offset of a candidate type, they agree
+  on its width 96.6% of the time (98.1% with a strict hub cutoff of 5 callers,
+  91.2% with no cutoff). The field evidence is coherent.
+* Only about 30% of offsets are seen by more than one function, so most layout
+  evidence comes from a single function.
+* Group sizes are not stable. Linking through generic routines (slots with many
+  callers) fuses unrelated types: the largest group is 2,005 functions with no
+  cutoff, 723 at 20 callers, 163 at 10 and 94 at 5. Struct recovery must treat
+  widely shared functions as generic rather than as evidence of one type.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
