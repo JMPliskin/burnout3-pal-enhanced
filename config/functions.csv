@@ -1,5 +1,7 @@
 address,name,status,source,notes
 0x00102628,ps2::RFU080,analyzed,,EE kernel service 0x80 (documented ABI); 1 callers
+0x00102EA0,sceGsSyncPath,identified,,Sony SDK; named by its own diagnostic string
+0x00103488,sceGsExecStoreImage,identified,,Sony SDK; named by its own diagnostic string
 0x0010BA70,ps2::ExecPS2,analyzed,,EE kernel service 0x07 (documented ABI); 1 callers
 0x0010BAD0,ps2::SetVTLBRefillHandler,analyzed,,EE kernel service 0x0D (documented ABI); 4 callers
 0x0010BAE0,ps2::SetVCommonHandler,analyzed,,EE kernel service 0x0E (documented ABI); 1 callers
@@ -70,6 +72,7 @@ address,name,status,source,notes
 0x00126EC8,runtime::StringAppend,analyzed,,strcat-like; used to build ValueDB paths
 0x001272D0,runtime::StringAssign,analyzed,,strcpy/init-like; first call in the path builder
 0x001273E8,valuedb::StringLength,analyzed,,returns string length; the hash loop takes its iteration count from this
+0x00216A58,sceDbcSendData2,identified,,Sony SDK (DBC/controller); named by its own diagnostic string
 0x0021B9B0,valuedb::LookupVariantC,analyzed,,third lookup entry point; 17 tuning-string call sites
 0x0021BB60,valuedb::LookupByPath,analyzed,,"assembles a slash-separated path from 3 parts, hashes it, then searches 32-byte records; 613 callers"
 0x0021BD80,valuedb::LookupVariantB,analyzed,,second lookup entry point; 31 tuning-string call sites

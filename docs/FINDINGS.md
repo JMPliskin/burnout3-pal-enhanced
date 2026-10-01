@@ -204,6 +204,30 @@ by the caller. That context is not recoverable from the call sites alone, which
 is why static reconstruction stops here. Options from this point are to emulate
 the lookup path, or to find the authored `.cfg` files if any survive.
 
+## What the executable is made of
+
+Every byte classified, each assigned to exactly one category (`tools/layout.py`).
+The categories summing to exactly 100% is also a check on the other passes - a
+double count would show up here.
+
+| category | bytes | share |
+| --- | ---: | ---: |
+| `code-function` | 3,254,964 | 79.91% |
+| `code-orphan` | 259,012 | 6.36% |
+| `data` | 199,588 | 4.90% |
+| `zero` | 187,851 | 4.61% |
+| `vu-microcode` | 108,096 | 2.65% |
+| `string` | 52,661 | 1.29% |
+| `pointer-table` | 10,916 | 0.27% |
+| **total** | **4,073,088** | **100.00%** |
+
+`code-orphan` is MIPS proven reachable by traversal but not attributed to any
+discovered function, most of it entered through pointer tables. `data` at 4.90% is
+the genuinely unidentified remainder.
+
+Worth noting that MIPS code accounts for 86.3% of the image, and a further 2.65%
+is VU microcode, so only about 11% is data of any kind.
+
 ## The other two executables
 
 Running the same pipeline over the sibling executables validates the tooling and,
