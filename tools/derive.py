@@ -27,14 +27,17 @@ import json
 import os
 import random
 import re
+import struct
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from b3lib.elf import ElfFile
+from b3lib.r5900 import DISASM
 from b3lib.emu import EmulationError, Machine
 from b3lib.paths import (STACK_TOP, Execution, PathDerivation, _is_frame_address,
+                         tree_expressions,
                          _relation, derive_paths)
 from b3lib import calls, structs, testmem, typed
 from b3lib.symexec import (
@@ -48,7 +51,9 @@ from b3lib.symexec import (
     Load,
     Predicate,
     Temp,
+    Var,
     rebuild,
+    register_name,
     Unsupported,
     FLOAT_ARG_BASE,
     arg_name,
@@ -63,6 +68,10 @@ from b3lib.symexec import (
 from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
 
 MAX_INSTRUCTIONS = 96
+# Refusals that come from unrolling or enumerating a loop; such a function is
+# retried with loops derived as loops.
+LOOP_SHAPED = {"loop", "too many paths", "exploration budget exhausted",
+               "path too long", "expression too large"}
 # Instructions one verification case may execute, callees included. Interpreting
 # is slow, and a function that calls into a large original routine would otherwise
 # spend minutes per case; one that needs more than this is reported untestable.
@@ -103,6 +112,10 @@ def derivation_args(derivation) -> set:
     """
     args = set()
     for path in derivation.paths:
+        for _count, kind, obj in path.marks:
+            if kind == "loop":
+                for expr in tree_expressions([("loop", obj)]):
+                    args |= used_args(expr)
         if path.expression is not None:
             args |= used_args(path.expression)
         for predicate in path.conditions:
@@ -357,6 +370,9 @@ class StatementEmitter:
         self.replaced = {}        # id(original node) -> Temp
         self.counter = 0
         self.frame_size = _frame_size([simplify(e) for e in self._expressions(self.tree)])
+        self.loops = {}
+        self.active = []          # loops whose body is being emitted, innermost last
+        self.hoisted = set()      # call results declared before a loop, assigned in it
 
     def render(self) -> list:
         """The statements, with a guest stack frame around them if one is needed.
@@ -394,24 +410,7 @@ class StatementEmitter:
 
     @staticmethod
     def _expressions(statements) -> list:
-        found = []
-        for statement in statements:
-            kind = statement[0]
-            if kind == "store":
-                found += [statement[1].address, statement[1].value]
-            elif kind == "call":
-                found += [expr for _index, expr in statement[1].arguments]
-                if statement[1].pointer is not None:
-                    found.append(statement[1].pointer)
-            elif kind == "if":
-                found.append(statement[1])
-                found += StatementEmitter._expressions(statement[2])
-                found += StatementEmitter._expressions(statement[3])
-            elif kind == "barrier":
-                continue
-            elif statement[1] is not None:
-                found.append(statement[1])
-        return found
+        return list(tree_expressions(statements))
 
     def _capture(self, later, affected, future) -> list:
         """Capture maximal subexpressions of `later` that contain an affected load
@@ -470,7 +469,7 @@ class StatementEmitter:
                     later,
                     lambda load: load.epoch <= epoch and _relation(
                         store.address, store.size, load.address, load.size) != "disjoint",
-                    lambda node: _beyond(node, epoch),
+                    lambda node: self._beyond(node, epoch),
                 )
                 lines += self._store(store)
             elif kind == "call":
@@ -478,7 +477,7 @@ class StatementEmitter:
                 lines += self._capture(
                     later,
                     lambda load: load.epoch < call.index,
-                    lambda node: _beyond(node, call.index - 1),
+                    lambda node: self._beyond(node, call.index - 1),
                 )
                 lines.append(self._call(call, later))
                 epoch = call.index
@@ -486,6 +485,17 @@ class StatementEmitter:
                 # Nothing to emit: the statements already run in order against live
                 # memory, which is what a barrier means.
                 epoch = statement[1].index
+            elif kind == "loop":
+                lines += self._loop(statement[1], later, epoch)
+                epoch = statement[1].after_epoch
+            elif kind == "continue":
+                lines += self._continue(statement[1], statement[2])
+            elif kind == "break":
+                if self.loops[statement[1]].exits > 1:
+                    lines.append("l%d_exit = %d;" % (statement[1], statement[2]))
+                lines.append("break;")
+            elif kind == "unreachable":
+                continue
             elif kind == "if":
                 lines.append("if (%s) {" % render_cpp(self._apply(statement[1])))
                 # A local captured inside one branch does not exist in the other, so
@@ -508,9 +518,64 @@ class StatementEmitter:
                     lines.append("return %s;" % _result(self._apply(statement[1])))
         return lines
 
+    def _loop(self, loop, later, epoch) -> list:
+        """A loop whose trip count depends on its input, as `for (;;)`.
+
+        The loop may write memory or call anything, so every later-used value read
+        before it is captured first, as for a call. Its variables are mutable
+        locals; each `continue` gives them their next values together, through
+        temporaries, since the new values are all computed from the old ones.
+        """
+        self.loops[loop.id] = loop
+        lines = self._capture(later, lambda load: load.epoch <= epoch,
+                              lambda node: self._beyond(node, epoch))
+        # A call result inside the loop may be used after it, where a local
+        # declared in the body no longer exists, so it is declared here.
+        for index in sorted(_calls_in(loop.body)):
+            if index not in self.hoisted:
+                self.hoisted.add(index)
+                lines.append("u64 r%d = 0;" % index)
+        initial = dict(loop.init)
+        for register in loop.carried:
+            value = render_cpp(self._apply(initial[register])) if register in initial else "0"
+            lines.append("u64 %s = %s;" % (Var(loop.id, register).render(), value))
+        if loop.exits > 1:
+            lines.append("u64 l%d_exit = 0;" % loop.id)
+        lines.append("for (;;) {")
+        outer = dict(self.replaced)
+        self.active.append(loop.id)
+        lines += ["    " + line for line in self._block(loop.body, loop.head_epoch)]
+        self.active.pop()
+        self.replaced = outer
+        lines.append("}")
+        return lines
+
+    def _beyond(self, node, epoch) -> bool:
+        """Whether a node cannot be evaluated at this point of the emitted code."""
+        if isinstance(node, Var):
+            # A loop variable exists only inside its own loop.
+            return node.loop not in self.active
+        return _beyond(node, epoch)
+
+    def _continue(self, loop, assignments) -> list:
+        changed = [(register, expr) for register, expr in assignments
+                   if expr != Var(loop, register)]
+        lines = []
+        for register, expr in changed:
+            lines.append("const u64 l%d_next_%s = %s;"
+                         % (loop, register_name(register), render_cpp(self._apply(expr))))
+        for register, _expr in changed:
+            lines.append("%s = l%d_next_%s;"
+                         % (Var(loop, register).render(), loop, register_name(register)))
+        if not lines:
+            return ["continue;"]
+        return ["{"] + ["    " + line for line in lines] + ["    continue;", "}"]
+
     def _pointer_call(self, call, passed, later) -> str:
         """A call through a function pointer or virtual method table."""
         text = _pointer_call_text(self, call, passed)
+        if call.index in self.hoisted:
+            return "r%d = %s;" % (call.index, text)
         if not any(_mentions_call(expr, call.index) for expr in later):
             return "%s;" % text
         return "const u64 r%d = %s;" % (call.index, text)
@@ -547,8 +612,10 @@ class StatementEmitter:
         used = any(_mentions_call(expr, call.index) for expr in later)
         if used and not returns_value:
             raise Unsupported("uses the result of a call to a void function")
-        if not used:
+        if not used and not (call.index in self.hoisted and returns_value):
             return "%s;" % text
+        if call.index in self.hoisted:
+            return "r%d = %s;" % (call.index, text)
         temp = Temp("r%d" % call.index)
         return "const u64 %s = %s;" % (temp.name, text)
 
@@ -608,6 +675,19 @@ def _beyond(node, epoch: int) -> bool:
     return False
 
 
+def _calls_in(statements) -> set:
+    """Indices of every call in a statement tree, loop bodies included."""
+    found = set()
+    for statement in statements:
+        if statement[0] == "call":
+            found.add(statement[1].index)
+        elif statement[0] == "if":
+            found |= _calls_in(statement[2]) | _calls_in(statement[3])
+        elif statement[0] == "loop":
+            found |= _calls_in(statement[1].body)
+    return found
+
+
 def _mentions_call(expr, index: int) -> bool:
     seen = set()
     stack = [expr]
@@ -659,6 +739,47 @@ def render_body(derivation) -> list:
     return lines
 
 
+# The original's results for every verified function's test cases, recorded during
+# verification so the compiled check need not run the original again.
+EXPECTATIONS = {}
+
+
+def has_loop(image, base, func) -> bool:
+    """Whether a function has a backward branch, i.e. a loop to derive as one."""
+    for address in range(func["addr"], func["end"], 4):
+        ins = DISASM.decode(struct.unpack_from("<I", image, address - base)[0], address)
+        if (ins.is_branch or (ins.is_jump and not ins.is_call)) \
+                and func["addr"] <= ins.target <= address:
+            return True
+    return False
+
+
+def direct_callees(image, base, func) -> set:
+    """Targets of a function's direct calls and jumps out of it."""
+    found = set()
+    for address in range(func["addr"], func["end"], 4):
+        ins = DISASM.decode(struct.unpack_from("<I", image, address - base)[0], address)
+        if ins.target >= 0 and (ins.is_call or ins.is_jump) \
+                and not (func["addr"] <= ins.target < func["end"]):
+            found.add(ins.target)
+    return found
+
+
+_GRAPHS = {}
+
+
+def recovered_graph(database, image, base):
+    """The struct-type graph for this binary, recovered once per run.
+
+    It is needed to seed global pointers before testing and again to type the
+    emitted source; recovering it twice was a fifth of a whole run.
+    """
+    key = (id(database), base)
+    if key not in _GRAPHS:
+        _GRAPHS[key] = structs.recover(database, image, base)
+    return _GRAPHS[key]
+
+
 def collect(database: dict, image: bytes, base: int, machine: Machine,
             max_passes: int = 6, verbose: bool = True) -> tuple:
     """Derive and verify, repeating until no further functions become derivable.
@@ -683,7 +804,8 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     parameters = calls.parameters(database, image, base)
     # Global pointers that are null until the game runs would make every function
     # using them untestable; point them at scratch (see testmem).
-    seeded = testmem.seed_global_pointers(machine.memory, global_pointers(database, image, base))
+    seeded = testmem.seed_global_pointers(machine.memory,
+                                          global_pointers(database, image, base))
     if verbose:
         print("  seeded %d null global pointers for testing" % seeded)
     known = {}
@@ -693,16 +815,33 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
         if f["size"] // 4 <= MAX_INSTRUCTIONS and f["has_return"]
     ]
 
+    # A refused function can only come out differently in a later pass if one of
+    # its callees has since been derived and so can be inlined; anything else about
+    # it is unchanged. Re-attempting every refused function each pass was a third
+    # of the derivation time.
+    callees = {f["addr"]: direct_callees(image, base, f) for f in candidates}
+    last = {}                    # address -> the refusal category it last got
+    mismatched = []
+    newly_known = None
     for pass_number in range(1, max_passes + 1):
         added = 0
-        pass_rejected = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+        fresh = set()
         for func in candidates:
             if func["addr"] in done:
                 continue
-            outcome = _attempt(func, image, base, machine, read, known, pass_rejected,
+            if newly_known is not None and not (callees[func["addr"]] & newly_known):
+                continue
+            outcome_counts = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+            outcome = _attempt(func, image, base, machine, read, known, outcome_counts,
                                parameters)
             if outcome is None:
+                for category, count in outcome_counts.items():
+                    if count and category != "mismatched":
+                        last[func["addr"]] = category
+                if outcome_counts.get("mismatched"):
+                    mismatched.append(func["addr"])
                 continue
+            last.pop(func["addr"], None)
             done.add(func["addr"])
             verified.append(outcome)
             # Only call-free derivations are inlined into callers. One that calls an
@@ -710,22 +849,24 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
             # and its callers call it instead.
             if not outcome[1].sequential:
                 known[func["addr"]] = outcome[1]
+                fresh.add(func["addr"])
             added += 1
         if verbose:
             print("  pass %d: +%d derived and verified (total %d)"
                   % (pass_number, added, len(verified)))
-        if added == 0:
-            # The last pass's refusal counts are the ones that describe what is
-            # actually left, so keep those rather than the first pass's.
-            rejected = pass_rejected
+        newly_known = fresh
+        if added == 0 or not fresh:
             break
-        rejected = pass_rejected
+    rejected = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+    for category in last.values():
+        rejected[category] += 1
+    rejected["mismatched"] = sorted(a for a in set(mismatched) if last.get(a) == "mismatch")
     return verified, rejected
 
 
 def global_pointers(database, image, base) -> set:
     """Addresses of global variables that some code dereferences as a pointer."""
-    graph = structs.recover(database, image, base)
+    graph = recovered_graph(database, image, base)
     if structs.GLOBALS not in graph.ids:
         return set()
     fields = graph.fields[graph.find(graph.ids[structs.GLOBALS])]
@@ -797,13 +938,18 @@ def test_plan(func, machine):
     return arg_sets, profile
 
 
-def run_cases(func, machine, arg_sets, profile, evaluate):
+def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=None):
     """Run the original and a candidate on every case; return (outcome, tested).
 
     `evaluate(args)` returns the candidate's (result, writes) for one case, with
     memory as the original saw it on entry; result is None for a void function and
     writes are (address, value, size) triples. The outcome is "ok", "mismatch" or
     "failed" (the case could not be run at all).
+
+    `record`, a list, receives the original's (result, effects) for each case;
+    `recorded` supplies them instead of running the original again. The compiled
+    check uses the results recorded while the derivation was verified: they are
+    the same runs on the same memory, and repeating them doubled its cost.
     """
     tested = 0
     for case, args in enumerate(arg_sets):
@@ -821,15 +967,20 @@ def run_cases(func, machine, arg_sets, profile, evaluate):
         # to globals well outside the scratch area, and restoring only scratch
         # left those changes in place - which both corrupted later cases and
         # made correct derivations look wrong.
-        machine.memory.begin_journal()
-        try:
-            expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
-        except Exception:
+        if recorded is not None:
+            expected, effects = recorded[case]
+        else:
+            machine.memory.begin_journal()
+            try:
+                expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
+            except Exception:
+                machine.memory.rollback()
+                machine.memory.end_journal()
+                return "failed", tested
+            effects = _journal_effects(machine.memory)
             machine.memory.rollback()
-            machine.memory.end_journal()
-            return "failed", tested
-        effects = _journal_effects(machine.memory)
-        machine.memory.rollback()
+            if record is not None:
+                record.append((expected, effects))
 
         # The candidate runs inside the replay journal: one that calls an underived
         # function writes memory as it goes - the callee must see the stores made
@@ -867,10 +1018,20 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
     """Try to derive and verify one function; returns the record or None."""
     if True:
         try:
-            derivation = derive_paths(
-                image, base, func["addr"], func["end"], known=known,
-                parameters=parameters,
-            )
+            try:
+                derivation = derive_paths(
+                    image, base, func["addr"], func["end"], known=known,
+                    parameters=parameters,
+                )
+            except Unsupported as exc:
+                # A loop whose trip count depends on the input can neither be
+                # unrolled nor enumerated as paths; derive it as a real loop.
+                if str(exc) not in LOOP_SHAPED or not has_loop(image, base, func):
+                    raise
+                derivation = derive_paths(
+                    image, base, func["addr"], func["end"], known=known,
+                    parameters=parameters, loops=True,
+                )
         except Unsupported:
             rejected["unsupported"] += 1
             return None
@@ -889,7 +1050,8 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
                 return derivation.run(args, Execution(machine, VERIFY_BUDGET)), []
             return derivation.evaluate(args, read), derivation.evaluate_stores(args, read)
 
-        outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate)
+        record = []
+        outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate, record)
         # A disagreement and an untestable function are different findings and are
         # counted once each. An earlier version fell through from one to the other
         # and so reported every disagreement twice.
@@ -911,6 +1073,7 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
         # mentions an argument, even when every returned value is constant: the
         # test then genuinely exercised different routes.
         argument_dependent = bool(derivation_args(derivation))
+        EXPECTATIONS[func["addr"]] = (arg_sets, profile, record)
         return (func, derivation, tested, argument_dependent)
 
 
@@ -1089,6 +1252,29 @@ def check_signatures(text: str) -> None:
         )
 
 
+def _functions_at_errors(source: str, errors: str) -> set:
+    """Addresses of the emitted functions that contain the given compiler errors."""
+    lines = [int(n) for n in re.findall(r"accessors\.cpp\((\d+)\)", errors)]
+    if not lines:
+        return set()
+    with open(source, encoding="utf-8") as handle:
+        text = handle.read().splitlines()
+    starts = [(number + 1, int(match.group(1), 16)) for number, line in enumerate(text)
+              for match in [re.match(r"^(?:s32|void) func_([0-9A-F]{8})\(.*\) \{$", line)]
+              if match]
+    found = set()
+    for line in lines:
+        owner = None
+        for number, address in starts:
+            if number <= line:
+                owner = address
+            else:
+                break
+        if owner is not None:
+            found.add(owner)
+    return found
+
+
 def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None) -> list:
     """Compile the emitted C++, run it on every function's cases, keep what agrees.
 
@@ -1103,27 +1289,46 @@ def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     work = os.path.join(root, "build", "cppcheck")
     runtime = [os.path.join(root, "src", "runtime", "eefpu.cpp")]
-    try:
-        dll, _functions = cppcheck.build(
-            os.path.join(out_dir, "accessors.cpp"), runtime,
-            os.path.join(root, "include"), work,
-        )
-    except cppcheck.CompilerUnavailable as exc:
-        print("compiled check SKIPPED: %s" % exc)
-        print("  the emitted source has NOT been run; only its trees were verified")
-        return verified
+    # A function whose source does not compile is dropped and the file re-emitted,
+    # rather than aborting the whole check: one rendering gap must not cost every
+    # other function its verdict.
+    source = os.path.join(out_dir, "accessors.cpp")
+    for _attempt_number in range(8):
+        try:
+            dll, _functions = cppcheck.build(source, runtime,
+                                             os.path.join(root, "include"), work)
+            break
+        except cppcheck.CompilerUnavailable as exc:
+            print("compiled check SKIPPED: %s" % exc)
+            print("  the emitted source has NOT been run; only its trees were verified")
+            return verified
+        except cppcheck.CompileError as exc:
+            broken = _functions_at_errors(source, str(exc))
+            if not broken:
+                raise
+            print("  dropping %d function(s) that do not compile: %s"
+                  % (len(broken), ", ".join("0x%08X" % a for a in sorted(broken)[:8])))
+            verified = [item for item in verified if item[0]["addr"] not in broken]
+            verified = emit(verified, out_dir, database["meta"]["source"], catalog)
+    else:
+        raise SystemExit("emitted source still does not compile after dropping functions")
     compiled = cppcheck.CompiledFunctions(dll, machine)
 
     kept, disagreed, untestable = [], [], []
     for item in verified:
         func = item[0]
-        plan = test_plan(func, machine)
-        if plan is None:
-            untestable.append(func["addr"])
-            continue
-        outcome, tested = run_cases(
-            func, machine, plan[0], plan[1], compiled.evaluator(func["addr"])
-        )
+        if func["addr"] in EXPECTATIONS:
+            arg_sets, profile, recorded = EXPECTATIONS[func["addr"]]
+            outcome, tested = run_cases(func, machine, arg_sets, profile,
+                                        compiled.evaluator(func["addr"]), recorded=recorded)
+        else:
+            plan = test_plan(func, machine)
+            if plan is None:
+                untestable.append(func["addr"])
+                continue
+            outcome, tested = run_cases(
+                func, machine, plan[0], plan[1], compiled.evaluator(func["addr"])
+            )
         if outcome == "ok":
             kept.append(item)
         elif outcome == "mismatch":
@@ -1204,7 +1409,7 @@ def main(argv=None) -> int:
         catalog = None
         if not args.untyped:
             started = time.time()
-            graph = structs.recover(database, image, section.addr)
+            graph = recovered_graph(database, image, section.addr)
             evidence = typed.add_derived_evidence(graph, verified)
             catalog = structs.Catalog(graph)
             print("recovered %d struct types in %.1fs (%d fields added from derivations)"

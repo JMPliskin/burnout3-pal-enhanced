@@ -35,6 +35,8 @@ from .symexec import (
     Arg,
     Binary,
     CallResult,
+    LoopExit,
+    Var,
     Const,
     Expr,
     Load,
@@ -131,6 +133,40 @@ class Call:
     pointer: Expr = None
 
 
+@dataclasses.dataclass(eq=False)
+class Loop:
+    """A loop whose trip count depends on its input, derived once over variables.
+
+    `carried` are the registers the body writes; each is a Var inside the body,
+    starting from `init` (the value before the loop, where there was one). The
+    body is a statement tree whose leaves continue - giving every variable its
+    next value - break to one of `exits`, or return from the function. Each
+    iteration begins a new memory epoch (`head_epoch`), and so does leaving the
+    loop (`after_epoch`).
+    """
+
+    id: int
+    head: int
+    init: tuple
+    carried: tuple
+    body: list
+    head_epoch: int
+    after_epoch: int
+    exits: int
+
+
+@dataclasses.dataclass
+class LoopContext:
+    id: int
+    head: int
+    body: frozenset
+    carried: tuple
+    exits: list
+
+
+MAX_ITERATIONS = 20_000
+
+
 @dataclasses.dataclass
 class Path:
     """One route through a function: the conditions holding, and the outcome."""
@@ -143,6 +179,13 @@ class Path:
     # gives the path's full event order, which matters once a call sits between
     # them: a callee sees the stores before it and not those after.
     marks: tuple = ()
+    # How a path inside a loop body ends, instead of returning: ("continue", loop,
+    # assignments), ("break", loop, exit) - or ("unreachable",) after a loop that
+    # can only be left by returning.
+    leaf: tuple = None
+
+    def end(self) -> tuple:
+        return self.leaf if self.leaf is not None else ("return", self.expression)
 
     @property
     def calls(self) -> tuple:
@@ -191,7 +234,7 @@ class PathDerivation:
         """True when the derivation must be run as ordered statements: it calls an
         underived function, or has a barrier where a load follows stores it may
         overlap."""
-        return any(kind in ("call", "barrier") for path in self.paths
+        return any(kind in ("call", "barrier", "loop") for path in self.paths
                    for _count, kind, _obj in path.marks)
 
     @property
@@ -213,7 +256,7 @@ class PathDerivation:
         predicate and its negation, so the merge is exact; anything else is
         refused rather than guessed at.
         """
-        return _build_tree([(path.events(), path.expression) for path in self.paths])
+        return _build_tree([(path.events(), path.end()) for path in self.paths])
 
     def run(self, args, execution) -> object:
         """Evaluate the tree against real memory, making the calls; see Execution.
@@ -222,9 +265,10 @@ class PathDerivation:
         """
         result = _run_tree(self.tree(), args, execution)
         execution.flush()
-        if result is None:
+        value = result.value if isinstance(result, _Returned) else None
+        if value is None:
             return None
-        return _sign32(result & MASK32)
+        return _sign32(value & MASK32)
 
     @property
     def stores(self) -> tuple:
@@ -313,7 +357,7 @@ def _build_tree(group) -> list:
         heads = [events[position] if position < len(events) else None
                  for events, _result in group]
         if all(head is None for head in heads):
-            statements.append(("return", group[0][1]))
+            statements.append(group[0][1])
             return statements
         first = heads[0]
         if first is not None and all(head is not None and _same_event(head, first)
@@ -349,6 +393,17 @@ def _negates(a, b) -> bool:
         return False
 
 
+class _Returned:
+    """The function returned (from anywhere, a loop body included) with `value`."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+_CONTINUE = object()
+_BREAK = object()
+
+
 def _run_tree(statements, args, execution):
     for statement in statements:
         kind = statement[0]
@@ -370,15 +425,53 @@ def _run_tree(statements, args, execution):
             execution.call(call.index, target, vector)
         elif kind == "barrier":
             execution.barrier(statement[1].index)
+        elif kind == "loop":
+            outcome = _run_loop(statement[1], args, execution)
+            if outcome is not None:
+                return outcome
         elif kind == "if":
             taken = statement[1].evaluate(args, execution)
             return _run_tree(statement[2] if taken else statement[3], args, execution)
+        elif kind == "continue":
+            _, loop, assignments = statement
+            values = {register: simplify(expr).evaluate(args, execution)
+                      for register, expr in assignments}
+            for register, value in values.items():
+                execution.vars[(loop, register)] = value & MASK64
+            return _CONTINUE
+        elif kind == "break":
+            execution.exits[statement[1]] = statement[2]
+            return _BREAK
+        elif kind == "unreachable":
+            return None
         else:
             expression = statement[1]
             if expression is None:
-                return None
-            return simplify(expression).evaluate(args, execution)
+                return _Returned(None)
+            return _Returned(simplify(expression).evaluate(args, execution))
     return None
+
+
+def _run_loop(loop, args, execution):
+    """Run a loop to completion; returns a _Returned if its body returned."""
+    initial = dict(loop.init)
+    values = {register: (simplify(initial[register]).evaluate(args, execution)
+                         if register in initial else 0)
+              for register in loop.carried}
+    for register, value in values.items():
+        execution.vars[(loop.id, register)] = value & MASK64
+    for _iteration in range(MAX_ITERATIONS):
+        execution.barrier(loop.head_epoch)
+        outcome = _run_tree(loop.body, args, execution)
+        if outcome is _CONTINUE:
+            continue
+        if outcome is _BREAK:
+            execution.barrier(loop.after_epoch)
+            return None
+        if isinstance(outcome, _Returned):
+            return outcome
+        raise Unsupported("a loop body ended without continuing or leaving")
+    raise Unsupported("a loop ran more than %d iterations" % MAX_ITERATIONS)
 
 
 class Execution:
@@ -402,6 +495,14 @@ class Execution:
         self.markers = {0: len(self.memory._journal)}
         self.results = {}
         self.pending = []
+        self.vars = {}
+        self.exits = {}
+
+    def var(self, loop, register):
+        return self.vars[(loop, register)]
+
+    def exit_taken(self, loop):
+        return self.exits.get(loop)
 
     def __call__(self, address, size, signed, epoch=0):
         raw = bytearray(self.memory.read(address, size))
@@ -617,17 +718,27 @@ class Overlay(dict):
     place among its ordered events right after the step.
     """
 
-    def __init__(self, *args, epoch: int = 0):
+    def __init__(self, *args, epoch: int = 0, counter=None):
         super().__init__(*args)
         self.epoch = epoch
         self.raised = []
+        # Shared by a whole derivation, so every epoch - from a barrier, a call or
+        # a loop - has its own number. Numbers local to a path were enough while
+        # paths never met again; a loop's body and what follows it do.
+        self.counter = counter
 
     def fork(self) -> "Overlay":
-        return Overlay(self, epoch=self.epoch)
+        return Overlay(self, epoch=self.epoch, counter=self.counter)
+
+    def next_epoch(self) -> int:
+        if self.counter is None:
+            return self.epoch + 1
+        self.counter[0] += 1
+        return self.counter[0]
 
     def barrier(self, store_count: int) -> int:
         self.clear()
-        self.epoch += 1
+        self.epoch = self.next_epoch()
         self.raised.append((store_count, "barrier", Barrier(self.epoch)))
         return self.epoch
 
@@ -643,20 +754,25 @@ class Frame(dict):
     register spills stay symbolic; no callee touches a caller's saved registers.
     """
 
-    def __init__(self, *args, escaped: bool = False, seeds=frozenset()):
+    def __init__(self, *args, escaped: bool = False, seeds=frozenset(), frozen=False):
         super().__init__(*args)
         self.escaped = escaped
+        # Inside a loop body the frame must not change: a slot written on one
+        # iteration and read on the next would need a loop variable of its own.
+        self.frozen = frozen
         # The values the walk invents for callee-saved registers and $ra on entry.
         # Spilling one is bookkeeping, not data: flushing it would write a made-up
         # value - the interpreter's return sentinel - into the guest stack.
         self.seeds = seeds
 
     def fork(self) -> "Frame":
-        return Frame(self, escaped=self.escaped, seeds=self.seeds)
+        return Frame(self, escaped=self.escaped, seeds=self.seeds, frozen=self.frozen)
 
     def escape(self, stores: list, memory) -> None:
         if self.escaped:
             return
+        if self.frozen:
+            raise Unsupported("a loop passes the address of a local")
         for (address, size), value in list(self.items()):
             if id(value) in self.seeds:
                 continue
@@ -696,6 +812,8 @@ def _as_stores(address, value, size: int) -> list:
 
 def _frame_write(frame: dict, address: int, size: int, value) -> None:
     """Record a write to the stack frame, newest last."""
+    if getattr(frame, "frozen", False):
+        raise Unsupported("a loop writes the stack frame")
     frame.pop((address, size), None)
     frame[(address, size)] = value
 
@@ -981,7 +1099,7 @@ def _apply_callee_path(callee_path, arguments, stores: list, memory: dict,
 
 def derive_paths(image: bytes, base: int, start: int, end: int,
                  gp_value: int = None, known: dict = None,
-                 parameters: dict = None) -> PathDerivation:
+                 parameters: dict = None, loops: bool = False) -> PathDerivation:
     """Derive a function as guarded paths, handling acyclic control flow.
 
     `known` maps an address to an already-derived `PathDerivation`. A call to one of
@@ -1004,6 +1122,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     paths = []
     # Shared by every fork of this function's walk, so the cap is on total work.
     budget = [MAX_TOTAL_STEPS]
+    epochs = [0]
+    loop_ids = [0]
+    loop_info = _loop_info(image, base, start, end) if loops else {}
 
     def shared_code(address: int) -> bool:
         """True for code outside this function that the walk may simply continue into.
@@ -1062,7 +1183,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     raise Unsupported("passes a stack address to an underived function")
                 frame.escape(stores, memory)
             arguments.append((index, regs[reg]))
-        call = Call(epoch + 1, target, tuple(arguments), pointer)
+        index = memory.next_epoch() if isinstance(memory, Overlay) else epoch + 1
+        call = Call(index, target, tuple(arguments), pointer)
         for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
             regs.pop(index, None)
         for index in range(20):                 # $f0..$f19 are caller-saved
@@ -1070,9 +1192,53 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[2] = CallResult(call.index, target)
         return marks + ((len(stores), "call", call),), call.index
 
+    def enter_loop(head, regs, stores, frame, memory, conditions, visited, marks,
+                   outer, sink):
+        """Derive the loop at `head` once over variables, then continue after it."""
+        body, carried, moves_sp = loop_info[head]
+        if moves_sp:
+            raise Unsupported("a loop moves the stack pointer")
+        loop_ids[0] += 1
+        identity = loop_ids[0]
+        head_epoch = memory.next_epoch()
+        init = tuple((register, regs[register]) for register in carried
+                     if register in regs)
+        body_regs = dict(regs)
+        for register in carried:
+            body_regs[register] = Var(identity, register)
+        context = LoopContext(identity, head, body, carried, [])
+        body_paths = []
+        body_frame = frame.fork()
+        body_frame.frozen = True
+        walk(head, body_regs, [], body_frame, Overlay(epoch=head_epoch, counter=epochs),
+             (), {}, (), loop=context, sink=body_paths)
+        tree = _build_tree([(path.events(), path.end()) for path in body_paths])
+        carried, tree = _prune_loop_variables(identity, carried, tree, context.exits)
+        init = tuple((register, value) for register, value in init if register in carried)
+        after_epoch = memory.next_epoch()
+        node = Loop(identity, head, init, carried, tree, head_epoch, after_epoch,
+                    len(context.exits))
+        loop_mark = (len(stores), "loop", node)
+        if not context.exits:
+            sink.append(Path(conditions, None, tuple(stores), marks + (loop_mark,),
+                             leaf=("unreachable",)))
+            return
+        count = len(context.exits)
+        for index, (exit_address, exit_regs) in enumerate(context.exits):
+            guards = [LoopExit(identity, j).negate() for j in range(index)]
+            if index < count - 1:
+                guards.append(LoopExit(identity, index))
+            walk(exit_address, dict(exit_regs), list(stores), frame.fork(),
+                 Overlay(epoch=after_epoch, counter=epochs),
+                 conditions + tuple(guards), visited,
+                 marks + (loop_mark,) + tuple((len(stores), "cond", g) for g in guards),
+                 loop=outer, sink=sink)
+
     def walk(addr: int, regs: dict, stores: list, frame: dict, memory: dict,
-             conditions: tuple, visited: dict, marks: tuple = (), epoch: int = 0):
-        if len(paths) > MAX_PATHS:
+             conditions: tuple, visited: dict, marks: tuple = (), epoch: int = 0,
+             loop=None, sink=None):
+        sink = paths if sink is None else sink
+        if len(sink) > MAX_PATHS:
             raise Unsupported("too many paths")
         # Each walk owns its counts; a fork must not see its sibling's iterations.
         visited = dict(visited)
@@ -1100,6 +1266,22 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 if value.tree_size > MAX_EXPR_SIZE:
                     raise Unsupported("expression too large")
             epoch = memory.epoch
+            if loop is not None:
+                if addr == loop.head and visited.get(addr):
+                    # Back at the head: the next iteration starts from these values.
+                    sink.append(Path(conditions, None, tuple(stores), marks, leaf=(
+                        "continue", loop.id,
+                        tuple((r, regs.get(r, Const(0))) for r in loop.carried))))
+                    return
+                if addr not in loop.body:
+                    loop.exits.append((addr, dict(regs)))
+                    sink.append(Path(conditions, None, tuple(stores), marks,
+                                     leaf=("break", loop.id, len(loop.exits) - 1)))
+                    return
+            if addr in loop_info and not (loop is not None and loop.head == addr):
+                enter_loop(addr, regs, stores, frame, memory, conditions, visited,
+                           marks, loop, sink)
+                return
             if not (start <= addr < end) and not shared_code(addr):
                 raise Unsupported("control flow leaves the function")
             visited[addr] = count
@@ -1125,7 +1307,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     result = _getter(regs)(2)
                 except Unsupported:
                     result = None
-                paths.append(Path(conditions, result, tuple(stores), marks))
+                sink.append(Path(conditions, result, tuple(stores), marks))
                 return
 
             if ins.is_branch:
@@ -1158,7 +1340,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                       slot, _getter(taken_regs), epoch)
                 walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
                      conditions + (predicate,), visited,
-                     _drain(taken_memory, marks + ((len(stores), "cond", predicate),)))
+                     _drain(taken_memory, marks + ((len(stores), "cond", predicate),)),
+                     loop=loop, sink=sink)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
@@ -1169,7 +1352,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 negated = predicate.negate()
                 walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
                      conditions + (negated,), visited,
-                     _drain(fall_memory, marks + ((len(stores), "cond", negated),)))
+                     _drain(fall_memory, marks + ((len(stores), "cond", negated),)),
+                     loop=loop, sink=sink)
                 return
 
             if m in ("b", "j"):
@@ -1192,7 +1376,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     # is this function's result.
                     marks, _epoch = opaque_call(ins.target, regs, stores, marks, epoch,
                                                 frame, memory)
-                    paths.append(Path(conditions, regs[2], tuple(stores), marks))
+                    sink.append(Path(conditions, regs[2], tuple(stores), marks))
                     return
                 callee = known[ins.target]
                 arguments = _call_arguments(regs)
@@ -1214,7 +1398,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                         else simplify(_in_caller(callee_path.expression, arguments,
                                                  epoch, {}))
                     )
-                    paths.append(Path(
+                    sink.append(Path(
                         conditions + extra, result, tuple(branch_stores),
                         marks + tuple((before, "cond", c) for c in extra),
                     ))
@@ -1231,7 +1415,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     marks = _drain(memory, marks)
                     marks, epoch = opaque_call(-1, regs, stores, marks, memory.epoch,
                                                frame, memory, pointer)
-                    memory = Overlay(epoch=epoch)
+                    memory = Overlay(epoch=epoch, counter=epochs)
                     addr += 8
                     continue
                 if ins.target not in known:
@@ -1245,7 +1429,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                                                memory.epoch, frame, memory)
                     # The callee may have written anything, so nothing this function
                     # wrote earlier can be forwarded to a later load any more.
-                    memory = Overlay(epoch=epoch)
+                    memory = Overlay(epoch=epoch, counter=epochs)
                     addr += 8
                     continue
                 callee = known[ins.target]
@@ -1279,7 +1463,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                             callee_path.expression, arguments, epoch, {}))
                     walk(addr + 8, branch_regs, branch_stores, branch_frame,
                          branch_memory, conditions + extra, visited,
-                         marks + tuple((before, "cond", c) for c in extra))
+                         marks + tuple((before, "cond", c) for c in extra),
+                         loop=loop, sink=sink)
                 return
 
             if ins.is_jump:
@@ -1323,7 +1508,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[fpr(reg)] = Arg(FLOAT_ARG_BASE + k)
     seeds = frozenset(id(regs[index]) for index in
                       list(range(16, 24)) + [30, 31] + [fpr(i) for i in range(20, 32)])
-    walk(start, regs, [], Frame(seeds=seeds), Overlay(), (), {})
+    walk(start, regs, [], Frame(seeds=seeds), Overlay(counter=epochs), (), {})
 
     if not paths:
         raise Unsupported("no return reached")
@@ -1334,8 +1519,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if isinstance(path.expression, CallResult) and path.calls and \
                     path.expression.index == path.calls[-1].index:
                 paths[index] = Path(path.conditions, None, path.stores, path.marks)
-    void_paths = sum(1 for path in paths if path.expression is None)
-    if void_paths and void_paths != len(paths):
+    returned = list(_returned_values(paths))
+    void_paths = sum(1 for value in returned if value is None)
+    if void_paths and void_paths != len(returned):
         # Some paths produce a value and others do not. That is either a function
         # whose result is only meaningful on some routes, or a misread; either way
         # the signature is ambiguous, so refuse rather than choose.
@@ -1348,6 +1534,166 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         # code that reads the stack at a fixed address.
         raise Unsupported("accesses the stack frame through memory")
     return derivation
+
+
+def _prune_loop_variables(identity, carried, tree, exits) -> tuple:
+    """Drop loop variables that nothing reads; returns (carried, tree).
+
+    Every register the body writes starts as a variable, but one that is always
+    written before it is read - a temporary - needs no value carried between
+    iterations. Keeping it would also give it an initial value from before the
+    loop: `$t0` started as argument 4, which made the function appear to take a
+    fifth argument it never reads. A variable is kept if any expression of the
+    body other than its own update reads it, or any exit's registers do.
+    """
+    def mentions(expr, wanted):
+        found, seen, stack = set(), set(), [expr]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, Var) and node.loop == identity and node.register in wanted:
+                found.add(node.register)
+            stack.extend(children(node))
+        return found
+
+    def readers(statements, wanted):
+        found = set()
+        for statement in statements:
+            kind = statement[0]
+            if kind == "continue" and statement[1] == identity:
+                for register, expr in statement[2]:
+                    found |= mentions(expr, wanted - {register})
+            elif kind == "if":
+                found |= mentions(statement[1], wanted)
+                found |= readers(statement[2], wanted) | readers(statement[3], wanted)
+            elif kind != "continue":
+                for expr in tree_expressions([statement]):
+                    found |= mentions(expr, wanted)
+        return found
+
+    def rewrite(statements, keep):
+        out = []
+        for statement in statements:
+            if statement[0] == "continue" and statement[1] == identity:
+                out.append(("continue", identity,
+                            tuple((r, e) for r, e in statement[2] if r in keep)))
+            elif statement[0] == "if":
+                out.append(("if", statement[1], rewrite(statement[2], keep),
+                            rewrite(statement[3], keep)))
+            else:
+                out.append(statement)
+        return out
+
+    keep = set(carried)
+    while True:
+        used = readers(tree, keep)
+        for _address, regs in exits:
+            for register in keep:
+                if register in regs:
+                    used |= mentions(regs[register], keep)
+            for value in regs.values():
+                used |= mentions(value, keep)
+        if used >= keep:
+            break
+        keep &= used
+    kept = tuple(register for register in carried if register in keep)
+    return kept, rewrite(tree, set(kept))
+
+
+def _returned_values(paths):
+    """Every value the function can return, from inside loop bodies too."""
+    for path in paths:
+        if path.leaf is None:
+            yield path.expression
+        for _count, kind, obj in path.marks:
+            if kind == "loop":
+                yield from _tree_returns(obj.body)
+
+
+def _tree_returns(statements):
+    for statement in statements:
+        if statement[0] == "return":
+            yield statement[1]
+        elif statement[0] == "if":
+            yield from _tree_returns(statement[2])
+            yield from _tree_returns(statement[3])
+        elif statement[0] == "loop":
+            yield from _tree_returns(statement[1].body)
+
+
+def tree_expressions(statements):
+    """Every expression in a statement tree, loop bodies included."""
+    for statement in statements:
+        kind = statement[0]
+        if kind == "store":
+            yield statement[1].address
+            yield statement[1].value
+        elif kind == "call":
+            for _index, expr in statement[1].arguments:
+                yield expr
+            if statement[1].pointer is not None:
+                yield statement[1].pointer
+        elif kind == "if":
+            yield statement[1]
+            yield from tree_expressions(statement[2])
+            yield from tree_expressions(statement[3])
+        elif kind == "loop":
+            for _register, expr in statement[1].init:
+                yield expr
+            yield from tree_expressions(statement[1].body)
+        elif kind == "continue":
+            for _register, expr in statement[2]:
+                yield expr
+        elif kind == "return" and statement[1] is not None:
+            yield statement[1]
+
+
+def _loop_info(image, base, start, end) -> dict:
+    """{head: (body addresses, carried registers, moves sp)} for each loop.
+
+    A loop is found by its back edge - a branch or jump to an address at or
+    before itself - and taken to span from the head to the last back edge's
+    delay slot, which is how compiled loops are laid out. The carried registers
+    are every register the body can write; a body containing a call also
+    clobbers everything a call does.
+    """
+    from .calls import _float_operands
+    from .structs import _written_register
+
+    def decode(address):
+        return DISASM.decode(struct.unpack_from("<I", image, address - base)[0], address)
+
+    last = {}
+    for address in range(start, end, 4):
+        ins = decode(address)
+        if (ins.is_branch or (ins.is_jump and not ins.is_call)) \
+                and start <= ins.target <= address:
+            last[ins.target] = max(last.get(ins.target, 0), address)
+    info = {}
+    for head, back in last.items():
+        body = frozenset(range(head, min(back + 8, end), 4))
+        carried, moves_sp, calls = set(), False, False
+        for address in body:
+            ins = decode(address)
+            written = _written_register(ins)
+            if written:
+                carried.add(written)
+                moves_sp |= written == 29
+            _read, wrote = _float_operands(ins)
+            carried |= {fpr(r) for r in wrote}
+            if ins.mnemonic.startswith(("mult", "div", "madd", "mthi", "mtlo")):
+                carried |= {REG_HI, REG_LO}
+            if ins.mnemonic.startswith("c."):
+                carried.add(FP_COND)
+            calls |= ins.is_call
+        if calls:
+            carried |= set(CALLER_SAVED) | {fpr(i) for i in range(20)}
+            carried |= {REG_HI, REG_LO, FP_COND, 31}
+        carried.discard(0)
+        info[head] = (body, tuple(sorted(carried)), moves_sp)
+    return info
 
 
 def _touches_frame_memory(derivation) -> bool:

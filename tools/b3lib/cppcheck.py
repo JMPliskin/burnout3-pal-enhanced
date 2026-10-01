@@ -216,7 +216,8 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
                   errors="replace") as handle:
             log = handle.read()
         errors = [line for line in log.splitlines() if " error " in line]
-        raise CompileError("\n".join(errors[:20]) or log[-2000:])
+        # Every error, not a sample: the caller drops each function named here.
+        raise CompileError("\n".join(errors) or log[-2000:])
     return dll, functions
 
 

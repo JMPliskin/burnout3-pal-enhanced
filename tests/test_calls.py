@@ -388,5 +388,67 @@ class TestStructCopies(unittest.TestCase):
         self.assertEqual(machine.memory.read(dest, 16), bytes(range(16)))
 
 
+
+class TestLoops(unittest.TestCase):
+    """strlen: a loop whose trip count depends entirely on memory.
+
+        v0 = 0; for (;;) { t0 = *p; if (t0 == 0) break; v0++; p++; } return v0;
+
+    It cannot be unrolled, so it is derived once over variables.
+    """
+
+    T0 = 8
+
+    def setUp(self):
+        def beq(rs, rt, here, target):
+            return i_type(0x04, rs, rt, (target - (here + 4)) // 4)
+
+        self.words = [
+            move(V0, 0),                                       # 0
+            i_type(0x20, A0, self.T0, 0),                      # 4: lb $t0, 0($a0)
+            beq(self.T0, 0, BASE + 8, BASE + 28),              # 8
+            NOP,                                               # 12
+            addiu(V0, V0, 1),                                  # 16
+            beq(0, 0, BASE + 20, BASE + 4),                    # 20
+            addiu(A0, A0, 1),                                  # 24 (delay slot)
+            JR_RA,                                             # 28
+            NOP,                                               # 32
+        ]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+
+    def derive(self, loops):
+        return derive_paths(self.image, BASE, BASE, BASE + 4 * len(self.words),
+                            known={}, loops=loops)
+
+    def test_without_loops_the_function_is_refused(self):
+        from b3lib.symexec import Unsupported
+
+        with self.assertRaises(Unsupported):
+            self.derive(False)
+
+    def test_loop_runs_to_the_right_count(self):
+        derivation = self.derive(True)
+        machine = Machine(BASE, self.image, 0x02000000 - BASE)
+        for text in (b"", b"a", b"hello", b"x" * 40):
+            machine.memory.write(0x01800000, text + bytes(1))
+            expected = machine.call(BASE, (0x01800000,))
+            machine.memory.begin_journal()
+            actual = derivation.run((0x01800000,) + (0,) * 15, Execution(machine))
+            machine.memory.rollback()
+            machine.memory.end_journal()
+            self.assertEqual(actual, expected, text)
+            self.assertEqual(actual, len(text))
+
+    def test_loop_is_emitted_as_a_loop(self):
+        import derive
+
+        derive._SIGNATURES.clear()
+        derive._EXTERNS.clear()
+        text = chr(10).join(derive.render_body(self.derive(True)))
+        self.assertIn("for (;;) {", text)
+        self.assertIn("break;", text)
+        self.assertIn("continue;", text)
+
+
 if __name__ == "__main__":
     unittest.main()

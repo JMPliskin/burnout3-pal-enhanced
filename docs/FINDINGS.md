@@ -614,6 +614,32 @@ compiled. Three model disagreements and one compiled one remain among the droppe
 functions; they agree when run alone and depend on interpreter state left by
 earlier tests.
 
+## Loops whose trip count depends on the input
+
+Loops were either unrolled - when their trip count folds to a constant - or
+refused; together with "too many paths", mostly loops forking every iteration,
+that was the largest modelling gap, close to a megabyte of code. A loop is now
+derived once over variables (`paths.Loop`): every register the body writes is a
+`Var`, initialised from its value before the loop; the body is walked once as a
+tree whose leaves continue (giving every variable its next value), break to an
+exit, or return. Each iteration begins a new memory epoch, so a load inside the
+loop reads memory as it is on that iteration, and one from the last iteration
+used after the loop reads that iteration's memory. Which exit was taken is an
+ordinary condition afterwards, so the rest of the machinery is unchanged. Loop
+mode is only tried when unrolling fails, and only for functions with a backward
+branch. Variables nothing reads are pruned - otherwise a temporary like `$t0`
+starts from argument 4 and the function appears to take a fifth argument. The
+emitted C++ is a real `for (;;)` - a `strlen` comes out as exactly that.
+
+Derived and verified rose from 2,475 to 2,680 functions, verified code from 5.17%
+to 5.83% of code bytes, with 394 loops in the emitted source. 22 functions
+disagree only in compiled form and are dropped; they are the next thing to look
+at. Loops made a full run much slower - derivation alone went from about two
+minutes to twelve - so refused functions are now re-attempted only when a callee
+has been derived since, struct recovery runs once per run, and the compiled
+check reuses the original's results recorded during verification; a full run
+is back under half an hour.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

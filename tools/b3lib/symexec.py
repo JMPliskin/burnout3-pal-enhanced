@@ -182,6 +182,64 @@ class CallResult(Expr):
         return read.result(self.index) & MASK64
 
 
+_REGISTER_NAMES = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+                   "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+                   "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+                   "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"]
+
+
+def register_name(index: int) -> str:
+    """A register's name for a C++ identifier: `s0`, `f20`, `hi`, `fcc`."""
+    if index < 32:
+        return _REGISTER_NAMES[index]
+    if index == REG_HI:
+        return "hi"
+    if index == REG_LO:
+        return "lo"
+    if index == FP_COND:
+        return "fcc"
+    if index >= FPR_BASE:
+        return "f%d" % (index - FPR_BASE)
+    return "r%d" % index
+
+
+@dataclasses.dataclass(frozen=True)
+class Var(Expr):
+    """A register's value at the start of the current iteration of a loop.
+
+    A loop whose trip count depends on its input cannot be unrolled into one
+    expression, so its body is derived once over variables: every register the
+    body writes is a Var, given its value before the loop on entry and the body's
+    new value on each `continue`.
+    """
+
+    loop: int
+    register: int
+
+    def render(self) -> str:
+        return "l%d_%s" % (self.loop, register_name(self.register))
+
+    def evaluate(self, args, read) -> int:
+        return read.var(self.loop, self.register) & MASK64
+
+
+@dataclasses.dataclass(frozen=True)
+class LoopExit(Expr):
+    """True when a loop was left by its `index`-th exit."""
+
+    loop: int
+    index: int
+
+    def render(self) -> str:
+        return "l%d_exit == %d" % (self.loop, self.index)
+
+    def evaluate(self, args, read) -> int:
+        return read.exit_taken(self.loop) == self.index
+
+    def negate(self) -> Expr:
+        return Not1(self)
+
+
 @dataclasses.dataclass(frozen=True)
 class Temp(Expr):
     """A named value the emitter has already captured into a local.
@@ -785,7 +843,7 @@ def children(expr: Expr) -> tuple:
     referencing undeclared parameters. A traversal that cannot see a new node type
     must break loudly, not quietly skip it.
     """
-    if isinstance(expr, (Arg, Const, CallResult, Temp)):
+    if isinstance(expr, (Arg, Const, CallResult, Temp, Var, LoopExit)):
         return ()
     if isinstance(expr, Load):
         return (expr.address,)
@@ -802,7 +860,7 @@ def children(expr: Expr) -> tuple:
 
 def rebuild(expr: Expr, new_children) -> Expr:
     """Reconstruct a node with replaced subexpressions, preserving its type."""
-    if isinstance(expr, (Arg, Const, CallResult, Temp)):
+    if isinstance(expr, (Arg, Const, CallResult, Temp, Var, LoopExit)):
         return expr
     if isinstance(expr, Load):
         return Load(new_children[0], expr.size, expr.signed, expr.epoch)
