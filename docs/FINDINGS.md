@@ -661,6 +661,19 @@ functions stay dropped. Model disagreements went from 23 to 11.
 Derived and verified: 2,670 functions; 2,624 emitted functions agree when
 compiled. Verified code: 6.01% of code bytes.
 
+## Pipeline speed
+
+A full run - derive, recover types, emit, compile, run the compiled code - had
+grown to 29 minutes. Measuring each stage rather than guessing showed that
+compiling takes 5 seconds and the compiled check 21; emission took 688 seconds,
+and ran two or three times per pipeline. Nearly all of it was the struct
+catalog: every typed memory access scanned every embedded type of its base and
+recomputed each one's size from all its fields, and the global address space
+embeds thousands of objects. Caching each type's extent and embedded map, and
+finding the covering objects by binary search, took emission to 8 seconds and
+type recovery from 95 seconds to under one. A full run now takes five minutes,
+four and a half of them derivation.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

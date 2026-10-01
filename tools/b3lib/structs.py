@@ -37,6 +37,7 @@ therefore loses links rather than inventing them.
 
 from __future__ import annotations
 
+import bisect
 import collections
 import struct
 
@@ -635,19 +636,48 @@ class Catalog:
         target = self.graph.find(field.target)
         return target if target in self.roots else None
 
+    # The catalog is read-only once built, so these are computed once per type.
+    # Recomputing them on every lookup was most of emission's time - eleven minutes
+    # of a run - because the global address space embeds thousands of objects and
+    # each typed access scanned all of them.
+
     def embedded(self, root: int):
         """{offset: root} for the types embedded in this one that have fields."""
-        found = {}
-        for offset, node in self.graph.embeds[root].items():
-            inner = self.graph.find(node)
-            if inner in self.roots and inner != root:
-                found[offset] = inner
-        return found
+        cache = self.__dict__.setdefault("_embedded_cache", {})
+        if root not in cache:
+            found = {}
+            for offset, node in self.graph.embeds[root].items():
+                inner = self.graph.find(node)
+                if inner in self.roots and inner != root:
+                    found[offset] = inner
+            cache[root] = found
+        return cache[root]
 
     def extent(self, root: int) -> int:
         """One past the last byte any field of the type is known to occupy."""
-        return max(offset + max(field.widths() or {4}) for offset, field
-                   in self.roots[root].items())
+        cache = self.__dict__.setdefault("_extent_cache", {})
+        if root not in cache:
+            cache[root] = max(offset + max(field.widths() or {4}) for offset, field
+                              in self.roots[root].items())
+        return cache[root]
+
+    def covering(self, root: int, offset: int) -> list:
+        """(at, inner) for each embedded type whose extent covers `offset`,
+        nearest first."""
+        cache = self.__dict__.setdefault("_covering_cache", {})
+        if root not in cache:
+            items = sorted(self.embedded(root).items())
+            starts = [at for at, _inner in items]
+            spans = [self.extent(inner) for _at, inner in items]
+            cache[root] = (starts, items, spans, max(spans, default=0))
+        starts, items, spans, widest = cache[root]
+        found = []
+        index = bisect.bisect_right(starts, offset) - 1
+        while index >= 0 and offset - starts[index] < widest:
+            if offset < starts[index] + spans[index]:
+                found.append(items[index])
+            index -= 1
+        return found
 
     def locate(self, root: int, offset: int):
         """Where a field at `offset` of `root` is: [(embed offset, inner root)...], field.
@@ -658,12 +688,11 @@ class Catalog:
         field = self.field(root, offset)
         if field is not None:
             return [], root, offset, field
-        for at, inner in sorted(self.embedded(root).items(), reverse=True):
-            if at <= offset < at + self.extent(inner):
-                found = self.locate(inner, offset - at)
-                if found is not None:
-                    path, owner, local, field = found
-                    return [(at, inner)] + path, owner, local, field
+        for at, inner in self.covering(root, offset):
+            found = self.locate(inner, offset - at)
+            if found is not None:
+                path, owner, local, field = found
+                return [(at, inner)] + path, owner, local, field
         return None
 
     def arrays(self, root: int) -> dict:
@@ -747,10 +776,9 @@ class Catalog:
         """
         direct = self.field(root, offset)
         nested = []
-        for at, inner in sorted(self.embedded(root).items(), reverse=True):
-            if at <= offset < at + self.extent(inner):
-                for path, owner, local, field in self.candidates(inner, offset - at):
-                    nested.append(([(at, inner)] + path, owner, local, field))
+        for at, inner in self.covering(root, offset):
+            for path, owner, local, field in self.candidates(inner, offset - at):
+                nested.append(([(at, inner)] + path, owner, local, field))
         found = [([], root, offset, direct)] if direct is not None else []
         return nested + found if root == self.globals else found + nested
 

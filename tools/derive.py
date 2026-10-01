@@ -1295,8 +1295,10 @@ def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None
     source = os.path.join(out_dir, "accessors.cpp")
     for _attempt_number in range(8):
         try:
+            stage = time.time()
             dll, _functions = cppcheck.build(source, runtime,
                                              os.path.join(root, "include"), work)
+            print("  compiling took %.0fs" % (time.time() - stage))
             break
         except cppcheck.CompilerUnavailable as exc:
             print("compiled check SKIPPED: %s" % exc)
@@ -1414,9 +1416,13 @@ def main(argv=None) -> int:
             catalog = structs.Catalog(graph)
             print("recovered %d struct types in %.1fs (%d fields added from derivations)"
                   % (len(catalog.roots), time.time() - started, evidence))
+        stage = time.time()
         verified = emit(verified, args.emit, database["meta"]["source"], catalog)
+        print("  emission took %.0fs" % (time.time() - stage))
         if not args.no_compile:
+            stage = time.time()
             verified = check_compiled(verified, machine, args.emit, database, catalog)
+            print("  compiled check took %.0fs" % (time.time() - stage))
     if args.csv:
         import csv
 
