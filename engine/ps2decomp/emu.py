@@ -139,7 +139,7 @@ class Memory:
     # A test that writes more than this is abandoned rather than allowed to grow
     # the journal - and the per-byte effect maps built from it - until the process
     # runs out of memory.
-    JOURNAL_LIMIT = 1 << 16
+    JOURNAL_LIMIT = 1 << 20
 
     def begin_journal(self) -> None:
         self._journal = []
@@ -313,6 +313,29 @@ class Machine:
                 )
         return _sign32(self.get32(2))
 
+    def run_to_return(self, addr: int, max_instructions: int = 2_000_000) -> None:
+        """Run the function at `addr` from the registers as they are, until it returns.
+
+        For a caller that is not this interpreter - lifted code calling a function
+        it does not have - which hands over its whole register state, $ra
+        included, and takes the whole state back. Nothing is reset. The function
+        has returned when control is back at the return address with the stack
+        pointer where it was, which stays right under recursion.
+        """
+        if not self._is_code(addr):
+            self._stubbed_call()
+            return
+        return_address = self.get32(31)
+        entry_sp = self.get32(29)
+        self.pc = addr
+        executed = 0
+        while not (self.pc == return_address and self.get32(29) == entry_sp):
+            self.step()
+            executed += 1
+            if executed > max_instructions:
+                raise ExecutionLimit(
+                    "exceeded %d instructions; likely an infinite loop" % max_instructions)
+
     def _decode(self, word: int, pc: int):
         """Decode an instruction, reusing an earlier decode of the same word here.
 
@@ -404,6 +427,14 @@ class Machine:
             return self.get32(ins.rs), None, False
         if m == "jalr":
             return self.get32(ins.rs), True, False
+        if m in ("bc0t", "bc0tl", "bc0f", "bc0fl"):
+            # COP0's condition is the DMA-complete signal that code polls with
+            # `bc0f` until a transfer ends. Like the hardware registers it reads
+            # as done, so the poll ends at once.
+            taken = m.startswith("bc0t")
+            if taken:
+                return ins.target, None, False
+            return (self.pc + 8, None, True) if m.endswith("l") else (None, None, False)
         if m in ("bc1t", "bc1tl"):
             taken = self.fp_cond
             if taken:
@@ -443,7 +474,7 @@ class Machine:
 
     def _execute(self, ins) -> None:
         m = ins.mnemonic
-        if m == "nop" or m == "sync":
+        if m in _NO_EFFECT:
             return
 
         handler = _HANDLERS.get(m)
@@ -473,7 +504,9 @@ def _load(size: int, signed: bool):
     def run(m: Machine, ins) -> None:
         addr = (m.get32(ins.rs) + ins.imm) & MASK32
         value = m.memory.read_int(addr, size, signed)
-        if size == 8:
+        # Unsigned loads zero-extend into the whole register; lwu of 0xFFFFFFF0 is
+        # 0x00000000FFFFFFF0, not the sign-extended word.
+        if size == 8 or not signed:
             m.set(ins.rt, value & MASK64)
         else:
             m.set32(ins.rt, value)
@@ -737,6 +770,14 @@ def _fp_compare(fn):
     return run
 
 
+def _op_sqrt_s(m: Machine, ins) -> None:
+    """`sqrt.s fd, ft`: unlike the other unary operations, the operand is in the ft
+    field (fs is zero). Reading fs took the root of $f0 instead, and the symbolic
+    model made the same mistake, so the two agreed and verified it."""
+    a = _fp_from_bits(m.fpr[_ft(ins)])
+    m.fpr[_fd(ins)] = _fp_bits(_f32(a ** 0.5 if a >= 0 else 0.0))
+
+
 def _op_cvt_w_s(m: Machine, ins) -> None:
     """Float to fixed, truncating toward zero as the EE does."""
     m.fpr[_fd(ins)] = int(_fp_from_bits(m.fpr[_fs(ins)])) & MASK32
@@ -794,9 +835,13 @@ def _q_perbyte(fn):
 
 def _op_pcpyld(m: Machine, ins) -> None:
     """Low doubleword of rt into the low half, low doubleword of rs into the high."""
+    # Both operands are read before either half is written: `pcpyld $v1, $v1, $v0`
+    # names $v1 as source and destination, and writing the low half first used to
+    # put the new value in the high half too.
     if ins.rd:
-        m.regs[ins.rd] = m.get(ins.rt)
-        m.regs_hi[ins.rd] = m.get(ins.rs)
+        low, high = m.get(ins.rt), m.get(ins.rs)
+        m.regs[ins.rd] = low
+        m.regs_hi[ins.rd] = high
 
 
 def _op_pcpyud(m: Machine, ins) -> None:
@@ -818,6 +863,98 @@ def _op_pcpyh(m: Machine, ins) -> None:
     _q_set(m, ins.rd, out)
 
 
+def _q_lanes(width: int, fn):
+    """Apply `fn(a, b)` to each `width`-bit lane of rs and rt, as unsigned values."""
+    mask = (1 << width) - 1
+
+    def run(m: Machine, ins) -> None:
+        a, b = _q_get(m, ins.rs), _q_get(m, ins.rt)
+        out = 0
+        for shift in range(0, 128, width):
+            out |= (fn((a >> shift) & mask, (b >> shift) & mask) & mask) << shift
+        _q_set(m, ins.rd, out)
+    return run
+
+
+def _s32(value: int) -> int:
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+def _op_psrlh(m: Machine, ins) -> None:
+    value, out, amount = _q_get(m, ins.rt), 0, ins.imm & 0xF
+    for shift in range(0, 128, 16):
+        out |= (((value >> shift) & 0xFFFF) >> amount) << shift
+    _q_set(m, ins.rd, out)
+
+
+def _op_pextlw(m: Machine, ins) -> None:
+    """Interleave the low words: rt.w0, rs.w0, rt.w1, rs.w1."""
+    a, b = m.get(ins.rs), m.get(ins.rt)
+    words = (b & MASK32, a & MASK32, b >> 32, a >> 32)
+    _q_set(m, ins.rd, sum(word << (32 * i) for i, word in enumerate(words)))
+
+
+# Unaligned loads and stores, little-endian. The "left" forms move the bytes from
+# the address down to the aligned boundary into the high end of the register;
+# the "right" forms move the bytes from the address up into the low end. A pair
+# (lwl at p+3, lwr at p) assembles the word at an unaligned p.
+
+def _unaligned_address(m: Machine, ins) -> int:
+    return (m.get32(ins.rs) + ins.imm) & MASK32
+
+
+def _op_lwl(m: Machine, ins) -> None:
+    addr = _unaligned_address(m, ins)
+    keep = (3 - (addr & 3)) * 8
+    word = m.memory.read_int(addr & ~3, 4, False)
+    m.set32(ins.rt, (word << keep) | (m.get32(ins.rt) & ((1 << keep) - 1)))
+
+
+def _op_lwr(m: Machine, ins) -> None:
+    addr = _unaligned_address(m, ins)
+    drop = (addr & 3) * 8
+    word = m.memory.read_int(addr & ~3, 4, False)
+    merged = ((word >> drop) | (m.get32(ins.rt) & ~(MASK32 >> drop))) & MASK32
+    if drop == 0:
+        m.set32(ins.rt, merged)
+    else:
+        # A partial word leaves the register's upper half as it was.
+        m.set(ins.rt, (m.get(ins.rt) & ~MASK32) | merged)
+
+
+def _op_ldl(m: Machine, ins) -> None:
+    addr = _unaligned_address(m, ins)
+    keep = (7 - (addr & 7)) * 8
+    double = m.memory.read_int(addr & ~7, 8, False)
+    m.set(ins.rt, ((double << keep) | (m.get(ins.rt) & ((1 << keep) - 1))) & MASK64)
+
+
+def _op_ldr(m: Machine, ins) -> None:
+    addr = _unaligned_address(m, ins)
+    drop = (addr & 7) * 8
+    double = m.memory.read_int(addr & ~7, 8, False)
+    m.set(ins.rt, ((double >> drop) | (m.get(ins.rt) & ~(MASK64 >> drop))) & MASK64)
+
+
+def _store_left(size: int):
+    def run(m: Machine, ins) -> None:
+        addr = _unaligned_address(m, ins)
+        offset = addr & (size - 1)
+        count = offset + 1
+        value = (m.get(ins.rt) & ((1 << (8 * size)) - 1)) >> (8 * (size - count))
+        m.memory.write(addr - offset, value.to_bytes(count, "little"))
+    return run
+
+
+def _store_right(size: int):
+    def run(m: Machine, ins) -> None:
+        addr = _unaligned_address(m, ins)
+        count = size - (addr & (size - 1))
+        value = m.get(ins.rt) & ((1 << (8 * count)) - 1)
+        m.memory.write(addr, value.to_bytes(count, "little"))
+    return run
+
+
 _HANDLERS = {
     # MMI (128-bit integer SIMD) subset
     "pand": _q_bitwise(lambda a, b: a & b),
@@ -829,6 +966,19 @@ _HANDLERS = {
     "pcpyld": _op_pcpyld,
     "pcpyud": _op_pcpyud,
     "pcpyh": _op_pcpyh,
+    "pmaxw": _q_lanes(32, lambda a, b: a if _s32(a) >= _s32(b) else b),
+    "pminw": _q_lanes(32, lambda a, b: a if _s32(a) <= _s32(b) else b),
+    "psubw": _q_lanes(32, lambda a, b: a - b),
+    "padduw": _q_lanes(32, lambda a, b: min(a + b, MASK32)),
+    "paddub": _q_lanes(8, lambda a, b: min(a + b, 0xFF)),
+    # |x|, except that 0x80000000 has none and saturates to 0x7FFFFFFF.
+    "pabsw": _q_lanes(32, lambda a, b: min(abs(_s32(b)), 0x7FFFFFFF)),
+    "psrlh": _op_psrlh,
+    "pextlw": _op_pextlw,
+    # Unaligned loads and stores
+    "lwl": _op_lwl, "lwr": _op_lwr, "ldl": _op_ldl, "ldr": _op_ldr,
+    "swl": _store_left(4), "swr": _store_right(4),
+    "sdl": _store_left(8), "sdr": _store_right(8),
     # 128-bit load/store, used for register spills
     "lq": _op_lq,
     "sq": _op_sq,
@@ -846,7 +996,7 @@ _HANDLERS = {
     "mov.s": _fp_unary(lambda a: a),
     "neg.s": _fp_unary(lambda a: -a),
     "abs.s": _fp_unary(abs),
-    "sqrt.s": _fp_unary(lambda a: a ** 0.5 if a >= 0 else 0.0),
+    "sqrt.s": _op_sqrt_s,
     "cvt.w.s": _op_cvt_w_s,
     "cvt.s.w": _op_cvt_s_w,
     "c.eq.s": _fp_compare(lambda a, b: a == b),
@@ -942,7 +1092,8 @@ _HANDLERS = {
 # decides which functions can be tested at all. The assumptions are deliberately
 # the plainest available:
 #
-#   syscall  - the kernel call does nothing and returns 0.
+#   syscall  - the kernel call does nothing and returns 0, except the services
+#              in SYSCALL_RESULTS.
 #   mfc0     - every system-control register reads as 0. Count in particular is
 #              constant, so a busy-wait on it never ends and the test runs out
 #              of budget, rather than finishing with a made-up time.
@@ -952,8 +1103,22 @@ _HANDLERS = {
 #              they are enabled changes nothing observable, and mfc0 reading
 #              Status as 0 already reports them disabled either way.
 
+# Services whose stub result is not 0. SifGetReg reads a SIF register, and code
+# polls it until the IOP sets a flag (`while (!(SifGetReg(4) & 0x20000))`); with
+# every bit set, the IOP is up and has answered, and the poll ends.
+SYSCALL_RESULTS = {
+    0x7A: 0xFFFFFFFF,     # SifGetReg
+}
+
+
+# Instructions with no effect an interpreter can observe: ordering barriers, and
+# cache maintenance and prefetch, which matter only to real caches.
+_NO_EFFECT = frozenset({"nop", "sync", "cache", "pref"})
+
+
 def _op_syscall(m: Machine, ins) -> None:
-    m.set(2, 0)
+    service = _sign32(m.get32(3))
+    m.set32(2, SYSCALL_RESULTS.get(service, 0))
 
 
 def _op_mfc0(m: Machine, ins) -> None:
@@ -991,6 +1156,9 @@ _HANDLERS.update({
     "mfc0": _op_mfc0,
     "ei": lambda m, ins: None,
     "di": lambda m, ins: None,
+    "break": _trap(lambda a, b: True),
+    # A system-control register write; reads (mfc0) see 0 regardless.
+    "mtc0": lambda m, ins: None,
     "teq": _trap(lambda a, b: a == b),
     "tne": _trap(lambda a, b: a != b),
     "tge": _trap(lambda a, b: _s64(a) >= _s64(b)),
@@ -1014,6 +1182,7 @@ CONTROL_MNEMONICS = frozenset({
     "blez", "bgtz", "blezl", "bgtzl",
     "bltz", "bgez", "bltzl", "bgezl", "bltzal", "bgezal",
     "bc1t", "bc1f", "bc1tl", "bc1fl",
+    "bc0t", "bc0f", "bc0tl", "bc0fl",
 })
 
-SUPPORTED_MNEMONICS = frozenset(_HANDLERS) | CONTROL_MNEMONICS | {"nop", "sync"}
+SUPPORTED_MNEMONICS = frozenset(_HANDLERS) | CONTROL_MNEMONICS | _NO_EFFECT

@@ -1,0 +1,419 @@
+"""Lift machine code to C++, one statement per instruction.
+
+Symbolic derivation (paths.py) produces readable functions, but it enumerates
+paths, and large functions explode: half the executable's code is in functions
+it cannot finish. Lifting is the mechanical complement. Every instruction becomes
+a C++ statement over an explicit register context (ps2rt/lifted.h), branches
+become gotos, and calls pass the whole context. Any function the interpreter can
+run can be lifted, whatever its size or control flow.
+
+The translation follows the interpreter (emu.py) instruction for instruction, since
+that is what it is verified against. The verification is stricter than for
+derived functions: after the run, the *entire* register file must match the
+original's, not just $v0, along with every byte of memory written.
+
+Control flow, precisely:
+
+* A branch's condition and a jump's target are read before the delay slot runs,
+  as on the hardware; a "likely" branch skips its delay slot when not taken.
+* A delay slot that is also a branch target is emitted a second time at its own
+  label, because reaching it by a jump runs it and then falls through.
+* A call (`jal`, `jalr`, `bgezal`...) sets $ra after the delay slot and goes
+  through `Call`, with the whole context.
+* `jr $ra` returns. `jr` through any other register is a jump table if the target
+  is inside the function and a tail call if not. A branch or jump that leaves the
+  function, and running off its end, are tail calls too.
+* Every loop head counts down a budget, so a loop that never ends cannot hang the
+  host.
+"""
+
+from __future__ import annotations
+
+import struct
+
+from .emu import SUPPORTED_MNEMONICS
+from .r5900 import DISASM
+
+MASK32 = 0xFFFFFFFF
+MASK64 = (1 << 64) - 1
+
+
+class Refused(Exception):
+    """This function cannot be lifted; the message says why."""
+
+
+def name_of(address: int) -> str:
+    return "F_%08X" % address
+
+
+def _u32(value: int) -> str:
+    return "0x%Xu" % (value & MASK32)
+
+
+def _u64(value: int) -> str:
+    return "0x%Xull" % (value & MASK64)
+
+
+def _sx32(value: int) -> int:
+    value &= MASK32
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+def _r(n: int) -> str:
+    return "0ull" if n == 0 else "c.r[%d]" % n
+
+
+def _set(rd: int, expr: str) -> str:
+    """Write a general register; $zero discards the value."""
+    if rd == 0:
+        return ""
+    return "c.r[%d] = %s;" % (rd, expr)
+
+
+def _fd(ins): return (ins.raw >> 6) & 0x1F
+def _fs(ins): return (ins.raw >> 11) & 0x1F
+def _ft(ins): return (ins.raw >> 16) & 0x1F
+
+
+_LOADS = {"lb": "ReadS8", "lbu": "ReadU8", "lh": "ReadS16", "lhu": "ReadU16",
+          "lw": "ReadS32", "lwu": "ReadU32", "ld": "ReadU64"}
+_STORES = {"sb": ("Write8", "(u32)"), "sh": ("Write16", "(u32)"),
+           "sw": ("Write32", "(u32)"), "sd": ("Write64", "")}
+_FLOAT_BINARY = {"add.s": "FloatAdd", "sub.s": "FloatSub", "mul.s": "FloatMul",
+                 "div.s": "FloatDiv", "max.s": "FloatMax", "min.s": "FloatMin"}
+_FLOAT_UNARY = {"mov.s": "FloatMove", "neg.s": "FloatNeg", "abs.s": "FloatAbs",
+                "cvt.w.s": "IntFromFloat", "cvt.s.w": "FloatFromInt"}
+_FLOAT_COMPARE = {"c.eq.s": "==", "c.lt.s": "<", "c.le.s": "<="}
+_TRAPS = {"teq": ("==", "u64"), "tne": ("!=", "u64"), "tge": (">=", "s64"),
+          "tgeu": (">=", "u64"), "tlt": ("<", "s64"), "tltu": ("<", "u64")}
+_NOTHING = {"nop", "sync", "cache", "pref", "ei", "di"}
+_LANES = {"pmaxw": "kPmaxw", "pminw": "kPminw", "psubw": "kPsubw", "padduw": "kPadduw",
+          "paddub": "kPaddub", "pabsw": "kPabsw"}
+_UNALIGNED_LOADS = {"lwl": "LoadWordLeft", "lwr": "LoadWordRight",
+                    "ldl": "LoadDoubleLeft", "ldr": "LoadDoubleRight"}
+_UNALIGNED_STORES = {"swl": ("StoreLeft", 4), "swr": ("StoreRight", 4),
+                     "sdl": ("StoreLeft", 8), "sdr": ("StoreRight", 8)}
+
+
+def statement(ins) -> str:
+    """The C++ for one non-control instruction."""
+    m, rs, rt, rd, imm = ins.mnemonic, ins.rs, ins.rt, ins.rd, ins.imm
+    a, b = _r(rs), _r(rt)
+    address = "(u32)%s + %s" % (a, _u32(imm))
+
+    if m in _NOTHING:
+        return ""
+    if m in ("addu", "add"):
+        return _set(rd, "lifted::Sx32((u32)%s + (u32)%s)" % (a, b))
+    if m in ("subu", "sub"):
+        return _set(rd, "lifted::Sx32((u32)%s - (u32)%s)" % (a, b))
+    if m in ("and", "or", "xor"):
+        return _set(rd, "%s %s %s" % (a, {"and": "&", "or": "|", "xor": "^"}[m], b))
+    if m == "nor":
+        return _set(rd, "~(%s | %s)" % (a, b))
+    if m in ("daddu", "dadd"):
+        return _set(rd, "%s + %s" % (a, b))
+    if m in ("dsubu", "dsub"):
+        return _set(rd, "%s - %s" % (a, b))
+    if m == "slt":
+        return _set(rd, "(u64)((s64)%s < (s64)%s)" % (a, b))
+    if m == "sltu":
+        return _set(rd, "(u64)(%s < %s)" % (a, b))
+    if m in ("movz", "movn"):
+        if rd == 0:
+            return ""
+        return "if (%s %s 0) c.r[%d] = %s;" % (b, "==" if m == "movz" else "!=", rd, a)
+    if m in ("sll", "srl", "sra"):
+        return _set(rd, _word_shift(m, b, str(imm)))
+    if m in ("sllv", "srlv", "srav"):
+        return _set(rd, _word_shift(m[:3], b, "(%s & 31)" % a))
+    if m in ("dsll", "dsrl", "dsra", "dsll32", "dsrl32", "dsra32"):
+        amount = imm + (32 if m.endswith("32") else 0)
+        return _set(rd, _double_shift(m[:4], b, str(amount)))
+    if m in ("dsllv", "dsrlv", "dsrav"):
+        return _set(rd, _double_shift(m[:4], b, "(%s & 63)" % a))
+
+    pipe = "1" if m.endswith("1") and m[:-1] in (
+        "mult", "multu", "div", "divu", "mfhi", "mflo", "mthi", "mtlo", "madd", "maddu") else ""
+    base = m[:-1] if pipe else m
+    hi, lo = "c.hi" + pipe, "c.lo" + pipe
+    if base in ("mult", "multu", "madd", "maddu"):
+        signed = "true" if base in ("mult", "madd") else "false"
+        accumulate = "true" if base.startswith("madd") else "false"
+        text = "lifted::Multiply(%s, %s, %s, %s, %s, %s);" % (hi, lo, a, b, signed, accumulate)
+        return text + (" " + _set(rd, lo) if rd else "")
+    if base in ("div", "divu"):
+        return "lifted::Divide(%s, %s, %s, %s, %s);" % (
+            hi, lo, a, b, "true" if base == "div" else "false")
+    if base == "mfhi":
+        return _set(rd, hi)
+    if base == "mflo":
+        return _set(rd, lo)
+    if base == "mthi":
+        return "%s = %s;" % (hi, a)
+    if base == "mtlo":
+        return "%s = %s;" % (lo, a)
+
+    if m in ("addiu", "addi"):
+        return _set(rt, "lifted::Sx32((u32)%s + %s)" % (a, _u32(imm)))
+    if m in ("daddiu", "daddi"):
+        return _set(rt, "%s + %s" % (a, _u64(imm)))
+    if m == "lui":
+        return _set(rt, _u64(_sx32((imm & 0xFFFF) << 16)))
+    if m in ("andi", "ori", "xori"):
+        op = {"andi": "&", "ori": "|", "xori": "^"}[m]
+        return _set(rt, "%s %s %s" % (a, op, _u64(imm & 0xFFFF)))
+    if m == "slti":
+        return _set(rt, "(u64)((s64)%s < (s64)%s)" % (a, _u64(imm)))
+    if m == "sltiu":
+        return _set(rt, "(u64)(%s < %s)" % (a, _u64(imm)))
+
+    if m in _LOADS:
+        read = "generated::%s(%s)" % (_LOADS[m], address)
+        return _set(rt, read) if rt else "(void)%s;" % read
+    if m in _STORES:
+        write, cast = _STORES[m]
+        return "generated::%s(%s, %s%s);" % (write, address, cast, b)
+    if m == "lq":
+        # As the interpreter does: the upper half is written even for $zero.
+        low = ("c.r[%d] = lo; " % rt) if rt else ""
+        return ("{ u32 q = (%s) & ~0xFu; u64 lo = lifted::Read64(q); "
+                "u64 hi = lifted::Read64(q + 8); %sc.rh[%d] = hi; }" % (address, low, rt))
+    if m == "sq":
+        return ("{ u32 q = (%s) & ~0xFu; generated::Write64(q, %s); "
+                "generated::Write64(q + 8, c.rh[%d]); }" % (address, b, rt))
+
+    if m == "lwc1":
+        return "c.f[%d] = (u32)generated::ReadU32(%s);" % (rt, address)
+    if m == "swc1":
+        return "generated::Write32(%s, c.f[%d]);" % (address, rt)
+    if m == "mtc1":
+        return "c.f[%d] = (u32)%s;" % (_fs(ins), b)
+    if m == "mfc1":
+        return _set(rt, "lifted::Sx32(c.f[%d])" % _fs(ins))
+    if m in _FLOAT_BINARY:
+        return "c.f[%d] = generated::%s(c.f[%d], c.f[%d]);" % (
+            _fd(ins), _FLOAT_BINARY[m], _fs(ins), _ft(ins))
+    if m in _FLOAT_UNARY:
+        return "c.f[%d] = generated::%s(c.f[%d]);" % (_fd(ins), _FLOAT_UNARY[m], _fs(ins))
+    if m == "sqrt.s":
+        return "c.f[%d] = generated::FloatSqrt(c.f[%d]);" % (_fd(ins), _ft(ins))
+    if m in _FLOAT_COMPARE:
+        return "c.fcc = generated::FloatValue(c.f[%d]) %s generated::FloatValue(c.f[%d]);" % (
+            _fs(ins), _FLOAT_COMPARE[m], _ft(ins))
+    if m == "c.f.s":
+        return "c.fcc = 0;"
+    if m in ("adda.s", "suba.s", "mula.s"):
+        op = {"adda.s": "FloatAdd", "suba.s": "FloatSub", "mula.s": "FloatMul"}[m]
+        return "c.acc = generated::%s(c.f[%d], c.f[%d]);" % (op, _fs(ins), _ft(ins))
+    if m in ("madda.s", "msuba.s", "madd.s", "msub.s"):
+        target = "c.acc" if m.endswith("a.s") else "c.f[%d]" % _fd(ins)
+        return "%s = lifted::FloatMulAdd(c.acc, c.f[%d], c.f[%d], %s);" % (
+            target, _fs(ins), _ft(ins), "true" if m.startswith("msub") else "false")
+
+    if m in ("pand", "por", "pxor", "pnor"):
+        if rd == 0:
+            return ""
+        if m == "pnor":
+            return "{ u64 lo = ~(%s | c.r[%d]), hi = ~(c.rh[%d] | c.rh[%d]); c.r[%d] = lo; c.rh[%d] = hi; }" % (
+                a, rt, rs, rt, rd, rd)
+        op = {"pand": "&", "por": "|", "pxor": "^"}[m]
+        return "{ u64 lo = %s %s %s, hi = c.rh[%d] %s c.rh[%d]; c.r[%d] = lo; c.rh[%d] = hi; }" % (
+            a, op, b, rs, op, rt, rd, rd)
+    if m in ("paddb", "psubb"):
+        if rd == 0:
+            return ""
+        return "lifted::AddBytes(c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d], %s);" % (
+            rd, rd, a, rs, b, rt, "true" if m == "psubb" else "false")
+    if m == "pcpyld":
+        if rd == 0:
+            return ""
+        return "{ u64 lo = %s, hi = %s; c.r[%d] = lo; c.rh[%d] = hi; }" % (b, a, rd, rd)
+    if m == "pcpyud":
+        if rd == 0:
+            return ""
+        return "{ u64 lo = c.rh[%d], hi = c.rh[%d]; c.r[%d] = lo; c.rh[%d] = hi; }" % (rs, rt, rd, rd)
+    if m == "pcpyh":
+        if rd == 0:
+            return ""
+        return ("{ u64 lo = (%s & 0xFFFF) * 0x0001000100010001ull, "
+                "hi = (c.rh[%d] & 0xFFFF) * 0x0001000100010001ull; "
+                "c.r[%d] = lo; c.rh[%d] = hi; }" % (b, rt, rd, rd))
+
+    if m in _LANES:
+        if rd == 0:
+            return ""
+        return "lifted::Lanes(lifted::%s, c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d]);" % (
+            _LANES[m], rd, rd, a, rs, b, rt)
+    if m == "psrlh":
+        if rd == 0:
+            return ""
+        return "lifted::ShiftHalfwordsRight(c.r[%d], c.rh[%d], %s, c.rh[%d], %du);" % (
+            rd, rd, b, rt, imm & 0xF)
+    if m == "pextlw":
+        if rd == 0:
+            return ""
+        return ("{ u64 a = %s, b = %s; c.r[%d] = (b & 0xFFFFFFFFull) | (a << 32); "
+                "c.rh[%d] = (b >> 32) | (a & 0xFFFFFFFF00000000ull); }" % (a, b, rd, rd))
+    if m in _UNALIGNED_LOADS:
+        return _set(rt, "lifted::%s(%s, %s)" % (_UNALIGNED_LOADS[m], address, b)) if rt else             "(void)lifted::%s(%s, 0);" % (_UNALIGNED_LOADS[m], address)
+    if m in _UNALIGNED_STORES:
+        helper, size = _UNALIGNED_STORES[m]
+        return "lifted::%s(%s, %s, %d);" % (helper, address, b, size)
+    if m == "break":
+        return "lifted::Trap(0x%08Xu);" % ins.addr
+    if m == "mtc0":
+        return ""
+    if m in _TRAPS:
+        op, kind = _TRAPS[m]
+        return "if ((%s)%s %s (%s)%s) lifted::Trap(0x%08Xu);" % (kind, a, op, kind, b, ins.addr)
+    if m == "syscall":
+        return "lifted::Syscall(c);"
+    if m == "mfc0":
+        return _set(rt, "0ull")
+    raise Refused("no translation for %s at 0x%08X" % (m, ins.addr))
+
+
+def _word_shift(kind: str, value: str, amount: str) -> str:
+    if kind == "sll":
+        return "lifted::Sx32((u32)%s << %s)" % (value, amount)
+    if kind == "srl":
+        return "lifted::Sx32((u32)%s >> %s)" % (value, amount)
+    return "lifted::Sx32((u64)((s32)(u32)%s >> %s))" % (value, amount)
+
+
+def _double_shift(kind: str, value: str, amount: str) -> str:
+    if kind == "dsll":
+        return "(%s << %s)" % (value, amount)
+    if kind == "dsrl":
+        return "(%s >> %s)" % (value, amount)
+    return "(u64)((s64)%s >> %s)" % (value, amount)
+
+
+_CONDITIONS = {
+    "beq": "%(a)s == %(b)s", "beql": "%(a)s == %(b)s",
+    "bne": "%(a)s != %(b)s", "bnel": "%(a)s != %(b)s",
+    "blez": "(s64)%(a)s <= 0", "blezl": "(s64)%(a)s <= 0",
+    "bgtz": "(s64)%(a)s > 0", "bgtzl": "(s64)%(a)s > 0",
+    "bltz": "(s64)%(a)s < 0", "bltzl": "(s64)%(a)s < 0", "bltzal": "(s64)%(a)s < 0",
+    "bgez": "(s64)%(a)s >= 0", "bgezl": "(s64)%(a)s >= 0", "bgezal": "(s64)%(a)s >= 0",
+    "bc1t": "c.fcc != 0", "bc1tl": "c.fcc != 0",
+    "bc1f": "c.fcc == 0", "bc1fl": "c.fcc == 0",
+    # COP0's condition reads as "done" (see emu.py).
+    "bc0t": "true", "bc0tl": "true", "bc0f": "false", "bc0fl": "false",
+}
+
+
+def lift_function(image: bytes, base: int, start: int, end: int) -> str:
+    """The C++ definition of one function; raises Refused if it cannot be lifted."""
+    if end <= start:
+        raise Refused("empty function")
+    count = (end - start) // 4
+    words = struct.unpack_from("<%dI" % count, image, start - base)
+    code = [DISASM.decode(word, start + 4 * i) for i, word in enumerate(words)]
+    by_address = {ins.addr: ins for ins in code}
+
+    for ins in code:
+        if not ins.is_valid:
+            raise Refused("invalid instruction at 0x%08X" % ins.addr)
+        if ins.mnemonic not in SUPPORTED_MNEMONICS:
+            raise Refused("unsupported instruction %s" % ins.mnemonic)
+        if ins.has_delay_slot:
+            slot = by_address.get(ins.addr + 4)
+            if slot is None:
+                raise Refused("delay slot outside the function at 0x%08X" % ins.addr)
+            if slot.has_delay_slot:
+                raise Refused("branch in a delay slot at 0x%08X" % ins.addr)
+
+    inside = lambda address: start <= address < end
+    dispatch = any(ins.mnemonic == "jr" and ins.rs != 31 for ins in code)
+    labels, loop_heads = set(), set()
+    for ins in code:
+        if ins.has_delay_slot and ins.mnemonic not in ("jr", "jalr") and not ins.is_call:
+            if inside(ins.target):
+                labels.add(ins.target)
+                if ins.target <= ins.addr:
+                    loop_heads.add(ins.target)
+    if dispatch:
+        # A jump table can reach any instruction; every one is a possible target,
+        # and any of them can begin a loop.
+        labels = {ins.addr for ins in code}
+        loop_heads = set(labels)
+
+    lines = ["void %s(lifted::Context& c) {" % name_of(start)]
+    if dispatch:
+        lines.append("    u32 jump;")
+    skip = set()
+    for ins in code:
+        address = ins.addr
+        if address in labels:
+            lines.append("L_%08X:" % address)
+            if address in loop_heads:
+                lines.append("    lifted::Tick(c, 0x%08Xu);" % address)
+        if address in skip:
+            # A delay slot already emitted with its branch. It runs here again only
+            # when a jump lands on it (its label, above); otherwise nothing reaches
+            # this point - the branch block ended with a goto past it.
+            if address in labels:
+                lines.append("    " + statement(ins))
+            continue
+        if not ins.has_delay_slot:
+            text = statement(ins)
+            if text:
+                lines.append("    " + text)
+            continue
+
+        slot = by_address[address + 4]
+        slot_text = statement(slot)
+        m = ins.mnemonic
+        after = address + 8
+        link = "c.r[31] = 0x%08Xull;" % after
+        body = []
+        if m in ("j", "b"):
+            body = [slot_text, _transfer(ins.target, inside)]
+        elif m == "jal":
+            body = [slot_text, link, "lifted::Call(c, 0x%08Xu);" % ins.target]
+        elif m == "jr" and ins.rs == 31:
+            body = [slot_text, "return;"]
+        elif m == "jr":
+            body = ["jump = (u32)%s;" % _r(ins.rs), slot_text, _dispatch(code)]
+        elif m == "jalr":
+            body = ["{ u32 target = (u32)%s;" % _r(ins.rs), slot_text, link,
+                    "lifted::Call(c, target); }"]
+        else:
+            condition = _CONDITIONS[m] % {"a": _r(ins.rs), "b": _r(ins.rt)}
+            taken = _transfer(ins.target, inside)
+            linking = link if m in ("bltzal", "bgezal") else ""
+            if m.endswith("l") and m not in ("bltzal", "bgezal"):
+                body = ["if (%s) { %s %s }" % (condition, slot_text, taken)]
+            elif m in ("bltzal", "bgezal"):
+                body = ["{ bool t = %s;" % condition, slot_text, linking,
+                        "if (t) lifted::Call(c, 0x%08Xu); }" % ins.target]
+            else:
+                body = ["{ bool t = %s;" % condition, slot_text, "if (t) %s }" % taken]
+        lines.append("    " + " ".join(part for part in body if part))
+        skip.add(address + 4)
+        if address + 4 in labels:
+            # Execution that branched past the delay slot continues after it.
+            lines.append("    goto L_%08X;" % after if after < end else
+                         "    lifted::Call(c, 0x%08Xu); return;" % after)
+            labels.add(after) if after < end else None
+    lines.append("    lifted::Call(c, 0x%08Xu);  /* runs off the end */" % end)
+    lines.append("}")
+    text = "\n".join(lines)
+    # A label is only emitted at an instruction; make sure every goto has one.
+    for target in sorted(labels):
+        if "L_%08X:" % target not in text:
+            raise Refused("label 0x%08X has no instruction" % target)
+    return text + "\n"
+
+
+def _transfer(target: int, inside) -> str:
+    if inside(target):
+        return "goto L_%08X;" % target
+    return "{ lifted::Call(c, 0x%08Xu); return; }" % target
+
+
+def _dispatch(code) -> str:
+    cases = " ".join("case 0x%08Xu: goto L_%08X;" % (ins.addr, ins.addr) for ins in code)
+    return "switch (jump) { %s default: lifted::Call(c, jump); return; }" % cases

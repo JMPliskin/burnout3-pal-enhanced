@@ -18,3 +18,7 @@ venv/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Lifted code is a mechanical translation, regenerated in minutes by
+# engine/tools/lift.py --emit; committing it would add megabytes per run.
+games/*/src/lifted/

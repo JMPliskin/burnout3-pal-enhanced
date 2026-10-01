@@ -1529,13 +1529,18 @@ def main(argv=None) -> int:
         import csv
 
         existing = {}
+        derived = {func["addr"] for func, _d, _t, _s in verified}
         if os.path.exists(args.csv):
             with open(args.csv, newline="", encoding="utf-8") as handle:
                 for row in csv.DictReader(handle):
                     # Generated rows are rebuilt from this run, so a function that
                     # is no longer derived - or no longer emitted - does not keep a
                     # status it can no longer show evidence for.
+                    # Lifted rows yield to derivation too: readable source that
+                    # is verified supersedes the mechanical translation.
                     if row["source"] == "src/generated/accessors.cpp":
+                        continue
+                    if row["status"] == "lifted" and int(row["address"], 16) in derived:
                         continue
                     existing[int(row["address"], 16)] = row
         for func, _derivation, tested, strong in verified:

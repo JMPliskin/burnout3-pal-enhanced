@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Report decompilation progress against the analysis database.
 
-Progress is tracked in four tiers, kept deliberately separate because they mean
+Progress is tracked in five tiers, kept deliberately separate because they mean
 very different things:
 
   undecompiled   the analysis found the function; nothing is known about it
   analyzed       behaviour worked out and written down, but no source yet
   reconstructed  source exists and is believed correct, but is untested
-  verified       the reconstruction was differential-tested against the original
+  lifted         a mechanical instruction-by-instruction translation exists and
+                 was differential-tested - complete and correct, but not readable
+  verified       readable source was differential-tested against the original
                  machine code running in the R5900 interpreter, and agreed
 
 Only `verified` is objective.  The project targets functional reconstruction
@@ -37,7 +39,7 @@ from ps2decomp import game as game_config
 import sys
 import time
 
-TIERS = ["undecompiled", "analyzed", "reconstructed", "verified"]
+TIERS = ["undecompiled", "analyzed", "reconstructed", "lifted", "verified"]
 
 
 def load_status(path: str) -> dict:
@@ -125,6 +127,9 @@ def render_text(summary: dict, title: str) -> str:
     verified = summary["by_tier"]["verified"]
     lines.append("VERIFIED: %.4f%% of code bytes are differential-tested against the original"
                  % _pct(verified["bytes"], summary["total_code"]))
+    checked = verified["bytes"] + summary["by_tier"]["lifted"]["bytes"]
+    lines.append("MACHINE-CHECKED: %.4f%% of code bytes are verified or lifted"
+                 % _pct(checked, summary["total_code"]))
     return "\n".join(lines)
 
 
@@ -148,6 +153,13 @@ def render_markdown(summary: dict) -> str:
         "This is the only number that means anything on its own. The tiers below "
         "track work in progress, but until a function reaches `verified` there is no "
         "evidence the source is right."
+    )
+    lines.append("")
+    checked = verified["bytes"] + summary["by_tier"]["lifted"]["bytes"]
+    lines.append(
+        "**%.4f%%** is machine-checked: verified, or `lifted` - translated instruction "
+        "by instruction and differential-tested, so correct and complete enough to run, "
+        "but not yet readable source." % _pct(checked, summary["total_code"])
     )
     lines.append("")
     lines.append("## Static analysis")

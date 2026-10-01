@@ -137,7 +137,12 @@ def seed_global_pointers(memory, addresses) -> int:
         except Exception:
             continue
         size = layout.CURRENT.scratch_size
-        offset = (zlib.crc32(address.to_bytes(4, "little")) % (size // 2)) & ~15
+        # Every word in one 16-byte block gets the same target, so a [begin, end)
+        # pair of adjacent globals describes an empty range rather than one
+        # running from one random place to another - a walk over it, as in the
+        # SIF RPC binder, otherwise never meets its end.
+        block = address & ~15
+        offset = (zlib.crc32(block.to_bytes(4, "little")) % (size // 2)) & ~15
         memory.write_int(address, layout.CURRENT.scratch + offset, 4)
         seeded += 1
     return seeded

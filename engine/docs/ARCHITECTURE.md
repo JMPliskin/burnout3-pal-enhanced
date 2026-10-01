@@ -41,6 +41,8 @@ engine/ps2decomp/
   structs.py   struct type recovery (type unification over the whole binary)
   typed.py     renders derived code against recovered types
   cppcheck.py  compiles emitted C++ and runs it against the interpreter
+  lift.py      lifts machine code to C++, one statement per instruction
+  liftcheck.py compiles lifted C++ and runs it against the interpreter
   difftest.py  differential-test harness
 
 engine/tools/
@@ -51,6 +53,7 @@ engine/tools/
   imagemap.py   byte-level accounting of the image
   candidates.py ranks functions by reconstructability
   derive.py     derives, verifies and emits accessor functions
+  lift.py       lifts every function, verifies each, emits the verified ones
   refusals.py   why the functions that were not derived were refused
   blockers.py   which instructions keep functions out of the interpreter
   loops.py      loop shapes, for planning loop support
@@ -65,8 +68,10 @@ engine/data/ee_syscalls.csv   EE kernel service numbers -> names
 engine/signatures/library.json  named signatures from every game so far
 
 engine/runtime/
-  include/ps2rt/  types.h and generated.h, which generated code compiles against
+  include/ps2rt/  types.h and generated.h, which generated code compiles against,
+                  and lifted.h, the register context lifted code runs on
   src/eefpu.cpp   reference EE FPU arithmetic (no IEEE infinities or NaNs)
+  src/lifted_support.cpp  multiply/divide, MMI lanes, unaligned access for lifted code
 ```
 
 Game-specific code lives with its game: for Burnout 3,
@@ -189,6 +194,26 @@ reading the code:
   `lui 0xFFFF` then `dsrl32 32` is `0xFFFFFFFF`, not 0.
 * **Float bit moves.** Holding float registers as host doubles canonicalises NaN
   payloads, altering values a copy must preserve.
+
+## Lifting: the complete tier
+
+Derivation enumerates paths and produces readable expressions, so it cannot
+finish large functions: half the executable's code is in functions of 96
+instructions or more, where it verified under 8%. Lifting is the mechanical
+complement. Each instruction becomes one C++ statement over `lifted::Context`
+(all GPRs with their upper 64 bits, HI/LO for both pipelines, the FPU registers,
+accumulator and condition). Branches become gotos, and a delay slot is emitted
+inside its branch's block, or twice when a jump also lands on it. Calls pass the
+whole context. The interpreter is the specification, and each handler has a
+lifted counterpart that `test_lift.py` checks against it, family by family.
+
+Verification uses the derivation's test plans and memory, but compares more.
+After each case the *entire* register state and every byte written must match
+the original. Callees run in the interpreter with the context handed over and
+back (`Machine.run_to_return`), so each function is checked on its own. Because
+the whole state is compared, the lifter also finds interpreter bugs that
+`$v0`-plus-memory comparison let through. `pcpyld $v1, $v1, $v0` was one: the
+interpreter wrote the low half before reading the source for the high half.
 
 ## Calling functions that are not derived
 

@@ -1475,6 +1475,8 @@ def _apply(regs: dict, ins, get, epoch: int = 0) -> None:
         return
     if m in _FLOAT_UNARY:
         fd, fs = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F
+        if m == "sqrt.s":
+            fs = (ins.raw >> 16) & 0x1F      # sqrt.s fd, ft: the operand is in ft
         regs[fpr(fd)] = FloatOp(_FLOAT_UNARY[m], get(fpr(fs)))
         return
     if m == "cvt.s.w":

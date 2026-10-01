@@ -768,6 +768,43 @@ Derived and verified: 2,811 -> 3,357 functions. Agreeing when compiled: 2,754 ->
 unmapped memory (693), the instruction budget (491), stores to unmapped memory
 (124), the 64 KB write cap (90), and VU0 macro instructions (`lqc2`, `vadd`).
 
+## Lifting: a third of the code, machine-checked
+
+Derivation verifies 10% of the code bytes, and measuring where they sit shows why
+it stalls:
+
+| function size (instructions) | share of code | verified by derivation |
+| --- | ---: | ---: |
+| up to 32 | 8.1% | 38.8% |
+| 33-96 | 18.9% | 24.1% |
+| 97-256 | 30.7% | 7.2% |
+| 257-512 | 18.9% | 1.5% |
+| over 512 | 23.4% | not attempted |
+
+Path enumeration cannot finish large functions. Lifting, one C++ statement per
+instruction over an explicit register context, has no such limit. Each lifted
+function is compiled and checked against the original on the same test cases,
+comparing the whole register file and memory: **4,865 functions, 32.9% of the
+code**, from a 10-minute run. With the derived functions that makes **32.0% of
+code bytes machine-checked** (functions verified both ways count once, under
+`verified`).
+
+Comparing whole register states found three bugs that had been verified wrong,
+because the interpreter and the symbolic model made the same mistake and so
+agreed:
+
+* `sqrt.s fd, ft` takes its operand from the ft field (fs is always 0). Both read
+  fs, so 78 emitted lines took the square root of `$f0`.
+* `pcpyld $v1, $v1, $v0` wrote the low half before reading the high half's source,
+  which is the same register. The lifted code read both first and disagreed.
+* `lwu` sign-extended instead of zero-extending (interpreter only).
+
+The interpreter also gained `break`, `mtc0`, the unaligned loads and stores
+(`lwl`/`lwr`/`ldl`/`ldr`/`swl`/`swr`/`sdl`/`sdr`) and six more MMI lane operations.
+What still blocks lifting is VU0 macro mode (`lqc2`, `qmtc2`, `vadd`...: about 650
+functions). What blocks *testing* lifted functions is the same as for derivation:
+memory faults on test data (2,480) and the instruction budget (1,076).
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

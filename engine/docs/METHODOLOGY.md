@@ -21,14 +21,31 @@ captures understanding, which is often the hard part, but it is not code.
 C++ source exists and is believed to behave correctly. It has **not** been tested
 against the original. Source at this tier is a hypothesis.
 
+### `lifted`
+
+The function has been translated instruction by instruction into C++ over an
+explicit register context (`engine/ps2decomp/lift.py`), compiled, and run on the
+same test cases against the original. After every case the **whole register
+file** and every byte of memory written agreed. That is a stricter comparison than
+for derived functions, which compare `$v0` and memory.
+
+Lifted source is correct and complete, and enough to run the game on a host, but
+it is not readable: it says `c.r[2] = c.r[4] + 5`, not what the function means.
+So it is reported as its own tier and never counted as `verified`. A function
+that is later derived moves up to `verified`, and its lifted copy is only the
+fallback.
+
 ### `verified`
 
 The reconstruction has been differential-tested against the original machine code
 running in the R5900 interpreter, on a corpus that includes edge cases, and they
 agreed. This is the project's bar for done.
 
-**Only `verified` counts.** The headline figure in [PROGRESS.md](../../games/burnout3/docs/PROGRESS.md)
-reports verified bytes and nothing else.
+**Only `verified` counts as decompiled.** The headline figure in
+[PROGRESS.md](../../games/burnout3/docs/PROGRESS.md) reports verified bytes and
+nothing else. A second figure, "machine-checked", adds the `lifted` tier: how
+much of the program exists as C++ proven to behave like the original, readable or
+not.
 
 ## Why functional reconstruction, and what it does and does not prove
 

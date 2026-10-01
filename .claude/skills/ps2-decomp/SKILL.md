@@ -14,7 +14,13 @@ byte-matched. Instead every function goes through the same check:
 3. The C++ emitted from that derivation is compiled and run on them too.
 
 A function counts as **verified** only when all three agree on the return value
-and on every byte of memory written. Read `engine/docs/METHODOLOGY.md` before
+and on every byte of memory written.
+
+There is a second, mechanical tier. `engine/tools/lift.py` translates every
+function instruction by instruction into C++ over a register context and verifies
+it the same way, comparing the whole register file. Lifted code is complete and
+correct but not readable, so it is the `lifted` tier, reported apart. Derivation
+then turns lifted functions into readable ones over time. Read `engine/docs/METHODOLOGY.md` before
 changing what "verified" means, and `engine/docs/ARCHITECTURE.md` before changing
 the engine.
 
@@ -76,8 +82,12 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
    python -u engine/tools/derive.py --game games/<name> --emit --csv > games/<name>/build/derive.log
    python engine/tools/progress.py --game games/<name> --markdown > games/<name>/docs/PROGRESS.md
    ```
-   A full run on a 4 MB executable takes about 12 minutes. Run it in the
+   A full run on a 4 MB executable takes about 14 minutes. Run it in the
    background, and never start two runs at once: they write the same outputs.
+   Then lift, after derivation, because lifted rows yield to derived ones:
+   ```sh
+   python -u engine/tools/lift.py --game games/<name> --emit --csv > games/<name>/build/lift.log
+   ```
 7. Name what the evidence supports, and share it:
    ```sh
    python engine/tools/signatures.py --game games/<name> name     # config/names.csv
@@ -143,6 +153,10 @@ Each of these has already produced plausible wrong output once:
 
 - Make tests deterministic: seed every random input from the function address,
   and reset all registers on every interpreter call.
+- When derivation and the interpreter share a bug, they agree and "verify"
+  wrong code (`sqrt.s` read fs instead of ft in both). Check the encoding of every
+  new instruction against the EE manual, not against the disassembler alone. The
+  lifter's whole-register comparison is a second line of defence.
 - Profile before optimising. Most slowness came from repeated work: uncached
   catalog lookups, re-deriving unchanged functions, re-running the original for
   the compiled check.

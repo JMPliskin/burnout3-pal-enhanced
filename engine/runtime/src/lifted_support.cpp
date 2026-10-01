@@ -1,0 +1,155 @@
+/*
+ * The lifted code's arithmetic helpers, written to match engine/ps2decomp/emu.py.
+ */
+
+#include "ps2rt/lifted.h"
+
+#include <cstring>
+
+namespace lifted {
+
+void Multiply(u64& hi, u64& lo, u64 a, u64 b, bool is_signed, bool accumulate) {
+    const u64 product = is_signed
+        ? (u64)((s64)(s32)(u32)a * (s64)(s32)(u32)b)
+        : (u64)(u32)a * (u64)(u32)b;
+    u64 total = product;
+    if (accumulate) {
+        total += ((hi & 0xFFFFFFFFull) << 32) | (lo & 0xFFFFFFFFull);
+    }
+    lo = Sx32(total);
+    hi = Sx32(total >> 32);
+}
+
+/* HI/LO are left alone on division by zero, as the interpreter does. The signed
+   case is computed in 64 bits, where INT_MIN / -1 is defined. */
+void Divide(u64& hi, u64& lo, u64 a, u64 b, bool is_signed) {
+    if (is_signed) {
+        const s64 x = (s32)(u32)a, y = (s32)(u32)b;
+        if (y == 0) return;
+        const s64 q = x / y;
+        lo = Sx32((u64)q);
+        hi = Sx32((u64)(x - y * q));
+    } else {
+        const u32 x = (u32)a, y = (u32)b;
+        if (y == 0) return;
+        lo = Sx32(x / y);
+        hi = Sx32(x % y);
+    }
+}
+
+u32 FloatMulAdd(u32 acc, u32 a, u32 b, bool subtract) {
+    const double x = generated::FloatValue(acc);
+    const double product = double(generated::FloatValue(a)) * double(generated::FloatValue(b));
+    double value = subtract ? x - product : x + product;
+    /* Saturate and drop NaN as every FPU result does (see eefpu.cpp). */
+    const double kFloatMax = 3.4028234663852886e38;
+    if (value != value) value = 0.0;
+    else if (value > kFloatMax) value = kFloatMax;
+    else if (value < -kFloatMax) value = -kFloatMax;
+    const float narrowed = static_cast<float>(value);
+    u32 bits;
+    std::memcpy(&bits, &narrowed, sizeof bits);
+    return bits;
+}
+
+void AddBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, bool subtract) {
+    u64 out[2] = {0, 0};
+    const u64 a[2] = {alo, ahi}, b[2] = {blo, bhi};
+    for (int half = 0; half < 2; ++half) {
+        for (int lane = 0; lane < 8; ++lane) {
+            const u32 x = (u32)(a[half] >> (lane * 8)) & 0xFF;
+            const u32 y = (u32)(b[half] >> (lane * 8)) & 0xFF;
+            const u32 z = (subtract ? x - y : x + y) & 0xFF;
+            out[half] |= (u64)z << (lane * 8);
+        }
+    }
+    lo = out[0];
+    hi = out[1];
+}
+
+namespace {
+
+u32 Lane32(int op, u32 a, u32 b) {
+    switch (op) {
+        case kPmaxw: return (s32)a >= (s32)b ? a : b;
+        case kPminw: return (s32)a <= (s32)b ? a : b;
+        case kPsubw: return a - b;
+        case kPadduw: { const u64 sum = (u64)a + b; return sum > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)sum; }
+        case kPabsw: { const s64 x = (s32)b; const s64 m = x < 0 ? -x : x;
+                       return m > 0x7FFFFFFF ? 0x7FFFFFFFu : (u32)m; }
+    }
+    return 0;
+}
+
+u64 LanesOf(int op, u64 a, u64 b) {
+    u64 out = 0;
+    if (op == kPaddub) {
+        for (int shift = 0; shift < 64; shift += 8) {
+            const u32 sum = (u32)((a >> shift) & 0xFF) + (u32)((b >> shift) & 0xFF);
+            out |= (u64)(sum > 0xFF ? 0xFF : sum) << shift;
+        }
+        return out;
+    }
+    for (int shift = 0; shift < 64; shift += 32) {
+        out |= (u64)Lane32(op, (u32)(a >> shift), (u32)(b >> shift)) << shift;
+    }
+    return out;
+}
+
+}  // namespace
+
+void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+    lo = LanesOf(op, alo, blo);
+    hi = LanesOf(op, ahi, bhi);
+}
+
+void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount) {
+    const u64 in[2] = {blo, bhi};
+    u64 out[2] = {0, 0};
+    for (int half = 0; half < 2; ++half)
+        for (int shift = 0; shift < 64; shift += 16)
+            out[half] |= (((in[half] >> shift) & 0xFFFF) >> (amount & 0xF)) << shift;
+    lo = out[0];
+    hi = out[1];
+}
+
+u64 LoadWordLeft(u32 address, u64 old) {
+    const u32 keep = (3 - (address & 3)) * 8;
+    const u32 word = (u32)generated::ReadU32(address & ~3u);
+    const u32 low = keep ? (u32)old & ((1u << keep) - 1) : 0;
+    return Sx32((keep ? word << keep : word) | low);
+}
+
+u64 LoadWordRight(u32 address, u64 old) {
+    const u32 drop = (address & 3) * 8;
+    const u32 word = (u32)generated::ReadU32(address & ~3u);
+    const u32 merged = (word >> drop) | ((u32)old & ~(0xFFFFFFFFu >> drop));
+    return drop == 0 ? Sx32(merged) : (old & 0xFFFFFFFF00000000ull) | merged;
+}
+
+u64 LoadDoubleLeft(u32 address, u64 old) {
+    const u32 keep = (7 - (address & 7)) * 8;
+    const u64 value = generated::ReadU64(address & ~7u);
+    return keep ? (value << keep) | (old & ((1ull << keep) - 1)) : value;
+}
+
+u64 LoadDoubleRight(u32 address, u64 old) {
+    const u32 drop = (address & 7) * 8;
+    const u64 value = generated::ReadU64(address & ~7u);
+    return (value >> drop) | (old & ~(~0ull >> drop));
+}
+
+void StoreLeft(u32 address, u64 value, u32 size) {
+    const u32 offset = address & (size - 1), count = offset + 1;
+    const u64 data = (size == 8 ? value : value & 0xFFFFFFFFull) >> (8 * (size - count));
+    for (u32 i = 0; i < count; ++i)
+        generated::Write8(address - offset + i, (u32)(data >> (8 * i)) & 0xFF);
+}
+
+void StoreRight(u32 address, u64 value, u32 size) {
+    const u32 count = size - (address & (size - 1));
+    for (u32 i = 0; i < count; ++i)
+        generated::Write8(address + i, (u32)(value >> (8 * i)) & 0xFF);
+}
+
+}  // namespace lifted

@@ -34,6 +34,11 @@ class TestStubs(unittest.TestCase):
         m = machine([0x24020007, 0x0000000C, JR_RA, 0])
         self.assertEqual(m.call(BASE, ()), 0)
 
+    def test_sif_register_reads_reply_every_flag_set(self):
+        # addiu $v1, $zero, 0x7A (SifGetReg) ; syscall ; jr $ra ; nop
+        m = machine([0x2403007A, 0x0000000C, JR_RA, 0])
+        self.assertEqual(m.call(BASE, ()), -1)
+
     def test_mfc0_reads_zero(self):
         # addiu $v0, $zero, 7 ; mfc0 $v0, Count ; jr $ra ; nop
         m = machine([0x24020007, 0x40024800, JR_RA, 0])
@@ -73,6 +78,58 @@ class TestInstructions(unittest.TestCase):
     def test_ei_and_di_do_nothing(self):
         m = machine([0x42000038, 0x42000039, JR_RA, 0x24020007])   # ei ; di ; addiu $v0, 7
         self.assertEqual(m.call(BASE, ()), 7)
+
+    def test_sqrt_takes_its_operand_from_ft(self):
+        # sqrt.s $f2, $f12 ; jr $ra ; mfc1 $v0, $f2     ($f0 holds 0, $f12 holds 4)
+        m = machine([0x460C0084, JR_RA, 0x44021000])
+        self.assertEqual(m.call(BASE, (0,) * 8 + (bits(4.0),)) & 0xFFFFFFFF, bits(2.0))
+
+    UNALIGNED = 0x01800001          # one past an aligned address holding 00 11 22 ...
+
+    def _unaligned_machine(self, words):
+        m = machine(words)
+        m.memory.write(self.UNALIGNED - 1, bytes(range(0, 0x100, 0x11)))
+        return m
+
+    def test_word_load_pair_assembles_an_unaligned_word(self):
+        # lwl $v0, 3($a0) ; lwr $v0, 0($a0) ; jr $ra ; nop
+        m = self._unaligned_machine([0x88820003, 0x98820000, JR_RA, 0])
+        self.assertEqual(m.call(BASE, (self.UNALIGNED,)), 0x44332211)
+
+    def test_doubleword_load_pair_assembles_an_unaligned_doubleword(self):
+        # ldl $v0, 7($a0) ; ldr $v0, 0($a0) ; jr $ra ; nop
+        m = self._unaligned_machine([0x68820007, 0x6C820000, JR_RA, 0])
+        m.call(BASE, (self.UNALIGNED,))
+        self.assertEqual(m.regs[2], 0x8877665544332211)
+
+    def test_word_store_pair_writes_only_its_four_bytes(self):
+        # swl $a1, 3($a0) ; swr $a1, 0($a0) ; jr $ra ; nop
+        m = self._unaligned_machine([0xA8850003, 0xB8850000, JR_RA, 0])
+        m.call(BASE, (self.UNALIGNED, 0xDDCCBBAA))
+        self.assertEqual(m.memory.read(self.UNALIGNED - 1, 6),
+                         bytes([0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0x55]))
+
+    def test_pcpyld_reads_its_operands_before_writing(self):
+        # pcpyld $a0, $a0, $a1 ; jr $ra ; nop
+        m = machine([0x70852389, JR_RA, 0])
+        m.call(BASE, (0x1111, 0x2222))
+        self.assertEqual((m.regs[4], m.regs_hi[4]), (0x2222, 0x1111))
+
+    def test_break_traps(self):
+        m = machine([0x0000000D, JR_RA, 0])
+        with self.assertRaises(EmulationError):
+            m.call(BASE, ())
+
+    def test_lwu_zero_extends(self):
+        m = machine([0x9C820000, JR_RA, 0])             # lwu $v0, 0($a0)
+        m.memory.write_int(0x01800000, 0xFFFFFFF0, 4)
+        m.call(BASE, (0x01800000,))
+        self.assertEqual(m.regs[2], 0xFFFFFFF0)
+
+    def test_a_dma_poll_on_cop0_condition_ends(self):
+        # 0: bc0f 0 (to itself) ; nop ; jr $ra ; addiu $v0, $zero, 7
+        m = machine([0x4100FFFF, 0, JR_RA, 0x24020007])
+        self.assertEqual(m.call(BASE, (), max_instructions=100), 7)
 
     def test_doubleword_variable_shift_takes_the_amount_mod_64(self):
         dsllv = 0x00A41014                       # dsllv $v0, $a0, $a1
