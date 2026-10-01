@@ -17,11 +17,13 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 ELF_PATH = os.path.join(ROOT, "extracted", "SLUS_210.50")
 
-from b3lib.difftest import StringFunctionTester, ascii_corpus
+from b3lib.difftest import StringFunctionTester, StringTransformTester, ascii_corpus
 from b3lib.vdbhash import crc32_textbook, hash_name
 
 # Addresses of the original functions under test.
 ADDR_STRLEN = 0x001273E8
+ADDR_STRCPY = 0x001272D0
+ADDR_STRCAT = 0x00126EC8
 ADDR_HASH_NAME = 0x0021BFA0
 
 
@@ -35,7 +37,11 @@ class TestAgainstOriginal(unittest.TestCase):
         cls.elf = ElfFile.load(ELF_PATH)
         cls.machine = Machine.from_elf(cls.elf)
         cls.tester = StringFunctionTester(cls.machine)
+        cls.transform = StringTransformTester(cls.machine)
         cls.corpus = ascii_corpus()
+        # The transform tester multiplies each case by prefixes and alignments, so
+        # a trimmed corpus keeps the suite fast without losing the edge cases.
+        cls.short_corpus = [c for c in cls.corpus if len(c) <= 64][:12]
 
     def test_strlen_matches_len(self):
         """func_001273E8 is a SIMD strlen.
@@ -65,6 +71,51 @@ class TestAgainstOriginal(unittest.TestCase):
                 self.machine.call(ADDR_STRLEN, (addr,)), 7,
                 "wrong length at pointer alignment +%d" % adjust,
             )
+
+
+    def test_string_copy_matches_strcpy(self):
+        """func_001272D0 is a SIMD strcpy.
+
+        It tests alignment on `dest | source` together, because the quadword path
+        needs both pointers co-aligned.
+        """
+        report = self.transform.run(
+            "runtime::StringCopy", ADDR_STRCPY,
+            lambda prefix, src: src, self.short_corpus,
+        )
+        self.assertTrue(report.passed, report.detail())
+        self.assertGreaterEqual(report.cases_run, 40)
+
+    def test_string_append_matches_strcat(self):
+        """func_00126EC8 is a SIMD strcat.
+
+        Exercised against several existing destination contents, since the
+        function first has to locate the terminator already in `dest`.
+        """
+        report = self.transform.run(
+            "runtime::StringAppend", ADDR_STRCAT,
+            lambda prefix, src: prefix + src, self.short_corpus,
+            prefixes=(b"", b"Score", b"Material Properties"),
+        )
+        self.assertTrue(report.passed, report.detail())
+        self.assertGreaterEqual(report.cases_run, 120)
+
+    def test_string_writers_do_not_overrun(self):
+        """Neither writer may touch memory past the terminator it writes.
+
+        The vector paths legitimately *read* past the end, which is safe on PS2
+        hardware, but writing past it would corrupt the caller's buffer. The
+        transform tester checks the following byte on every case; this makes the
+        intent explicit.
+        """
+        for name, address, reference in (
+            ("StringCopy", ADDR_STRCPY, lambda p, s: s),
+            ("StringAppend", ADDR_STRCAT, lambda p, s: p + s),
+        ):
+            report = self.transform.run(
+                name, address, reference, [b"", b"a", b"x" * 17, b"y" * 33]
+            )
+            self.assertTrue(report.passed, report.detail())
 
     def test_hash_name_matches_reconstruction(self):
         """valuedb::HashName reproduces func_0021BFA0 exactly."""

@@ -69,9 +69,9 @@ address,name,status,source,notes
 0x00115580,ps2::SetSyscall,analyzed,,EE kernel service 0x74 (documented ABI); 3 callers
 0x00115590,ps2::MachineType_or_rfu,analyzed,,EE kernel service 0x5A (documented ABI); 2 callers
 0x001155D8,ps2::GetMemorySize_or_rfu,analyzed,,EE kernel service 0x5B (documented ABI); 1 callers
-0x00126EC8,runtime::StringAppend,analyzed,,strcat-like; used to build ValueDB paths
-0x001272D0,runtime::StringAssign,analyzed,,strcpy/init-like; first call in the path builder
-0x001273E8,valuedb::StringLength,verified,src/valuedb/string.cpp,"SIMD strlen; differential-tested, 32 cases + all 16 pointer alignments"
+0x00126EC8,runtime::StringAppend,verified,src/runtime/string.cpp,"SIMD strcat; verified, 180 cases across 3 prefixes x 5 alignments"
+0x001272D0,runtime::StringCopy,verified,src/runtime/string.cpp,"SIMD strcpy; verified, 60 cases across 5 alignments"
+0x001273E8,runtime::StringLength,verified,src/runtime/string.cpp,"SIMD strlen; verified, 32 cases + all 16 pointer alignments"
 0x00216A58,sceDbcSendData2,reconstructed,,Sony SDK (DBC/controller); named by its own diagnostic string
 0x0021B9B0,valuedb::LookupVariantC,analyzed,,third lookup entry point; 17 tuning-string call sites
 0x0021BB60,valuedb::LookupByPath,analyzed,,"assembles a slash-separated path from 3 parts, hashes it, then searches 32-byte records; 613 callers"
