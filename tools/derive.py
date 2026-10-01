@@ -68,8 +68,10 @@ from b3lib.symexec import (
 from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
 
 # Longer functions are not attempted. The limit was 96 while a full run took half
-# an hour; with the pipeline fast, 256 added 114 functions and 1.6% of the code.
-MAX_INSTRUCTIONS = 256
+# an hour; with the pipeline fast, 256 added 114 functions and 1.6% of the code,
+# and 512 six more large ones (0.2%). Beyond that the limit is not what stops
+# functions - path explosion is.
+MAX_INSTRUCTIONS = 512
 # Refusals that come from unrolling or enumerating a loop; such a function is
 # retried with loops derived as loops.
 LOOP_SHAPED = {"loop", "too many paths", "exploration budget exhausted",
