@@ -1,6 +1,6 @@
 # Decompilation progress
 
-_Generated 2026-10-01 07:54 from `SLUS_210.50`._
+_Generated 2026-10-01 08:07 from `SLUS_210.50`._
 
 ## Headline number
 
@@ -20,16 +20,16 @@ This is the only number that means anything on its own. The tiers below track wo
 | - found via prologue scan | 1,746 |
 | functions using VU0 macro mode | 703 |
 | strings recovered | 5,556 |
-| address cross-references | 8,171 |
+| address cross-references | 7,574 |
 | pointer tables (vtables/jump tables) | 95 |
 
 ## Progress by tier
 
 | tier | functions | share | code bytes | share |
 | --- | ---: | ---: | ---: | ---: |
-| `undecompiled` | 7,347 | 98.98% | 3,480,528 | 99.90% |
-| `analyzed` | 72 | 0.97% | 3,412 | 0.10% |
-| `identified` | 4 | 0.05% | 164 | 0.00% |
+| `undecompiled` | 7,347 | 98.98% | 3,104,084 | 99.88% |
+| `analyzed` | 72 | 0.97% | 3,412 | 0.11% |
+| `identified` | 4 | 0.05% | 164 | 0.01% |
 | `matched` | 0 | 0.00% | 0 | 0.00% |
 
 Tier meanings are defined in [METHODOLOGY.md](METHODOLOGY.md).

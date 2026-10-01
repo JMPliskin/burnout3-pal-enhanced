@@ -141,8 +141,15 @@ class ImageAnalyzer:
                 break
         return valid >= 2
 
-    def traverse(self, start: int, func: Function) -> None:
-        """Walk one function's control-flow graph, marking reachable bytes."""
+    def traverse(self, start: int, func: Function) -> set:
+        """Walk one function's control-flow graph, marking reachable bytes.
+
+        Returns the set of addresses proven to belong to this function, which the
+        caller turns into an extent.  The traversal itself must not decide the
+        extent: a tail jump or a shared epilogue can land far away, and treating
+        the furthest address reached as the end merges everything in between into
+        one enormous bogus function.
+        """
         queue = collections.deque([start])
         seen = set()
         max_addr = start
@@ -186,7 +193,42 @@ class ImageAnalyzer:
                     break
 
                 addr += 8 if ins.has_delay_slot else 4
-        func.end = max_addr + 4
+        return seen
+
+    # Alignment padding between functions is a short run of `nop`; bridging that
+    # much keeps a function whole without letting a real gap merge two of them.
+    MAX_PADDING_WORDS = 4
+
+    def extent_from(self, start: int, visited: set) -> int:
+        """Turn a traversal's visited set into a contiguous end address.
+
+        The body of a function is the unbroken run of its own instructions. A gap
+        means the run has ended - the next bytes belong to something else - except
+        when the gap is only `nop` padding inserted for alignment.
+        """
+        addr = start
+        end = start
+        while self.contains(addr):
+            if addr in visited:
+                addr += 4
+                end = addr
+                continue
+            # Look past a short run of nops for more of this function.
+            probe = addr
+            padding = 0
+            while (
+                self.contains(probe)
+                and padding < self.MAX_PADDING_WORDS
+                and self.word_at(probe) == 0
+                and probe not in visited
+            ):
+                probe += 4
+                padding += 1
+            if padding and self.contains(probe) and probe in visited:
+                addr = probe
+                continue
+            break
+        return max(end, start + 4)
 
     # -- stage 3: prologue scan ----------------------------------------
 
@@ -232,7 +274,11 @@ class ImageAnalyzer:
             func = Function(start=addr, confidence=confidence)
             func.callers = set(self.call_sites.get(addr, ()))
             self.functions[addr] = func
-            self.traverse(addr, func)
+            visited = self.traverse(addr, func)
+            func.end = self.extent_from(addr, visited)
+            func.instruction_count = sum(
+                1 for a in visited if func.start <= a < func.end
+            )
 
         # A second pass catches functions only reached indirectly.
         for addr in self.scan_prologues():
@@ -240,7 +286,11 @@ class ImageAnalyzer:
                 continue
             func = Function(start=addr, confidence=CONF_PROLOGUE)
             self.functions[addr] = func
-            self.traverse(addr, func)
+            visited = self.traverse(addr, func)
+            func.end = self.extent_from(addr, visited)
+            func.instruction_count = sum(
+                1 for a in visited if func.start <= a < func.end
+            )
             self.stats["prologue_found"] += 1
 
         self._tighten_bounds()
@@ -252,6 +302,9 @@ class ImageAnalyzer:
         for i, addr in enumerate(starts):
             func = self.functions[addr]
             limit = starts[i + 1] if i + 1 < len(starts) else self.end
+            # Clamp only. The extent already reflects the function's own
+            # contiguous code, so growing it here would reintroduce the merging
+            # this pass exists to prevent.
             if func.end > limit:
                 func.end = limit
             if func.end <= func.start:
