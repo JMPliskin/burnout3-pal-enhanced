@@ -34,6 +34,7 @@ from .symexec import (
     Store,
     Unsupported,
     _apply,
+    _LOAD_SIZES,
     _sign32,
     _STORE_SIZES,
     simplify,
@@ -44,6 +45,29 @@ from .symexec import (
 # of function this module is meant for.
 MAX_PATHS = 24
 MAX_PATH_LENGTH = 96
+
+# `$sp` is seeded with the same value the interpreter uses, so stack addresses fold
+# to constants and the frame can be modelled separately from real memory.
+#
+# This matters more than it looks. Over a thousand functions were refused purely for
+# reading `$sp`, because they have an ordinary prologue: reserve a frame, spill the
+# callee-saved registers, do the work, reload them, return. Modelling the frame makes
+# those spill/reload pairs cancel out, leaving the function's actual behaviour.
+from .emu import DEFAULT_STACK_TOP as STACK_TOP
+
+# How far below the stack top a reference is still considered part of the frame. A
+# function's own frame is far smaller than this; the bound exists so a wild address
+# is treated as real memory rather than silently absorbed into the frame model.
+MAX_FRAME_SIZE = 0x4000
+
+
+def _is_frame_address(expr) -> bool:
+    """True when an address is a constant inside the current stack frame."""
+    folded = simplify(expr)
+    if not isinstance(folded, Const):
+        return False
+    value = folded.value & MASK64
+    return STACK_TOP - MAX_FRAME_SIZE <= value <= STACK_TOP + 0x10
 
 
 @dataclasses.dataclass
@@ -156,18 +180,46 @@ def _condition_for(ins, get) -> Predicate:
     return Predicate(op, get(ins.rs), right)
 
 
-def _step(regs: dict, stores: list, ins, get) -> None:
-    """Apply one non-control instruction, recording a store if it is one."""
+def _step(regs: dict, stores: list, frame: dict, ins, get) -> None:
+    """Apply one non-control instruction.
+
+    Accesses that land in the stack frame are routed to `frame` rather than being
+    recorded as real memory effects, so a prologue's register spills and the
+    matching epilogue reloads cancel instead of appearing as writes the caller
+    could observe.
+    """
     m = ins.mnemonic
     if m in ("nop", "sync"):
         return
+
     if m in _STORE_SIZES:
         size = _STORE_SIZES[m]
-        if size == 16:
-            raise Unsupported("128-bit store")
         target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        if _is_frame_address(target):
+            # A spill. Record the full value regardless of width: a 128-bit `sq`
+            # of a callee-saved register is reloaded by a matching `lq`, and the
+            # expression model has no notion of the upper half, so the pair only
+            # cancels if the slot holds exactly what was written.
+            frame[(simplify(target).value & MASK64, size)] = get(ins.rt)
+            return
+        if size == 16:
+            raise Unsupported("128-bit store to real memory")
         stores.append(Store(target, get(ins.rt), size))
         return
+
+    if m in _LOAD_SIZES:
+        size, _signed_load = _LOAD_SIZES[m]
+        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        if _is_frame_address(target):
+            key = (simplify(target).value & MASK64, size)
+            if key not in frame:
+                # Reading a frame slot that was never written means the value came
+                # from the caller's frame - a stack argument - which this model does
+                # not carry.
+                raise Unsupported("reads an unwritten stack slot")
+            regs[ins.rt] = frame[key]
+            return
+
     if ins.is_branch or ins.is_jump or ins.is_call:
         raise Unsupported("branch in a delay slot")
     _apply(regs, ins, get)
@@ -188,7 +240,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
     paths = []
 
-    def walk(addr: int, regs: dict, stores: list, conditions: tuple, visited: frozenset):
+    def walk(addr: int, regs: dict, stores: list, frame: dict,
+             conditions: tuple, visited: frozenset):
         if len(paths) > MAX_PATHS:
             raise Unsupported("too many paths")
         if len(visited) > MAX_PATH_LENGTH:
@@ -211,7 +264,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if m == "jr":
                 if not ins.is_return:
                     raise Unsupported("indirect jump")
-                _step(regs, stores, DISASM.decode(word_at(addr + 4), addr + 4), get)
+                _step(regs, stores, frame,
+                      DISASM.decode(word_at(addr + 4), addr + 4), get)
                 paths.append(Path(conditions, _getter(regs)(2), tuple(stores)))
                 return
 
@@ -221,33 +275,55 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
-                _step(taken_regs, taken_stores, slot, _getter(taken_regs))
-                walk(ins.target, taken_regs, taken_stores,
+                taken_frame = dict(frame)
+                _step(taken_regs, taken_stores, taken_frame, slot, _getter(taken_regs))
+                walk(ins.target, taken_regs, taken_stores, taken_frame,
                      conditions + (predicate,), visited)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
+                fall_frame = dict(frame)
                 if not ins.is_likely:
-                    _step(fall_regs, fall_stores, slot, _getter(fall_regs))
-                walk(addr + 8, fall_regs, fall_stores,
+                    _step(fall_regs, fall_stores, fall_frame, slot, _getter(fall_regs))
+                walk(addr + 8, fall_regs, fall_stores, fall_frame,
                      conditions + (predicate.negate(),), visited)
                 return
 
             if m in ("b", "j"):
-                _step(regs, stores, DISASM.decode(word_at(addr + 4), addr + 4), get)
+                _step(regs, stores, frame,
+                      DISASM.decode(word_at(addr + 4), addr + 4), get)
                 addr = ins.target
                 continue
 
             if ins.is_jump or ins.is_call:
                 raise Unsupported("calls another function")
 
-            _step(regs, stores, ins, get)
+            _step(regs, stores, frame, ins, get)
             addr += 4
 
-    regs = {0: Const(0), 28: Const(gp_value)}
+    # Seed the registers to exactly the state the interpreter starts a call in, so
+    # a derivation and the differential test it is checked against begin from the
+    # same place.
+    #
+    # The callee-saved registers need values for a mundane reason: the prologue
+    # *reads* them in order to spill them. Without a value, every function with a
+    # frame was refused for "reads uninitialised register $16" or "$31". Seeding
+    # them lets the spill and its matching reload cancel out.
+    #
+    # The limitation to be honest about: a function that genuinely took a value in a
+    # callee-saved register would be derived as though that register were zero, and
+    # the differential test would still pass, because the interpreter also starts it
+    # at zero. The ABI says those registers are not parameters, so this does not
+    # arise in compiled code - but it is an assumption, not something proven here.
+    from .emu import RETURN_SENTINEL
+
+    regs = {0: Const(0), 28: Const(gp_value), 29: Const(STACK_TOP)}
+    for index in list(range(16, 24)) + [30]:   # $s0..$s7 and $fp
+        regs[index] = Const(0)
+    regs[31] = Const(RETURN_SENTINEL)          # $ra
     for i in range(4):
         regs[4 + i] = Arg(i)
-    walk(start, regs, [], (), frozenset())
+    walk(start, regs, [], {}, (), frozenset())
 
     if not paths:
         raise Unsupported("no return reached")
