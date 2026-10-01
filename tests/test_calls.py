@@ -255,5 +255,59 @@ class TestBarriers(unittest.TestCase):
         self.assertEqual(lines, ["Write32(arg0, 7);", "return ReadS32(arg1);"])
 
 
+
+class TestOutParameters(unittest.TestCase):
+    """f(): int local; fill(&local); return local + 1  - the callee writes the frame.
+
+    fill(p) stores 41 at *p. The caller's frame has to be real memory for that to
+    be seen, and the callee has to run clear of it.
+    """
+
+    def setUp(self):
+        fill = [addiu(V1, 0, 41), JR_RA, sw(V1, 0, A0)]
+        caller = [
+            addiu(SP, SP, -32),
+            sd(RA, 16, SP),
+            jal(BASE),
+            addiu(A0, SP, 0),                   # &local, in the delay slot
+            lw(V0, 0, SP),
+            addiu(V0, V0, 1),
+            ld(RA, 16, SP),
+            JR_RA,
+            addiu(SP, SP, 32),
+        ]
+        self.words = fill + caller
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+        self.caller = BASE + 4 * len(fill)
+        self.parameters = {BASE: (0,), self.caller: ()}
+
+    def derive(self):
+        return derive_paths(self.image, BASE, self.caller, BASE + 4 * len(self.words),
+                            known={}, parameters=self.parameters)
+
+    def test_out_parameter_is_read_back_after_the_call(self):
+        derivation = self.derive()
+        machine = Machine(BASE, self.image, 0x02000000 - BASE)
+        self.assertEqual(machine.call(self.caller, ()), 42)
+        machine.memory.begin_journal()
+        result = derivation.run((0,) * 16, Execution(machine))
+        machine.memory.rollback()
+        machine.memory.end_journal()
+        self.assertEqual(result, 42)
+
+    def test_emitted_code_allocates_a_guest_frame(self):
+        import derive
+
+        derive._SIGNATURES.clear()
+        derive._EXTERNS.clear()
+        lines = derive.render_body(self.derive())
+        self.assertTrue(lines[0].startswith("const u64 sp = StackEnter("), lines)
+        self.assertTrue(any(line.startswith("func_%08X(" % BASE) and "sp" in line
+                            for line in lines), lines)
+        self.assertTrue(lines[-2].startswith("StackLeave("), lines)
+        # The $ra spill is bookkeeping and must not be written to the guest stack.
+        self.assertFalse(any("0xDEAD0000" in line for line in lines), lines)
+
+
 if __name__ == "__main__":
     unittest.main()

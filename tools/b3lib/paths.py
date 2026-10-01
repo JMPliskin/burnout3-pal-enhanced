@@ -101,6 +101,8 @@ from .emu import DEFAULT_STACK_TOP as STACK_TOP
 # function's own frame is far smaller than this; the bound exists so a wild address
 # is treated as real memory rather than silently absorbed into the frame model.
 MAX_FRAME_SIZE = 0x4000
+# Where callees of a derived function run, clear of the function's own frame.
+CALLEE_STACK_TOP = STACK_TOP - MAX_FRAME_SIZE
 
 
 def _is_frame_address(expr) -> bool:
@@ -422,7 +424,10 @@ class Execution:
 
     def call(self, index, target, vector):
         self.flush()
-        self.machine.call(target, vector, max_instructions=self.budget)
+        # Below this function's frame, which may hold an out-parameter the callee
+        # writes - running the callee at the usual stack top would trample it.
+        self.machine.call(target, vector, max_instructions=self.budget,
+                          stack_top=CALLEE_STACK_TOP)
         self.results[index] = self.machine.get(2) & MASK64
         self.markers[index] = len(self.memory._journal)
 
@@ -621,6 +626,88 @@ class Overlay(dict):
         return self.epoch
 
 
+class Frame(dict):
+    """The function's stack frame: symbolic slots, until its address escapes.
+
+    While no callee can see it, the frame is a map of slots to the values written
+    there, and a spill and its reload simply cancel. Once a frame address is passed
+    to a function that is not derived - an out-parameter, `GetPosition(&local)` - the
+    callee can read and write it, so the frame has to become real memory: the
+    slots are flushed as stores and later accesses go to memory. Sixteen-byte
+    register spills stay symbolic; no callee touches a caller's saved registers.
+    """
+
+    def __init__(self, *args, escaped: bool = False, seeds=frozenset()):
+        super().__init__(*args)
+        self.escaped = escaped
+        # The values the walk invents for callee-saved registers and $ra on entry.
+        # Spilling one is bookkeeping, not data: flushing it would write a made-up
+        # value - the interpreter's return sentinel - into the guest stack.
+        self.seeds = seeds
+
+    def fork(self) -> "Frame":
+        return Frame(self, escaped=self.escaped, seeds=self.seeds)
+
+    def escape(self, stores: list, memory) -> None:
+        if self.escaped:
+            return
+        for (address, size), value in list(self.items()):
+            if size <= 8 and id(value) in self.seeds:
+                continue
+            if size <= 8:
+                store = Store(Const(address), value, size)
+                stores.append(store)
+                _record_store(memory, store.address, size, value)
+                del self[(address, size)]
+        self.escaped = True
+
+    def symbolic(self, address: int, size: int) -> bool:
+        """Whether an access is answered by the symbolic slots rather than memory."""
+        if not self.escaped:
+            return True
+        return size > 8 or any(
+            not (address + size <= written or written + width <= address)
+            for (written, width) in self)
+
+
+def _frame_write(frame: dict, address: int, size: int, value) -> None:
+    """Record a write to the stack frame, newest last."""
+    frame.pop((address, size), None)
+    frame[(address, size)] = value
+
+
+def _frame_read(frame: dict, address: int, size: int, signed: bool):
+    """A stack-frame read, answered from the newest write that covers it.
+
+    Slots used to be looked up by exact (address, width), so a value spilled 8
+    bytes wide and reloaded 4 bytes wide counted as never written, and a 4-byte
+    reload returned the whole 64-bit register instead of its sign-extended low
+    word. A same-width reload of an 8- or 16-byte spill still returns exactly what
+    was saved - a callee-saved register round trip must cancel - while a narrower
+    one takes the right bytes and extends them as the load does.
+    """
+    for (written, width), value in reversed(list(frame.items())):
+        if address + size <= written or written + width <= address:
+            continue
+        if not (written <= address and address + size <= written + width):
+            raise Unsupported("reads a partly overwritten stack slot")
+        if size == width and size >= 8:
+            return value
+        delta = address - written
+        if delta + size > 8:
+            raise Unsupported("reads beyond the modelled 64 bits of a stack slot")
+        if delta:
+            value = simplify(Binary("dshr", value, Const(8 * delta)))
+        return _forward(value, size, signed)
+    raise Unsupported("reads an unwritten stack slot")
+
+
+def _symbolic_frame(frame, target, size: int) -> bool:
+    if not isinstance(frame, Frame):
+        return True
+    return frame.symbolic(simplify(target).value & MASK64, size)
+
+
 def _drain(memory, marks: tuple) -> tuple:
     """Marks with any barriers the last step raised appended, in order."""
     if isinstance(memory, Overlay) and memory.raised:
@@ -680,8 +767,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
     if m == "swc1":
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         value = get(fpr(ins.rt))
-        if _is_frame_address(target):
-            frame[(simplify(target).value & MASK64, 4)] = value
+        if _is_frame_address(target) and _symbolic_frame(frame, target, 4):
+            _frame_write(frame, simplify(target).value & MASK64, 4, value)
             return
         stores.append(Store(target, value, 4))
         _record_store(memory, target, 4, value)
@@ -689,11 +776,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
 
     if m == "lwc1":
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
-        if _is_frame_address(target):
-            key = (simplify(target).value & MASK64, 4)
-            if key not in frame:
-                raise Unsupported("reads an unwritten stack slot")
-            regs[fpr(ins.rt)] = frame[key]
+        if _is_frame_address(target) and _symbolic_frame(frame, target, 4):
+            regs[fpr(ins.rt)] = _frame_read(frame, simplify(target).value & MASK64, 4, False)
             return
         # Float registers hold bit patterns, so this is an unsigned 32-bit read.
         regs[fpr(ins.rt)] = _read_through(memory, target, 4, False, epoch, len(stores))
@@ -702,12 +786,12 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
     if m in _STORE_SIZES:
         size = _STORE_SIZES[m]
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
-        if _is_frame_address(target):
+        if _is_frame_address(target) and _symbolic_frame(frame, target, size):
             # A spill. Record the full value regardless of width: a 128-bit `sq`
             # of a callee-saved register is reloaded by a matching `lq`, and the
             # expression model has no notion of the upper half, so the pair only
             # cancels if the slot holds exactly what was written.
-            frame[(simplify(target).value & MASK64, size)] = get(ins.rt)
+            _frame_write(frame, simplify(target).value & MASK64, size, get(ins.rt))
             return
         if size == 16:
             raise Unsupported("128-bit store to real memory")
@@ -719,14 +803,9 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
     if m in _LOAD_SIZES:
         size, signed_load = _LOAD_SIZES[m]
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
-        if _is_frame_address(target):
-            key = (simplify(target).value & MASK64, size)
-            if key not in frame:
-                # Reading a frame slot that was never written means the value came
-                # from the caller's frame - a stack argument - which this model does
-                # not carry.
-                raise Unsupported("reads an unwritten stack slot")
-            regs[ins.rt] = frame[key]
+        if _is_frame_address(target) and _symbolic_frame(frame, target, size):
+            regs[ins.rt] = _frame_read(frame, simplify(target).value & MASK64, size,
+                                       signed_load)
             return
         if memory:
             regs[ins.rt] = _read_through(memory, target, size, signed_load, epoch,
@@ -812,13 +891,24 @@ def _in_caller(expr, arguments, epoch: int, memo: dict):
     return substitute(expr, arguments)
 
 
-def _settle_for_callee(callee, arguments, memory, stores, marks) -> tuple:
+def _settle_for_callee(callee, arguments, memory, stores, marks, frame=None) -> tuple:
     """Make a known callee safe to inline; returns (epoch, marks).
 
     A callee's loads describe memory as it stood when it was entered, after the
     caller's stores. If one may read something the caller wrote, a barrier first
     applies those stores, and the callee's loads then read the new epoch.
+
+    A callee handed the address of one of the caller's locals reads and writes it
+    through memory, so the caller's frame escapes first, exactly as for a call
+    that is not inlined. Without this the inlined callee read real stack memory
+    while the caller's write sat in the symbolic frame - stale data that a
+    no-argument function's near-vacuous test let through.
     """
+    if isinstance(frame, Frame) and any(_is_frame_address(value)
+                                        for value in arguments.values()):
+        frame.escape(stores, memory)
+        memory.barrier(len(stores))
+        marks = _drain(memory, marks)
     try:
         _check_callee_loads_are_safe(callee, arguments, memory, memory.epoch)
     except Unsupported:
@@ -889,7 +979,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         return (parameters is not None and address not in parameters
                 and address not in known and base <= address < base + len(image) - 3)
 
-    def opaque_call(target: int, regs: dict, stores: list, marks: tuple, epoch: int):
+    def opaque_call(target: int, regs: dict, stores: list, marks: tuple, epoch: int,
+                    frame=None, memory=None):
         """Record a call to an underived function; returns (marks, new epoch).
 
         Only the arguments the callee reads are passed, and each must be known. A
@@ -905,7 +996,11 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if reg not in regs:
                 raise Unsupported("passes an argument it never set")
             if _is_frame_address(regs[reg]):
-                raise Unsupported("passes a stack address to an underived function")
+                # An out-parameter: the callee may read or write the frame, so from
+                # here on it is real memory.
+                if not isinstance(frame, Frame):
+                    raise Unsupported("passes a stack address to an underived function")
+                frame.escape(stores, memory)
             arguments.append((index, regs[reg]))
         call = Call(epoch + 1, target, tuple(arguments))
         for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
@@ -998,7 +1093,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
-                taken_frame, taken_memory = dict(frame), memory.fork()
+                taken_frame, taken_memory = frame.fork(), memory.fork()
                 _step(taken_regs, taken_stores, taken_frame, taken_memory,
                       slot, _getter(taken_regs), epoch)
                 walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
@@ -1007,7 +1102,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
-                fall_frame, fall_memory = dict(frame), memory.fork()
+                fall_frame, fall_memory = frame.fork(), memory.fork()
                 if not ins.is_likely:
                     _step(fall_regs, fall_stores, fall_frame, fall_memory,
                           slot, _getter(fall_regs), epoch)
@@ -1035,12 +1130,14 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                             "tail-calls an underived function: 0x%08X" % ins.target)
                     # A tail call to an underived function: call it, and its $v0
                     # is this function's result.
-                    marks, _epoch = opaque_call(ins.target, regs, stores, marks, epoch)
+                    marks, _epoch = opaque_call(ins.target, regs, stores, marks, epoch,
+                                                frame, memory)
                     paths.append(Path(conditions, regs[2], tuple(stores), marks))
                     return
                 callee = known[ins.target]
                 arguments = _call_arguments(regs)
-                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks)
+                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks,
+                                                  frame)
 
                 # Each route through the callee becomes a route through this
                 # function, since a tail call has no return of its own: the callee's
@@ -1074,7 +1171,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                           DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
                     marks = _drain(memory, marks)
                     marks, epoch = opaque_call(ins.target, regs, stores, marks,
-                                               memory.epoch)
+                                               memory.epoch, frame, memory)
                     # The callee may have written anything, so nothing this function
                     # wrote earlier can be forwarded to a later load any more.
                     memory = Overlay(epoch=epoch)
@@ -1088,7 +1185,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                       DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
                 marks = _drain(memory, marks)
                 arguments = _call_arguments(regs)
-                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks)
+                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks,
+                                                  frame)
 
                 # A callee with several paths multiplies the caller's: one caller
                 # path continues for each route through the callee, carrying that
@@ -1097,7 +1195,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 for callee_path in callee.paths:
                     branch_regs = dict(regs)
                     branch_stores = list(stores)
-                    branch_frame = dict(frame)
+                    branch_frame = frame.fork()
                     branch_memory = memory.fork()
                     before = len(stores)
                     extra = _apply_callee_path(
@@ -1152,7 +1250,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[reg] = Arg(i)
     for k, reg in enumerate(FLOAT_ARG_REGS):
         regs[fpr(reg)] = Arg(FLOAT_ARG_BASE + k)
-    walk(start, regs, [], {}, Overlay(), (), {})
+    seeds = frozenset(id(regs[index]) for index in list(range(16, 24)) + [30, 31])
+    walk(start, regs, [], Frame(seeds=seeds), Overlay(), (), {})
 
     if not paths:
         raise Unsupported("no return reached")
@@ -1169,4 +1268,33 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         # whose result is only meaningful on some routes, or a misread; either way
         # the signature is ambiguous, so refuse rather than choose.
         raise Unsupported("inconsistent void and value-returning paths")
-    return PathDerivation(start, tuple(paths))
+    derivation = PathDerivation(start, tuple(paths))
+    if not derivation.sequential and _touches_frame_memory(derivation):
+        # The frame is symbolic unless it escaped, and escaping always makes the
+        # derivation sequential. A frame address reaching memory any other way is
+        # a route this model does not account for, so refuse it rather than emit
+        # code that reads the stack at a fixed address.
+        raise Unsupported("accesses the stack frame through memory")
+    return derivation
+
+
+def _touches_frame_memory(derivation) -> bool:
+    roots = []
+    for path in derivation.paths:
+        roots += list(path.conditions)
+        if path.expression is not None:
+            roots.append(path.expression)
+        for store in path.stores:
+            if _is_frame_address(store.address):
+                return True
+            roots += [store.address, store.value]
+    seen, stack = set(), roots
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Load) and _is_frame_address(node.address):
+            return True
+        stack.extend(children(node))
+    return False

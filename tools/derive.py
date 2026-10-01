@@ -34,9 +34,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
-from b3lib.paths import Execution, PathDerivation, _relation, derive_paths
+from b3lib.paths import (STACK_TOP, Execution, PathDerivation, _is_frame_address,
+                         _relation, derive_paths)
 from b3lib import calls, structs, testmem, typed
 from b3lib.symexec import (
+    MASK64,
     Arg,
     Binary,
     CallResult,
@@ -352,9 +354,19 @@ class StatementEmitter:
         self.void = derivation.is_void
         self.replaced = {}        # id(original node) -> Temp
         self.counter = 0
+        self.frame_size = _frame_size([simplify(e) for e in self._expressions(self.tree)])
 
     def render(self) -> list:
-        return self._block(self.tree)
+        """The statements, with a guest stack frame around them if one is needed.
+
+        A function whose frame address escapes to a callee keeps its frame in guest
+        memory, so it allocates one: `sp` is its stack pointer, and every frame
+        address is rendered relative to it.
+        """
+        lines = self._block(self.tree)
+        if not self.frame_size:
+            return lines
+        return ["const u64 sp = StackEnter(0x%X);" % self.frame_size] + lines
 
     # -- capture -------------------------------------------------------------
 
@@ -371,7 +383,12 @@ class StatementEmitter:
             new = rebuild(node, [walk(child) for child in kids]) if kids else node
             memo[key] = new
             return new
-        return walk(expr)
+        result = walk(expr)
+        if not self.frame_size:
+            return result
+        # Frame addresses are often unfolded sums (`sp + 0x10` from an `addiu`), so
+        # they are found after folding; a constant one is relative to `sp` here.
+        return _relative_to_sp(simplify(result), self.frame_size)
 
     @staticmethod
     def _expressions(statements) -> list:
@@ -477,6 +494,10 @@ class StatementEmitter:
                 self.replaced = outer
                 lines.append("}")
             else:
+                if self.frame_size:
+                    # The frame's memory is left as it is, so the returned value can
+                    # still read it after the allocation is released.
+                    lines.append("StackLeave(0x%X);" % self.frame_size)
                 if self.void or statement[1] is None:
                     lines.append("return;")
                 else:
@@ -517,6 +538,44 @@ class StatementEmitter:
             return "%s;" % text
         temp = Temp("r%d" % call.index)
         return "const u64 %s = %s;" % (temp.name, text)
+
+
+def _relative_to_sp(expr, frame_size: int):
+    """`expr` with every constant frame address rewritten as `sp + offset`."""
+    memo = {}
+
+    def walk(node):
+        key = id(node)
+        if key in memo:
+            return memo[key]
+        kids = children(node)
+        if not kids and isinstance(node, Const) and _is_frame_address(node):
+            new = Binary("add", Temp("sp"),
+                         Const((node.value & MASK64) - (STACK_TOP - frame_size)))
+        else:
+            new = rebuild(node, [walk(child) for child in kids]) if kids else node
+        memo[key] = new
+        return new
+    return walk(expr)
+
+
+def _frame_size(expressions) -> int:
+    """Bytes of guest stack a derivation's frame addresses span, or 0 for none."""
+    lowest = None
+    seen = set()
+    stack = list(expressions)
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Const) and _is_frame_address(node):
+            address = node.value & MASK64
+            lowest = address if lowest is None else min(lowest, address)
+        stack.extend(children(node))
+    if lowest is None or lowest >= STACK_TOP:
+        return 0
+    return (STACK_TOP - lowest + 15) & ~15
 
 
 def _beyond(node, epoch: int) -> bool:

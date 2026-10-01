@@ -43,10 +43,15 @@ READ_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint
                                  ctypes.c_uint32)
 WRITE_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_uint32)
 CALL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32,
-                                 ctypes.POINTER(ctypes.c_uint64))
+                                 ctypes.POINTER(ctypes.c_uint64), ctypes.c_uint32)
 
 
 _BUILDS = 0
+
+from .emu import DEFAULT_STACK_TOP as STACK_TOP
+# Room left between the derived function's guest stack and a callee's.
+CALLEE_GAP = 0x100
+from .paths import CALLEE_STACK_TOP
 
 
 class CompilerUnavailable(Exception):
@@ -109,12 +114,15 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "",
         "typedef u64 (*ReadFn)(u32 address, u32 size, u32 is_signed);",
         "typedef void (*WriteFn)(u32 address, u64 value, u32 size);",
-        "typedef u64 (*CallFn)(u32 address, const u64* arguments);",
+        "typedef u64 (*CallFn)(u32 address, const u64* arguments, u32 stack_top);",
         "static ReadFn g_read;",
         "static WriteFn g_write;",
         "static CallFn g_call;",
+        "static u32 g_sp = 0x%08X;  /* the interpreter's default stack top */" % STACK_TOP,
         "",
         "namespace generated {",
+        "u64 StackEnter(u32 size) { g_sp -= size; return g_sp; }",
+        "void StackLeave(u32 size) { g_sp += size; }",
     ]
     # A callee that was not derived runs as the original machine code.
     for address, name, indices in externs:
@@ -123,7 +131,11 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         lines.append("    u64 vector[16] = {0};")
         for index in indices:
             lines.append("    vector[%d] = p%d;" % (index, index))
-        lines.append("    return g_call(0x%08X, vector);" % address)
+        # Callees run where the model runs them, or lower if nested derived
+        # functions have already used more guest stack than that.
+        lines.append("    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
+                     % (CALLEE_GAP, CALLEE_STACK_TOP, CALLEE_GAP, CALLEE_STACK_TOP))
+        lines.append("    return g_call(0x%08X, vector, top);" % address)
         lines.append("}")
     for name, size, signed in READERS:
         lines.append("u64 %s(u32 a) { return g_read(a, %d, %d); }" % (name, size, signed))
@@ -230,10 +242,10 @@ class CompiledFunctions:
         except Exception as exc:
             self.error = exc
 
-    def _on_call(self, address, arguments):
+    def _on_call(self, address, arguments, stack_top):
         try:
             self.machine.call(address, [arguments[i] for i in range(16)],
-                              max_instructions=self.budget)
+                              max_instructions=self.budget, stack_top=stack_top)
             return self.machine.get(2) & MASK64
         except Exception as exc:
             self.error = exc

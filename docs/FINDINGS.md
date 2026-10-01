@@ -525,6 +525,39 @@ Derived and verified rose from 1,835 to 2,020 functions; verified code from 2.60
 to 3.32% of code bytes. All 1,967 emitted functions agree when compiled, and the
 category no longer appears among the refusals.
 
+## The stack frame: widths, out-parameters, fragments
+
+Frame slots were looked up by exact address and width, so a value spilled 8 bytes
+wide and reloaded 4 bytes wide counted as never written, and a 4-byte reload
+returned the whole 64-bit register. Frame reads are now forwarded from the newest
+covering write and narrowed as the load narrows.
+
+Passing the address of a local to a callee - an out-parameter - used to be
+refused (594 functions). Now the frame *escapes*: its slots are flushed to memory
+and later accesses go to memory, so the callee's writes are seen. Spills of the
+entry values the model invents for saved registers are not flushed; they would
+write made-up values, the return sentinel among them, into the guest stack. In
+the emitted C++, such a function allocates guest stack (`StackEnter`/`StackLeave`)
+and addresses its frame relative to `sp`; verification runs its callees clear of
+that frame. A first version missed frame addresses that were still unfolded sums
+and emitted the model's stack address as a constant; the compiled check caught it.
+
+The same escape has to happen before an *inlined* callee is handed a local's
+address: without it the callee read stale stack memory, and a function taking no
+arguments passed its near-vacuous test anyway. Any frame address reaching memory
+in a derivation that did not escape is now refused outright.
+
+Most of the remaining "reads an unwritten stack slot" refusals are not stack
+arguments but *fragments*: pieces of larger functions that discovery accepted as
+entries (through jump tables), which restore registers from the enclosing
+function's frame. They are not worth deriving as functions.
+
+Derived and verified: 2,020 -> 2,157 functions; verified code 3.32% -> 3.86% of code bytes. All 2,102 emitted functions agree when
+compiled. Two functions that the pipeline drops (one disagreeing in the model, one
+compiled) agree when run alone; their callees most likely read a register the
+parameter analysis did not attribute to them, which then holds whatever the
+interpreter last left there. Verification catches such cases and drops them.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
