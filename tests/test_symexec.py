@@ -656,6 +656,110 @@ class TestTreeSize(unittest.TestCase):
         """Load's own `size` field (the access width) must not be shadowed."""
         self.assertEqual(Load(Arg(0), 4, False).size, 4)
 
+class TestAliasing(unittest.TestCase):
+    """Whether a load can be answered after earlier writes.
+
+    Addresses are compared as base + offset, with widths taken into account and
+    writes examined newest first.
+    """
+
+    def setUp(self):
+        from b3lib import paths
+
+        self.paths = paths
+
+    def rel(self, a, sa, b, sb):
+        return self.paths._relation(a, sa, b, sb)
+
+    def test_same_base_different_offsets_are_disjoint(self):
+        self.assertEqual(
+            self.rel(Binary("add", Arg(0), Const(4)), 4,
+                     Binary("add", Arg(0), Const(8)), 4),
+            "disjoint",
+        )
+
+    def test_same_base_same_offset_same_width_is_the_same_location(self):
+        a = Binary("add", Arg(0), Const(4))
+        self.assertEqual(self.rel(a, 4, a, 4), "same")
+
+    def test_widths_matter_with_constant_addresses(self):
+        """A 4-byte write at 0x100 covers 0x102.
+
+        The earlier check compared start addresses only and called these
+        independent.
+        """
+        self.assertEqual(self.rel(Const(0x100), 4, Const(0x102), 1), "overlap")
+        self.assertEqual(self.rel(Const(0x100), 4, Const(0x104), 4), "disjoint")
+
+    def test_widths_matter_with_a_shared_base(self):
+        self.assertEqual(
+            self.rel(Arg(0), 4, Binary("add", Arg(0), Const(2)), 2), "overlap"
+        )
+
+    def test_different_bases_are_unknown(self):
+        """Two pointers may point at the same place; nothing here can rule it out."""
+        self.assertEqual(self.rel(Arg(0), 4, Arg(1), 4), "unknown")
+        self.assertEqual(self.rel(Const(0x1000), 4, Arg(0), 4), "unknown")
+
+    def test_offsets_wrap_at_32_bits(self):
+        # base - 4 and base + 0: four bytes apart once wrapped, so disjoint.
+        below = Binary("add", Arg(0), Const(0xFFFFFFFC))
+        self.assertEqual(self.rel(below, 4, Arg(0), 4), "disjoint")
+        self.assertEqual(self.rel(below, 8, Arg(0), 4), "overlap")
+
+    def test_newest_write_wins(self):
+        """A later partial write must not be skipped by an older exact match.
+
+        Matching on exact address alone forwarded the first write here and missed
+        the byte written over part of it.
+        """
+        from b3lib.symexec import Unsupported
+
+        memory = {}
+        self.paths._record_store(memory, Arg(0), 4, Const(0x11223344))
+        self.paths._record_store(memory, Binary("add", Arg(0), Const(1)), 1, Const(0xAA))
+        with self.assertRaises(Unsupported):
+            self.paths._read_through(memory, Arg(0), 4, False)
+
+    def test_rewriting_a_location_makes_it_newest(self):
+        memory = {}
+        self.paths._record_store(memory, Arg(0), 4, Const(1))
+        self.paths._record_store(memory, Arg(1), 4, Const(2))
+        self.paths._record_store(memory, Arg(0), 4, Const(3))
+        self.assertEqual(list(memory)[-1], (Arg(0), 4))
+
+    def test_disjoint_writes_fall_through_to_entry_memory(self):
+        memory = {}
+        self.paths._record_store(memory, Binary("add", Arg(0), Const(8)), 4, Const(9))
+        result = self.paths._read_through(memory, Arg(0), 4, True)
+        self.assertIsInstance(result, Load)
+
+    def _read(self, addr, size, signed):
+        return 0
+
+    def test_forwarding_truncates_to_the_stored_width(self):
+        """`sb` then `lbu` yields the stored byte, not the whole register."""
+        memory = {}
+        self.paths._record_store(memory, Arg(0), 1, Const(0x1234))
+        value = self.paths._read_through(memory, Arg(0), 1, False)
+        self.assertEqual(value.evaluate((0, 0, 0, 0), self._read), 0x34)
+
+    def test_forwarding_sign_extends_signed_loads(self):
+        memory = {}
+        self.paths._record_store(memory, Arg(0), 1, Const(0x80))
+        value = self.paths._read_through(memory, Arg(0), 1, True)
+        self.assertEqual(value.evaluate((0, 0, 0, 0), self._read) & 0xFFFFFFFF,
+                         0xFFFFFF80)
+
+    def test_store_then_load_of_a_neighbouring_field_derives(self):
+        """The array-writing loops that motivated this: a write at arg0+4 no longer
+        blocks a read at arg0+8."""
+        # sw $a1, 4($a0) ; lw $v0, 8($a0) ; jr $ra ; nop
+        words = [enc_i(0x2B, 4, 5, 4), enc_i(0x23, 4, 2, 8), JR_RA, 0]
+        image = assemble(words)
+        result = self.paths.derive_paths(image, BASE, BASE, BASE + len(image))
+        self.assertIsInstance(simplify(result.paths[0].expression), Load)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

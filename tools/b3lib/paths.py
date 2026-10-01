@@ -32,6 +32,7 @@ from .symexec import (
     Expr,
     Load,
     Predicate,
+    SignExtend32,
     Store,
     Unsupported,
     FP_COND,
@@ -264,6 +265,107 @@ def _condition_for(ins, get):
     return Predicate(op, get(ins.rs), right)
 
 
+# -- memory aliasing ---------------------------------------------------------
+#
+# Every derived expression denotes a value in terms of memory as it stood on entry.
+# Once a function has written memory, a later load has to be answered by asking
+# which earlier write, if any, could have touched the bytes it reads. That needs a
+# notion of when two accesses provably do or do not overlap.
+#
+# Addresses are compared as *base + constant offset*. When two accesses share a base
+# expression, their relative position is known exactly even though the base's value
+# is not, so arg0+4 and arg0+8 can be proven apart. This is sound because a base
+# expression denotes an entry-state value: two structurally equal bases evaluate to
+# the same address at any point in the function. Accesses on different bases, such
+# as arg0+4 and arg1+4, may be the same location and are treated as unknown.
+
+ADDRESS_SPACE = 1 << 32
+
+
+def _split_address(address):
+    """Split an address into (base expression or None, offset modulo 2^32)."""
+    folded = simplify(address)
+    if isinstance(folded, Const):
+        return None, folded.value % ADDRESS_SPACE
+    if isinstance(folded, Binary) and folded.op == "add":
+        if isinstance(folded.right, Const):
+            return folded.left, folded.right.value % ADDRESS_SPACE
+        if isinstance(folded.left, Const):
+            return folded.right, folded.left.value % ADDRESS_SPACE
+    return folded, 0
+
+
+def _relation(first, first_size, second, second_size) -> str:
+    """How two accesses relate: 'same', 'disjoint', 'overlap' or 'unknown'.
+
+    Widths are part of the answer. Comparing start addresses alone - which an earlier
+    version did - would call a 4-byte write at 0x100 and a read at 0x102 independent.
+    Offsets are compared modulo 2^32, because that is how addresses wrap.
+    """
+    base_a, offset_a = _split_address(first)
+    base_b, offset_b = _split_address(second)
+    if (base_a is None) != (base_b is None):
+        return "unknown"
+    if base_a is not None and not (base_a is base_b or base_a == base_b):
+        return "unknown"
+    distance = (offset_b - offset_a) % ADDRESS_SPACE
+    if distance == 0 and first_size == second_size:
+        return "same"
+    if distance >= first_size and ADDRESS_SPACE - distance >= second_size:
+        return "disjoint"
+    return "overlap"
+
+
+def _record_store(memory: dict, target, size: int, value) -> None:
+    """Remember a write, keeping the overlay ordered from oldest to newest.
+
+    Re-inserting rather than assigning matters: a plain assignment to an existing
+    key keeps its original position, so a repeated write would look older than a
+    write that actually came after it.
+    """
+    key = (target, size)
+    memory.pop(key, None)
+    memory[key] = value
+
+
+def _forward(value, size: int, signed: bool):
+    """The value a load of `size` bytes sees after a store of exactly those bytes.
+
+    A store keeps only its low `size` bytes and the load then extends them, so
+    `sb` followed by `lbu` yields the stored byte - not the whole register, which is
+    what forwarding the raw value used to produce.
+    """
+    if size == 8:
+        return value
+    if size == 4:
+        return SignExtend32(value) if signed else Binary("and", value, Const(0xFFFFFFFF))
+    if size in (1, 2):
+        if signed:
+            shift = Const(64 - 8 * size)
+            return Binary("dsar", Binary("dshl", value, shift), shift)
+        return Binary("and", value, Const((1 << (8 * size)) - 1))
+    raise Unsupported("cannot forward a %d-byte store" % size)
+
+
+def _read_through(memory: dict, target, size: int, signed: bool):
+    """Answer a load given everything written so far.
+
+    Writes are examined newest first. The first one that could touch the loaded
+    bytes decides: an exact match is forwarded, a partial or unprovable overlap is
+    refused, and only if every write is provably elsewhere does the load read
+    entry-state memory. Matching on exact address alone - the earlier approach -
+    ignored a newer write that overlapped only part of an older one.
+    """
+    for (address, written_size), value in reversed(list(memory.items())):
+        relation = _relation(address, written_size, target, size)
+        if relation == "disjoint":
+            continue
+        if relation == "same":
+            return _forward(value, size, signed)
+        raise Unsupported("load may alias an earlier store")
+    return Load(target, size, signed)
+
+
 def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None:
     """Apply one non-control instruction.
 
@@ -289,7 +391,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
             frame[(simplify(target).value & MASK64, 4)] = value
             return
         stores.append(Store(target, value, 4))
-        memory[(target, 4)] = value
+        _record_store(memory, target, 4, value)
         return
 
     if m == "lwc1":
@@ -300,15 +402,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
                 raise Unsupported("reads an unwritten stack slot")
             regs[fpr(ins.rt)] = frame[key]
             return
-        if memory and (target, 4) in memory:
-            regs[fpr(ins.rt)] = memory[(target, 4)]
-            return
-        if memory and not (
-            isinstance(target, Const)
-            and all(isinstance(a, Const) and a.value != target.value for a, _z in memory)
-        ):
-            raise Unsupported("load may alias an earlier store")
-        regs[fpr(ins.rt)] = Load(target, 4, False)
+        # Float registers hold bit patterns, so this is an unsigned 32-bit read.
+        regs[fpr(ins.rt)] = _read_through(memory, target, 4, False)
         return
 
     if m in _STORE_SIZES:
@@ -325,11 +420,11 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
             raise Unsupported("128-bit store to real memory")
         value = get(ins.rt)
         stores.append(Store(target, value, size))
-        memory[(target, size)] = value
+        _record_store(memory, target, size, value)
         return
 
     if m in _LOAD_SIZES:
-        size, _signed_load = _LOAD_SIZES[m]
+        size, signed_load = _LOAD_SIZES[m]
         target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target):
             key = (simplify(target).value & MASK64, size)
@@ -341,18 +436,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
             regs[ins.rt] = frame[key]
             return
         if memory:
-            if (target, size) in memory:
-                # Exactly the location that was written: forward the stored value.
-                regs[ins.rt] = memory[(target, size)]
-                return
-            # Otherwise the load might or might not alias an earlier store. Proving
-            # it does not requires both addresses to be constants that differ;
-            # anything else is refused rather than assumed independent.
-            if not isinstance(target, Const) or not all(
-                isinstance(addr, Const) and addr.value != target.value
-                for addr, _size in memory
-            ):
-                raise Unsupported("load may alias an earlier store")
+            regs[ins.rt] = _read_through(memory, target, size, signed_load)
+            return
 
     if ins.is_branch or ins.is_jump or ins.is_call:
         raise Unsupported("branch in a delay slot")
@@ -404,16 +489,17 @@ def _check_callee_loads_are_safe(callee, arguments, memory: dict) -> None:
 
 
 def _loads_are_disjoint(expr, memory: dict) -> bool:
-    """True when every load in `expr` is at a constant address none of `memory` holds."""
+    """True when every load in `expr` is provably clear of every write in `memory`.
+
+    Uses the same base-plus-offset reasoning as an ordinary load. Forwarding is not
+    attempted across a call - a callee load that exactly matches a caller write is
+    still refused here - since that would need the callee's loads rewritten rather
+    than merely checked.
+    """
     if isinstance(expr, Load):
-        address = simplify(expr.address)
-        if not isinstance(address, Const):
-            return False
-        if any(
-            not isinstance(written, Const) or written.value == address.value
-            for written, _size in memory
-        ):
-            return False
+        for (written, written_size) in memory:
+            if _relation(written, written_size, expr.address, expr.size) != "disjoint":
+                return False
     return all(_loads_are_disjoint(child, memory) for child in children(expr))
 
 
@@ -426,7 +512,7 @@ def _apply_callee_path(callee_path, arguments, stores: list, memory: dict) -> tu
             store.size,
         )
         stores.append(moved)
-        memory[(moved.address, moved.size)] = moved.value
+        _record_store(memory, moved.address, moved.size, moved.value)
     return tuple(
         simplify(substitute(condition, arguments))
         for condition in callee_path.conditions
