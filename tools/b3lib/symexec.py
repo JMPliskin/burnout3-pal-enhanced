@@ -225,17 +225,52 @@ _LOAD_SIZES = {
 }
 
 
+_STORE_SIZES = {"sb": 1, "sh": 2, "sw": 4, "sd": 8, "sq": 16}
+
+
+@dataclasses.dataclass(frozen=True)
+class Store:
+    """One memory write a function performs, as a pair of expressions."""
+
+    address: Expr
+    value: Expr
+    size: int
+
+    def render(self) -> str:
+        kind = {1: "u8", 2: "u16", 4: "u32", 8: "u64", 16: "u128"}[self.size]
+        return "*(%s*)(%s) = %s;" % (
+            kind, simplify(self.address).render(), simplify(self.value).render()
+        )
+
+
 @dataclasses.dataclass
 class Derivation:
     address: int
     expression: Expr
     instructions: int
+    stores: tuple = ()
 
     def render(self) -> str:
-        return "return %s;" % simplify(self.expression).render()
+        lines = [store.render() for store in self.stores]
+        lines.append("return %s;" % simplify(self.expression).render())
+        return "\n".join(lines)
 
     def evaluate(self, args, read) -> int:
         return _sign32(simplify(self.expression).evaluate(args, read) & MASK32)
+
+    def evaluate_stores(self, args, read) -> list:
+        """Resolve each store to a concrete (address, value, size) triple.
+
+        Addresses and values are evaluated against the state *before* any store is
+        applied, which is correct only because a derivation is refused if it ever
+        loads from an address it has already written - see `derive`.
+        """
+        out = []
+        for store in self.stores:
+            address = simplify(store.address).evaluate(args, read) & MASK32
+            value = simplify(store.value).evaluate(args, read)
+            out.append((address, value & ((1 << (store.size * 8)) - 1), store.size))
+        return out
 
 
 def derive(image: bytes, base: int, start: int, end: int) -> Derivation:
@@ -243,6 +278,7 @@ def derive(image: bytes, base: int, start: int, end: int) -> Derivation:
     regs = {0: Const(0)}
     for i in range(4):
         regs[4 + i] = Arg(i)
+    stores = []
 
     def get(index: int) -> Expr:
         if index == 0:
@@ -271,14 +307,37 @@ def derive(image: bytes, base: int, start: int, end: int) -> Derivation:
             if slot_addr < end:
                 slot_word = struct.unpack_from("<I", image, slot_addr - base)[0]
                 slot = DISASM.decode(slot_word, slot_addr)
-                if slot.mnemonic not in ("nop", "sync"):
+                if slot.mnemonic in _STORE_SIZES:
+                    size = _STORE_SIZES[slot.mnemonic]
+                    if size == 16:
+                        raise Unsupported("128-bit store")
+                    target = simplify(
+                        Binary("add", get(slot.rs), Const(slot.imm & MASK64))
+                    )
+                    stores.append(Store(target, get(slot.rt), size))
+                elif slot.mnemonic not in ("nop", "sync"):
                     _apply(regs, slot, get)
-            return Derivation(start, get(2), count + 1)
+            return Derivation(start, get(2), count + 1, tuple(stores))
 
         if ins.is_branch or ins.is_jump:
             raise Unsupported("control flow: %s" % m)
-        if ins.flags & 0x40:  # Flags.STORE
-            raise Unsupported("writes memory")
+
+        if m in _STORE_SIZES:
+            size = _STORE_SIZES[m]
+            if size == 16:
+                # A quadword store needs the upper half of the register, which the
+                # expression model does not carry.
+                raise Unsupported("128-bit store")
+            target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+            stores.append(Store(target, get(ins.rt), size))
+            addr += 4
+            continue
+
+        if ins.mnemonic in _LOAD_SIZES and stores:
+            # Loading after storing would make the result depend on the order the
+            # stores were applied, which `evaluate_stores` does not model. Rare
+            # enough to refuse rather than complicate.
+            raise Unsupported("loads after a store")
 
         _apply(regs, ins, get)
         addr += 4

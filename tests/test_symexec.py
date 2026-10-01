@@ -160,5 +160,46 @@ class TestDerive(unittest.TestCase):
             derive(assemble(words), BASE, BASE, BASE + 12)
 
 
+
+
+class TestEmitterSelfCheck(unittest.TestCase):
+    """The generated source must not reference undeclared parameters.
+
+    An earlier version of the emitter built each signature from the return
+    expression only, so arguments used solely inside a store went undeclared and
+    the output could not compile. Nothing caught it until a human read the file,
+    which is not a check.
+    """
+
+    def setUp(self):
+        from derive import check_signatures
+
+        self.check = check_signatures
+
+    def test_rejects_an_undeclared_argument(self):
+        bad = "s32 func_00ABCDEF(u32 arg0) {\n    return arg1 + arg0;\n}\n"
+        with self.assertRaises(SystemExit):
+            self.check(bad)
+
+    def test_accepts_a_complete_signature(self):
+        good = "s32 func_00ABCDEF(u32 arg0, u32 arg1) {\n    return arg1 + arg0;\n}\n"
+        self.check(good)
+
+    def test_accepts_a_function_with_no_arguments(self):
+        self.check("s32 func_00ABCDEF(void) {\n    return 1;\n}\n")
+
+    def test_checks_store_bodies_too(self):
+        bad = (
+            "s32 func_00ABCDEF(u32 arg0) {\n"
+            "    const u32 addr0 = arg0 + 8;\n"
+            "    const u64 val0 = arg2;\n"
+            "    Write32(addr0, val0);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        with self.assertRaises(SystemExit):
+            self.check(bad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

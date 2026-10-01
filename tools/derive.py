@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 
@@ -59,6 +60,8 @@ READERS = {
     (4, True): "ReadS32", (4, False): "ReadU32",
     (8, False): "ReadU64",
 }
+
+WRITERS = {1: "Write8", 2: "Write16", 4: "Write32", 8: "Write64"}
 
 
 def used_args(expr) -> set:
@@ -131,14 +134,40 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         tested = 0
         failed = False
         for args in arg_sets:
+            # A function with stores is only verified if its *memory effects* match
+            # too, so snapshot the scratch region, let the original run, and then
+            # check that applying the derived stores to the same starting state
+            # reproduces exactly what the original produced.
+            before = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
             try:
                 expected = machine.call(func["addr"], args)
-                actual = derivation.evaluate(args, read)
             except (EmulationError, Exception):
+                machine.memory.write(SCRATCH, before)
                 failed = True
                 break
+            after = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
+
+            machine.memory.write(SCRATCH, before)
+            try:
+                actual = derivation.evaluate(args, read)
+                writes = derivation.evaluate_stores(args, read)
+            except Exception:
+                machine.memory.write(SCRATCH, before)
+                failed = True
+                break
+            for address, value, size in writes:
+                try:
+                    machine.memory.write_int(address, value, size)
+                except Exception:
+                    failed = True
+                    break
+            replayed = bytes(machine.memory.read(SCRATCH, SCRATCH_SIZE))
+            machine.memory.write(SCRATCH, before)
+            if failed:
+                break
+
             tested += 1
-            if expected != actual:
+            if expected != actual or replayed != after:
                 rejected["mismatch"] += 1
                 failed = True
                 break
@@ -156,6 +185,9 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         # would inflate the figure. Those are still derived and almost certainly
         # right, but the evidence is weaker, so they land a tier lower.
         argument_dependent = bool(used_args(derivation.expression))
+        for store in derivation.stores:
+            if used_args(store.address) or used_args(store.value):
+                argument_dependent = True
         verified.append((func, derivation, tested, argument_dependent))
     return verified, rejected
 
@@ -188,10 +220,22 @@ def emit(verified, out_dir: str, source_name: str) -> None:
     lines.append("")
 
     for func, derivation, tested, strong in verified:
-        args = sorted(used_args(derivation.expression))
+        # Arguments can appear only inside a store, so the signature has to be
+        # built from the stores as well as the return expression - otherwise the
+        # emitted function references an undeclared parameter and will not compile.
+        args = set(used_args(derivation.expression))
+        for store in derivation.stores:
+            args |= used_args(store.address)
+            args |= used_args(store.value)
+        args = sorted(args)
         params = ", ".join("u32 arg%d" % i for i in args) or "void"
         try:
             body = render_cpp(derivation.expression)
+            for store in derivation.stores:
+                if store.size not in WRITERS:
+                    raise Unsupported("no writer for %d-byte store" % store.size)
+                render_cpp(store.address)
+                render_cpp(store.value)
         except Unsupported:
             continue
         lines.append(
@@ -204,14 +248,58 @@ def emit(verified, out_dir: str, source_name: str) -> None:
             )
         )
         lines.append("s32 func_%08X(%s) {" % (func["addr"], params))
-        lines.append("    return %s;" % body)
+        if derivation.stores:
+            # Every expression was derived against memory as it stood on entry, so
+            # the values have to be captured *before* any write lands. Emitting the
+            # stores first would change the meaning whenever a function reads and
+            # writes the same location - which is exactly what an increment does.
+            lines.append("    /* Captured before any store: the derived expressions")
+            lines.append("       all refer to memory as it was on entry. */")
+            lines.append("    const s32 result = %s;" % body)
+            for index, store in enumerate(derivation.stores):
+                lines.append("    const u32 addr%d = %s;" % (index, render_cpp(store.address)))
+                lines.append("    const u64 val%d = %s;" % (index, render_cpp(store.value)))
+            for index, store in enumerate(derivation.stores):
+                lines.append("    %s(addr%d, val%d);" % (WRITERS[store.size], index, index))
+            lines.append("    return result;")
+        else:
+            lines.append("    return %s;" % body)
         lines.append("}")
         lines.append("")
 
     lines.append("}  // namespace generated")
+    text = "\n".join(lines) + "\n"
+    check_signatures(text)
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-    print("wrote %s (%d functions)" % (path, len(verified)))
+        handle.write(text)
+    print("wrote %s (%d functions, signature self-check passed)"
+          % (path, len(verified)))
+
+
+def check_signatures(text: str) -> None:
+    """Refuse to write source that references an undeclared argument.
+
+    An earlier version built each parameter list from the return expression alone
+    and so emitted functions using arguments that appear only inside a store. That
+    source could not compile, and nothing caught it until the output was read by
+    eye - which is not a check. This makes it one.
+    """
+    problems = []
+    pattern = re.compile(r"^s32 (func_[0-9A-F]+)\(([^)]*)\) \{\n(.*?)^\}$", re.S | re.M)
+    for match in pattern.finditer(text):
+        name, signature, body = match.groups()
+        declared = set(re.findall(r"arg(\d)", signature))
+        used = set(re.findall(r"arg(\d)", body))
+        missing = sorted(used - declared)
+        if missing:
+            problems.append(
+                "%s uses undeclared %s"
+                % (name, ", ".join("arg" + index for index in missing))
+            )
+    if problems:
+        raise SystemExit(
+            "refusing to write generated source:\n  " + "\n  ".join(problems)
+        )
 
 
 def main(argv=None) -> int:
