@@ -270,6 +270,43 @@ def _sign32(value: int) -> int:
     return value - (1 << 32) if value & 0x80000000 else value
 
 
+def substitute(expr: Expr, arguments) -> Expr:
+    """Rewrite a derivation's `Arg` nodes with the caller's actual expressions.
+
+    This is what makes a derived callee usable at a call site: the callee's result
+    is expressed in terms of `arg0..arg3`, and inlining it means replacing those
+    with whatever the caller had in `$a0..$a3` at the moment of the call.
+
+    `arguments` maps an argument index to an expression. An index with no entry is
+    left as-is, which keeps the result honest: if a callee reads an argument the
+    caller never set, that shows up as a stray `argN` rather than silently becoming
+    zero.
+    """
+    if isinstance(expr, Arg):
+        return arguments.get(expr.index, expr)
+    if isinstance(expr, Load):
+        return Load(substitute(expr.address, arguments), expr.size, expr.signed)
+    if isinstance(expr, Binary):
+        return Binary(
+            expr.op,
+            substitute(expr.left, arguments),
+            substitute(expr.right, arguments),
+        )
+    if isinstance(expr, Compare):
+        return Compare(
+            expr.op,
+            substitute(expr.left, arguments),
+            substitute(expr.right, arguments),
+        )
+    if isinstance(expr, Predicate):
+        return Predicate(
+            expr.op,
+            substitute(expr.left, arguments),
+            substitute(expr.right, arguments),
+        )
+    return expr
+
+
 def simplify(expr: Expr) -> Expr:
     """Fold constants and drop identities, so the output reads like source.
 

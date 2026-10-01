@@ -35,6 +35,7 @@ from .symexec import (
     Unsupported,
     _apply,
     _LOAD_SIZES,
+    substitute,
     _sign32,
     _STORE_SIZES,
     simplify,
@@ -225,9 +226,23 @@ def _step(regs: dict, stores: list, frame: dict, ins, get) -> None:
     _apply(regs, ins, get)
 
 
+# Registers a call may clobber. After inlining a callee these are dropped rather
+# than left holding stale values: if the caller then reads one, the derivation is
+# refused instead of quietly using a value the real code would not have had.
+CALLER_SAVED = tuple(range(2, 4)) + tuple(range(4, 8)) + tuple(range(8, 16)) + (24, 25)
+
+
 def derive_paths(image: bytes, base: int, start: int, end: int,
-                 gp_value: int = None) -> PathDerivation:
-    """Derive a function as guarded paths, handling acyclic control flow."""
+                 gp_value: int = None, known: dict = None) -> PathDerivation:
+    """Derive a function as guarded paths, handling acyclic control flow.
+
+    `known` maps an address to an already-derived `PathDerivation`. A call to one of
+    those is inlined - its result substituted with the caller's arguments - which is
+    what lets derivation progress up the call graph instead of stopping at the first
+    `jal`. Only single-path callees are inlined, so a conditional callee cannot
+    multiply the caller's path count.
+    """
+    known = known or {}
     if gp_value is None:
         from .emu import GP_VALUE
 
@@ -295,8 +310,39 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 addr = ins.target
                 continue
 
-            if ins.is_jump or ins.is_call:
-                raise Unsupported("calls another function")
+            if ins.is_call:
+                if ins.target < 0 or ins.target not in known:
+                    raise Unsupported("calls another function")
+                callee = known[ins.target]
+                if not callee.is_straight_line:
+                    raise Unsupported("calls a conditional function")
+
+                # The delay slot runs before the call, and often sets the last
+                # argument, so apply it first.
+                _step(regs, stores, frame,
+                      DISASM.decode(word_at(addr + 4), addr + 4), get)
+                get = _getter(regs)
+
+                arguments = {}
+                for index in range(4):
+                    if 4 + index in regs:
+                        arguments[index] = regs[4 + index]
+                inlined = callee.paths[0]
+                for store in inlined.stores:
+                    stores.append(Store(
+                        simplify(substitute(store.address, arguments)),
+                        simplify(substitute(store.value, arguments)),
+                        store.size,
+                    ))
+                result = simplify(substitute(inlined.expression, arguments))
+                for index in CALLER_SAVED:
+                    regs.pop(index, None)
+                regs[2] = result
+                addr += 8
+                continue
+
+            if ins.is_jump:
+                raise Unsupported("unhandled jump")
 
             _step(regs, stores, frame, ins, get)
             addr += 4

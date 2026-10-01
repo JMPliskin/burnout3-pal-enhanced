@@ -163,7 +163,18 @@ def render_body(derivation) -> list:
     return lines
 
 
-def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
+def collect(database: dict, image: bytes, base: int, machine: Machine,
+            max_passes: int = 6, verbose: bool = True) -> tuple:
+    """Derive and verify, repeating until no further functions become derivable.
+
+    Derivation runs to a fixed point because a call can only be inlined once its
+    callee has been derived. Each pass therefore unlocks the callers of whatever the
+    previous pass proved, and the process stops when a pass adds nothing.
+
+    Only *verified* derivations are offered for inlining. Building on an unverified
+    one would let a single bad derivation propagate into everything above it, and
+    the whole point of the pipeline is that nothing unchecked gets used.
+    """
     rng = random.Random(0xB3)
     machine.memory.write(SCRATCH, bytes(rng.randrange(256) for _ in range(SCRATCH_SIZE)))
 
@@ -171,20 +182,58 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         return machine.memory.read_int(addr, size, signed)
 
     verified, rejected = [], {"unsupported": 0, "untestable": 0, "mismatch": 0}
-    for func in database["functions"]:
-        if func["size"] // 4 > MAX_INSTRUCTIONS or not func["has_return"]:
-            continue
+    known = {}
+    done = set()
+    candidates = [
+        f for f in database["functions"]
+        if f["size"] // 4 <= MAX_INSTRUCTIONS and f["has_return"]
+    ]
+
+    for pass_number in range(1, max_passes + 1):
+        added = 0
+        pass_rejected = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+        for func in candidates:
+            if func["addr"] in done:
+                continue
+            outcome = _attempt(func, image, base, machine, read, known, pass_rejected)
+            if outcome is None:
+                continue
+            done.add(func["addr"])
+            verified.append(outcome)
+            known[func["addr"]] = outcome[1]
+            added += 1
+        if verbose:
+            print("  pass %d: +%d derived and verified (total %d)"
+                  % (pass_number, added, len(verified)))
+        if added == 0:
+            # The last pass's refusal counts are the ones that describe what is
+            # actually left, so keep those rather than the first pass's.
+            rejected = pass_rejected
+            break
+        rejected = pass_rejected
+    return verified, rejected
+
+
+def _attempt(func, image, base, machine, read, known, rejected):
+    """Try to derive and verify one function; returns the record or None."""
+    if True:
         try:
-            derivation = derive_paths(image, base, func["addr"], func["end"])
+            derivation = derive_paths(
+                image, base, func["addr"], func["end"], known=known
+            )
         except Unsupported:
             rejected["unsupported"] += 1
-            continue
+            return None
         except Exception:
             rejected["unsupported"] += 1
-            continue
+            return None
 
+        # Seeded from the address so argument sets are stable across passes: a
+        # function retried in a later pass must be tested on the same inputs, or a
+        # pass-dependent result would be impossible to reproduce.
+        local_rng = random.Random(func["addr"])
         arg_sets = [
-            tuple(SCRATCH + rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(4))
+            tuple(SCRATCH + local_rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(4))
             for _ in range(ARG_SETS - 1)
         ]
         arg_sets.append((SCRATCH, SCRATCH + 16, SCRATCH + 32, SCRATCH + 48))
@@ -230,11 +279,8 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
                 failed = True
                 break
         if failed or tested < 5:
-            if not failed:
-                rejected["untestable"] += 1
-            elif rejected["mismatch"] == 0:
-                rejected["untestable"] += 1
-            continue
+            rejected["untestable"] += 1
+            return None
 
         # Only count a function as verified when the test actually varied
         # something. If the expression ignores its arguments - a constant, or a
@@ -246,8 +292,7 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         # mentions an argument, even when every returned value is constant: the
         # test then genuinely exercised different routes.
         argument_dependent = bool(derivation_args(derivation))
-        verified.append((func, derivation, tested, argument_dependent))
-    return verified, rejected
+        return (func, derivation, tested, argument_dependent)
 
 
 def emit(verified, out_dir: str, source_name: str) -> None:
