@@ -78,6 +78,34 @@ is unusually lucky - most stripped retail binaries do not retain `.comment`, and
 identifying the compiler by fingerprinting code generation is normally weeks of
 work and the first hurdle of any matching decompilation.
 
+### A VU disassembler, and how far it gets
+
+`tools/b3lib/vu.py` decodes microcode bundles; `tools/vudis.py` drives it. Current
+coverage, with all-zero padding excluded so it cannot flatter the numbers:
+
+| blob | real bundles | upper decoded | lower decoded | microprograms |
+| --- | ---: | ---: | ---: | ---: |
+| `SLUS_210.50` region | 13,465 | 85.9% | 34.2% | 173 |
+| `NFSUNDER.ELF` `.vutext` | 1,955 | 85.4% | 51.8% | 16 |
+| `NTGUI_UC.ELF` `.vutext` | 223 | 73.1% | 37.2% | 6 |
+
+Excluding padding matters: a zero upper word decodes as `addx`, so counting zero
+bundles as successes would make a block of padding look fully understood.
+
+Finding the bundle layout settled one thing and corrected another. The layout is
+lower word first, then upper - confirmed by the padding bundle appearing as
+`8000033C 400002FF` in the real section. And the lower opcode is **seven** bits
+wide, bits 31..25, not six: masking it to six collapses the special group (`0x40`,
+where the integer ALU and elementary-function unit live) onto opcode `0x00`, which
+made thousands of real instructions undecodable. Fixing that moved lower coverage
+from 26.5% to 34.2%.
+
+The upper (FMAC) pipeline is in good shape at ~86%. The lower slot is not, and the
+gap is concentrated in a handful of opcode values. Those are deliberately left as
+`.word` rather than filled in by inference: a plausible-looking wrong mnemonic in
+a geometry routine is far more damaging than an obvious hole, since it would be
+believed. Closing them needs the authoritative VU instruction tables.
+
 Two consequences:
 
 * Matching is a realistic goal, *provided* `mwccmips` 2.4.1.01 can be obtained.
