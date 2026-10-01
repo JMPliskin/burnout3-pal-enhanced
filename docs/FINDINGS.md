@@ -175,6 +175,45 @@ by the caller. That context is not recoverable from the call sites alone, which
 is why static reconstruction stops here. Options from this point are to emulate
 the lookup path, or to find the authored `.cfg` files if any survive.
 
+## The other two executables
+
+Running the same pipeline over the sibling executables validates the tooling and,
+more usefully, reveals structure the main executable has had stripped out.
+
+| executable | functions | code coverage | end in `jr $ra` | VU0 users | strings |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `SLUS_210.50` | 9,163 | 86.2% | 99.7% | 796 | 5,556 |
+| `NFSUNDER.ELF` | 10,329 | 92.1% | 99.8% | 398 | 2,441 |
+| `NTGUI_UC.ELF` | 3,098 | 89.3% | 99.8% | 18 | 770 |
+
+The return rate holding at 99.7-99.8% across three independently built binaries is
+reasonable evidence that the discovery heuristics are sound rather than tuned to
+one image.
+
+### These two keep their section names
+
+Unlike the game executable, both retain a section header table:
+
+| | `.text` | `.vutext` | `.DVP.overlay.*` |
+| --- | ---: | ---: | ---: |
+| `NFSUNDER.ELF` | 2,566,272 | 20,624 | 8 sections |
+| `NTGUI_UC.ELF` | 741,416 | 1,792 | 2 sections |
+
+`.vutext` holds **VU microcode** - instructions for the Vector Units, which are not
+MIPS and need a separate disassembler. `.DVP.overlay.*` sections are DMA/VIF
+packet overlays, the microprograms uploaded to VU1. In `NFSUNDER.ELF` `.vutext`
+begins at `0x00372880`, immediately after `.text` ends, so this toolchain lays
+VU microcode directly behind the MIPS code.
+
+That is a useful lead for the game executable: it almost certainly contains an
+equivalent region, and locating it matters for a port, since VU1 does most of the
+geometry work. It also explains part of the 13.8% of the image not proven to be
+MIPS code - some of it is not MIPS at all.
+
+`NFSUNDER.ELF` is the bundled *Need for Speed Underground 2* demo, a different EA
+studio's codebase: it carries no RenderWare `$Id` tags, so it does not share the
+game's middleware.
+
 ## Middleware: RenderWare 3.6
 
 The binary retains RCS `$Id:` tags naming the exact SDK sources linked in:
