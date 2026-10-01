@@ -23,23 +23,31 @@ executable, with no third-party dependencies.
 * 5,556 strings, 8,171 address cross-references, 95 pointer tables
 * Annotated assembly generated for every function
 
-## Phase 2 - Establish a matching toolchain **[blocked - highest priority]**
+## Phase 2 - Establish a matching toolchain **[compiler identified; sourcing blocked]**
 
-Nothing can reach `matched` until this is solved, so it gates the entire
-project. See [METHODOLOGY.md](METHODOLOGY.md#the-toolchain-problem).
+Nothing can reach `matched` until this is finished, so it gates the entire
+project. See [METHODOLOGY.md](METHODOLOGY.md#the-toolchain).
 
-* Identify the original compiler (SN Systems ProDG or Metrowerks CodeWarrior for
-  EE) and its version
-* Determine the optimisation flags by matching known-trivial functions
-* Build a `diff` harness that compiles a candidate source file and reports
-  instruction-level differences against the original image
-* Success criterion: one function, byte-identical
+* [x] **Identify the original compiler.** The `.comment` section names it
+      directly: `MW MIPS C Compiler (2.4.1.01)` / `PlayStation2` - Metrowerks
+      CodeWarrior 2.4.1.01 for PS2. No fingerprinting was needed.
+* [x] **Build the verification harness.** `tools/matchdiff.py` compares a
+      candidate against the original image and scores it both exactly and
+      semantically. Tested against known-good, near-miss and wrong-function
+      inputs.
+* [ ] **Obtain `mwccmips` 2.4.1.01.** A sourcing problem rather than a technical
+      one: CodeWarrior for PS2 is abandoned proprietary software, unsold for
+      about two decades. This is now the only thing standing between the project
+      and verified progress.
+* [ ] **Recover the optimisation flags**, calibrating against the kernel stubs in
+      `src/kernel/syscalls.cpp`.
+* [ ] **Success criterion: one function, byte-identical.**
 
-This is genuinely uncertain work. It may turn out that no available compiler
-reproduces the original output, in which case the project has to fall back to a
-non-matching "functionally equivalent" reconstruction - a legitimate goal, but a
-different and weaker one that should be chosen deliberately rather than by
-drift.
+If the compiler cannot be obtained, matching is not achievable - Metrowerks and
+GCC differ systematically in register allocation and scheduling, so a GCC attempt
+would stall short and never close. The honest fallback is then a **functionally
+equivalent** reconstruction, which is a legitimate goal but a different and
+weaker one, and should be chosen deliberately rather than arrived at by drift.
 
 ## Phase 3 - Runtime and library layer
 

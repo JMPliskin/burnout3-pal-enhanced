@@ -63,22 +63,56 @@ the bytes still agree.
    source until the assembly agrees.
 6. **Promote the tier** in `config/functions.csv` and commit.
 
-## The toolchain problem
+## The toolchain
 
-Step 5 is blocked on an unsolved prerequisite: nobody has established which
-compiler and which flags reproduce this binary's code generation.
+The compiler is known. The executable's `.comment` section names it outright:
 
-Criterion's 2004 PS2 builds would have used either SN Systems ProDG or
-Metrowerks CodeWarrior for the EE, and the specific version and optimisation
-settings matter down to instruction scheduling. Determining this is done by
-taking a handful of functions whose source is obvious - the kernel stubs in
-`src/kernel/syscalls.cpp` are deliberately chosen for this - and trying
-candidate compilers until one reproduces the exact instruction sequence,
-including register allocation and delay-slot filling.
+```
+MW MIPS C Compiler (2.4.1.01)   PlayStation2
+```
 
-Until that is settled, **no function can reach `matched`**, and the project's
+That is **Metrowerks CodeWarrior**, MIPS C compiler version 2.4.1.01, targeting
+PlayStation 2. This removes the guesswork that normally consumes the opening
+weeks of a decompilation project - there is no need to fingerprint code
+generation against candidate compilers, because the build stamped its own
+identity into the binary.
+
+Two things still have to be established:
+
+1. **Obtaining `mwccmips` 2.4.1.01.** CodeWarrior for PlayStation 2 is abandoned
+   proprietary software - Metrowerks was absorbed into Freescale and then NXP,
+   and the PS2 product has not been sold for roughly two decades. This is a
+   practical sourcing problem, not a technical one, and it is now the single
+   thing standing between this project and verified progress.
+2. **Recovering the optimisation flags.** Once the compiler is available, the
+   kernel stubs in `src/kernel/syscalls.cpp` are the calibration targets: they
+   are short enough that their source is unambiguous, so any flag combination
+   that fails to reproduce them exactly is wrong. Work up from there.
+
+Note that matching Metrowerks output with GCC is not realistic. The two
+differ systematically in register allocation, instruction scheduling and
+delay-slot filling, so a GCC-based attempt would stall in the high-90s and never
+close. If `mwccmips` cannot be obtained, the honest response is to switch
+deliberately to a **functionally equivalent** reconstruction and stop reporting
+a match percentage at all, rather than chase a target that cannot be reached.
+
+Until the compiler is in place, **no function can reach `matched`**, and the
 verified-complete figure stays at zero no matter how much source is written.
-This is the single highest-value open problem.
+
+## Verifying a candidate
+
+`tools/matchdiff.py` performs the comparison, scoring two ways:
+
+* **exact** - bytes identical. This is the bar for `matched`.
+* **semantic** - identical opcodes in the same order, ignoring which registers
+  were chosen. A high semantic score with a lower exact score means the logic is
+  right and only register allocation differs, which is the normal state of a
+  function that is nearly finished.
+
+```sh
+python tools/matchdiff.py build/slus_210_50.json 0x0010BE40 --asm candidate.txt
+python tools/matchdiff.py build/slus_210_50.json 0x0010BE40 --object build/syscalls.o --symbol SignalSema
+```
 
 ## Conventions for reconstructed source
 

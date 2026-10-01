@@ -23,6 +23,7 @@ executable:
 | Address cross-references | 8,171 |
 | Pointer tables (vtables / jump tables) | 95 |
 | Annotated assembly listings generated | 7,423 files |
+| Original compiler | Metrowerks CodeWarrior MIPS 2.4.1.01 |
 | **Verified-complete source** | **0.0000%** |
 
 That last row is the one that counts, and it is not a typo. See

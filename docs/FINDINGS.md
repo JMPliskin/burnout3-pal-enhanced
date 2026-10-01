@@ -57,6 +57,29 @@ genuine monster.
 The largest non-code spans - `0x004856C8..0x004D3E00` (321 KB) and
 `0x00469D90..0x004843D0` (108 KB) - are the main read-only data blocks.
 
+## Build toolchain
+
+The `.comment` section identifies the compiler directly:
+
+```
+MW MIPS C Compiler (2.4.1.01)   PlayStation2
+```
+
+Metrowerks CodeWarrior, MIPS C compiler 2.4.1.01, targeting PlayStation 2. This
+is unusually lucky - most stripped retail binaries do not retain `.comment`, and
+identifying the compiler by fingerprinting code generation is normally weeks of
+work and the first hurdle of any matching decompilation.
+
+Two consequences:
+
+* Matching is a realistic goal, *provided* `mwccmips` 2.4.1.01 can be obtained.
+* Attempting to match with GCC is not realistic. Metrowerks differs
+  systematically in register allocation, instruction scheduling and delay-slot
+  filling, so a GCC-based effort would plateau short of a match.
+
+Neither of the other two executables on the disc retains a `.comment` section,
+so their toolchains are unknown.
+
 ## Middleware: RenderWare 3.6
 
 The binary retains RCS `$Id:` tags naming the exact SDK sources linked in:
