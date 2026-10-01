@@ -260,6 +260,88 @@ class TestRendererIsNotDuplicated(unittest.TestCase):
         self.render_cpp(expr)
         self.assertIn("*(s32*)", expr.render())
 
+class TestFloatModelling(unittest.TestCase):
+    """Floats are modelled as bit patterns, matching the hardware registers.
+
+    The interpreter and the deriver must agree exactly on float semantics, since
+    they are compared against each other on every derivation. Two Emotion Engine
+    behaviours are deliberate and are pinned here.
+    """
+
+    def setUp(self):
+        from b3lib.symexec import FloatOp, FloatPredicate, IntToFloat, FloatToInt
+        from b3lib.symexec import _bits_to_float, _float_to_bits
+
+        self.FloatOp = FloatOp
+        self.FloatPredicate = FloatPredicate
+        self.IntToFloat = IntToFloat
+        self.FloatToInt = FloatToInt
+        self.to_float = _bits_to_float
+        self.to_bits = _float_to_bits
+
+    def _read(self, addr, size, signed):
+        return 0
+
+    def test_arithmetic_round_trips_through_bits(self):
+        two = Const(self.to_bits(2.0))
+        three = Const(self.to_bits(3.0))
+        result = self.FloatOp("add", two, three).evaluate((0, 0, 0, 0), self._read)
+        self.assertEqual(self.to_float(result), 5.0)
+
+    def test_overflow_saturates_rather_than_becoming_infinite(self):
+        """The EE's FPU has no infinities: it saturates to the largest magnitude.
+
+        Python computes in double precision, so an overflowing multiply would
+        otherwise raise when packed back to 32 bits - which crashed the interpreter
+        outright on real game code.
+        """
+        from b3lib.symexec import FLOAT_MAX
+
+        big = Const(self.to_bits(3.0e38))
+        result = self.FloatOp("mul", big, Const(self.to_bits(10.0)))
+        self.assertEqual(self.to_float(result.evaluate((0, 0, 0, 0), self._read)),
+                         FLOAT_MAX)
+
+    def test_negative_overflow_saturates(self):
+        from b3lib.symexec import FLOAT_MAX
+
+        big = Const(self.to_bits(-3.0e38))
+        result = self.FloatOp("mul", big, Const(self.to_bits(10.0)))
+        self.assertEqual(self.to_float(result.evaluate((0, 0, 0, 0), self._read)),
+                         -FLOAT_MAX)
+
+    def test_division_by_zero_yields_zero(self):
+        """The FPU flags this rather than trapping."""
+        result = self.FloatOp("div", Const(self.to_bits(1.0)), Const(self.to_bits(0.0)))
+        self.assertEqual(self.to_float(result.evaluate((0, 0, 0, 0), self._read)), 0.0)
+
+    def test_conversions(self):
+        to_float = self.IntToFloat(Const(7)).evaluate((0, 0, 0, 0), self._read)
+        self.assertEqual(self.to_float(to_float), 7.0)
+        back = self.FloatToInt(Const(self.to_bits(-3.75))).evaluate(
+            (0, 0, 0, 0), self._read
+        )
+        # Truncation toward zero, not rounding.
+        self.assertEqual(back & 0xFFFFFFFF, (-3) & 0xFFFFFFFF)
+
+    def test_comparison_and_negation(self):
+        one = Const(self.to_bits(1.0))
+        two = Const(self.to_bits(2.0))
+        predicate = self.FloatPredicate("lt", one, two)
+        self.assertTrue(predicate.evaluate((0, 0, 0, 0), self._read))
+        self.assertFalse(predicate.negate().evaluate((0, 0, 0, 0), self._read))
+
+    def test_float_nodes_are_traversable(self):
+        """A new node type must be visible to the shared traversal.
+
+        Adding nodes without updating it is what previously made arguments nested
+        inside them invisible to the emitter.
+        """
+        from b3lib.symexec import arguments_used
+
+        expr = self.FloatOp("mul", Load(Arg(1), 4, False), Const(0))
+        self.assertEqual(arguments_used(expr), {1})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

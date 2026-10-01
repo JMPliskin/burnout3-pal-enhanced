@@ -30,10 +30,14 @@ from .symexec import (
     Binary,
     Const,
     Expr,
+    Load,
     Predicate,
     Store,
     Unsupported,
+    FP_COND,
+    Not1,
     _apply,
+    fpr,
     _LOAD_SIZES,
     substitute,
     _sign32,
@@ -162,9 +166,15 @@ def _getter(regs: dict):
     return get
 
 
-def _condition_for(ins, get) -> Predicate:
-    """The predicate that is true exactly when `ins` takes its branch."""
+def _condition_for(ins, get):
+    """The condition that is true exactly when `ins` takes its branch."""
     zero = Const(0)
+    # The FPU branches test the flag a preceding `c.<cond>.s` set, so the condition
+    # is whatever comparison was recorded rather than anything in this instruction.
+    if ins.mnemonic in ("bc1t", "bc1tl"):
+        return get(FP_COND)
+    if ins.mnemonic in ("bc1f", "bc1fl"):
+        return Not1(get(FP_COND))
     table = {
         "beq": ("eq", True), "beql": ("eq", True),
         "bne": ("ne", True), "bnel": ("ne", True),
@@ -197,6 +207,35 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
     """
     m = ins.mnemonic
     if m in ("nop", "sync"):
+        return
+
+    if m == "swc1":
+        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        value = get(fpr(ins.rt))
+        if _is_frame_address(target):
+            frame[(simplify(target).value & MASK64, 4)] = value
+            return
+        stores.append(Store(target, value, 4))
+        memory[(target, 4)] = value
+        return
+
+    if m == "lwc1":
+        target = simplify(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
+        if _is_frame_address(target):
+            key = (simplify(target).value & MASK64, 4)
+            if key not in frame:
+                raise Unsupported("reads an unwritten stack slot")
+            regs[fpr(ins.rt)] = frame[key]
+            return
+        if memory and (target, 4) in memory:
+            regs[fpr(ins.rt)] = memory[(target, 4)]
+            return
+        if memory and not (
+            isinstance(target, Const)
+            and all(isinstance(a, Const) and a.value != target.value for a, _z in memory)
+        ):
+            raise Unsupported("load may alias an earlier store")
+        regs[fpr(ins.rt)] = Load(target, 4, False)
         return
 
     if m in _STORE_SIZES:

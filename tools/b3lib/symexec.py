@@ -244,6 +244,156 @@ class Compare(Expr):
         return 1 if _signed(a) < _signed(b) else 0
 
 
+# -- floating point ------------------------------------------------------
+#
+# Every expression in this model evaluates to an integer *bit pattern*, floats
+# included. That mirrors the hardware - a float register holds 32 bits, and
+# `mfc1`/`swc1` move those bits around without interpreting them - and it keeps
+# evaluation uniform, with reinterpretation confined to the float operations
+# themselves rather than smeared across the whole tree.
+
+def _bits_to_float(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits & MASK32))[0]
+
+
+# The largest finite single-precision magnitude, bit pattern 0x7F7FFFFF.
+FLOAT_MAX = struct.unpack("<f", struct.pack("<I", 0x7F7FFFFF))[0]
+
+
+def _float_to_bits(value: float) -> int:
+    """Encode a result the way the EE's FPU would.
+
+    That FPU is deliberately not IEEE-754: no infinities, no NaNs, and an overflow
+    saturates to the largest representable magnitude. This must match `_f32` in
+    emu.py exactly - the two are compared against each other on every derivation,
+    so any divergence registers as a disagreement.
+    """
+    if value != value:
+        return _float_to_bits(0.0)
+    if value > FLOAT_MAX:
+        value = FLOAT_MAX
+    elif value < -FLOAT_MAX:
+        value = -FLOAT_MAX
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+@dataclasses.dataclass(frozen=True)
+class FloatOp(Expr):
+    """A single-precision arithmetic operation over bit-pattern operands."""
+
+    op: str
+    left: Expr
+    right: Expr = None   # None for the unary forms
+
+    _NAMES = {
+        "add": "FloatAdd", "sub": "FloatSub", "mul": "FloatMul", "div": "FloatDiv",
+        "min": "FloatMin", "max": "FloatMax",
+        "neg": "FloatNeg", "abs": "FloatAbs", "sqrt": "FloatSqrt", "mov": "FloatMove",
+    }
+
+    def render(self) -> str:
+        name = self._NAMES[self.op]
+        if self.right is None:
+            return "%s(%s)" % (name, self.left.render())
+        return "%s(%s, %s)" % (name, self.left.render(), self.right.render())
+
+    def evaluate(self, args, read) -> int:
+        a = _bits_to_float(self.left.evaluate(args, read))
+        if self.right is None:
+            result = {
+                "neg": lambda x: -x,
+                "abs": abs,
+                "mov": lambda x: x,
+                "sqrt": lambda x: x ** 0.5 if x >= 0 else 0.0,
+            }[self.op](a)
+            return _float_to_bits(result)
+        b = _bits_to_float(self.right.evaluate(args, read))
+        if self.op == "div":
+            # The FPU flags division by zero rather than trapping; the interpreter
+            # yields zero, and the two must agree or every such function would
+            # register as a disagreement.
+            result = 0.0 if b == 0.0 else a / b
+        else:
+            result = {
+                "add": lambda x, y: x + y,
+                "sub": lambda x, y: x - y,
+                "mul": lambda x, y: x * y,
+                "min": min,
+                "max": max,
+            }[self.op](a, b)
+        return _float_to_bits(result)
+
+
+@dataclasses.dataclass(frozen=True)
+class IntToFloat(Expr):
+    """`cvt.s.w`: reinterpret the operand's bits as an integer, convert to float."""
+
+    value: Expr
+
+    def render(self) -> str:
+        return "FloatFromInt(%s)" % self.value.render()
+
+    def evaluate(self, args, read) -> int:
+        return _float_to_bits(float(_sign32(self.value.evaluate(args, read))))
+
+
+@dataclasses.dataclass(frozen=True)
+class FloatToInt(Expr):
+    """`cvt.w.s`: convert a float to an integer, truncating toward zero."""
+
+    value: Expr
+
+    def render(self) -> str:
+        return "IntFromFloat(%s)" % self.value.render()
+
+    def evaluate(self, args, read) -> int:
+        return int(_bits_to_float(self.value.evaluate(args, read))) & MASK32
+
+
+@dataclasses.dataclass(frozen=True)
+class FloatPredicate(Expr):
+    """A `c.<cond>.s` comparison, as tested later by `bc1t`/`bc1f`."""
+
+    op: str  # eq lt le
+    left: Expr
+    right: Expr
+
+    _SYMBOL = {"eq": "==", "lt": "<", "le": "<=", "false": "false"}
+
+    def render(self) -> str:
+        if self.op == "false":
+            return "false"
+        return "FloatValue(%s) %s FloatValue(%s)" % (
+            self.left.render(), self._SYMBOL[self.op], self.right.render()
+        )
+
+    def evaluate(self, args, read) -> int:
+        if self.op == "false":
+            return False
+        a = _bits_to_float(self.left.evaluate(args, read))
+        b = _bits_to_float(self.right.evaluate(args, read))
+        return {"eq": a == b, "lt": a < b, "le": a <= b}[self.op]
+
+    def negate(self) -> "Expr":
+        return Not1(self)
+
+
+@dataclasses.dataclass(frozen=True)
+class Not1(Expr):
+    """Logical negation of a condition, as distinct from a bitwise complement."""
+
+    value: Expr
+
+    def render(self) -> str:
+        return "!(%s)" % self.value.render()
+
+    def evaluate(self, args, read) -> int:
+        return not self.value.evaluate(args, read)
+
+    def negate(self) -> Expr:
+        return self.value
+
+
 @dataclasses.dataclass(frozen=True)
 class SignExtend32(Expr):
     """Narrow to 32 bits and sign-extend, as every 32-bit MIPS result is.
@@ -353,11 +503,13 @@ def children(expr: Expr) -> tuple:
         return ()
     if isinstance(expr, Load):
         return (expr.address,)
-    if isinstance(expr, (Not, SignExtend32)):
+    if isinstance(expr, (Not, Not1, SignExtend32, IntToFloat, FloatToInt)):
         return (expr.value,)
     if isinstance(expr, Select):
         return (expr.condition, expr.when_true, expr.when_false)
-    if isinstance(expr, (Binary, Compare, Predicate)):
+    if isinstance(expr, FloatOp):
+        return (expr.left,) if expr.right is None else (expr.left, expr.right)
+    if isinstance(expr, (Binary, Compare, Predicate, FloatPredicate)):
         return (expr.left, expr.right)
     raise Unsupported("no traversal rule for %s" % type(expr).__name__)
 
@@ -370,16 +522,28 @@ def rebuild(expr: Expr, new_children) -> Expr:
         return Load(new_children[0], expr.size, expr.signed)
     if isinstance(expr, Not):
         return Not(new_children[0])
+    if isinstance(expr, Not1):
+        return Not1(new_children[0])
     if isinstance(expr, SignExtend32):
         return SignExtend32(new_children[0])
+    if isinstance(expr, IntToFloat):
+        return IntToFloat(new_children[0])
+    if isinstance(expr, FloatToInt):
+        return FloatToInt(new_children[0])
     if isinstance(expr, Select):
         return Select(*new_children)
+    if isinstance(expr, FloatOp):
+        if expr.right is None:
+            return FloatOp(expr.op, new_children[0])
+        return FloatOp(expr.op, *new_children)
     if isinstance(expr, Binary):
         return Binary(expr.op, *new_children)
     if isinstance(expr, Compare):
         return Compare(expr.op, *new_children)
     if isinstance(expr, Predicate):
         return Predicate(expr.op, *new_children)
+    if isinstance(expr, FloatPredicate):
+        return FloatPredicate(expr.op, *new_children)
     raise Unsupported("no rebuild rule for %s" % type(expr).__name__)
 
 
@@ -455,6 +619,10 @@ def simplify(expr: Expr) -> Expr:
         return Load(simplify(expr.address), expr.size, expr.signed)
     if isinstance(expr, Compare):
         return Compare(expr.op, simplify(expr.left), simplify(expr.right))
+    if isinstance(expr, (FloatOp, IntToFloat, FloatToInt, FloatPredicate, Not1,
+                         Not, Select, SignExtend32)):
+        kids = children(expr)
+        return rebuild(expr, [simplify(child) for child in kids]) if kids else expr
     if isinstance(expr, Predicate):
         left, right = simplify(expr.left), simplify(expr.right)
         # `slt` followed by `bne ..., $zero` is how a compiler spells a plain
@@ -485,11 +653,29 @@ _LOAD_SIZES = {
 
 _STORE_SIZES = {"sb": 1, "sh": 2, "sw": 4, "sd": 8, "sq": 16}
 
+_FLOAT_BINARY = {
+    "add.s": "add", "sub.s": "sub", "mul.s": "mul", "div.s": "div",
+    "max.s": "max", "min.s": "min",
+}
+_FLOAT_UNARY = {"mov.s": "mov", "neg.s": "neg", "abs.s": "abs", "sqrt.s": "sqrt"}
+_FLOAT_COMPARE = {"c.eq.s": "eq", "c.lt.s": "lt", "c.le.s": "le", "c.f.s": "false"}
+
 # The multiplier result registers. They are kept in the same dict as the general
 # registers under indices the hardware cannot name, which avoids threading a second
 # piece of state through every caller.
 REG_HI = 64
 REG_LO = 65
+
+# Float registers and the FPU condition flag share the register dict under indices
+# the integer unit cannot name, so no extra state has to be threaded through every
+# caller. The condition flag holds a predicate expression, which is what `bc1t` and
+# `bc1f` then branch on.
+FPR_BASE = 128
+FP_COND = 127
+
+
+def fpr(index: int) -> int:
+    return FPR_BASE + index
 
 
 @dataclasses.dataclass(frozen=True)
@@ -764,6 +950,38 @@ def _apply(regs: dict, ins, get) -> None:
         # would not be faithful for every input. Refuse rather than describe only
         # the well-defined half.
         raise Unsupported("division: result undefined for a zero divisor")
+    # -- coprocessor 1 (single precision) ---------------------------------
+    #
+    # COP1 R-format packs its registers differently from the integer unit, and the
+    # disassembler does not populate rs/rt/rd for those forms, so the fields come
+    # straight from the encoding.
+    if m in _FLOAT_BINARY:
+        fd, fs, ft = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F, (ins.raw >> 16) & 0x1F
+        regs[fpr(fd)] = FloatOp(_FLOAT_BINARY[m], get(fpr(fs)), get(fpr(ft)))
+        return
+    if m in _FLOAT_UNARY:
+        fd, fs = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F
+        regs[fpr(fd)] = FloatOp(_FLOAT_UNARY[m], get(fpr(fs)))
+        return
+    if m == "cvt.s.w":
+        fd, fs = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F
+        regs[fpr(fd)] = IntToFloat(get(fpr(fs)))
+        return
+    if m == "cvt.w.s":
+        fd, fs = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F
+        regs[fpr(fd)] = FloatToInt(get(fpr(fs)))
+        return
+    if m in _FLOAT_COMPARE:
+        fs, ft = (ins.raw >> 11) & 0x1F, (ins.raw >> 16) & 0x1F
+        regs[FP_COND] = FloatPredicate(_FLOAT_COMPARE[m], get(fpr(fs)), get(fpr(ft)))
+        return
+    if m == "mtc1":
+        regs[fpr(ins.rd)] = get(ins.rt)
+        return
+    if m == "mfc1":
+        regs[ins.rt] = SignExtend32(get(fpr(ins.rd)))
+        return
+
     if m == "mfhi":
         regs[ins.rd] = get(REG_HI)
         return

@@ -164,9 +164,15 @@ class Machine:
         self.regs_hi = [0] * 32
         self.hi = 0
         self.lo = 0
-        # Coprocessor 1: 32 single-precision registers plus the condition flag
-        # that `c.<cond>.s` sets and `bc1t`/`bc1f` test.
-        self.fpr = [0.0] * 32
+        # Coprocessor 1: 32 single-precision registers held as raw 32-bit patterns,
+        # plus the condition flag that `c.<cond>.s` sets and `bc1t`/`bc1f` test.
+        #
+        # Storing bits rather than Python floats matters. `lwc1`/`swc1`/`mtc1`/`mfc1`
+        # are bit moves - the hardware copies all 32 bits verbatim - so keeping
+        # floats here round-trips through a double and canonicalises NaN payloads,
+        # silently altering values a copy must preserve. That showed up as a
+        # float-copying function disagreeing with a derivation that was correct.
+        self.fpr = [0] * 32
         self.fp_cond = False
         self.pc = 0
         self.instructions_executed = 0
@@ -492,8 +498,29 @@ def _op_sq(m: Machine, ins) -> None:
     m.memory.write_int(addr + 8, m.regs_hi[ins.rt], 8)
 
 
+# The largest finite single-precision magnitude, bit pattern 0x7F7FFFFF.
+FLOAT_MAX = struct.unpack("<f", struct.pack("<I", 0x7F7FFFFF))[0]
+
+
 def _f32(value: float) -> float:
-    """Round a Python double to single precision, as the FPU would."""
+    """Round a Python double to single precision, as the EE's FPU would.
+
+    The Emotion Engine's FPU is deliberately not IEEE-754: it has no infinities and
+    no NaNs, and an operation that overflows saturates to the largest representable
+    magnitude rather than becoming infinite.
+
+    Modelling that is not optional here. Python computes in double precision, so an
+    overflowing `mul.s` reaches `struct.pack` with a value no float32 can hold and
+    raises OverflowError - which showed up as the interpreter crashing outright on
+    real game code. Saturating is both the fix and the more faithful behaviour, and
+    it is a quirk any port has to reproduce or physics will diverge.
+    """
+    if value != value:          # NaN has no representation on this FPU
+        return 0.0
+    if value > FLOAT_MAX:
+        return FLOAT_MAX
+    if value < -FLOAT_MAX:
+        return -FLOAT_MAX
     return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
@@ -521,59 +548,67 @@ def _ft(ins) -> int:
 
 
 def _op_lwc1(m: Machine, ins) -> None:
+    # A bit move: no interpretation, so a NaN payload survives intact. Converting
+    # to a Python float here and back on the matching `swc1` sets the quiet-NaN bit
+    # and silently alters values that a copy must preserve.
     addr = (m.get32(ins.rs) + ins.imm) & MASK32
-    m.fpr[ins.rt] = _fp_from_bits(m.memory.read_int(addr, 4, False))
+    m.fpr[ins.rt] = m.memory.read_int(addr, 4, False)
 
 
 def _op_swc1(m: Machine, ins) -> None:
     addr = (m.get32(ins.rs) + ins.imm) & MASK32
-    m.memory.write_int(addr, _fp_bits(m.fpr[ins.rt]), 4)
+    m.memory.write_int(addr, m.fpr[ins.rt] & MASK32, 4)
 
 
 def _op_mtc1(m: Machine, ins) -> None:
-    m.fpr[ins.rd] = _fp_from_bits(m.get32(ins.rt))
+    m.fpr[ins.rd] = m.get32(ins.rt)
 
 
 def _op_mfc1(m: Machine, ins) -> None:
-    m.set32(ins.rt, _fp_bits(m.fpr[ins.rd]))
+    m.set32(ins.rt, m.fpr[ins.rd] & MASK32)
 
 
+# Float registers hold raw bit patterns, so arithmetic converts in and out
+# explicitly. Confining the conversion to these helpers is what keeps the bit moves
+# above exact.
 def _fp_arith(fn):
     def run(m: Machine, ins) -> None:
-        m.fpr[_fd(ins)] = _f32(fn(m.fpr[_fs(ins)], m.fpr[_ft(ins)]))
+        a = _fp_from_bits(m.fpr[_fs(ins)])
+        b = _fp_from_bits(m.fpr[_ft(ins)])
+        m.fpr[_fd(ins)] = _fp_bits(_f32(fn(a, b)))
     return run
 
 
 def _fp_unary(fn):
     def run(m: Machine, ins) -> None:
-        m.fpr[_fd(ins)] = _f32(fn(m.fpr[_fs(ins)]))
+        m.fpr[_fd(ins)] = _fp_bits(_f32(fn(_fp_from_bits(m.fpr[_fs(ins)]))))
     return run
 
 
 def _fp_compare(fn):
     def run(m: Machine, ins) -> None:
-        m.fp_cond = fn(m.fpr[_fs(ins)], m.fpr[_ft(ins)])
+        m.fp_cond = fn(
+            _fp_from_bits(m.fpr[_fs(ins)]), _fp_from_bits(m.fpr[_ft(ins)])
+        )
     return run
 
 
 def _op_cvt_w_s(m: Machine, ins) -> None:
     """Float to fixed, truncating toward zero as the EE does."""
-    value = m.fpr[_fs(ins)]
-    m.fpr[_fd(ins)] = _fp_from_bits(int(value) & MASK32)
+    m.fpr[_fd(ins)] = int(_fp_from_bits(m.fpr[_fs(ins)])) & MASK32
 
 
 def _op_cvt_s_w(m: Machine, ins) -> None:
-    m.fpr[_fd(ins)] = _f32(float(_sign32(_fp_bits(m.fpr[_fs(ins)]))))
+    m.fpr[_fd(ins)] = _fp_bits(_f32(float(_sign32(m.fpr[_fs(ins)]))))
 
 
 def _op_div_s(m: Machine, ins) -> None:
-    divisor = m.fpr[_ft(ins)]
+    divisor = _fp_from_bits(m.fpr[_ft(ins)])
     if divisor == 0.0:
-        # The FPU flags this rather than trapping; mirror that by producing a
-        # large finite value instead of raising.
-        m.fpr[_fd(ins)] = 0.0
+        # The FPU flags this rather than trapping, so yield zero instead of raising.
+        m.fpr[_fd(ins)] = _fp_bits(0.0)
         return
-    m.fpr[_fd(ins)] = _f32(m.fpr[_fs(ins)] / divisor)
+    m.fpr[_fd(ins)] = _fp_bits(_f32(_fp_from_bits(m.fpr[_fs(ins)]) / divisor))
 
 
 
