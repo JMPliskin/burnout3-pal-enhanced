@@ -76,7 +76,18 @@ python tools/disasm.py build/slus_210_50.json --all -o asm/
 python tools/progress.py build/slus_210_50.json
 python tools/progress.py build/slus_210_50.json --markdown > docs/PROGRESS.md
 
-# Tests
+# Verification: derive accessors, differential-test them, emit C++
+python tools/candidates.py build/slus_210_50.json --pure
+python tools/derive.py build/slus_210_50.json --emit src/generated
+
+# VU microcode and the ValueDB container
+python tools/vudis.py extracted/SLUS_210.50 --range 0x00469D90 0x004843D0 --stats
+python tools/vdb.py extracted/DATA/VDB.XML
+
+# Byte-level accounting of the executable
+python tools/layout.py build/slus_210_50.json
+
+# Tests (includes differential tests when extracted/ is present)
 python -m unittest discover -s tests -v
 ```
 
@@ -84,12 +95,18 @@ python -m unittest discover -s tests -v
 
 ```
 tools/           analysis toolchain (Python)
-  b3lib/         library: iso9660, elf, r5900 disassembler, analysis, symbols
+  b3lib/         library: iso9660, elf, r5900/vu disassemblers, analysis,
+                 symbols, vdbhash, emu (R5900 interpreter), symexec, difftest
   isotool.py     disc inspection and extraction
   analyze.py     full static-analysis pipeline
   disasm.py      annotated assembly emitter
+  vudis.py       VU microcode disassembler
+  vdb.py         ValueDB container reader
+  layout.py      byte-level accounting of the image
+  candidates.py  ranks functions by reconstructability
+  derive.py      derives, verifies and emits accessor functions
   progress.py    progress accounting
-tests/           unit tests for the disassembler
+tests/           unit tests, plus differential tests against the original code
 include/         headers for the reconstructed sources
 src/             reconstructed C++ sources
 asm/             generated per-function assembly (not committed)

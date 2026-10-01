@@ -102,8 +102,14 @@ address,name,status,source,notes
 0x001D8B88,generated::func_001D8B88,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x001DA860,generated::func_001DA860,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001DB798,generated::func_001DB798,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001EA6B0,generated::func_001EA6B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001EA6D0,generated::func_001EA6D0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001EA6E8,generated::func_001EA6E8,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001EA708,generated::func_001EA708,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x001FF360,generated::func_001FF360,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x001FF3C8,generated::func_001FF3C8,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x001FF768,generated::func_001FF768,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001FF834,generated::func_001FF834,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0020E0A0,generated::func_0020E0A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0020E0C0,generated::func_0020E0C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0020E310,generated::func_0020E310,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
@@ -155,10 +161,12 @@ address,name,status,source,notes
 0x00357520,generated::func_00357520,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00361590,generated::func_00361590,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x003615A0,generated::func_003615A0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00365880,generated::func_00365880,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x00369200,generated::func_00369200,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00374440,generated::func_00374440,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00374450,generated::func_00374450,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003744B0,generated::func_003744B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003753B0,generated::func_003753B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00385FD0,generated::func_00385FD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00386010,generated::func_00386010,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0039AD50,generated::func_0039AD50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -189,5 +197,6 @@ address,name,status,source,notes
 0x00446FE0,generated::func_00446FE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00458960,generated::func_00458960,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00469540,generated::func_00469540,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
+0x00469770,generated::func_00469770,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x004697C0,generated::func_004697C0,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"
 0x00469950,generated::func_00469950,reconstructed,src/generated/accessors.cpp,"symbolically derived; result ignores its arguments, so the differential test is near-vacuous - derived, not verified"

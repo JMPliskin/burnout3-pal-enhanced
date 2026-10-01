@@ -273,9 +273,19 @@ class Derivation:
         return out
 
 
-def derive(image: bytes, base: int, start: int, end: int) -> Derivation:
-    """Derive the return expression of a branch-free, store-free function."""
-    regs = {0: Const(0)}
+def derive(image: bytes, base: int, start: int, end: int,
+           gp_value: int = None) -> Derivation:
+    """Derive the return expression and memory effects of a branch-free function.
+
+    `$gp` is seeded with its startup value, since globals are commonly reached as
+    an offset from it and refusing those would exclude a large set of otherwise
+    simple functions.
+    """
+    if gp_value is None:
+        from .emu import GP_VALUE
+
+        gp_value = GP_VALUE
+    regs = {0: Const(0), 28: Const(gp_value)}
     for i in range(4):
         regs[4 + i] = Arg(i)
     stores = []

@@ -33,6 +33,15 @@ DEFAULT_STACK_SIZE = 64 * 1024
 # Writing this to $ra before a call lets the interpreter spot the return.
 RETURN_SENTINEL = 0xDEAD0000
 
+# The global pointer, as the startup code establishes it. Recovered from the entry
+# function: `lui $a0, 0x4F` then `addiu $a0, $a0, -0x7990` gives 0x004E8670, which
+# is then copied into $gp at 0x001001C0. It lands just past the loaded image, in
+# the BSS, which is where a small-data pointer belongs.
+#
+# This matters for execution: a great many functions reach globals as an offset
+# from $gp, and leaving the register zero makes every one of them fault.
+GP_VALUE = 0x004E8670
+
 
 class EmulationError(Exception):
     """Base class for interpreter failures."""
@@ -179,6 +188,7 @@ class Machine:
             raise EmulationError("only register arguments ($a0..$a3) are supported")
         for i, value in enumerate(args):
             self.set(4 + i, value & MASK64)
+        self.set(28, GP_VALUE)            # $gp
         self.set(29, stack_top)           # $sp
         self.set(31, RETURN_SENTINEL)     # $ra
         self.pc = addr

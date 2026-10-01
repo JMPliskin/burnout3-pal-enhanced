@@ -22,12 +22,76 @@ tools/b3lib/
   iso9660.py   ISO9660 reader: directory tree, random access, extraction
   elf.py       32-bit little-endian ELF reader
   r5900.py     Emotion Engine disassembler
+  vu.py        Vector Unit microcode disassembler
   analysis.py  function discovery and code/data classification
   symbols.py   strings, address cross-references, pointer tables
+  vdbhash.py   the recovered ValueDB name hash
+  emu.py       R5900 interpreter, for verification
+  symexec.py   symbolic execution of branch-free functions
+  difftest.py  differential-test harness
+
+tools/
+  isotool.py    disc inspection and extraction
+  analyze.py    full static-analysis pipeline
+  disasm.py     annotated assembly emitter
+  vudis.py      VU microcode disassembler driver
+  vdb.py        ValueDB container reader
+  layout.py     byte-level accounting of the image
+  candidates.py ranks functions by reconstructability
+  derive.py     derives, verifies and emits accessor functions
+  matchdiff.py  byte-comparison, kept for if the compiler is ever obtained
+  progress.py   progress accounting
 ```
 
 Each layer depends only on the ones above it, and none of them depend on the
 CLI drivers.
+
+## `emu.py` - the R5900 interpreter
+
+This is what makes verification possible without the original compiler. It
+executes the integer core, common loads and stores, 128-bit `lq`/`sq`, a COP1
+single-precision subset, and the MMI operations the string routines need - enough
+for 84.8% of discovered functions. `$gp` is seeded with `0x004E8670`, recovered
+from the startup code, because a great many functions reach globals through it.
+
+Anything outside the subset raises `UnsupportedInstruction`. That refusal is the
+design: an interpreter that quietly approximated an instruction would hand back
+confident wrong answers, which is worse than a gap.
+
+Two correctness details that cost real debugging:
+
+* **Branch-likely nullification.** `beql`/`bnel` skip their delay slot when *not*
+  taken. Executing it unconditionally corrupted a mask register inside the SIMD
+  `strlen` and made it return wrong lengths for every input.
+* **Quadword halves.** `lq`/`sq` must preserve the upper 64 bits of a register,
+  because Metrowerks spills callee-saved registers with them. Dropping those bits
+  corrupts every restore.
+
+## `symexec.py` and `derive.py` - deriving accessors
+
+Roughly 150 discovered functions are tiny branch-free accessors. Rather than read
+each by hand, `symexec.py` walks one with expressions in the registers instead of
+values and reports what ends up in `$v0`, plus any stores as
+(address, value, size) triples.
+
+`derive.py` then differential-tests each derivation against the original machine
+code - for stores, by snapshotting memory, running the original, and requiring a
+replay of the derived writes to reproduce the same bytes - and emits C++ only for
+derivations that agreed.
+
+Three traps here are worth recording, because all three produced plausible-looking
+wrong output:
+
+* **Operator precedence.** An expression tree evaluates from its structure, so a
+  rendering bug leaves the arithmetic correct while the printed C means something
+  else: `arg1 << 2 + arg0` is `arg1 << (2 + arg0)` in C. Rendering is
+  precedence-aware and tested.
+* **Store ordering.** Every derived expression refers to memory as it stood on
+  entry, so emitting stores before the return inverts a read-modify-write. Values
+  are captured into temporaries first.
+* **Incomplete signatures.** Parameter lists built from the return expression alone
+  omit arguments used only inside a store. `check_signatures()` now refuses to
+  write source that references an undeclared parameter.
 
 ## `r5900.py` - the disassembler
 
@@ -62,24 +126,42 @@ down:
 
 1. **Call-target harvesting.** Every `jal` names a function entry directly. The
    compiler only emits `jal` for real call sites, so a `jal` landing inside the
-   image is near-proof. Found 40,430 call sites resolving to 6,101 distinct
-   targets.
-2. **Recursive traversal.** From the entry point and every harvested target,
-   walk the control-flow graph, following branches and claiming delay slots,
-   stopping at returns. This marks bytes *provably* reachable as code, rather
-   than bytes that merely happen to decode.
-3. **Prologue scanning.** In the gaps, look for `addiu $sp, $sp, -N`. This
-   catches functions reached only through function pointers - vtables, jump
-   tables, callbacks - which a 2004 C++ game uses heavily. Found 1,746 more.
-4. **Bounds tightening.** Clamp each function to end no later than the next
-   function's start.
+   image is near-proof. 40,430 call sites resolve to 5,677 accepted targets.
+2. **Recursive traversal.** From the entry point and every harvested target, walk
+   the control-flow graph, following branches and claiming delay slots, stopping
+   at returns. This marks bytes *provably* reachable as code, rather than bytes
+   that merely happen to decode.
+3. **Pointer-table targets.** Virtual calls and callbacks emit no `jal` at all, so
+   their targets are invisible to step 1. Every aligned word pointing inside the
+   image is considered, then filtered hard: the target must land on a stack
+   prologue or just past another function's terminator, decode as a run of real
+   instructions, and **end in `jr $ra`**. That last test is what separates code
+   from data which merely decodes - a virtual method has to return. 2,597 accepted,
+   37 rejected for never returning.
+4. **Prologue scanning.** A final `addiu $sp, $sp, -N` sweep catches the remainder:
+   888 more.
+5. **Extent from contiguous code.** A function's end is the unbroken run of its own
+   instructions from its entry, bridging only short all-nop alignment padding.
+   Taking the furthest address *reached* instead lets one tail jump swallow
+   everything in between - which it did, until it was fixed.
 
-Candidate targets are sanity-checked before acceptance (425 were rejected), and
-each function records *why* it was classified, so results stay auditable rather
+Each function records *why* it was classified, so results stay auditable rather
 than being an opaque guess.
 
-The resulting 81.0% code coverage is a **lower bound**: it counts only bytes
-proven reachable.
+Current result: **9,163 functions**, 86.2% of the image proven to be MIPS code,
+99.67% of functions ending in a return, and 0 of 814,598 instructions failing to
+decode. The coverage figure is a **lower bound** - it counts only bytes proven
+reachable, and a further 2.65% of the image is VU microcode rather than MIPS.
+
+Two false-positive traps were worth closing:
+
+* A zero word decodes as a perfectly valid `nop`, so any test that only asks "does
+  this decode?" accepts a block of padding as a function. `_looks_like_code` also
+  requires real work - at least two non-`nop` instructions and a majority of
+  non-padding.
+* Seventeen "functions" were sitting inside the read-only data block, decoding
+  tables of small integers as instructions on `$zero`, and one pointer array that
+  pointed at itself. The return requirement removed all of them.
 
 ## `symbols.py` - naming leverage
 
