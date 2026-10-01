@@ -198,11 +198,20 @@ independent checks (`tools/structtypes.py`) are float-versus-integer use and
 signedness at offsets shared by several functions; without the guard both drop
 and one type absorbs 1,422 functions.
 
+Global memory is one more node, `globals`, standing for the whole address space. A
+register holding a constant address - from `lui`, or the fixed `$gp` - holds
+`(globals, address)`, so global variables are fields of that node at absolute
+addresses, and a global whose address is passed to a function becomes an embedded
+*global object*. For globals the emitter prefers the object form, so an object's
+first field does not read as a separate scalar.
+
 The emitter (`typed.py`) renders a typed value as a *view*: a thin object over a
 guest address with an accessor per field, a pointer field returning the view of
 its target. A load or store becomes a field access only when it matches the field
 exactly - offset, width and signedness - so a wrong type can make the source less
 tidy but cannot change its meaning, and the compiled check runs it regardless.
+Global variables become `g_004876E8()` / `set_g_004876E8(v)` and global objects
+constant views such as `g_0049A278_obj.f_8()`.
 Before emitting, the derived functions' own accesses are added to the graph as
 evidence: the scan cannot follow a variable index, but an unrolled loop shows
 every concrete access it makes, each already verified.

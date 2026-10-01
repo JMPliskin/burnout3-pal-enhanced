@@ -45,6 +45,18 @@ def main(argv=None) -> int:
 
     if args.show:
         by_name = {name: root for root, name in catalog.names.items()}
+        if args.show.startswith("g_") and catalog.globals is not None:
+            address = int(args.show[2:10], 16)
+            field = catalog.roots[catalog.globals].get(address)
+            target = catalog.pointee(catalog.globals, address)
+            if field is None:
+                print("no global at 0x%08X" % address)
+                return 1
+            print("%s: read %s, write %s, %s, %d function(s)%s"
+                  % (args.show, catalog.read_flavour(field), catalog.write_width(field),
+                     catalog.kind(field), len(field.functions),
+                     ("; -> " + catalog.names[target]) if target is not None else ""))
+            return 0
         root = by_name.get(args.show)
         if root is None:
             print("no type named %s" % args.show)
@@ -61,13 +73,14 @@ def main(argv=None) -> int:
             print("  %+6X  embedded %s" % (offset, catalog.names[inner]))
         return 0
 
-    sizes = sorted((len(catalog.functions(root)) for root in catalog.roots), reverse=True)
+    ordinary = [root for root in catalog.roots if root != catalog.globals]
+    sizes = sorted((len(catalog.functions(root)) for root in ordinary), reverse=True)
     pointers = sum(1 for root in catalog.roots for offset in catalog.roots[root]
                    if catalog.pointee(root, offset) is not None)
     embeds = sum(len(catalog.embedded(root)) for root in catalog.roots)
     quality = structs.quality(graph)
     print("recovered in %.1fs" % elapsed)
-    print("types with at least one field         : %s" % format(len(catalog.roots), ","))
+    print("types with at least one field         : %s" % format(len(ordinary), ","))
     print("  ...used by two or more functions    : %s"
           % format(sum(1 for size in sizes if size >= 2), ","))
     print("pointer fields (to a recovered type)  : %s" % format(pointers, ","))
@@ -75,6 +88,13 @@ def main(argv=None) -> int:
     print("joins made / refused by the guard     : %s / %s"
           % (format(graph.joined, ","), format(graph.refused, ",")))
     print("functions per type, largest           : %s" % sizes[:args.largest])
+    if catalog.globals is not None:
+        cells = catalog.roots[catalog.globals]
+        print("global variables (distinct addresses) : %s" % format(len(cells), ","))
+        print("  ...holding a pointer to a type      : %s" % format(
+            sum(1 for a in cells if catalog.pointee(catalog.globals, a) is not None), ","))
+        print("  ...global objects of a known type   : %s"
+              % format(len(catalog.embedded(catalog.globals)), ","))
     print("offsets used by 2+ functions          : %s" % format(quality["shared offsets"], ","))
     print("  ...used consistently as float or int: %.1f%%"
           % (100 * quality["float/int agreement"]))

@@ -402,9 +402,30 @@ Three things the recovery taught about the code:
   of 0x50 bytes). The scan cannot follow a variable index; the unrolled derivations
   can, and their accesses are fed back as evidence.
 
-In the emitted source, 471 of the 647 derived functions take at least one typed
-argument. Field accessors account for about 2,750 reads and 4,600 writes, against
-about 870 reads and 700 writes still done by address, most of those on globals.
+### Global variables
+
+Global memory is recovered by the same machinery, as one more type node standing
+for the whole address space: a register holding a constant address (`lui`, or the
+fixed `$gp` of 0x004E8670) holds "globals plus a constant", so an access through it
+is a field of the global space at an absolute address, a pointer loaded from a
+global gets a type of its own, and a global's address handed to a function makes
+that function's argument type a *global object* at that address.
+
+That finds 6,129 distinct global variables, 443 of which hold a pointer to a
+recovered type, and 2,733 global objects of a known type. Adding them did not make
+ordinary types worse: excluding globals, offsets shared by several functions are
+94.2% consistent as float or integer and 97.5% in signedness, over 3,905 offsets
+(against 93.9% and 97.2% over 3,148 before). Global cells themselves are 89.4%
+consistent as float or integer, since float globals are often copied as plain
+words, and 99.6% in signedness.
+
+### In the emitted source
+
+480 of the 647 derived functions take at least one typed argument. Field
+accessors account for 2,974 reads and 4,729 writes, global variables for 511 reads
+and 431 writes, and global objects for 324 uses. 141 reads and 168 writes are still
+done by address; the largest remaining group is arrays indexed by a variable
+(`base + (i << 2)`), which the recovery does not model yet.
 
 ## Open questions
 

@@ -42,6 +42,7 @@ import struct
 
 import re
 
+from .emu import GP_VALUE
 from .r5900 import DISASM, GPR
 
 # mnemonic -> (width, kind, signed); signed is None for stores
@@ -65,6 +66,14 @@ MAX_TERM_DEPTH = 4
 # Interior pointers further than this from their base are not followed; real
 # structures here span up to ~0x7000 bytes.
 MAX_DISPLACEMENT = 0x8000
+
+# The whole global address space, as one type node. A register holding a
+# constant address holds (GLOBALS, address), so the same machinery that records
+# fields of a struct records global variables: an access through it is a field of
+# GLOBALS at an absolute address, a pointer loaded from one gets a type of its
+# own, and a global's address passed into a function is an embedded object.
+GLOBALS = ("globals",)
+GP = 28
 
 
 def _written_register(ins):
@@ -156,6 +165,11 @@ def argument_use(database, image, base) -> set:
     return used
 
 
+def _sign32(value: int) -> int:
+    value &= 0xFFFFFFFF
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
 def _depth(term) -> int:
     depth = 0
     while term[0] == "field":
@@ -205,6 +219,8 @@ def scan(func, image, base, functions, used):
         for ins in (decode(a) for a in range(start, end, 4))
     )
     state = {reg: (("arg", start, index), 0) for index, reg in enumerate(ARG_REGS)}
+    # $gp is fixed for the whole program, so small-data accesses are globals too.
+    state[GP] = (GLOBALS, GP_VALUE)
     reachable = True
 
     # A register holds (term, displacement): the value `term` plus a constant. The
@@ -250,9 +266,15 @@ def scan(func, image, base, functions, used):
                 return
         if m in ("addiu", "daddiu") and ins.rs in state:
             term, displacement = state[ins.rs]
-            if abs(displacement + ins.imm) <= MAX_DISPLACEMENT:
-                state[ins.rt] = (term, displacement + ins.imm)
+            if term == GLOBALS or abs(displacement + ins.imm) <= MAX_DISPLACEMENT:
+                state[ins.rt] = (term, _sign32(displacement + ins.imm))
                 return
+        if m == "lui":
+            state[ins.rt] = (GLOBALS, _sign32(ins.imm << 16))
+            return
+        if m == "ori" and state.get(ins.rs, (None,))[0] == GLOBALS:
+            state[ins.rt] = (GLOBALS, _sign32(state[ins.rs][1] | ins.imm))
+            return
         reg = _written_register(ins)
         if reg is not None:
             state.pop(reg, None)
@@ -545,6 +567,14 @@ class Catalog:
         self.graph = graph
         self.roots = types(graph)
         self.names = {}
+        self.globals = None
+        if GLOBALS in graph.ids:
+            # Kept even with no direct fields: a program whose globals are only
+            # ever reached as objects passed to functions still has them.
+            root = graph.find(graph.ids[GLOBALS])
+            self.roots.setdefault(root, graph.fields[root])
+            self.globals = root
+            self.names[root] = "globals"
         named = []
         for root in self.roots:
             terms = sorted(t for t in graph.slots[root] if t[0] in ("arg", "ret"))
@@ -563,11 +593,20 @@ class Catalog:
                 for offset in sorted(self.roots[root]):
                     target = self.pointee(root, offset)
                     if target is not None and target not in self.names:
-                        self.names[target] = "%s_p%s" % (self.names[root], _offset_name(offset))
+                        if root == self.globals:
+                            # What global variable 0x4876E8 points to.
+                            self.names[target] = "S_g%08X" % (offset & 0xFFFFFFFF)
+                        else:
+                            self.names[target] = "%s_p%s" % (
+                                self.names[root], _offset_name(offset))
                         following.append(target)
                 for offset, inner in sorted(self.embedded(root).items()):
                     if inner not in self.names:
-                        self.names[inner] = "%s_e%s" % (self.names[root], _offset_name(offset))
+                        if root == self.globals:
+                            self.names[inner] = "S_g%08X_obj" % (offset & 0xFFFFFFFF)
+                        else:
+                            self.names[inner] = "%s_e%s" % (
+                                self.names[root], _offset_name(offset))
                         following.append(inner)
             frontier = following
         for root in sorted(self.roots):
@@ -620,6 +659,24 @@ class Catalog:
                     path, owner, local, field = found
                     return [(at, inner)] + path, owner, local, field
         return None
+
+    def candidates(self, root: int, offset: int):
+        """Every way to reach a field at `offset`, best first.
+
+        For an ordinary type the direct field comes first, as in `locate`. For the
+        global address space it comes last: a global object's fields read as
+        `g_0049A278_obj.f_4()`, and the same object's first field should not read
+        as an unrelated-looking `g_0049A278()` just because the scan also saw it
+        accessed directly.
+        """
+        direct = self.field(root, offset)
+        nested = []
+        for at, inner in sorted(self.embedded(root).items(), reverse=True):
+            if at <= offset < at + self.extent(inner):
+                for path, owner, local, field in self.candidates(inner, offset - at):
+                    nested.append(([(at, inner)] + path, owner, local, field))
+        found = [([], root, offset, direct)] if direct is not None else []
+        return nested + found if root == self.globals else found + nested
 
     @staticmethod
     def read_flavour(field):

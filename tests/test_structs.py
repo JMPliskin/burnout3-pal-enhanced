@@ -17,7 +17,7 @@ from b3lib.symexec import Arg, Binary, Const, Load
 
 BASE = 0x00100000
 
-A0, A1, A2, V0, T0, SP, RA = 4, 5, 6, 2, 8, 29, 31
+A0, A1, A2, V0, T0, AT, GP, SP, RA = 4, 5, 6, 2, 8, 1, 28, 29, 31
 
 
 def i_type(op, rs, rt, imm):
@@ -38,6 +38,10 @@ def lb(rt, offset, rs):
 
 def sw(rt, offset, rs):
     return i_type(0x2B, rs, rt, offset)
+
+
+def lui(rt, imm):
+    return i_type(0x0F, 0, rt, imm)
 
 
 def addiu(rt, rs, imm):
@@ -199,6 +203,51 @@ class TestScanFlow(unittest.TestCase):
         catalog = structs.Catalog(program.recover())
         root = catalog.slot(func, 0)
         self.assertNotIn(12, catalog.roots.get(root, {}))
+
+
+class TestGlobals(unittest.TestCase):
+    """Constant addresses are fields of one node, the global address space."""
+
+    def test_lui_addressed_global_is_a_field_of_globals(self):
+        program = Program()
+        program.add(lambda here: [lui(AT, 0x49), lw(V0, -0x1234, AT), JR_RA, NOP])
+        catalog = structs.Catalog(program.recover())
+        self.assertIn(0x490000 - 0x1234, catalog.roots[catalog.globals])
+
+    def test_gp_relative_access_is_a_global(self):
+        program = Program()
+        program.add(lambda here: [lw(V0, -0x7FF0, GP), JR_RA, NOP])
+        catalog = structs.Catalog(program.recover())
+        self.assertIn(0x004E8670 - 0x7FF0, catalog.roots[catalog.globals])
+
+    def test_pointer_held_in_a_global_gets_a_type(self):
+        program = Program()
+        program.add(lambda here: [lui(AT, 0x49), lw(T0, 0x10, AT), lw(V0, 8, T0), JR_RA, NOP])
+        catalog = structs.Catalog(program.recover())
+        target = catalog.pointee(catalog.globals, 0x490010)
+        self.assertIn(8, catalog.roots[target])
+        self.assertEqual(catalog.names[target], "S_g00490010")
+
+    def test_global_address_passed_on_is_a_global_object(self):
+        program = Program()
+        inner = program.add(lambda here: [sw(0, 4, A0), JR_RA, NOP])
+        program.add(lambda here: [
+            lui(A0, 0x49), jal(inner), addiu(A0, A0, 0x100), JR_RA, NOP])
+        catalog = structs.Catalog(program.recover())
+        self.assertEqual(catalog.embedded(catalog.globals), {0x490100: catalog.slot(inner, 0)})
+
+    def test_constant_loads_render_as_globals(self):
+        program = Program()
+        inner = program.add(lambda here: [lw(V0, 4, A0), JR_RA, NOP])
+        func = program.add(lambda here: [
+            lui(AT, 0x49), lw(V0, 0x20, AT), lui(A0, 0x49), jal(inner),
+            addiu(A0, A0, 0x100), JR_RA, NOP])
+        typing = typed.Typing(structs.Catalog(program.recover()), func)
+        scalar = Load(Const(0x490020), 4, True)
+        self.assertEqual(typing.render_load(scalar, lambda n: n.render()), "g_00490020()")
+        member = Load(Const(0x490104), 4, True)
+        self.assertEqual(typing.render_load(member, lambda n: n.render()),
+                         "g_00490100_obj.f_4()")
 
 
 class TestTypedRendering(unittest.TestCase):

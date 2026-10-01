@@ -18,7 +18,7 @@ compiled-code check runs every function in this form.
 from __future__ import annotations
 
 from .paths import _split_address
-from .structs import Catalog, _offset_name
+from .structs import GLOBALS, Catalog, _offset_name
 from .symexec import Arg, Load, children
 
 READERS = {
@@ -41,6 +41,16 @@ def _hex(value: int, signed: bool = False) -> str:
     return "+" + text if signed else text
 
 
+def global_name(address: int) -> str:
+    return "g_%08X" % (address & 0xFFFFFFFF)
+
+
+def object_name(address: int) -> str:
+    """A global object's name. Distinct from the scalar at the same address: an
+    object's first field and the object itself share an address."""
+    return "g_%08X_obj" % (address & 0xFFFFFFFF)
+
+
 def embedded_accessor(offset: int) -> str:
     return "e_%s" % _offset_name(offset)
 
@@ -61,6 +71,8 @@ class Typing:
         self.catalog = catalog
         self.function = function
         self.used = set()
+        self.used_globals = set()        # addresses of scalar globals read or written
+        self.used_objects = set()        # (address, type) of global objects
 
     def type_of(self, expr):
         """The recovered type of a value, as a catalog root, or None."""
@@ -73,50 +85,72 @@ class Typing:
                 return self.catalog.pointee(owner, local)
         return None
 
-    def _locate(self, address):
-        """(base, path, owner, local, field) for a typed address, else None."""
+    def _candidates(self, address):
+        """(base, path, owner, local, field) for each way to reach a typed address."""
         try:
             base, offset = _split_address(address)
         except Exception:
-            return None
+            return []
         if base is None:
-            return None
-        root = self.type_of(base)
+            # A constant address: a global variable, or a field of a global object.
+            root = self.catalog.globals
+        else:
+            root = self.type_of(base)
         if root is None:
-            return None
-        found = self.catalog.locate(root, _signed_offset(offset))
-        if found is None:
-            return None
-        path, owner, local, field = found
-        return base, path, owner, local, field
+            return []
+        return [(base, path, owner, local, field) for path, owner, local, field
+                in self.catalog.candidates(root, _signed_offset(offset))]
 
     def access(self, load):
         """(base, embed path, owner, offset) when a load is exactly a field read."""
-        found = self._locate(load.address)
-        if found is None:
-            return None
-        base, path, owner, local, field = found
-        if self.catalog.read_flavour(field) != (load.size, load.signed):
-            return None
-        return base, path, owner, local
+        for base, path, owner, local, field in self._candidates(load.address):
+            if self.catalog.read_flavour(field) == (load.size, load.signed):
+                return base, path, owner, local
+        return None
 
     def store_target(self, store):
         """(base, embed path, owner, offset) when a store is exactly a field write."""
-        found = self._locate(store.address)
-        if found is None:
-            return None
-        base, path, owner, local, field = found
-        if self.catalog.write_width(field) != store.size:
-            return None
-        return base, path, owner, local
+        for base, path, owner, local, field in self._candidates(store.address):
+            if self.catalog.write_width(field) == store.size:
+                return base, path, owner, local
+        return None
 
     def object(self, base, path) -> str:
-        """The view a field belongs to: the base's view, then any embedded parts."""
-        text = self.view(base)
+        """The view a field belongs to: the base's view, then any embedded parts.
+
+        With no base the field is global: the first embedded part is then a global
+        object, named for its address.
+        """
+        if base is None:
+            at, inner = path[0]
+            self.used.add(inner)
+            self.used_objects.add((at, inner))
+            text, path = object_name(at), path[1:]
+        else:
+            text = self.view(base)
         for at, inner in path:
             self.used.add(inner)
             text += ".%s()" % embedded_accessor(at)
         return text
+
+    def read(self, base, path, local) -> str:
+        """The expression reading a located field."""
+        if base is None and not path:
+            self.used_globals.add(local)
+            return "%s()" % global_name(local)
+        return "%s.%s()" % (self.object(base, path), accessor(local))
+
+    def write(self, holder, base, path, local, value) -> str:
+        """The statement writing a located field; `holder` is a captured view."""
+        if base is None and not path:
+            self.used_globals.add(local)
+            return "set_%s(%s);" % (global_name(local), value)
+        return "%s.set_%s(%s);" % (holder or self.object(base, path), accessor(local), value)
+
+    @staticmethod
+    def needs_capture(base) -> bool:
+        """Whether the view a store goes through reads memory to compute."""
+        return base is not None and not isinstance(base, Arg)
 
     def view(self, expr) -> str:
         """Render a typed value as its view object."""
@@ -127,7 +161,7 @@ class Typing:
             return "arg%d" % expr.index
         base, path, owner, local = self.access(expr)
         self.used.add(owner)
-        return "%s.%s()" % (self.object(base, path), accessor(local))
+        return self.read(base, path, local)
 
     def type_name(self, root) -> str:
         return self.catalog.names[root]
@@ -145,7 +179,7 @@ class Typing:
         if access is not None:
             base, path, owner, offset = access
             self.used.add(owner)
-            text = "%s.%s()" % (self.object(base, path), accessor(offset))
+            text = self.read(base, path, offset)
             if self.type_of(node) is not None:
                 self.used.add(self.type_of(node))
                 return text + ".address"
@@ -158,9 +192,10 @@ class Typing:
         return "%s(%s)" % (reader, render_child(node.address))
 
 
-def header(catalog: Catalog, roots, source_name: str) -> str:
-    """The view classes for the given types, as a C++ header."""
-    roots = sorted(roots, key=lambda root: catalog.names[root])
+def header(catalog: Catalog, roots, source_name: str, globals_used=(), objects=()) -> str:
+    """The view classes for the given types, and the globals used, as a C++ header."""
+    roots = sorted((root for root in roots if root != catalog.globals),
+                   key=lambda root: catalog.names[root])
     included = set(roots)
     lines = [
         "/*",
@@ -180,7 +215,9 @@ def header(catalog: Catalog, roots, source_name: str) -> str:
         " *",
         " * The names are placeholders derived from the evidence: S_0035F0A0_a0 is the",
         " * type of argument 0 of func_0035F0A0, and S_..._p1C is what its field 0x1C",
-        " * points to.",
+        " * points to. Global variables are named by address: g_004876E8() reads the",
+        " * one at 0x4876E8, S_g004876E8 is what it points to, and g_0049A278_obj is a",
+        " * global object of a recovered type.",
         " */",
         "",
         "#ifndef B3_GENERATED_TYPES_H",
@@ -254,8 +291,49 @@ def header(catalog: Catalog, roots, source_name: str) -> str:
         lines.append("")
     lines.append("/* Accessor definitions, after every type is complete. */")
     lines.extend(definitions)
+    lines += global_section(catalog, included, globals_used, objects)
     lines += ["", "}  // namespace generated", "", "#endif  /* B3_GENERATED_TYPES_H */", ""]
     return "\n".join(lines)
+
+
+def global_section(catalog, included, globals_used, objects) -> list:
+    """Accessors for the global variables and global objects the code uses.
+
+    A scalar global is a pair of functions, `g_004876E8()` and `set_g_004876E8(v)`,
+    reading at the width and signedness the code uses it with; one that holds a
+    pointer returns the view of what it points to. A global object - one whose
+    address is handed to functions that know its type - is a constant view.
+    """
+    lines = ["", "/* Global variables, by address. */"]
+    fields = catalog.roots.get(catalog.globals, {})
+    for address in sorted(globals_used):
+        field = fields[address]
+        flavour = catalog.read_flavour(field)
+        width = catalog.write_width(field)
+        target = catalog.pointee(catalog.globals, address)
+        name = global_name(address)
+        location = "0x%X" % (address & 0xFFFFFFFF)
+        note = "%d function(s)" % len(field.functions)
+        if flavour in READERS:
+            if target is not None and target in included:
+                returns, describe = catalog.names[target], "-> " + catalog.names[target]
+            else:
+                returns = "u64"
+                describe = "f32 bits" if catalog.kind(field) == "float" else VALUE_TYPES[flavour]
+            lines.append("/* %s  %s, %s */" % (location, describe, note))
+            lines.append("inline %s %s() { return %s(%s); }"
+                         % (returns, name, READERS[flavour], location))
+        if width in WRITERS:
+            if flavour not in READERS:
+                lines.append("/* %s  written only, %s */" % (location, note))
+            lines.append("inline void set_%s(u64 value) { %s(%s, value); }"
+                         % (name, WRITERS[width], location))
+    if objects:
+        lines += ["", "/* Global objects, by address. */"]
+        for address, inner in sorted(objects):
+            lines.append("inline const %s %s{0x%X};"
+                         % (catalog.names[inner], object_name(address), address & 0xFFFFFFFF))
+    return lines
 
 
 def _walk(expr):
@@ -307,11 +385,11 @@ def add_derived_evidence(graph, verified, rounds: int = 4) -> int:
                     base, offset = _split_address(address)
                 except Exception:
                     continue
-                if base is None:
-                    continue
                 offset = _signed_offset(offset)
-                root = typing.type_of(base)
-                if root is None:
+                root = typing.type_of(base) if base is not None else catalog.globals
+                if base is None and root is None:
+                    node = graph.node(GLOBALS)
+                elif root is None:
                     if not isinstance(base, Arg):
                         continue
                     node = graph.node(("arg", func["addr"], base.index))

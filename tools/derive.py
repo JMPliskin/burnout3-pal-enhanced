@@ -172,8 +172,7 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
             target = _TYPING.store_target(store) if _TYPING is not None else None
             if target is not None:
                 base, embeds, _owner, offset = target
-                lines.append("%s.set_%s(%s);" % (
-                    _TYPING.object(base, embeds), typed.accessor(offset), _store_value(store)))
+                lines.append(_TYPING.write(None, base, embeds, offset, _store_value(store)))
             else:
                 lines.append("%s(%s, %s);" % (
                     WRITERS[store.size], render_cpp(store.address), _store_value(store)))
@@ -205,13 +204,12 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
         target = _TYPING.store_target(store) if _TYPING is not None else None
         if target is not None:
             base, embeds, owner, offset = target
-            if isinstance(base, Arg):
-                where = _TYPING.object(base, embeds)
-            else:
-                where = "%sobj%d" % (prefix, index)
+            holder = None
+            if _TYPING.needs_capture(base):
+                holder = "%sobj%d" % (prefix, index)
                 lines.append("const %s %s = %s;" % (
-                    _TYPING.type_name(owner), where, _TYPING.object(base, embeds)))
-            writes.append("%s.set_%s(%s);" % (where, typed.accessor(offset), value))
+                    _TYPING.type_name(owner), holder, _TYPING.object(base, embeds)))
+            writes.append(_TYPING.write(holder, base, embeds, offset, value))
         elif _reads_memory(store.address):
             lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
             writes.append("%s(%saddr%d, %s);" % (WRITERS[store.size], prefix, index, value))
@@ -499,8 +497,8 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     lines.append(" *")
     lines.append(" * Pointer arguments are typed with the struct types recovered in types.h, so")
     lines.append(" * field reads and writes go through named accessors; anything the recovery")
-    lines.append(" * could not place stays a plain Read*/Write* on the address. The compiled")
-    lines.append(" * form of every function is run against the original as well.")
+    lines.append(" * could not place stays a plain Read or Write helper call on the address. The")
+    lines.append(" * compiled form of every function is run against the original as well.")
     lines.append(" *")
     lines.append(" * The names are placeholders. The behaviour is verified, but what each")
     lines.append(" * function and field is *for* has not been worked out, and a descriptive")
@@ -526,6 +524,7 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
 
     global _TYPING
     used_types = set()
+    used_globals, used_objects = set(), set()
     for func, derivation, tested, strong in verified:
         # Arguments can appear only inside a store, so the signature has to be
         # built from the stores as well as the return expression - otherwise the
@@ -548,6 +547,8 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
             continue
         if _TYPING is not None:
             used_types |= _TYPING.used
+            used_globals |= _TYPING.used_globals
+            used_objects |= _TYPING.used_objects
         _TYPING = None
         lines.append(
             "/* 0x%08X  %d caller(s)  %s */"
@@ -572,7 +573,8 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     types_path = os.path.join(out_dir, "types.h")
     if catalog is not None:
         with open(types_path, "w", encoding="utf-8") as handle:
-            handle.write(typed.header(catalog, used_types, source_name))
+            handle.write(typed.header(catalog, used_types, source_name,
+                                      used_globals, used_objects))
         print("wrote %s (%d recovered types)" % (types_path, len(used_types)))
     elif os.path.exists(types_path):
         os.remove(types_path)
