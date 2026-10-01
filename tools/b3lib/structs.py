@@ -354,12 +354,15 @@ def scan(func, image, base, functions, used):
 
 
 class Field:
-    __slots__ = ("uses", "functions", "target")
+    __slots__ = ("uses", "functions", "target", "strides")
 
     def __init__(self):
         self.uses = collections.Counter()    # (width, kind, signed, is_store) -> count
         self.functions = set()
         self.target = None
+        # Strides this field was seen indexed with: the field is element 0 of an
+        # array whose elements are that many bytes apart.
+        self.strides = collections.Counter()
 
     def widths(self) -> set:
         return {use[0] for use in self.uses if use[0] != BLOCK_WIDTH}
@@ -471,6 +474,7 @@ class TypeGraph:
                 other = into[offset]
                 other.uses.update(field.uses)
                 other.functions |= field.functions
+                other.strides.update(field.strides)
                 if field.target is not None:
                     if other.target is None:
                         other.target = field.target
@@ -568,6 +572,7 @@ class Catalog:
         self.roots = types(graph)
         self.names = {}
         self.globals = None
+        self._arrays = {}
         if GLOBALS in graph.ids:
             # Kept even with no direct fields: a program whose globals are only
             # ever reached as objects passed to functions still has them.
@@ -658,6 +663,76 @@ class Catalog:
                 if found is not None:
                     path, owner, local, field = found
                     return [(at, inner)] + path, owner, local, field
+        return None
+
+    def arrays(self, root: int) -> dict:
+        """{start: (stride, count)} for the arrays in a type; count None if unbounded.
+
+        Two kinds of evidence. A field the code indexes with a variable is element 0
+        of an array of that stride - its length is not known. And a run of fields
+        with the same access flavour at a fixed spacing is an array the code walked
+        with an unrolled loop; there the run gives the length.
+
+        Runs need to be long to count. A struct of eight consecutive ints looks
+        exactly like an int array of eight, and calling a real struct an array
+        would misdescribe it, so contiguous runs need 16 elements; a run with gaps
+        between elements - records, each with several fields - needs 6. Global
+        memory gets no run detection at all: neighbouring globals are usually
+        separate variables.
+        """
+        if root in self._arrays:
+            return self._arrays[root]
+        fields = self.roots.get(root, {})
+        found = {}
+        for offset, field in fields.items():
+            if field.strides:
+                stride = max(sorted(field.strides), key=lambda s: field.strides[s])
+                found[offset] = (stride, None)
+        if root != self.globals:
+            found.update(self._runs(fields, found))
+        self._arrays[root] = found
+        return found
+
+    def _runs(self, fields, taken) -> dict:
+        by_shape = collections.defaultdict(list)
+        for offset, field in fields.items():
+            shape = (self.read_flavour(field), self.write_width(field))
+            by_shape[shape].append(offset)
+        runs = {}
+        for shape, offsets in by_shape.items():
+            width = (shape[0] or (shape[1], None))[0]
+            if not width:
+                continue
+            offsets.sort()
+            members = set(offsets)
+            claimed = set()
+            for position, start in enumerate(offsets):
+                if start in claimed or start in taken:
+                    continue
+                best = (0, 0)
+                for following in offsets[position + 1:position + 9]:
+                    stride = following - start
+                    if stride < width or stride > 0x10000:
+                        continue
+                    count = 1
+                    while start + count * stride in members:
+                        count += 1
+                    best = max(best, (count, -stride))
+                count, stride = best[0], -best[1]
+                needed = 16 if stride == width else 6
+                if count >= needed:
+                    runs[start] = (stride, count)
+                    claimed.update(start + i * stride for i in range(count))
+        return runs
+
+    def element(self, root: int, offset: int):
+        """(start, index) if a constant offset falls on an element of a known run."""
+        for start, (stride, count) in self.arrays(root).items():
+            if count is None or offset < start:
+                continue
+            index, remainder = divmod(offset - start, stride)
+            if remainder == 0 and index < count:
+                return start, index
         return None
 
     def candidates(self, root: int, offset: int):

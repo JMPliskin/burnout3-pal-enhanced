@@ -212,6 +212,12 @@ exactly - offset, width and signedness - so a wrong type can make the source les
 tidy but cannot change its meaning, and the compiled check runs it regardless.
 Global variables become `g_004876E8()` / `set_g_004876E8(v)` and global objects
 constant views such as `g_0049A278_obj.f_8()`.
+
+Arrays are fields with a stride. An address in the linear form base + offset +
+stride * index (`typed.linear`, exact through shifts, multiplies and sums) renders
+as `arg0.f_10(i)`; a constant offset on a detected run of fields renders as the
+element it is, `arg0.set_f_40(3, 0)`. The derived accesses supply the stride
+evidence, since the scan cannot follow a variable index.
 Before emitting, the derived functions' own accesses are added to the graph as
 evidence: the scan cannot follow a variable index, but an unrolled loop shows
 every concrete access it makes, each already verified.

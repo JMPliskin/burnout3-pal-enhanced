@@ -171,8 +171,9 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
         for store in path.stores:
             target = _TYPING.store_target(store) if _TYPING is not None else None
             if target is not None:
-                base, embeds, _owner, offset = target
-                lines.append(_TYPING.write(None, base, embeds, offset, _store_value(store)))
+                base, embeds, _owner, offset, index = target
+                lines.append(_TYPING.write(None, base, embeds, offset, _store_value(store),
+                                           index))
             else:
                 lines.append("%s(%s, %s);" % (
                     WRITERS[store.size], render_cpp(store.address), _store_value(store)))
@@ -203,13 +204,17 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
             value = _store_value(store)
         target = _TYPING.store_target(store) if _TYPING is not None else None
         if target is not None:
-            base, embeds, owner, offset = target
+            base, embeds, owner, offset, element = target
             holder = None
             if _TYPING.needs_capture(base):
                 holder = "%sobj%d" % (prefix, index)
                 lines.append("const %s %s = %s;" % (
                     _TYPING.type_name(owner), holder, _TYPING.object(base, embeds)))
-            writes.append(_TYPING.write(holder, base, embeds, offset, value))
+            if element is not None and not isinstance(element, int) and _reads_memory(element):
+                # An index computed from memory must be read before any store too.
+                lines.append("const u64 %sidx%d = %s;" % (prefix, index, render_cpp(element)))
+                element = "%sidx%d" % (prefix, index)
+            writes.append(_TYPING.write(holder, base, embeds, offset, value, element))
         elif _reads_memory(store.address):
             lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
             writes.append("%s(%saddr%d, %s);" % (WRITERS[store.size], prefix, index, value))
@@ -524,7 +529,7 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
 
     global _TYPING
     used_types = set()
-    used_globals, used_objects = set(), set()
+    used_globals, used_objects, used_global_arrays = set(), set(), set()
     for func, derivation, tested, strong in verified:
         # Arguments can appear only inside a store, so the signature has to be
         # built from the stores as well as the return expression - otherwise the
@@ -549,6 +554,7 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
             used_types |= _TYPING.used
             used_globals |= _TYPING.used_globals
             used_objects |= _TYPING.used_objects
+            used_global_arrays |= _TYPING.used_global_arrays
         _TYPING = None
         lines.append(
             "/* 0x%08X  %d caller(s)  %s */"
@@ -574,7 +580,7 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     if catalog is not None:
         with open(types_path, "w", encoding="utf-8") as handle:
             handle.write(typed.header(catalog, used_types, source_name,
-                                      used_globals, used_objects))
+                                      used_globals, used_objects, used_global_arrays))
         print("wrote %s (%d recovered types)" % (types_path, len(used_types)))
     elif os.path.exists(types_path):
         os.remove(types_path)

@@ -250,6 +250,54 @@ class TestGlobals(unittest.TestCase):
                          "g_00490100_obj.f_4()")
 
 
+class TestArrays(unittest.TestCase):
+    def test_linear_form_sees_through_shifts_and_sums(self):
+        """(i << 2) + i << 4 is 0x50 * i, exactly."""
+        i = Load(Arg(1), 4, True)
+        index = Binary("shl", Binary("add", Binary("shl", i, Const(2)), i), Const(4))
+        self.assertEqual(typed.linear(index), (0x50, i, 0))
+        self.assertIsNone(typed.linear(Binary("add", Arg(1), Arg(2))))
+
+    def _typing_for(self, words_for):
+        program = Program()
+        func = program.add(words_for)
+        graph = program.recover()
+        return graph, func
+
+    def test_indexed_access_renders_as_array_element(self):
+        graph, func = self._typing_for(lambda here: [lw(V0, 0x10, A0), JR_RA, NOP])
+        catalog = structs.Catalog(graph)
+        root = catalog.slot(func, 0)
+        graph.field(root, 0x10).strides[4] += 1      # as derived evidence would
+        catalog = structs.Catalog(graph)
+        typing = typed.Typing(catalog, func)
+        address = Binary("add", Binary("add", Arg(0), Binary("shl", Arg(1), Const(2))),
+                         Const(0x10))
+        load = Load(address, 4, True)
+        self.assertEqual(typing.render_load(load, lambda n: n.render()), "arg0.f_10(arg1)")
+
+    def test_run_of_records_is_an_array(self):
+        """An unrolled loop's fields at a fixed spacing become one array."""
+        def build(here):
+            words = [lw(T0, 0x100, A0)]
+            for i in range(8):
+                words.append(sw(0, 0x40 + i * 0x50, A0))
+            return words + [JR_RA, NOP]
+
+        graph, func = self._typing_for(build)
+        catalog = structs.Catalog(graph)
+        root = catalog.slot(func, 0)
+        self.assertEqual(catalog.arrays(root), {0x40: (0x50, 8)})
+        self.assertEqual(catalog.element(root, 0x40 + 3 * 0x50), (0x40, 3))
+
+    def test_a_few_consecutive_ints_stay_a_struct(self):
+        """Eight consecutive words look like an array but are usually members."""
+        graph, func = self._typing_for(
+            lambda here: [lw(T0, i * 4, A0) for i in range(8)] + [JR_RA, NOP])
+        catalog = structs.Catalog(graph)
+        self.assertEqual(catalog.arrays(catalog.slot(func, 0)), {})
+
+
 class TestTypedRendering(unittest.TestCase):
     def test_pointer_chain_renders_as_field_accesses(self):
         program = Program()

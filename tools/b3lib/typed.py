@@ -19,7 +19,8 @@ from __future__ import annotations
 
 from .paths import _split_address
 from .structs import GLOBALS, Catalog, _offset_name
-from .symexec import Arg, Load, children
+from .symexec import (Arg, Binary, Const, Load, arg_renderer, children, load_renderer,
+                      simplify)
 
 READERS = {
     (1, True): "ReadS8", (1, False): "ReadU8",
@@ -39,6 +40,61 @@ def _hex(value: int, signed: bool = False) -> str:
     if value < 0:
         return "-" + text
     return "+" + text if signed else text
+
+
+MAX_STRIDE = 0x10000
+MASK64 = (1 << 64) - 1
+
+
+def _sum_terms(expr):
+    """The operands of a chain of additions."""
+    if isinstance(expr, Binary) and expr.op == "add":
+        yield from _sum_terms(expr.left)
+        yield from _sum_terms(expr.right)
+    else:
+        yield expr
+
+
+def _combine(a, b, sign):
+    """a + sign*b for linear forms (coefficient, atom, constant); None if the
+    atoms differ."""
+    if a[1] is not None and b[1] is not None and a[1] != b[1]:
+        return None
+    return ((a[0] + sign * b[0]) & MASK64, a[1] if a[1] is not None else b[1],
+            (a[2] + sign * b[2]) & MASK64)
+
+
+def linear(expr):
+    """expr as (coefficient, atom, constant): coefficient*atom + constant, mod 2^64.
+
+    The atom is the one non-constant subexpression; anything that is not a sum,
+    difference, constant shift or constant multiple of it is itself the atom.
+    Returns None when two different atoms appear.
+    """
+    if isinstance(expr, Const):
+        return (0, None, expr.value & MASK64)
+    if isinstance(expr, Binary):
+        if expr.op in ("add", "sub"):
+            left, right = linear(expr.left), linear(expr.right)
+            if left is None or right is None:
+                return None
+            return _combine(left, right, 1 if expr.op == "add" else -1)
+        if expr.op in ("shl", "dshl") and isinstance(expr.right, Const):
+            inner = linear(expr.left)
+            if inner is None:
+                return None
+            factor = 1 << (expr.right.value & (31 if expr.op == "shl" else 63))
+            return ((inner[0] * factor) & MASK64, inner[1], (inner[2] * factor) & MASK64)
+        if expr.op == "mul" and isinstance(expr.right, Const) or (
+                expr.op == "mul" and isinstance(expr.left, Const)):
+            constant, other = ((expr.right, expr.left) if isinstance(expr.right, Const)
+                               else (expr.left, expr.right))
+            inner = linear(other)
+            if inner is None:
+                return None
+            factor = constant.value
+            return ((inner[0] * factor) & MASK64, inner[1], (inner[2] * factor) & MASK64)
+    return (1, expr, 0)
 
 
 def global_name(address: int) -> str:
@@ -73,6 +129,7 @@ class Typing:
         self.used = set()
         self.used_globals = set()        # addresses of scalar globals read or written
         self.used_objects = set()        # (address, type) of global objects
+        self.used_global_arrays = set()  # addresses of global arrays indexed
 
     def type_of(self, expr):
         """The recovered type of a value, as a catalog root, or None."""
@@ -81,38 +138,88 @@ class Typing:
         if isinstance(expr, Load):
             access = self.access(expr)
             if access is not None:
-                _base, _path, owner, local = access
+                _base, _path, owner, local, _index = access
                 return self.catalog.pointee(owner, local)
         return None
 
     def _candidates(self, address):
-        """(base, path, owner, local, field) for each way to reach a typed address."""
+        """Each way to reach a typed address, best first.
+
+        Yields (base, path, owner, local, field, index). `index` is None for a plain
+        field; an int for an element of a run of fields the code walked with an
+        unrolled loop; or an expression when the address is indexed by a variable,
+        in which case `local` is element 0 of the array.
+        """
+        indexed = self.decompose(address)
+        if indexed is not None:
+            base, root, offset, stride, index = indexed
+            field = self.catalog.field(root, offset)
+            if field is not None and self.catalog.arrays(root).get(offset, (None,))[0] == stride:
+                yield base, [], root, offset, field, index
+            return
         try:
             base, offset = _split_address(address)
         except Exception:
-            return []
+            return
         if base is None:
             # A constant address: a global variable, or a field of a global object.
             root = self.catalog.globals
         else:
             root = self.type_of(base)
         if root is None:
-            return []
-        return [(base, path, owner, local, field) for path, owner, local, field
-                in self.catalog.candidates(root, _signed_offset(offset))]
+            return
+        offset = _signed_offset(offset)
+        element = self.catalog.element(root, offset)
+        if element is not None:
+            start, index = element
+            yield base, [], root, start, self.catalog.field(root, start), index
+        for path, owner, local, field in self.catalog.candidates(root, offset):
+            yield base, path, owner, local, field, None
+
+    def decompose(self, address):
+        """(base, root, offset, stride, index) for an address indexed by a variable.
+
+        The address must be exactly base + offset + stride * index, with the base a
+        typed value (or absent, for a global array). Shifts, multiplies, additions
+        and subtractions by constants are exact in the 64-bit model, so
+        `arg0 + 0x10 + ((i << 2) + i << 4)` is arg0 + 0x10 + 0x50 * i.
+        """
+        terms = list(_sum_terms(simplify(address)))
+        base, root = None, self.catalog.globals
+        rest = []
+        for term in terms:
+            typed_root = None if isinstance(term, Const) else self.type_of(term)
+            if typed_root is not None and base is None:
+                base, root = term, typed_root
+            else:
+                rest.append(term)
+        if root is None:
+            return None
+        form = (0, None, 0)
+        for term in rest:
+            part = linear(term)
+            if part is None:
+                return None
+            form = _combine(form, part, 1)
+            if form is None:
+                return None
+        coefficient, index, constant = form
+        if index is None or not 1 <= coefficient <= MAX_STRIDE:
+            return None
+        return base, root, _signed_offset(constant), coefficient, index
 
     def access(self, load):
-        """(base, embed path, owner, offset) when a load is exactly a field read."""
-        for base, path, owner, local, field in self._candidates(load.address):
+        """(base, embed path, owner, offset, index) when a load is exactly a field read."""
+        for base, path, owner, local, field, index in self._candidates(load.address):
             if self.catalog.read_flavour(field) == (load.size, load.signed):
-                return base, path, owner, local
+                return base, path, owner, local, index
         return None
 
     def store_target(self, store):
-        """(base, embed path, owner, offset) when a store is exactly a field write."""
-        for base, path, owner, local, field in self._candidates(store.address):
+        """(base, embed path, owner, offset, index) when a store is exactly a field write."""
+        for base, path, owner, local, field, index in self._candidates(store.address):
             if self.catalog.write_width(field) == store.size:
-                return base, path, owner, local
+                return base, path, owner, local, index
         return None
 
     def object(self, base, path) -> str:
@@ -133,19 +240,38 @@ class Typing:
             text += ".%s()" % embedded_accessor(at)
         return text
 
-    def read(self, base, path, local) -> str:
-        """The expression reading a located field."""
-        if base is None and not path:
-            self.used_globals.add(local)
-            return "%s()" % global_name(local)
-        return "%s.%s()" % (self.object(base, path), accessor(local))
+    def index_text(self, index) -> str:
+        """An element number or index expression, rendered with this typing.
 
-    def write(self, holder, base, path, local, value) -> str:
-        """The statement writing a located field; `holder` is a captured view."""
+        Installs the hooks itself: it is also called from statement-level code,
+        outside any expression rendering, and the default renderer would print a
+        typed argument without `.address`.
+        """
+        if index is None:
+            return ""
+        if isinstance(index, int):
+            return str(index)
+        with load_renderer(self.render_load), arg_renderer(self.render_arg):
+            return simplify(index).render()
+
+    def read(self, base, path, local, index=None) -> str:
+        """The expression reading a located field, or an element of one."""
+        arguments = self.index_text(index)
         if base is None and not path:
-            self.used_globals.add(local)
-            return "set_%s(%s);" % (global_name(local), value)
-        return "%s.set_%s(%s);" % (holder or self.object(base, path), accessor(local), value)
+            (self.used_global_arrays if index is not None else self.used_globals).add(local)
+            return "%s(%s)" % (global_name(local), arguments)
+        return "%s.%s(%s)" % (self.object(base, path), accessor(local), arguments)
+
+    def write(self, holder, base, path, local, value, index=None) -> str:
+        """The statement writing a located field; `holder` is a captured view and
+        `index` an element number, an index expression, or text already captured."""
+        arguments = value if index is None else "%s, %s" % (
+            index if isinstance(index, str) else self.index_text(index), value)
+        if base is None and not path:
+            (self.used_global_arrays if index is not None else self.used_globals).add(local)
+            return "set_%s(%s);" % (global_name(local), arguments)
+        return "%s.set_%s(%s);" % (holder or self.object(base, path), accessor(local),
+                                   arguments)
 
     @staticmethod
     def needs_capture(base) -> bool:
@@ -159,9 +285,9 @@ class Typing:
         self.used.add(root)
         if isinstance(expr, Arg):
             return "arg%d" % expr.index
-        base, path, owner, local = self.access(expr)
+        base, path, owner, local, index = self.access(expr)
         self.used.add(owner)
-        return self.read(base, path, local)
+        return self.read(base, path, local, index)
 
     def type_name(self, root) -> str:
         return self.catalog.names[root]
@@ -177,9 +303,9 @@ class Typing:
     def render_load(self, node, render_child) -> str:
         access = self.access(node)
         if access is not None:
-            base, path, owner, offset = access
+            base, path, owner, offset, index = access
             self.used.add(owner)
-            text = self.read(base, path, offset)
+            text = self.read(base, path, offset, index)
             if self.type_of(node) is not None:
                 self.used.add(self.type_of(node))
                 return text + ".address"
@@ -192,7 +318,8 @@ class Typing:
         return "%s(%s)" % (reader, render_child(node.address))
 
 
-def header(catalog: Catalog, roots, source_name: str, globals_used=(), objects=()) -> str:
+def header(catalog: Catalog, roots, source_name: str, globals_used=(), objects=(),
+           global_arrays=()) -> str:
     """The view classes for the given types, and the globals used, as a C++ header."""
     roots = sorted((root for root in roots if root != catalog.globals),
                    key=lambda root: catalog.names[root])
@@ -278,6 +405,26 @@ def header(catalog: Catalog, roots, source_name: str, globals_used=(), objects=(
                     "inline void %s::set_%s(u64 value) const { %s(%s, value); }"
                     % (name, accessor(offset), WRITERS[width], displacement)
                 )
+        for start, (stride, count) in sorted(catalog.arrays(root).items()):
+            field = fields[start]
+            flavour = catalog.read_flavour(field)
+            width = catalog.write_width(field)
+            target = catalog.pointee(root, start)
+            element = ("address + 0x%X + index * 0x%X" % (start, stride) if start >= 0
+                       else "address - 0x%X + index * 0x%X" % (-start, stride))
+            extent = "%d elements" % count if count is not None else "length unknown"
+            if flavour in READERS:
+                returns = (catalog.names[target] if target is not None and target in included
+                           else "u64")
+                lines.append("    %s %s(u64 index) const;  /* array: every 0x%X bytes, %s */"
+                             % (returns, accessor(start), stride, extent))
+                definitions.append("inline %s %s::%s(u64 index) const { return %s(%s); }"
+                                   % (returns, name, accessor(start), READERS[flavour], element))
+            if width in WRITERS:
+                lines.append("    void set_%s(u64 index, u64 value) const;" % accessor(start))
+                definitions.append(
+                    "inline void %s::set_%s(u64 index, u64 value) const { %s(%s, value); }"
+                    % (name, accessor(start), WRITERS[width], element))
         for at, inner in sorted(catalog.embedded(root).items()):
             if inner not in included:
                 continue
@@ -291,12 +438,12 @@ def header(catalog: Catalog, roots, source_name: str, globals_used=(), objects=(
         lines.append("")
     lines.append("/* Accessor definitions, after every type is complete. */")
     lines.extend(definitions)
-    lines += global_section(catalog, included, globals_used, objects)
+    lines += global_section(catalog, included, globals_used, objects, global_arrays)
     lines += ["", "}  // namespace generated", "", "#endif  /* B3_GENERATED_TYPES_H */", ""]
     return "\n".join(lines)
 
 
-def global_section(catalog, included, globals_used, objects) -> list:
+def global_section(catalog, included, globals_used, objects, global_arrays=()) -> list:
     """Accessors for the global variables and global objects the code uses.
 
     A scalar global is a pair of functions, `g_004876E8()` and `set_g_004876E8(v)`,
@@ -328,6 +475,26 @@ def global_section(catalog, included, globals_used, objects) -> list:
                 lines.append("/* %s  written only, %s */" % (location, note))
             lines.append("inline void set_%s(u64 value) { %s(%s, value); }"
                          % (name, WRITERS[width], location))
+    if global_arrays:
+        lines += ["", "/* Global arrays, by address of element 0. */"]
+        arrays = catalog.arrays(catalog.globals)
+        for address in sorted(global_arrays):
+            field = fields[address]
+            stride = arrays[address][0]
+            flavour = catalog.read_flavour(field)
+            width = catalog.write_width(field)
+            target = catalog.pointee(catalog.globals, address)
+            element = "0x%X + index * 0x%X" % (address & 0xFFFFFFFF, stride)
+            lines.append("/* 0x%X  every 0x%X bytes, %d function(s) */"
+                         % (address & 0xFFFFFFFF, stride, len(field.functions)))
+            if flavour in READERS:
+                returns = (catalog.names[target] if target is not None and target in included
+                           else "u64")
+                lines.append("inline %s %s(u64 index) { return %s(%s); }"
+                             % (returns, global_name(address), READERS[flavour], element))
+            if width in WRITERS:
+                lines.append("inline void set_%s(u64 index, u64 value) { %s(%s, value); }"
+                             % (global_name(address), WRITERS[width], element))
     if objects:
         lines += ["", "/* Global objects, by address. */"]
         for address, inner in sorted(objects):
@@ -360,6 +527,24 @@ def _accesses(derivation):
             yield store.address, store.size, None, True
 
 
+def _untyped_indexed(typing, func, address, graph):
+    """Like Typing.decompose, for an indexed access through an argument with no
+    type yet - which then gets one. None if the address is not of that shape."""
+    terms = list(_sum_terms(simplify(address)))
+    for term in terms:
+        if isinstance(term, Arg) and typing.type_of(term) is None:
+            rest = [t for t in terms if t is not term]
+            form = (0, None, 0)
+            for other in rest:
+                part = linear(other)
+                form = None if part is None or form is None else _combine(form, part, 1)
+            if form is None or form[1] is None or not 1 <= form[0] <= MAX_STRIDE:
+                return None
+            node = graph.node(("arg", func["addr"], term.index))
+            return term, node, _signed_offset(form[2]), form[0], form[1]
+    return None
+
+
 def add_derived_evidence(graph, verified, rounds: int = 4) -> int:
     """Add the derived functions' own accesses to the type graph as evidence.
 
@@ -380,6 +565,20 @@ def add_derived_evidence(graph, verified, rounds: int = 4) -> int:
             typing = Typing(catalog, func["addr"])
             for address, size, signed, is_store in _accesses(derivation):
                 if size not in (1, 2, 4, 8):
+                    continue
+                indexed = typing.decompose(address)
+                if indexed is None:
+                    indexed = _untyped_indexed(typing, func, address, graph)
+                if indexed is not None:
+                    _base, root, offset, stride, _index = indexed
+                    node = root
+                    field = graph.field(node, offset)
+                    if not field.strides:
+                        added += 1
+                    field.strides[stride] += 1
+                    field.uses[(size, "derived", bool(signed) if not is_store else None,
+                                is_store)] += 1
+                    field.functions.add(func["addr"])
                     continue
                 try:
                     base, offset = _split_address(address)

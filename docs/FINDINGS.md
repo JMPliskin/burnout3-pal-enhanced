@@ -419,13 +419,27 @@ ordinary types worse: excluding globals, offsets shared by several functions are
 consistent as float or integer, since float globals are often copied as plain
 words, and 99.6% in signedness.
 
+### Arrays
+
+Arrays come from two kinds of evidence. A derived access of the form base +
+offset + stride * index - found by putting the address in linear form, which is
+exact through shifts, multiplies and sums - makes the field at that offset element
+0 of an array of that stride. A run of same-shaped fields at a fixed spacing is an
+array the code walked with an unrolled loop, and the run gives its length. Runs
+must be long (16 contiguous elements, or 6 records with gaps) because a struct of
+consecutive ints looks exactly like a short int array; neighbouring globals get no
+run detection at all.
+
+Examples: `func_0013D4D0` clears an array of 24 records of 0x50 bytes, and
+`arg0.f_362E0((arg1 & 255) >> 5) & 1ull << (arg1 & 31)` is a bitset lookup.
+
 ### In the emitted source
 
-480 of the 647 derived functions take at least one typed argument. Field
-accessors account for 2,974 reads and 4,729 writes, global variables for 511 reads
-and 431 writes, and global objects for 324 uses. 141 reads and 168 writes are still
-done by address; the largest remaining group is arrays indexed by a variable
-(`base + (i << 2)`), which the recovery does not model yet.
+480 of the 647 derived functions take at least one typed argument. Plain field
+accessors account for 2,609 reads and 2,302 writes, array elements of struct types
+for 252 reads and 2,054 writes, scalar globals for 510 reads and 431 writes, and
+global arrays for 211 reads and 459 writes. 43 reads and 82 writes are still done by
+address.
 
 ## Open questions
 
