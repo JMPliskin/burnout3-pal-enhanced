@@ -213,5 +213,47 @@ class TestSharedCode(unittest.TestCase):
             derive_paths(self.image, BASE, self.func_a, self.func_a + 8, known={})
 
 
+
+class TestBarriers(unittest.TestCase):
+    """A load that may or may not overlap an earlier store reads memory after it.
+
+    f(p, q): *p = 7; return *q - with no way to tell from the addresses whether p
+    and q are the same. It used to be refused; now a barrier applies the store
+    first, so the answer is right whether they alias or not.
+    """
+
+    WORDS = [addiu(V1, 0, 7), sw(V1, 0, A0), JR_RA, lw(V0, 0, A1)]
+
+    def derive(self):
+        image = struct.pack("<%dI" % len(self.WORDS), *self.WORDS)
+        return image, derive_paths(image, BASE, BASE, BASE + 4 * len(self.WORDS), known={})
+
+    def test_unprovable_overlap_becomes_a_barrier(self):
+        _image, derivation = self.derive()
+        self.assertTrue(derivation.sequential)
+        self.assertEqual([s[0] for s in derivation.tree()], ["store", "barrier", "return"])
+
+    def test_barrier_is_exact_whether_or_not_the_pointers_alias(self):
+        image, derivation = self.derive()
+        machine = Machine(BASE, image, 0x02000000 - BASE)
+        for p, q in ((0x01800000, 0x01800000), (0x01800000, 0x01800010)):
+            machine.memory.write(0x01800000, bytes(range(32)))
+            expected = machine.call(BASE, (p, q))
+            machine.memory.write(0x01800000, bytes(range(32)))
+            machine.memory.begin_journal()
+            actual = derivation.run((p, q) + (0,) * 14, Execution(machine))
+            machine.memory.rollback()
+            machine.memory.end_journal()
+            self.assertEqual(actual, expected, "p=%#x q=%#x" % (p, q))
+
+    def test_barrier_emits_the_store_before_the_load(self):
+        import derive
+
+        derive._SIGNATURES.clear()
+        derive._EXTERNS.clear()
+        lines = derive.render_body(self.derive()[1])
+        self.assertEqual(lines, ["Write32(arg0, 7);", "return ReadS32(arg1);"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -386,6 +386,8 @@ class StatementEmitter:
                 found.append(statement[1])
                 found += StatementEmitter._expressions(statement[2])
                 found += StatementEmitter._expressions(statement[3])
+            elif kind == "barrier":
+                continue
             elif statement[1] is not None:
                 found.append(statement[1])
         return found
@@ -441,9 +443,11 @@ class StatementEmitter:
                 store = statement[1]
                 # Capture first: a value the store may overwrite has to be read
                 # before the write lands, not after.
+                # Any epoch up to this one: between barriers only stores change
+                # memory, so a load from before a barrier can still be overwritten.
                 lines += self._capture(
                     later,
-                    lambda load: load.epoch == epoch and _relation(
+                    lambda load: load.epoch <= epoch and _relation(
                         store.address, store.size, load.address, load.size) != "disjoint",
                     lambda node: _beyond(node, epoch),
                 )
@@ -457,6 +461,10 @@ class StatementEmitter:
                 )
                 lines.append(self._call(call, later))
                 epoch = call.index
+            elif kind == "barrier":
+                # Nothing to emit: the statements already run in order against live
+                # memory, which is what a barrier means.
+                epoch = statement[1].index
             elif kind == "if":
                 lines.append("if (%s) {" % render_cpp(self._apply(statement[1])))
                 # A local captured inside one branch does not exist in the other, so
@@ -550,7 +558,7 @@ _EXTERNS = {}
 
 def render_body(derivation) -> list:
     """Render a whole derivation as C++ statement lines, without indentation."""
-    if derivation.has_calls:
+    if derivation.sequential:
         return StatementEmitter(derivation).render()
     if derivation.is_straight_line:
         return render_path_body(derivation.paths[0], "")
@@ -615,7 +623,7 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
             # Only call-free derivations are inlined into callers. One that calls an
             # underived function is a sequence of statements, not an expression,
             # and its callers call it instead.
-            if not outcome[1].has_calls:
+            if not outcome[1].sequential:
                 known[func["addr"]] = outcome[1]
             added += 1
         if verbose:
@@ -782,7 +790,7 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
         arg_sets, profile = plan
 
         def evaluate(args):
-            if derivation.has_calls:
+            if derivation.sequential:
                 return derivation.run(args, Execution(machine, VERIFY_BUDGET)), []
             return derivation.evaluate(args, read), derivation.evaluate_stores(args, read)
 

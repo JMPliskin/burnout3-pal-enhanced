@@ -182,6 +182,14 @@ class PathDerivation:
         return all(path.expression is None for path in self.paths)
 
     @property
+    def sequential(self) -> bool:
+        """True when the derivation must be run as ordered statements: it calls an
+        underived function, or has a barrier where a load follows stores it may
+        overlap."""
+        return any(kind in ("call", "barrier") for path in self.paths
+                   for _count, kind, _obj in path.marks)
+
+    @property
     def has_calls(self) -> bool:
         """True when the derived code calls a function that was not derived.
 
@@ -352,6 +360,8 @@ def _run_tree(statements, args, execution):
             for index, expr in call.arguments:
                 vector[index] = simplify(expr).evaluate(args, execution)
             execution.call(call.index, call.target, vector)
+        elif kind == "barrier":
+            execution.barrier(statement[1].index)
         elif kind == "if":
             taken = statement[1].evaluate(args, execution)
             return _run_tree(statement[2] if taken else statement[3], args, execution)
@@ -405,6 +415,10 @@ class Execution:
         for address, value, size in self.pending:
             self.memory.write_int(address, value, size)
         self.pending = []
+
+    def barrier(self, index):
+        self.flush()
+        self.markers[index] = len(self.memory._journal)
 
     def call(self, index, target, vector):
         self.flush()
@@ -570,7 +584,53 @@ def _forward(value, size: int, signed: bool):
     raise Unsupported("cannot forward a %d-byte store" % size)
 
 
-def _read_through(memory: dict, target, size: int, signed: bool, epoch: int = 0):
+@dataclasses.dataclass(frozen=True)
+class Barrier:
+    """The point where held stores must reach memory before a load can be answered.
+
+    A load that may or may not overlap an earlier store cannot be expressed against
+    the memory the epoch began with. Rather than refuse the function, the walk
+    starts a new epoch here: the stores so far are applied, and the load reads
+    memory as it then is - exactly what the original does. It is an opaque call
+    with no callee.
+    """
+
+    index: int
+
+
+class Overlay(dict):
+    """The function's own writes in the current epoch, plus the epoch itself.
+
+    The epoch travels with the overlay because a barrier can arise deep inside an
+    instruction step; barriers raised are collected in `raised` for the walk to
+    place among its ordered events right after the step.
+    """
+
+    def __init__(self, *args, epoch: int = 0):
+        super().__init__(*args)
+        self.epoch = epoch
+        self.raised = []
+
+    def fork(self) -> "Overlay":
+        return Overlay(self, epoch=self.epoch)
+
+    def barrier(self, store_count: int) -> int:
+        self.clear()
+        self.epoch += 1
+        self.raised.append((store_count, "barrier", Barrier(self.epoch)))
+        return self.epoch
+
+
+def _drain(memory, marks: tuple) -> tuple:
+    """Marks with any barriers the last step raised appended, in order."""
+    if isinstance(memory, Overlay) and memory.raised:
+        marks = marks + tuple(memory.raised)
+        memory.raised = []
+    return marks
+
+
+def _read_through(memory: dict, target, size: int, signed: bool, epoch: int = 0,
+                  store_count: int = 0):
     """Answer a load given everything written so far.
 
     Writes are examined newest first. The first one that could touch the loaded
@@ -584,8 +644,15 @@ def _read_through(memory: dict, target, size: int, signed: bool, epoch: int = 0)
         if relation == "disjoint":
             continue
         if relation == "same":
-            return _forward(value, size, signed)
-        raise Unsupported("load may alias an earlier store")
+            try:
+                return _forward(value, size, signed)
+            except Unsupported:
+                if not isinstance(memory, Overlay):
+                    raise
+        elif not isinstance(memory, Overlay):
+            raise Unsupported("load may alias an earlier store")
+        # Undecidable from addresses alone: apply the held stores and read memory.
+        return Load(target, size, signed, memory.barrier(store_count))
     return Load(target, size, signed, epoch)
 
 
@@ -604,6 +671,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
     back - a setter returning the field it just set is the common shape - would
     otherwise be derived against stale contents.
     """
+    if isinstance(memory, Overlay):
+        epoch = memory.epoch
     m = ins.mnemonic
     if m in ("nop", "sync"):
         return
@@ -627,7 +696,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
             regs[fpr(ins.rt)] = frame[key]
             return
         # Float registers hold bit patterns, so this is an unsigned 32-bit read.
-        regs[fpr(ins.rt)] = _read_through(memory, target, 4, False, epoch)
+        regs[fpr(ins.rt)] = _read_through(memory, target, 4, False, epoch, len(stores))
         return
 
     if m in _STORE_SIZES:
@@ -660,7 +729,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
             regs[ins.rt] = frame[key]
             return
         if memory:
-            regs[ins.rt] = _read_through(memory, target, size, signed_load, epoch)
+            regs[ins.rt] = _read_through(memory, target, size, signed_load, epoch,
+                                         len(stores))
             return
 
     if ins.is_branch or ins.is_jump or ins.is_call:
@@ -740,6 +810,23 @@ def _in_caller(expr, arguments, epoch: int, memo: dict):
     if epoch:
         expr = _retag(expr, epoch, memo)
     return substitute(expr, arguments)
+
+
+def _settle_for_callee(callee, arguments, memory, stores, marks) -> tuple:
+    """Make a known callee safe to inline; returns (epoch, marks).
+
+    A callee's loads describe memory as it stood when it was entered, after the
+    caller's stores. If one may read something the caller wrote, a barrier first
+    applies those stores, and the callee's loads then read the new epoch.
+    """
+    try:
+        _check_callee_loads_are_safe(callee, arguments, memory, memory.epoch)
+    except Unsupported:
+        if not isinstance(memory, Overlay):
+            raise
+        memory.barrier(len(stores))
+        marks = _drain(memory, marks)
+    return memory.epoch, marks
 
 
 def _apply_callee_path(callee_path, arguments, stores: list, memory: dict,
@@ -857,6 +944,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             for value in regs.values():
                 if value.tree_size > MAX_EXPR_SIZE:
                     raise Unsupported("expression too large")
+            epoch = memory.epoch
             if not (start <= addr < end) and not shared_code(addr):
                 raise Unsupported("control flow leaves the function")
             visited[addr] = count
@@ -874,6 +962,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     raise Unsupported("indirect jump")
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
+                marks = _drain(memory, marks)
                 # A function that never writes $v0 returns nothing. Insisting on a
                 # return value refused 514 functions outright - every setter and
                 # initialiser in the binary - because they are simply void.
@@ -897,38 +986,42 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 decided = _constant_truth(predicate)
                 if decided is True:
                     _step(regs, stores, frame, memory, slot, get, epoch)
+                    marks = _drain(memory, marks)
                     addr = ins.target
                     continue
                 if decided is False:
                     if not ins.is_likely:
                         _step(regs, stores, frame, memory, slot, get, epoch)
+                    marks = _drain(memory, marks)
                     addr += 8
                     continue
 
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
-                taken_frame, taken_memory = dict(frame), dict(memory)
+                taken_frame, taken_memory = dict(frame), memory.fork()
                 _step(taken_regs, taken_stores, taken_frame, taken_memory,
                       slot, _getter(taken_regs), epoch)
                 walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
                      conditions + (predicate,), visited,
-                     marks + ((len(stores), "cond", predicate),), epoch)
+                     _drain(taken_memory, marks + ((len(stores), "cond", predicate),)))
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
-                fall_frame, fall_memory = dict(frame), dict(memory)
+                fall_frame, fall_memory = dict(frame), memory.fork()
                 if not ins.is_likely:
                     _step(fall_regs, fall_stores, fall_frame, fall_memory,
                           slot, _getter(fall_regs), epoch)
                 negated = predicate.negate()
                 walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
                      conditions + (negated,), visited,
-                     marks + ((len(stores), "cond", negated),), epoch)
+                     _drain(fall_memory, marks + ((len(stores), "cond", negated),)))
                 return
 
             if m in ("b", "j"):
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
+                marks = _drain(memory, marks)
+                epoch = memory.epoch
                 if start <= ins.target < end or shared_code(ins.target):
                     addr = ins.target
                     continue
@@ -942,19 +1035,19 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                             "tail-calls an underived function: 0x%08X" % ins.target)
                     # A tail call to an underived function: call it, and its $v0
                     # is this function's result.
-                    marks, epoch = opaque_call(ins.target, regs, stores, marks, epoch)
+                    marks, _epoch = opaque_call(ins.target, regs, stores, marks, epoch)
                     paths.append(Path(conditions, regs[2], tuple(stores), marks))
                     return
                 callee = known[ins.target]
                 arguments = _call_arguments(regs)
-                _check_callee_loads_are_safe(callee, arguments, memory, epoch)
+                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks)
 
                 # Each route through the callee becomes a route through this
                 # function, since a tail call has no return of its own: the callee's
                 # result and conditions are simply adopted.
                 for callee_path in callee.paths:
                     branch_stores = list(stores)
-                    branch_memory = dict(memory)
+                    branch_memory = memory.fork()
                     before = len(stores)
                     extra = _apply_callee_path(
                         callee_path, arguments, branch_stores, branch_memory, epoch
@@ -979,10 +1072,12 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                             "calls an underived function: 0x%08X" % ins.target)
                     _step(regs, stores, frame, memory,
                           DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
-                    marks, epoch = opaque_call(ins.target, regs, stores, marks, epoch)
+                    marks = _drain(memory, marks)
+                    marks, epoch = opaque_call(ins.target, regs, stores, marks,
+                                               memory.epoch)
                     # The callee may have written anything, so nothing this function
                     # wrote earlier can be forwarded to a later load any more.
-                    memory = {}
+                    memory = Overlay(epoch=epoch)
                     addr += 8
                     continue
                 callee = known[ins.target]
@@ -991,8 +1086,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # argument, so apply it first.
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
+                marks = _drain(memory, marks)
                 arguments = _call_arguments(regs)
-                _check_callee_loads_are_safe(callee, arguments, memory, epoch)
+                epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks)
 
                 # A callee with several paths multiplies the caller's: one caller
                 # path continues for each route through the callee, carrying that
@@ -1002,7 +1098,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     branch_regs = dict(regs)
                     branch_stores = list(stores)
                     branch_frame = dict(frame)
-                    branch_memory = dict(memory)
+                    branch_memory = memory.fork()
                     before = len(stores)
                     extra = _apply_callee_path(
                         callee_path, arguments, branch_stores, branch_memory, epoch
@@ -1014,13 +1110,14 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                             callee_path.expression, arguments, epoch, {}))
                     walk(addr + 8, branch_regs, branch_stores, branch_frame,
                          branch_memory, conditions + extra, visited,
-                         marks + tuple((before, "cond", c) for c in extra), epoch)
+                         marks + tuple((before, "cond", c) for c in extra))
                 return
 
             if ins.is_jump:
                 raise Unsupported("unhandled jump")
 
             _step(regs, stores, frame, memory, ins, get, epoch)
+            marks = _drain(memory, marks)
             addr += 4
 
     # Seed the registers to exactly the state the interpreter starts a call in, so
@@ -1055,7 +1152,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[reg] = Arg(i)
     for k, reg in enumerate(FLOAT_ARG_REGS):
         regs[fpr(reg)] = Arg(FLOAT_ARG_BASE + k)
-    walk(start, regs, [], {}, {}, (), {})
+    walk(start, regs, [], {}, Overlay(), (), {})
 
     if not paths:
         raise Unsupported("no return reached")

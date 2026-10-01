@@ -510,6 +510,21 @@ compiled. Many of the rest now get as far as a shared *epilogue*, which restores
 registers from a stack frame the jumping function did not lay out itself; "reads
 an unwritten stack slot" rose from 398 to 1,281 accordingly.
 
+## Loads that may or may not overlap a store
+
+The largest obstacle after shared tails was a load that might read what an
+earlier store wrote, where the addresses alone cannot decide it - `*p = 7; return
+*q;` with nothing relating p and q (1,726 functions). The deriver now puts a
+*barrier* there: the stores so far are applied, and the load reads memory as it
+then is. That is exactly what the original does, so it is not a guess that
+testing has to back up - the barrier is an opaque call with no callee, and the
+epoch machinery built for calls handles it unchanged. The same applies when an
+inlined callee might read what its caller wrote: a barrier goes in first.
+
+Derived and verified rose from 1,835 to 2,020 functions; verified code from 2.60%
+to 3.32% of code bytes. All 1,967 emitted functions agree when compiled, and the
+category no longer appears among the refusals.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

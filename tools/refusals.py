@@ -64,7 +64,7 @@ def main(argv=None) -> int:
     verified, _rejected = derive.collect(database, image, section.addr, machine,
                                          verbose=False)
     known = {func["addr"]: derivation for func, derivation, _t, _s in verified
-             if not derivation.has_calls}
+             if not derivation.sequential}
     done = {func["addr"] for func, _d, _t, _s in verified}
     parameters = calls.parameters(database, image, section.addr)
     by_address = {f["addr"]: f for f in database["functions"]}

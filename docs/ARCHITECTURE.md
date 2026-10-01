@@ -188,6 +188,12 @@ interpreter, so the compiled code is tested against original callees too.
 Only call-free derivations are inlined. A derived function that calls an
 underived one is called by its own callers, by its emitted signature.
 
+A *barrier* (`paths.Barrier`) is an epoch boundary with no call: where a load may
+or may not overlap an earlier store, the held stores are applied and the load
+reads the new epoch. The walk's epoch lives on its store overlay (`paths.Overlay`)
+because a barrier arises deep inside an instruction step. Emitted code needs
+nothing for it - its statements already run in order against live memory.
+
 ## `structs.py` and `typed.py` - struct types
 
 Types are recovered by unification in the style of Steensgaard's points-to
