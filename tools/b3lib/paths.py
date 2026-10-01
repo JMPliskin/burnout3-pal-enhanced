@@ -50,7 +50,32 @@ from .symexec import (
 # accessor or predicate has a handful of paths; anything past these is not the kind
 # of function this module is meant for.
 MAX_PATHS = 24
-MAX_PATH_LENGTH = 96
+
+# Loop unrolling bounds. MAX_UNROLL caps how often any one instruction may execute on
+# a single path, i.e. the largest trip count that will be unrolled. MAX_PATH_STEPS
+# caps the instructions on a path overall, so a modest loop nested in another cannot
+# multiply into something enormous. Beyond these the function is refused as looping.
+MAX_UNROLL = 64
+MAX_PATH_STEPS = 2048
+
+# Total instructions walked across *every* path of one function. MAX_PATHS alone is
+# not a brake: it counts completed paths, and a loop whose exit depends on memory can
+# fork on every iteration for a very long time before any path completes. One such
+# function - a ring-buffer walk at 0x0020DD08, forking four ways per iteration - grew
+# roughly as 4^64 and never returned. Capping the work, not the results, bounds it.
+MAX_TOTAL_STEPS = 20_000
+
+# Largest expression, counted as a tree, that a derivation may hold. Step counts do
+# not bound this: an unrolled loop that uses a value twice per iteration doubles the
+# tree each time round while taking only a handful of instructions to do it, so the
+# derivation stalls in building and simplifying nodes long before any step limit
+# trips. A result this large would also be unreadable as source, so refusing it loses
+# nothing a reconstruction could have used.
+MAX_EXPR_SIZE = 4000
+
+# Key under which a path's total step count is kept alongside its per-address
+# counts. No instruction address can collide with it.
+STEPS = -1
 
 # `$sp` is seeded with the same value the interpreter uses, so stack addresses fold
 # to constants and the frame can be modelled separately from real memory.
@@ -430,20 +455,42 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         return struct.unpack_from("<I", image, addr - base)[0]
 
     paths = []
+    # Shared by every fork of this function's walk, so the cap is on total work.
+    budget = [MAX_TOTAL_STEPS]
 
     def walk(addr: int, regs: dict, stores: list, frame: dict, memory: dict,
-             conditions: tuple, visited: frozenset):
+             conditions: tuple, visited: dict):
         if len(paths) > MAX_PATHS:
             raise Unsupported("too many paths")
-        if len(visited) > MAX_PATH_LENGTH:
-            raise Unsupported("path too long")
+        # Each walk owns its counts; a fork must not see its sibling's iterations.
+        visited = dict(visited)
 
         while True:
-            if addr in visited:
+            # Loops are unrolled rather than refused. A loop whose trip count is
+            # constant needs no special handling: its exit condition folds to a
+            # constant on every iteration (see _constant_truth), so the walk follows
+            # the single feasible side round the loop and out. A loop whose count
+            # depends on input instead forks on every iteration and runs into
+            # MAX_PATHS or MAX_UNROLL - refused, which is the honest outcome, since
+            # no finite expression describes it.
+            count = visited.get(addr, 0) + 1
+            if count > MAX_UNROLL:
                 raise Unsupported("loop")
+            steps = visited.get(STEPS, 0) + 1
+            if steps > MAX_PATH_STEPS:
+                raise Unsupported("path too long")
+            budget[0] -= 1
+            if budget[0] < 0:
+                raise Unsupported("exploration budget exhausted")
+            # Sizes are recorded at construction, so this costs one attribute read
+            # per live register.
+            for value in regs.values():
+                if value.tree_size > MAX_EXPR_SIZE:
+                    raise Unsupported("expression too large")
             if not (start <= addr < end):
                 raise Unsupported("control flow leaves the function")
-            visited = visited | {addr}
+            visited[addr] = count
+            visited[STEPS] = steps
             get = _getter(regs)
             ins = DISASM.decode(word_at(addr), addr)
             m = ins.mnemonic
@@ -610,7 +657,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[fpr(index)] = Const(0)
     for i in range(4):
         regs[4 + i] = Arg(i)
-    walk(start, regs, [], {}, {}, (), frozenset())
+    walk(start, regs, [], {}, {}, (), {})
 
     if not paths:
         raise Unsupported("no return reached")

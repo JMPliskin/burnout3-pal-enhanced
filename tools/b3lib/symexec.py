@@ -37,6 +37,30 @@ class Unsupported(Exception):
 class Expr:
     """Base class for symbolic values."""
 
+    def __post_init__(self) -> None:
+        # Record the node's size *as a tree* - the size its rendering would have -
+        # at construction, from the children's already-recorded sizes. That makes the
+        # size free to query, which matters because unrolled loops build expressions
+        # that share subtrees: a value used twice per iteration doubles the tree each
+        # time round while the underlying graph grows only linearly. Anything that
+        # walks such a value as a tree is exponential, and the deriver has to be able
+        # to notice that before it walks it. Defined here so every dataclass subclass
+        # inherits it; dataclasses call an inherited __post_init__.
+        #
+        # Named `tree_size`, not `size`: Load already has a field called `size` (the
+        # access width), and a base-class `size` attribute becomes that field's
+        # default value, which breaks every dataclass declared after it.
+        object.__setattr__(
+            self,
+            "_tree_size",
+            min(1 + sum(child.tree_size for child in children(self)), 1 << 30),
+        )
+
+    @property
+    def tree_size(self) -> int:
+        """Node count as a tree, i.e. the size of this expression when printed."""
+        return getattr(self, "_tree_size", 1)
+
     def render(self) -> str:
         raise NotImplementedError
 

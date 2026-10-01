@@ -550,6 +550,112 @@ class TestVisitCounting(unittest.TestCase):
         machine.call(BASE, (0, 0, 0, 0))
         self.assertEqual(machine.visit_counts.get(loop), 3)
 
+class TestLoopUnrolling(unittest.TestCase):
+    """Loops with a constant trip count unroll themselves.
+
+    No trip count is supplied: the exit condition folds to a constant on every
+    iteration, so the walk follows the one feasible side round the loop and out. A
+    loop whose count depends on input forks on every iteration and is refused.
+    """
+
+    def setUp(self):
+        from b3lib.paths import derive_paths
+        from b3lib.symexec import Unsupported
+
+        self.derive_paths = derive_paths
+        self.Unsupported = Unsupported
+
+    def _derive(self, words):
+        image = assemble(words)
+        return self.derive_paths(image, BASE, BASE, BASE + len(image))
+
+    def test_constant_count_loop_unrolls(self):
+        # v0 = 0; t0 = 3; do { v0 += a0; t0 -= 1; } while (t0 != 0); return v0;
+        words = [
+            enc_i(0x09, 0, 2, 0),            # addiu $v0, $zero, 0
+            enc_i(0x09, 0, 8, 3),            # addiu $t0, $zero, 3
+            enc_r(0, 2, 4, 2, 0, 0x21),      # loop: addu $v0, $v0, $a0
+            enc_i(0x09, 8, 8, -1),           #       addiu $t0, $t0, -1
+            enc_i(0x05, 8, 0, -3),           #       bne $t0, $zero, loop
+            0,
+            JR_RA,
+            0,
+        ]
+        result = self._derive(words)
+        self.assertEqual(len(result.paths), 1, "a constant loop must not fork")
+        # Three iterations of `v0 += a0`.
+        self.assertEqual(result.evaluate((5, 0, 0, 0), lambda a, s, g: 0), 15)
+
+    def test_input_dependent_loop_is_refused(self):
+        """The count comes from arg0, so no finite expression describes it."""
+        # do { a0 -= 1; } while (a0 != 0); return 0;
+        words = [
+            enc_i(0x09, 4, 4, -1),           # loop: addiu $a0, $a0, -1
+            enc_i(0x05, 4, 0, -2),           #       bne $a0, $zero, loop
+            0,
+            JR_RA,
+            enc_i(0x09, 0, 2, 0),            # delay: addiu $v0, $zero, 0
+        ]
+        with self.assertRaises(self.Unsupported):
+            self._derive(words)
+
+    def test_over_long_constant_loop_is_refused(self):
+        """A trip count beyond MAX_UNROLL is refused rather than unrolled."""
+        from b3lib.paths import MAX_UNROLL
+
+        words = [
+            enc_i(0x09, 0, 8, MAX_UNROLL + 5),
+            enc_i(0x09, 8, 8, -1),
+            enc_i(0x05, 8, 0, -2),
+            0,
+            JR_RA,
+            0,
+        ]
+        with self.assertRaises(self.Unsupported):
+            self._derive(words)
+
+    def test_doubling_expression_is_refused_quickly(self):
+        """A value used twice per iteration doubles the tree every time round.
+
+        This is the shape that hung derivation outright: a ring-buffer walk at
+        0x0020DD08 built a tree growing as 2^iterations. It must now be refused on
+        size, and promptly.
+        """
+        import time
+
+        # v0 = a0; t0 = 40; do { v0 = v0 + v0; t0 -= 1; } while (t0 != 0);
+        words = [
+            enc_r(0, 4, 0, 2, 0, 0x21),      # addu $v0, $a0, $zero
+            enc_i(0x09, 0, 8, 40),           # addiu $t0, $zero, 40
+            enc_r(0, 2, 2, 2, 0, 0x21),      # loop: addu $v0, $v0, $v0
+            enc_i(0x09, 8, 8, -1),
+            enc_i(0x05, 8, 0, -3),
+            0,
+            JR_RA,
+            0,
+        ]
+        started = time.time()
+        with self.assertRaises(self.Unsupported):
+            self._derive(words)
+        self.assertLess(time.time() - started, 2.0)
+
+
+class TestTreeSize(unittest.TestCase):
+    def test_sizes_are_recorded_at_construction(self):
+        self.assertEqual(Arg(0).tree_size, 1)
+        self.assertEqual(Binary("add", Arg(0), Const(4)).tree_size, 3)
+
+    def test_shared_subtrees_count_as_a_tree(self):
+        """Sharing keeps the graph small but the printed form is a full tree."""
+        x = Arg(0)
+        for _ in range(10):
+            x = Binary("add", x, x)
+        self.assertEqual(x.tree_size, 2 ** 11 - 1)
+
+    def test_load_width_field_is_unaffected(self):
+        """Load's own `size` field (the access width) must not be shadowed."""
+        self.assertEqual(Load(Arg(0), 4, False).size, 4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

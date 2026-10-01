@@ -1,10 +1,10 @@
 # Decompilation progress
 
-_Generated 2026-10-01 10:13 from `SLUS_210.50`._
+_Generated 2026-10-01 10:26 from `SLUS_210.50`._
 
 ## Headline number
 
-**0.8118%** of the executable's code bytes are verified - reconstructed source that was differential-tested against the original machine code and agreed.
+**0.9381%** of the executable's code bytes are verified - reconstructed source that was differential-tested against the original machine code and agreed.
 
 This is the only number that means anything on its own. The tiers below track work in progress, but until a function reaches `verified` there is no evidence the source is right.
 
@@ -27,9 +27,9 @@ This is the only number that means anything on its own. The tiers below track wo
 
 | tier | functions | share | code bytes | share |
 | --- | ---: | ---: | ---: | ---: |
-| `undecompiled` | 8,504 | 92.81% | 3,219,132 | 98.90% |
+| `undecompiled` | 8,466 | 92.39% | 3,214,672 | 98.76% |
 | `analyzed` | 72 | 0.79% | 2,584 | 0.08% |
-| `reconstructed` | 102 | 1.11% | 6,824 | 0.21% |
-| `verified` | 485 | 5.29% | 26,424 | 0.81% |
+| `reconstructed` | 107 | 1.17% | 7,172 | 0.22% |
+| `verified` | 518 | 5.65% | 30,536 | 0.94% |
 
 Tier meanings are defined in [METHODOLOGY.md](METHODOLOGY.md).
