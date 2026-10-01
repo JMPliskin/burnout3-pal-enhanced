@@ -11,60 +11,46 @@ begun.** See [Honest scope](#honest-scope) before reading anything else.
 
 ## What exists today
 
-A working, tested analysis toolchain, and a complete static map of the
-executable:
+A working analysis toolchain, a complete static map of the executable, and an
+objective way to verify reconstructed functions without the original compiler.
 
 | | |
 | --- | ---: |
 | Executable analysed | `SLUS_210.50`, 4,073,088 bytes |
-| Functions discovered | 7,423 |
-| Image proven to be code | 3,300,392 bytes (81.0%) |
-| Strings recovered | 5,556 |
-| Address cross-references | 8,171 |
-| Pointer tables (vtables / jump tables) | 95 |
-| Annotated assembly listings generated | 7,423 files |
-| Original compiler | Metrowerks CodeWarrior MIPS 2.4.1.01 |
-| **Verified-complete source** | **0.0000%** |
+| Functions discovered | 9,163 |
+| Image proven to be MIPS code | 86.2% |
+| VU microcode located | 108,096 bytes (~173 microprograms) |
+| Instructions failing to decode | 0 of 814,598 |
+| Strings / xrefs / pointer tables | 5,556 / 8,159 / 355 |
+| Functions executable in the interpreter | 7,412 (80.9%) |
+| **Verified reconstructions** | **2 functions, 0.0130% of code bytes** |
 
-That last row is the one that counts, and it is not a typo. See
-[docs/PROGRESS.md](docs/PROGRESS.md) for the live numbers.
+See [docs/PROGRESS.md](docs/PROGRESS.md) for live numbers.
 
-## Honest scope
+## Approach: functional reconstruction
 
-The stated goal is a 100% decompilation. That is a legitimate goal, but it is
-worth being precise about what it costs, because the gap between "analysis
-done" and "decompilation done" is enormous.
+The original compiler is known - `MW MIPS C Compiler (2.4.1.01)`, Metrowerks
+CodeWarrior, named in the executable's own `.comment` section - but it is
+abandoned proprietary software and could not be obtained. Byte-matching is
+therefore off the table: Metrowerks and GCC differ systematically in register
+allocation and scheduling, so chasing a match with GCC would stall short and never
+close.
 
-A *matching* decompilation means source code that recompiles to byte-identical
-machine code. For each of the 7,423 functions that requires recovering the
-signature and every struct layout it touches, writing candidate C++, compiling
-it with the **original** 2004 toolchain, diffing the output, and iterating until
-the bytes agree.
+So the project verifies **behaviour** instead of bytes. An R5900 interpreter runs
+the original machine code, the reconstruction runs on the same inputs, and the two
+are compared. A function is `verified` only when that test passes.
 
-For scale, comparable finished projects:
+This is a weaker guarantee than byte-matching and the docs say so plainly: a
+passing test shows agreement *on the inputs tested*, not equivalence in general.
+What it buys is an automated check that fails loudly on a regression, which
+untested source does not. It also caught a real interpreter bug - `beql`/`bnel`
+nullify their delay slot when not taken - that inspection and synthetic unit tests
+both missed.
 
-| Project | Scale | Effort |
-| --- | --- | --- |
-| Super Mario 64 | ~1 MB, N64 | ~2 years |
-| Ocarina of Time | ~1 MB, N64 | ~3 years, 100+ contributors |
-| Metroid Prime | GameCube, comparable size | ~5 years |
-
-This binary is **harder than all three**. It is larger, it is completely
-stripped (no symbol table, no section boundaries - code and data share one flat
-blob), and nobody has yet established which compiler and flags reproduce
-Criterion's code generation. Identifying that toolchain is itself a
-prerequisite and typically weeks of work before the first function can match.
-
-So: this is a multi-year, multi-person effort, and no amount of unattended
-machine time changes that. What *can* be automated - extraction, disassembly,
-function discovery, symbol recovery, progress accounting - is done and is in
-this repository. The per-function work that follows is iterative and needs a
-human in the loop.
-
-The project deliberately refuses to report a flattering headline percentage.
-Auto-generating plausible-looking C for thousands of functions is easy and
-completely worthless: it compiles to nothing, matches nothing, and has to be
-thrown away. Only `matched` counts.
+For scale: comparable finished projects (Ocarina of Time ~3 years and 100+
+contributors, Metroid Prime ~5 years) had *more* symbol information than this
+fully stripped binary. This remains a multi-year effort, and the project reports
+verified bytes rather than a flattering headline.
 
 ## Requirements
 

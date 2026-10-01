@@ -19,35 +19,30 @@ executable, with no third-party dependencies.
 
 ## Phase 1 - Static map of the executable **[complete]**
 
-* 7,423 functions discovered; 81.0% of the image proven to be code
-* 5,556 strings, 8,171 address cross-references, 95 pointer tables
+* 9,163 functions discovered; 86.2% of the image proven to be code
+* 5,556 strings, 8,159 address cross-references, 355 pointer tables
+* 108 KB of VU microcode located, plus a byte-level accounting of the whole image
 * Annotated assembly generated for every function
 
-## Phase 2 - Establish a matching toolchain **[compiler identified; sourcing blocked]**
+## Phase 2 - Verification without the original compiler **[complete]**
 
-Nothing can reach `matched` until this is finished, so it gates the entire
-project. See [METHODOLOGY.md](METHODOLOGY.md#the-toolchain).
+The original compiler is identified but unobtainable, so the project has
+deliberately switched from byte-matching to **functional reconstruction**, with
+differential testing against an interpreter as the verification mechanism. See
+[METHODOLOGY.md](METHODOLOGY.md).
 
-* [x] **Identify the original compiler.** The `.comment` section names it
-      directly: `MW MIPS C Compiler (2.4.1.01)` / `PlayStation2` - Metrowerks
-      CodeWarrior 2.4.1.01 for PS2. No fingerprinting was needed.
-* [x] **Build the verification harness.** `tools/matchdiff.py` compares a
-      candidate against the original image and scores it both exactly and
-      semantically. Tested against known-good, near-miss and wrong-function
-      inputs.
-* [ ] **Obtain `mwccmips` 2.4.1.01.** A sourcing problem rather than a technical
-      one: CodeWarrior for PS2 is abandoned proprietary software, unsold for
-      about two decades. This is now the only thing standing between the project
-      and verified progress.
-* [ ] **Recover the optimisation flags**, calibrating against the kernel stubs in
-      `src/kernel/syscalls.cpp`.
-* [ ] **Success criterion: one function, byte-identical.**
-
-If the compiler cannot be obtained, matching is not achievable - Metrowerks and
-GCC differ systematically in register allocation and scheduling, so a GCC attempt
-would stall short and never close. The honest fallback is then a **functionally
-equivalent** reconstruction, which is a legitimate goal but a different and
-weaker one, and should be chosen deliberately rather than arrived at by drift.
+* [x] Identify the original compiler: `MW MIPS C Compiler (2.4.1.01)`, from
+      `.comment`.
+* [x] Decide the strategy deliberately. Matching is unreachable without
+      `mwccmips`; chasing it with GCC would stall short and never close.
+* [x] Build an R5900 interpreter (`tools/b3lib/emu.py`). Covers the integer core,
+      common loads/stores, `lq`/`sq`, COP1 single precision and the needed MMI
+      subset - enough to execute 80.9% of discovered functions.
+* [x] Build the differential-test harness (`tools/b3lib/difftest.py`) and wire it
+      into the test suite.
+* [x] First verified functions: `valuedb::StringLength` and `valuedb::HashName`.
+* [ ] Extend interpreter coverage to VU0 macro mode, which is the bulk of the
+      remaining 19%.
 
 ## Phase 3 - Runtime and library layer
 
@@ -68,8 +63,8 @@ The most tractable code, because much of it has a known public API.
   `Min/Max Impulse`, `Slip Speed Multipler`). `DATA/VDB.XML` on the disc is the
   authored side of the same system, which makes this unusually well-evidenced.
 * File and streaming layer (`.RWS`, `.TXD`, `.BIN`, `.KFS` containers)
-* Rendering pipeline, including the VU0/VU1 microcode paths (703 functions use
-  VU0 macro mode and need hand review)
+* Rendering pipeline, including the VU0/VU1 microcode paths (796 functions use
+  VU0 macro mode; `tools/vudis.py` reads the microcode itself)
 * Audio, input, save/memory-card, network
 
 ## Phase 5 - Game logic
@@ -79,16 +74,22 @@ and progression, front-end and UI.
 
 ## Phase 6 - PC port
 
-Only meaningful once a substantial fraction is matched. Requires replacing the
+Only meaningful once a substantial fraction is verified. Requires replacing the
 PS2 hardware layer - GS rasteriser, VU pipelines, DMA, SPU2, controller - with
 portable equivalents, which is a large project in its own right, comparable in
-size to the decompilation itself.
+size to the reconstruction itself.
+
+Functional reconstruction suits this endpoint better than byte-matching would
+have: the goal is source that *runs*, not source that reassembles. The
+differential tests carry over directly, since they check behaviour rather than
+encoding.
 
 ## What is realistic
 
-Phases 0 and 1 are done. Phase 2 is a focused, well-defined problem and is the
-right next thing to attempt. Phases 3-5 are years of incremental
-function-by-function work. Phase 6 follows from them.
+Phases 0, 1 and 2 are done: the executable is mapped, and there is now an
+objective way to verify a reconstruction without the original compiler. Phases 3-5
+are years of incremental function-by-function work. Phase 6 follows from them.
 
-Progress should be measured by matched bytes, reported by `tools/progress.py`,
-and by nothing else.
+Progress is measured by verified bytes, reported by `tools/progress.py`, and by
+nothing else. Two functions are verified so far - 0.0130% of code bytes - and that
+figure is deliberately not flattered by counting untested source.

@@ -4,14 +4,19 @@
 Progress is tracked in four tiers, kept deliberately separate because they mean
 very different things:
 
-  undecompiled  the analysis found the function; nothing is known about it
-  analyzed      behaviour worked out and written down, but no source yet
-  identified    C/C++ source exists and is believed to be behaviourally correct
-  matched       the source recompiles to byte-identical machine code
+  undecompiled   the analysis found the function; nothing is known about it
+  analyzed       behaviour worked out and written down, but no source yet
+  reconstructed  source exists and is believed correct, but is untested
+  verified       the reconstruction was differential-tested against the original
+                 machine code running in the R5900 interpreter, and agreed
 
-Only `matched` is objective.  The other tiers rest on human judgement, so they
-are never folded together into a single headline percentage: a project that
-reports "80% done" on the strength of unverified source is lying to itself.
+Only `verified` is objective.  The project targets functional reconstruction
+rather than a byte-identical match, because the original Metrowerks compiler is
+unavailable - so the top tier is "provably behaves the same", not "assembles to
+the same bytes".
+
+The tiers are never folded into one headline percentage: a project that reports
+"80% done" on the strength of untested source is lying to itself.
 
     python tools/progress.py build/slus_210_50.json
     python tools/progress.py build/slus_210_50.json --markdown > docs/PROGRESS.md
@@ -26,7 +31,7 @@ import os
 import sys
 import time
 
-TIERS = ["undecompiled", "analyzed", "identified", "matched"]
+TIERS = ["undecompiled", "analyzed", "reconstructed", "verified"]
 
 
 def load_status(path: str) -> dict:
@@ -111,15 +116,15 @@ def render_text(summary: dict) -> str:
             )
         )
     lines.append("-" * 62)
-    matched = summary["by_tier"]["matched"]
-    lines.append("VERIFIED COMPLETE: %.4f%% of code bytes recompile byte-identical"
-                 % _pct(matched["bytes"], summary["total_code"]))
+    verified = summary["by_tier"]["verified"]
+    lines.append("VERIFIED: %.4f%% of code bytes are differential-tested against the original"
+                 % _pct(verified["bytes"], summary["total_code"]))
     return "\n".join(lines)
 
 
 def render_markdown(summary: dict) -> str:
     meta = summary["meta"]
-    matched = summary["by_tier"]["matched"]
+    verified = summary["by_tier"]["verified"]
     lines = []
     lines.append("# Decompilation progress")
     lines.append("")
@@ -128,14 +133,15 @@ def render_markdown(summary: dict) -> str:
     lines.append("## Headline number")
     lines.append("")
     lines.append(
-        "**%.4f%%** of the executable's code bytes are verified complete - that is, "
-        "source that recompiles to byte-identical machine code." % _pct(matched["bytes"], summary["total_code"])
+        "**%.4f%%** of the executable's code bytes are verified - reconstructed source "
+        "that was differential-tested against the original machine code and agreed."
+        % _pct(verified["bytes"], summary["total_code"])
     )
     lines.append("")
     lines.append(
         "This is the only number that means anything on its own. The tiers below "
-        "track work in progress, but until a function reaches `matched` there is no "
-        "proof the source is right."
+        "track work in progress, but until a function reaches `verified` there is no "
+        "evidence the source is right."
     )
     lines.append("")
     lines.append("## Static analysis")
