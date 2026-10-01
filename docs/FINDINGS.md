@@ -116,20 +116,57 @@ assembles the path before hashing it:
 `func_0024FDF0` is a thin forwarder that hashes a bare name with no path
 assembly, so not every lookup takes the path-building route.
 
-### Status of the match against the database file
+### The compiled database format
 
-The hash is recovered and implemented (`tools/b3lib/vdbhash.py`,
-`src/valuedb/hash.cpp`), but it has **not** yet been confirmed against the 7,525
-keys in `DATA/VDB.XML`, because the keys are hashes of *full* paths and the path
-prefixes are not yet known. Hashing the bare leaf names recovered from the
-executable produces zero matches, which is the expected result given the path
-assembly above rather than evidence against the algorithm.
+`DATA/VDB.XML` is fully mapped - every byte is accounted for, and all three
+header counts are explained:
 
-Supporting evidence that the algorithm is right: the two tables in the database
-split 3,775 / 3,750 on bit 31 of the key, within 0.2% of an even split, which is
-what a uniform 32-bit hash produces. The remaining work is recovering the path
-hierarchy - the unparsed 10,424-byte tail of the database file is the obvious
-place to look, as are `DATA/STAGEHED.BIN` and `DATA/GLOBALUS.BIN`.
+| region | size | content |
+| --- | --- | --- |
+| `0x000000..0x000018` | 24 B | header: version `2`, counts 7,525 / 452 / 348, offset `0x010918` |
+| `0x000018..0x00EB40` | 7,525 x 8 B | `(key: int32, value: f32)`, sorted by **signed** key |
+| `0x00EB40..0x010780` | 452 x 16 B | `(f32, f32, f32, 0xCDCDCDCD)` |
+| `0x010780..0x010918` | 408 B | 102 words of mixed int and float - undecoded |
+| `0x010918..0x0113F8` | 348 x 8 B | `(tag: 1, key: int32)`, sorted signed |
+
+The main table is one run sorted by *signed* comparison, which is why all 3,775
+negative keys precede all 3,750 positive ones. An earlier reading mistook that
+sign change for a boundary between two separate tables; it is not.
+
+Two checks confirm the keys are hashes rather than allocated identifiers: they
+are strictly ascending as signed int32 across all 7,525 entries, and their mean
+spacing is 570,757 against a uniform expectation of 570,760 over 2^32 - agreement
+to within 0.001%, which allocated ids would not produce.
+
+The 452 sixteen-byte records carry an `0xCDCDCDCD` sentinel in every single
+record. That is the fill a Microsoft debug runtime writes over uninitialised
+memory, so the authoring tool was a Windows build that serialised a partly
+uninitialised structure. The three floats are *not* simply `(something, min,
+max)`: only 296 of 452 satisfy `f1 <= f2`, and the first float is zero in 313
+records, so the layout is recorded but its meaning is still open.
+
+The 348 entries in the final section use a key namespace that is **disjoint from
+the main table** - none of the 348 keys appears among the 7,525 - and split
+exactly 174 negative / 174 positive. Their purpose is unknown.
+
+### Naming the keys: still open
+
+The parameter names are **not in the database file**; it holds only hashes and
+floats. They live in the executable, so the mapping has to come from there.
+
+Recovering the arguments at all 705 lookup call sites (702 resolved) yields the
+real path fragments - leaf parameter name in `$a2`, category in `$a3`, authoring
+`.cfg` path in `$t0`, giving pairs such as `Score/Boost/Air` +
+`Minimum Air Distance (Metres)`. Hashing those in every ordering and format, over
+16 hash configurations and 7,067 candidate strings, matches **none** of the
+7,525 keys.
+
+The reason is visible in `func_0021BB60`: the first argument is a node structure
+that the function walks (`lw $a2, 0x4($s4)`, `lw $v1, 0xc($s4)`, 32-byte
+records), so the full path hashed at runtime includes ancestor context supplied
+by the caller. That context is not recoverable from the call sites alone, which
+is why static reconstruction stops here. Options from this point are to emulate
+the lookup path, or to find the authored `.cfg` files if any survive.
 
 ## Middleware: RenderWare 3.6
 

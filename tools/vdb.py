@@ -43,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 HEADER_SIZE = 20
 RECORD_SIZE = 8
+META_SIZE = 16
+META_SENTINEL = 0xCDCDCDCD
 TABLE_OFFSET = 0x18  # records begin here, just past the header
 
 
@@ -68,12 +70,40 @@ def parse(data: bytes) -> dict:
     ]
     table_end = TABLE_OFFSET + count_a * RECORD_SIZE
 
+    # Section 2: count_b sixteen-byte records, three floats plus a sentinel.
+    # The sentinel is 0xCDCDCDCD - the fill a Microsoft debug runtime writes over
+    # uninitialised memory - so the authoring tool was a Windows build that
+    # serialised a partly-uninitialised structure.
+    meta = [
+        struct.unpack_from("<fffI", data, table_end + i * META_SIZE)
+        for i in range(count_b)
+    ]
+    meta_end = table_end + count_b * META_SIZE
+
+    # Section 4 starts at the header's offset field; whatever sits between the
+    # metadata and it is a mixed block of ints and floats that is not decoded.
+    middle = data[meta_end:tail_offset]
+
+    # Section 4: count_c eight-byte entries, a tag (always 1 so far) and a key.
+    # These keys do not appear in the main table, so this is a separate namespace
+    # rather than a list of references into it.
+    index = [
+        struct.unpack_from("<Ii", data, tail_offset + i * RECORD_SIZE)
+        for i in range(count_c)
+    ]
+    index_end = tail_offset + count_c * RECORD_SIZE
+
     return {
         "version": version,
         "header_counts": [count_a, count_b, count_c],
         "tail_offset": tail_offset,
         "records": records,
         "table_end": table_end,
+        "meta": meta,
+        "meta_end": meta_end,
+        "middle": middle,
+        "index": index,
+        "index_end": index_end,
         "file_size": len(data),
     }
 
@@ -127,15 +157,68 @@ def validate(parsed: dict) -> list:
     )
     notes.append("header offset      : 0x%06X" % parsed["tail_offset"])
 
-    if parsed["table_end"] < parsed["file_size"]:
+    meta = parsed["meta"]
+    notes.append("")
+    notes.append(
+        "metadata section   : %s records of %d bytes, 0x%06X..0x%06X"
+        % (format(len(meta), ","), META_SIZE, parsed["table_end"], parsed["meta_end"])
+    )
+    if meta:
+        intact = sum(1 for r in meta if r[3] == META_SENTINEL)
         notes.append(
-            "unparsed tail      : 0x%06X..0x%06X (%s bytes) - structure unknown"
+            "  sentinel 0x%08X intact in %d/%d records" % (META_SENTINEL, intact, len(meta))
+        )
+        ordered = sum(1 for r in meta if r[1] <= r[2])
+        notes.append(
+            "  f1 <= f2 in %d/%d - so the three floats are NOT simply (?, min, max)"
+            % (ordered, len(meta))
+        )
+
+    notes.append(
+        "undecoded middle   : 0x%06X..0x%06X (%s bytes, %d words of mixed int/float)"
+        % (
+            parsed["meta_end"],
+            parsed["tail_offset"],
+            format(len(parsed["middle"]), ","),
+            len(parsed["middle"]) // 4,
+        )
+    )
+
+    index = parsed["index"]
+    notes.append(
+        "key index section  : %s entries of %d bytes, 0x%06X..0x%06X"
+        % (format(len(index), ","), RECORD_SIZE, parsed["tail_offset"], parsed["index_end"])
+    )
+    if index:
+        index_keys = [k for _tag, k in index]
+        main_keys = {k for k, _v in records}
+        shared = sum(1 for k in index_keys if k in main_keys)
+        notes.append(
+            "  tags present: %s" % sorted({tag for tag, _k in index})
+        )
+        notes.append(
+            "  sorted (signed): %s; %d of %d keys also in the main table"
             % (
-                parsed["table_end"],
-                parsed["file_size"],
-                format(parsed["file_size"] - parsed["table_end"], ","),
+                "yes" if all(index_keys[i] < index_keys[i + 1] for i in range(len(index_keys) - 1)) else "no",
+                shared,
+                len(index_keys),
             )
         )
+        if shared == 0:
+            notes.append("  -> a separate key namespace, not references into the main table")
+
+    if parsed["index_end"] < parsed["file_size"]:
+        notes.append(
+            "trailing bytes     : 0x%06X..0x%06X (%s) - unaccounted"
+            % (
+                parsed["index_end"],
+                parsed["file_size"],
+                format(parsed["file_size"] - parsed["index_end"], ","),
+            )
+        )
+    else:
+        notes.append("")
+        notes.append("every byte of the file is accounted for by the sections above")
     return notes
 
 
