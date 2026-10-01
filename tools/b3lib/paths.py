@@ -105,6 +105,11 @@ class PathDerivation:
         return len(self.paths) == 1 and not self.paths[0].conditions
 
     @property
+    def is_void(self) -> bool:
+        """True when no path produces a value."""
+        return all(path.expression is None for path in self.paths)
+
+    @property
     def stores(self) -> tuple:
         """Every store the function can perform, across all paths."""
         out = []
@@ -112,24 +117,35 @@ class PathDerivation:
             out.extend(path.stores)
         return tuple(out)
 
+    def _render_return(self, path) -> list:
+        """The return statement for a path, or nothing when the function is void."""
+        if path.expression is None:
+            return []
+        return ["return %s;" % simplify(path.expression).render()]
+
     def render(self) -> str:
         if self.is_straight_line:
             path = self.paths[0]
             lines = [store.render() for store in path.stores]
-            lines.append("return %s;" % simplify(path.expression).render())
-            return "\n".join(lines)
+            lines.extend(self._render_return(path))
+            return "\n".join(lines) if lines else "/* no observable effect */"
 
         lines = []
         for path in self.paths[:-1]:
             lines.append("if (%s) {" % path.render_condition())
             for store in path.stores:
                 lines.append("    " + store.render())
-            lines.append("    return %s;" % simplify(path.expression).render())
+            returned = self._render_return(path)
+            lines.extend("    " + line for line in returned)
+            if not returned:
+                # A void path still has to leave the function here, or control would
+                # fall through into the next guard.
+                lines.append("    return;")
             lines.append("}")
         last = self.paths[-1]
         for store in last.stores:
             lines.append(store.render())
-        lines.append("return %s;" % simplify(last.expression).render())
+        lines.extend(self._render_return(last))
         return "\n".join(lines)
 
     def select(self, args, read):
@@ -139,10 +155,17 @@ class PathDerivation:
                 return path
         return None
 
-    def evaluate(self, args, read) -> int:
+    def evaluate(self, args, read):
+        """The returned value, or None for a void function.
+
+        A void function's `$v0` holds whatever the caller left there, so there is
+        nothing to compare and the verifier must not try.
+        """
         path = self.select(args, read)
         if path is None:
             raise Unsupported("no path matched: the condition set is incomplete")
+        if path.expression is None:
+            return None
         return _sign32(simplify(path.expression).evaluate(args, read) & MASK32)
 
     def evaluate_stores(self, args, read) -> list:
@@ -366,7 +389,14 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     raise Unsupported("indirect jump")
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get)
-                paths.append(Path(conditions, _getter(regs)(2), tuple(stores)))
+                # A function that never writes $v0 returns nothing. Insisting on a
+                # return value refused 514 functions outright - every setter and
+                # initialiser in the binary - because they are simply void.
+                try:
+                    result = _getter(regs)(2)
+                except Unsupported:
+                    result = None
+                paths.append(Path(conditions, result, tuple(stores)))
                 return
 
             if ins.is_branch:
@@ -500,10 +530,24 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     for index in list(range(16, 24)) + [30]:   # $s0..$s7 and $fp
         regs[index] = Const(0)
     regs[31] = Const(RETURN_SENTINEL)          # $ra
+    # $f20..$f31 are callee-saved, so they are spilled and reloaded for exactly the
+    # same reason the integer saved registers are, and were blocking 123 functions
+    # for exactly the same reason: the prologue reads them in order to save them.
+    # Float *arguments* ($f12..$f14) are deliberately left unseeded - seeding those
+    # with zero would make the differential test pass vacuously, since the
+    # interpreter starts them at zero too.
+    for index in range(20, 32):
+        regs[fpr(index)] = Const(0)
     for i in range(4):
         regs[4 + i] = Arg(i)
     walk(start, regs, [], {}, {}, (), frozenset())
 
     if not paths:
         raise Unsupported("no return reached")
+    void_paths = sum(1 for path in paths if path.expression is None)
+    if void_paths and void_paths != len(paths):
+        # Some paths produce a value and others do not. That is either a function
+        # whose result is only meaningful on some routes, or a misread; either way
+        # the signature is ambiguous, so refuse rather than choose.
+        raise Unsupported("inconsistent void and value-returning paths")
     return PathDerivation(start, tuple(paths))

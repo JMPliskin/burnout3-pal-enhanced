@@ -88,7 +88,8 @@ def derivation_args(derivation) -> set:
     """
     args = set()
     for path in derivation.paths:
-        args |= used_args(path.expression)
+        if path.expression is not None:
+            args |= used_args(path.expression)
         for predicate in path.conditions:
             args |= used_args(predicate)
         for store in path.stores:
@@ -125,6 +126,20 @@ def render_path_body(path, prefix: str) -> list:
     any write lands. Emitting the writes first inverts a read-modify-write, which
     is precisely what an increment is.
     """
+    if path.expression is None:
+        # Void: the stores *are* the function, so there is nothing to capture into a
+        # temporary first and nothing to return.
+        if not path.stores:
+            return ["/* no observable effect */"]
+        for store in path.stores:
+            if store.size not in WRITERS:
+                raise Unsupported("no writer for %d-byte store" % store.size)
+        return [
+            "%s(%s, %s);"
+            % (WRITERS[store.size], render_cpp(store.address), render_cpp(store.value))
+            for store in path.stores
+        ]
+
     value = render_cpp(path.expression)
     if not path.stores:
         return ["return %s;" % value]
@@ -307,7 +322,14 @@ def _attempt(func, image, base, machine, read, known, rejected):
                 break
 
             tested += 1
-            if expected != actual or replayed != effects:
+            # A void function leaves whatever the caller had in $v0, so there is no
+            # return value to compare - only its memory effects carry meaning.
+            # Comparing $v0 anyway registered 175 correct derivations as failures.
+            if actual is not None and expected != actual:
+                rejected["mismatch"] += 1
+                failed = True
+                break
+            if replayed != effects:
                 rejected["mismatch"] += 1
                 failed = True
                 break
@@ -374,7 +396,8 @@ def emit(verified, out_dir: str, source_name: str) -> None:
                 else "argument-independent: derived, test near-vacuous",
             )
         )
-        lines.append("s32 func_%08X(%s) {" % (func["addr"], params))
+        return_type = "void" if derivation.is_void else "s32"
+        lines.append("%s func_%08X(%s) {" % (return_type, func["addr"], params))
         lines.extend("    " + line for line in body_lines)
         lines.append("}")
         lines.append("")
@@ -397,7 +420,11 @@ def check_signatures(text: str) -> None:
     eye - which is not a check. This makes it one.
     """
     problems = []
-    pattern = re.compile(r"^s32 (func_[0-9A-F]+)\(([^)]*)\) \{\n(.*?)^\}$", re.S | re.M)
+    # Accepts both return types: a function that writes memory and returns nothing
+    # is emitted as `void`, and the check must still inspect its body.
+    pattern = re.compile(
+        r"^(?:s32|void) (func_[0-9A-F]+)\(([^)]*)\) \{\n(.*?)^\}$", re.S | re.M
+    )
     for match in pattern.finditer(text):
         name, signature, body = match.groups()
         declared = set(re.findall(r"arg(\d)", signature))

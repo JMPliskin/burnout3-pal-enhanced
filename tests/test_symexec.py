@@ -342,6 +342,65 @@ class TestFloatModelling(unittest.TestCase):
         expr = self.FloatOp("mul", Load(Arg(1), 4, False), Const(0))
         self.assertEqual(arguments_used(expr), {1})
 
+class TestVoidFunctions(unittest.TestCase):
+    """A function that never writes $v0 returns nothing.
+
+    Insisting on a return value refused 514 functions outright - every setter and
+    initialiser in the binary - because the deriver treated a missing $v0 as a
+    missing register rather than as a void signature.
+    """
+
+    def setUp(self):
+        from b3lib.paths import derive_paths
+
+        self.derive_paths = derive_paths
+
+    def _derive(self, words):
+        image = assemble(words)
+        return self.derive_paths(image, BASE, BASE, BASE + len(image))
+
+    def test_store_only_function_is_void(self):
+        # sw $a1, 0($a0) ; jr $ra ; nop
+        result = self._derive([enc_i(0x2B, 4, 5, 0), JR_RA, 0])
+        self.assertTrue(result.is_void)
+        self.assertEqual(len(result.paths[0].stores), 1)
+
+    def test_void_function_renders_without_a_return(self):
+        result = self._derive([enc_i(0x2B, 4, 5, 0), JR_RA, 0])
+        self.assertNotIn("return", result.render())
+
+    def test_void_evaluation_yields_none(self):
+        """The verifier relies on None to know not to compare $v0."""
+        result = self._derive([enc_i(0x2B, 4, 5, 0), JR_RA, 0])
+        self.assertIsNone(result.evaluate((0, 0, 0, 0), lambda a, s, g: 0))
+
+    def test_value_returning_function_is_not_void(self):
+        # lw $v0, 8($a0) ; jr $ra ; nop
+        result = self._derive([enc_i(0x23, 4, 2, 8), JR_RA, 0])
+        self.assertFalse(result.is_void)
+        self.assertIn("return", result.render())
+
+    def test_mixed_void_and_value_paths_are_refused(self):
+        """One route returning a value and another not is ambiguous, so refuse it.
+
+        Choosing either reading would be a guess about the signature.
+        """
+        # beq $a0,$zero,+2 ; nop ; jr $ra ; nop   (taken path leaves $v0 unset)
+        # followed by a path that sets $v0, reached by falling through.
+        words = [
+            enc_i(0x04, 4, 0, 3),        # beq $a0, $zero, -> skip the addiu
+            0,                            # delay slot
+            enc_i(0x09, 0, 2, 7),        # addiu $v0, $zero, 7
+            JR_RA,
+            0,
+            JR_RA,                        # the branch target: returns with $v0 unset
+            0,
+        ]
+        from b3lib.symexec import Unsupported
+
+        with self.assertRaises(Unsupported):
+            self._derive(words)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
