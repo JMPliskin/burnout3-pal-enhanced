@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
 from b3lib.paths import PathDerivation, derive_paths
+from b3lib import testmem
 from b3lib.symexec import (
     Arg,
     Binary,
@@ -256,6 +257,27 @@ def _journal_effects(memory) -> dict:
     return effects
 
 
+def _choose_profile(machine, func, args):
+    """Return the first memory profile under which the original executes, or None.
+
+    The profile only decides whether the test can *reach* the function; the original
+    and the derivation always read the same memory, so it never changes a verdict.
+    """
+    for profile in testmem.PROFILES:
+        machine.memory.end_journal()
+        machine.memory.write(SCRATCH, testmem.build(profile, func["addr"]))
+        machine.memory.begin_journal()
+        try:
+            machine.call(func["addr"], args)
+            return profile
+        except Exception:
+            continue
+        finally:
+            machine.memory.rollback()
+            machine.memory.end_journal()
+    return None
+
+
 def _attempt(func, image, base, machine, read, known, rejected):
     """Try to derive and verify one function; returns the record or None."""
     if True:
@@ -274,15 +296,24 @@ def _attempt(func, image, base, machine, read, known, rejected):
         # function retried in a later pass must be tested on the same inputs, or a
         # pass-dependent result would be impossible to reproduce.
         local_rng = random.Random(func["addr"])
-        arg_sets = [
-            tuple(SCRATCH + local_rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(4))
-            for _ in range(ARG_SETS - 1)
-        ]
+        arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
         arg_sets.append((SCRATCH, SCRATCH + 16, SCRATCH + 32, SCRATCH + 48))
+
+        profile = _choose_profile(machine, func, arg_sets[0])
+        if profile is None:
+            rejected["untestable"] += 1
+            return None
 
         tested = 0
         failed = False
-        for args in arg_sets:
+        mismatched = False
+        for case, args in enumerate(arg_sets):
+            # Fresh memory of the chosen shape for every case, so the test varies
+            # memory as well as arguments. Written outside the journal on purpose:
+            # the journal does not nest, and this region is rewritten before every
+            # case anyway, so nothing leaks between them.
+            machine.memory.end_journal()
+            machine.memory.write(SCRATCH, testmem.build(profile, func["addr"] + case))
             # A function with stores is only verified if its *memory effects* match
             # too, so snapshot the scratch region, let the original run, and then
             # check that applying the derived stores to the same starting state
@@ -326,13 +357,18 @@ def _attempt(func, image, base, machine, read, known, rejected):
             # return value to compare - only its memory effects carry meaning.
             # Comparing $v0 anyway registered 175 correct derivations as failures.
             if actual is not None and expected != actual:
-                rejected["mismatch"] += 1
-                failed = True
+                mismatched = True
                 break
             if replayed != effects:
-                rejected["mismatch"] += 1
-                failed = True
+                mismatched = True
                 break
+        machine.memory.end_journal()
+        # A disagreement and an untestable function are different findings and are
+        # counted once each. An earlier version fell through from one to the other
+        # and so reported every disagreement twice.
+        if mismatched:
+            rejected["mismatch"] += 1
+            return None
         if failed or tested < 5:
             rejected["untestable"] += 1
             return None

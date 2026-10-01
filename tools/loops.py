@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
 from b3lib.r5900 import DISASM
+from b3lib import testmem
 
 SCRATCH = 0x01800000
 SCRATCH_SIZE = 0x20000
@@ -59,16 +60,16 @@ def loop_headers(func, image, base) -> list:
     return sorted(headers)
 
 
-def trip_counts(machine, func, headers, trial) -> dict:
+def trip_counts(machine, func, headers, trial, profile="noise") -> dict:
     """Run one trial and report how often each loop header was reached."""
     rng = random.Random((func["addr"] << 8) ^ trial)
     # Fresh memory contents each trial, so a count driven by a global shows up as
-    # varying rather than looking constant.
+    # varying rather than looking constant. The *shape* of that memory comes from a
+    # profile chosen per function - see b3lib/testmem.py for why random bytes alone
+    # left most looping functions untestable.
     machine.memory.begin_journal()
-    machine.memory.write(
-        SCRATCH, bytes(rng.randrange(256) for _ in range(SCRATCH_SIZE))
-    )
-    args = tuple(SCRATCH + rng.randrange(0, SCRATCH_SIZE // 2, 16) for _ in range(4))
+    machine.memory.write(SCRATCH, testmem.build(profile, (func["addr"] << 4) + trial))
+    args = testmem.arguments(rng)
 
     machine.visit_counts = {}
     machine.count_visits = True
@@ -83,10 +84,24 @@ def trip_counts(machine, func, headers, trial) -> dict:
 
 def classify(machine, func, headers) -> tuple:
     """Return (verdict, counts) for one function."""
-    observed = []
-    for trial in range(TRIALS):
+    # Pick the first memory shape under which the function runs at all, then hold it
+    # fixed across trials. Mixing shapes between trials would make a count that
+    # depends on memory *shape* look like a count that depends on memory *contents*.
+    profile = None
+    for candidate in testmem.PROFILES:
         try:
-            observed.append(trip_counts(machine, func, headers, trial))
+            first_trial = trip_counts(machine, func, headers, 0, candidate)
+        except Exception:
+            continue
+        profile = candidate
+        break
+    if profile is None:
+        return "untestable", None
+
+    observed = [first_trial]
+    for trial in range(1, TRIALS):
+        try:
+            observed.append(trip_counts(machine, func, headers, trial, profile))
         except EmulationError:
             return "untestable", None
         except Exception:
