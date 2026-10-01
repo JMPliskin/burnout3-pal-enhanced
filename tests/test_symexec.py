@@ -40,6 +40,11 @@ def enc_r(op, rs, rt, rd, sa, funct):
     return (op << 26) | (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
 
 
+def enc_j(op, target):
+    """J-type: the target is a word address, not a byte address."""
+    return (op << 26) | (target & 0x03FFFFFF)
+
+
 JR_RA = enc_r(0, 31, 0, 0, 0, 0x08)
 
 
@@ -400,6 +405,96 @@ class TestVoidFunctions(unittest.TestCase):
 
         with self.assertRaises(Unsupported):
             self._derive(words)
+
+class TestInterproceduralInlining(unittest.TestCase):
+    """Calls are inlined by substituting the caller's arguments into the callee.
+
+    Restricting this to single-path callees is why an earlier version gained almost
+    nothing: most callees have a conditional in them.
+    """
+
+    def setUp(self):
+        from b3lib.paths import derive_paths
+
+        self.derive_paths = derive_paths
+
+    def _derive(self, words, known=None, start_offset=0):
+        image = assemble(words)
+        return self.derive_paths(
+            image, BASE, BASE + start_offset, BASE + len(image), known=known
+        )
+
+    def _callee_returning(self, value):
+        """A callee that is `return argN + value;` for arg0."""
+        words = [enc_i(0x09, 4, 2, value), JR_RA, 0]   # addiu $v0, $a0, value
+        return self.derive_paths(assemble(words), BASE, BASE, BASE + 12)
+
+    def test_call_to_underived_function_is_refused(self):
+        from b3lib.symexec import Unsupported
+
+        # jal 0x00100100 ; nop ; jr $ra ; nop
+        words = [enc_j(0x03, (BASE + 0x100) >> 2), 0, JR_RA, 0]
+        with self.assertRaises(Unsupported):
+            self._derive(words, known={})
+
+    def test_single_path_callee_is_substituted(self):
+        callee = self._callee_returning(5)
+        # addiu $a0, $zero, 10 ; jal callee ; nop ; jr $ra ; nop
+        target = BASE + 0x40
+        words = [
+            enc_i(0x09, 0, 4, 10),
+            enc_j(0x03, target >> 2),
+            0,
+            JR_RA,
+            0,
+        ]
+        result = self._derive(words, known={target: callee})
+        # 10 + 5, folded by simplification.
+        self.assertEqual(simplify(result.paths[0].expression).render(), "15")
+
+    def test_multi_path_callee_multiplies_caller_paths(self):
+        """A conditional callee yields one caller path per callee route."""
+        # Callee: if (arg0 == 0) return 1; return 2;
+        #
+        # The branch offset is counted from the delay slot, so +4 lands on index 5.
+        # An earlier version used +2, which landed on the `jr $ra` at index 3 with
+        # $v0 never written - and the "inconsistent void" guard correctly refused it.
+        callee_words = [
+            enc_i(0x04, 4, 0, 4),       # beq $a0, $zero, -> the "1" arm (index 5)
+            0,                           # delay slot
+            enc_i(0x09, 0, 2, 2),       # addiu $v0, $zero, 2
+            JR_RA,
+            0,
+            enc_i(0x09, 0, 2, 1),       # addiu $v0, $zero, 1
+            JR_RA,
+            0,
+        ]
+        callee = self.derive_paths(
+            assemble(callee_words), BASE, BASE, BASE + len(callee_words) * 4
+        )
+        self.assertGreater(len(callee.paths), 1)
+
+        target = BASE + 0x80
+        words = [enc_j(0x03, target >> 2), 0, JR_RA, 0]
+        result = self._derive(words, known={target: callee})
+        self.assertEqual(len(result.paths), len(callee.paths))
+
+    def test_caller_saved_registers_are_dropped_after_a_call(self):
+        """Reading a temp after a call must be refused, not served a stale value."""
+        from b3lib.symexec import Unsupported
+
+        callee = self._callee_returning(1)
+        target = BASE + 0x40
+        words = [
+            enc_i(0x09, 0, 8, 7),        # addiu $t0, $zero, 7
+            enc_j(0x03, target >> 2),    # jal callee   (clobbers $t0)
+            0,
+            enc_r(0, 8, 0, 2, 0, 0x21),  # addu $v0, $t0, $zero  <- stale read
+            JR_RA,
+            0,
+        ]
+        with self.assertRaises(Unsupported):
+            self._derive(words, known={target: callee})
 
 
 if __name__ == "__main__":

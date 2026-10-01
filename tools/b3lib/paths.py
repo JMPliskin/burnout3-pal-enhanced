@@ -340,6 +340,74 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
 CALLER_SAVED = tuple(range(2, 4)) + tuple(range(4, 8)) + tuple(range(8, 16)) + (24, 25)
 
 
+def _call_arguments(regs: dict) -> dict:
+    """The expressions sitting in $a0..$a3, as a substitution map for a callee."""
+    return {index: regs[4 + index] for index in range(4) if 4 + index in regs}
+
+
+def _contains_load(expr) -> bool:
+    if isinstance(expr, Load):
+        return True
+    return any(_contains_load(child) for child in children(expr))
+
+
+def _check_callee_loads_are_safe(callee, arguments, memory: dict) -> None:
+    """Refuse an inline whose callee might read what the caller has already written.
+
+    A callee's expressions describe memory as it stood when the callee was entered,
+    which is *after* the caller's earlier stores. Substituting them into the caller
+    evaluates those loads against entry-state memory instead, so a caller that writes
+    a field and then calls something reading that field would be derived wrongly.
+
+    Proving independence needs every address on both sides to be a constant and all
+    of them distinct. Anything less is refused - the same conservatism the plain
+    load-after-store path uses. The single-path version of inlining omitted this
+    check entirely.
+    """
+    if not memory:
+        return
+    for path in callee.paths:
+        parts = [path.expression] if path.expression is not None else []
+        parts.extend(path.conditions)
+        for store in path.stores:
+            parts.extend((store.address, store.value))
+        for part in parts:
+            if not _contains_load(substitute(part, arguments)):
+                continue
+            if not _loads_are_disjoint(substitute(part, arguments), memory):
+                raise Unsupported("callee may read a location the caller wrote")
+
+
+def _loads_are_disjoint(expr, memory: dict) -> bool:
+    """True when every load in `expr` is at a constant address none of `memory` holds."""
+    if isinstance(expr, Load):
+        address = simplify(expr.address)
+        if not isinstance(address, Const):
+            return False
+        if any(
+            not isinstance(written, Const) or written.value == address.value
+            for written, _size in memory
+        ):
+            return False
+    return all(_loads_are_disjoint(child, memory) for child in children(expr))
+
+
+def _apply_callee_path(callee_path, arguments, stores: list, memory: dict) -> tuple:
+    """Fold one callee path into the caller, returning its conditions."""
+    for store in callee_path.stores:
+        moved = Store(
+            simplify(substitute(store.address, arguments)),
+            simplify(substitute(store.value, arguments)),
+            store.size,
+        )
+        stores.append(moved)
+        memory[(moved.address, moved.size)] = moved.value
+    return tuple(
+        simplify(substitute(condition, arguments))
+        for condition in callee_path.conditions
+    )
+
+
 def derive_paths(image: bytes, base: int, start: int, end: int,
                  gp_value: int = None, known: dict = None) -> PathDerivation:
     """Derive a function as guarded paths, handling acyclic control flow.
@@ -451,58 +519,60 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 if ins.target not in known:
                     raise Unsupported("tail-calls an underived function")
                 callee = known[ins.target]
-                if not callee.is_straight_line:
-                    raise Unsupported("tail-calls a conditional function")
-                get = _getter(regs)
-                arguments = {
-                    index: regs[4 + index] for index in range(4) if 4 + index in regs
-                }
-                inlined = callee.paths[0]
-                for store in inlined.stores:
-                    stores.append(Store(
-                        simplify(substitute(store.address, arguments)),
-                        simplify(substitute(store.value, arguments)),
-                        store.size,
-                    ))
-                paths.append(Path(
-                    conditions,
-                    simplify(substitute(inlined.expression, arguments)),
-                    tuple(stores),
-                ))
+                arguments = _call_arguments(regs)
+                _check_callee_loads_are_safe(callee, arguments, memory)
+
+                # Each route through the callee becomes a route through this
+                # function, since a tail call has no return of its own: the callee's
+                # result and conditions are simply adopted.
+                for callee_path in callee.paths:
+                    branch_stores = list(stores)
+                    branch_memory = dict(memory)
+                    extra = _apply_callee_path(
+                        callee_path, arguments, branch_stores, branch_memory
+                    )
+                    result = (
+                        None if callee_path.expression is None
+                        else simplify(substitute(callee_path.expression, arguments))
+                    )
+                    paths.append(
+                        Path(conditions + extra, result, tuple(branch_stores))
+                    )
                 return
 
             if ins.is_call:
                 if ins.target < 0 or ins.target not in known:
                     raise Unsupported("calls another function")
                 callee = known[ins.target]
-                if not callee.is_straight_line:
-                    raise Unsupported("calls a conditional function")
 
                 # The delay slot runs before the call, and often sets the last
                 # argument, so apply it first.
                 _step(regs, stores, frame, memory,
                       DISASM.decode(word_at(addr + 4), addr + 4), get)
-                get = _getter(regs)
+                arguments = _call_arguments(regs)
+                _check_callee_loads_are_safe(callee, arguments, memory)
 
-                arguments = {}
-                for index in range(4):
-                    if 4 + index in regs:
-                        arguments[index] = regs[4 + index]
-                inlined = callee.paths[0]
-                for store in inlined.stores:
-                    moved = Store(
-                        simplify(substitute(store.address, arguments)),
-                        simplify(substitute(store.value, arguments)),
-                        store.size,
+                # A callee with several paths multiplies the caller's: one caller
+                # path continues for each route through the callee, carrying that
+                # route's conditions. Restricting this to single-path callees is why
+                # an earlier version of inlining gained almost nothing.
+                for callee_path in callee.paths:
+                    branch_regs = dict(regs)
+                    branch_stores = list(stores)
+                    branch_frame = dict(frame)
+                    branch_memory = dict(memory)
+                    extra = _apply_callee_path(
+                        callee_path, arguments, branch_stores, branch_memory
                     )
-                    stores.append(moved)
-                    memory[(moved.address, moved.size)] = moved.value
-                result = simplify(substitute(inlined.expression, arguments))
-                for index in CALLER_SAVED:
-                    regs.pop(index, None)
-                regs[2] = result
-                addr += 8
-                continue
+                    for index in CALLER_SAVED:
+                        branch_regs.pop(index, None)
+                    if callee_path.expression is not None:
+                        branch_regs[2] = simplify(
+                            substitute(callee_path.expression, arguments)
+                        )
+                    walk(addr + 8, branch_regs, branch_stores, branch_frame,
+                         branch_memory, conditions + extra, visited)
+                return
 
             if ins.is_jump:
                 raise Unsupported("unhandled jump")
