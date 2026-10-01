@@ -195,6 +195,50 @@ class ImageAnalyzer:
                 addr += 8 if ins.has_delay_slot else 4
         return seen
 
+    # -- stage 2b: pointer-table targets -------------------------------
+
+    def _is_prologue(self, addr: int) -> bool:
+        """True when `addr` holds `addiu $sp, $sp, -N`."""
+        word = self.word_at(addr)
+        return (word & self._PROLOGUE_MASK) == self._PROLOGUE_MATCH and bool(word & 0x8000)
+
+    def _follows_terminator(self, addr: int) -> bool:
+        """True when the instruction two slots back ends a function.
+
+        A function entry is normally preceded by the previous function's final
+        delay slot, so the terminating `jr`/`j` sits two words back.
+        """
+        if not self.contains(addr - 8):
+            return False
+        return DISASM.decode(self.word_at(addr - 8), addr - 8).ends_block
+
+    def harvest_pointer_targets(self) -> list:
+        """Find function entries referenced only by pointer tables.
+
+        Virtual calls and callback tables never produce a `jal`, so those targets
+        are invisible to call-target harvesting.  Every aligned word that points
+        at a plausible entry inside the image is considered, then filtered hard -
+        a word has to land on a stack prologue or just past another function's
+        terminator to be accepted, which is what keeps ordinary data from
+        registering as code.
+        """
+        candidates = set()
+        for word in self.words:
+            if not self.contains(word) or word % 4:
+                continue
+            candidates.add(word)
+
+        accepted = []
+        for addr in sorted(candidates):
+            if addr in self.functions:
+                continue
+            if not (self._is_prologue(addr) or self._follows_terminator(addr)):
+                continue
+            if not self._looks_like_code(addr):
+                continue
+            accepted.append(addr)
+        return accepted
+
     # Alignment padding between functions is a short run of `nop`; bridging that
     # much keeps a function whole without letting a real gap merge two of them.
     MAX_PADDING_WORDS = 4
@@ -280,7 +324,21 @@ class ImageAnalyzer:
                 1 for a in visited if func.start <= a < func.end
             )
 
-        # A second pass catches functions only reached indirectly.
+        # Functions reached only through pointer tables emit no jal at all, so
+        # harvest plausible pointer targets before falling back to a blind scan.
+        for addr in self.harvest_pointer_targets():
+            if addr in self.functions:
+                continue
+            func = Function(start=addr, confidence=CONF_POINTER)
+            self.functions[addr] = func
+            visited = self.traverse(addr, func)
+            func.end = self.extent_from(addr, visited)
+            func.instruction_count = sum(
+                1 for a in visited if func.start <= a < func.end
+            )
+            self.stats["pointer_found"] += 1
+
+        # A final pass catches anything still missing.
         for addr in self.scan_prologues():
             if addr in self.functions:
                 continue

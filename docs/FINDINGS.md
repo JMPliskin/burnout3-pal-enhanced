@@ -39,20 +39,25 @@ consecutive `padduw` instructions zeroing the 128-bit general registers, then
 
 | metric | value |
 | --- | ---: |
-| Functions discovered | 7,423 |
+| Functions discovered | 9,203 |
 | - proven by a direct `jal` | 5,676 |
-| - found by prologue scan (indirect/vtable targets) | 1,746 |
+| - found via pointer tables (vtables/callbacks) | 2,637 |
+| - found by prologue scan | 889 |
 | Direct call sites | 40,430 |
-| Image proven to be code | 3,300,392 bytes (81.0%) |
-| Remaining (rodata/data/padding) | 772,696 bytes |
-| Functions using VU0 macro mode | 703 |
+| Image proven to be code | 3,511,240 bytes (86.2%) |
+| Code attributed to a function | 3,258,392 bytes |
+| Code not yet attributed | 252,848 bytes |
+| Functions ending in `jr $ra` | 9,134 (99.3%) |
+| Functions using VU0 macro mode | 796 |
 | Strings | 5,556 |
-| Address cross-references | 8,171 |
-| Pointer tables (vtables / jump tables) | 95 |
+| Address cross-references | 8,159 |
+| Pointer tables (vtables / jump tables) | 355 |
 
-Median function is 200 bytes; the largest is 77,428 bytes, which is almost
-certainly several functions the analysis has not yet separated rather than one
-genuine monster.
+Median function is 188 bytes. The largest is 77,428 bytes and is a *genuine*
+single function, not a boundary artefact: it contains exactly one stack prologue,
+one `jr $ra`, no indirect jumps and no internal `jal` target. Two others of
+75,704 and 37,836 bytes share that shape. Roughly 19,000 instructions each, which
+points at aggressive Metrowerks inlining.
 
 The largest non-code spans - `0x004856C8..0x004D3E00` (321 KB) and
 `0x00469D90..0x004843D0` (108 KB) - are the main read-only data blocks.
