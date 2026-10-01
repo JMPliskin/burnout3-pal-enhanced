@@ -31,6 +31,8 @@ engine/ps2decomp/
   vu.py        Vector Unit microcode disassembler
   analysis.py  function discovery and code/data classification
   symbols.py   strings, address cross-references, pointer tables
+  naming.py    names from evidence: kernel stubs, diagnostic strings
+  signatures.py relocation-masked function signatures, cross-game library
   emu.py       R5900 interpreter, for verification
   symexec.py   symbolic execution of branch-free functions
   paths.py     control flow, frames, memory, inlining, loops
@@ -56,7 +58,11 @@ engine/tools/
   structtypes.py reports on the recovered struct types
   fields.py     measures field-offset consistency (the groundwork for structs.py)
   matchdiff.py  byte-comparison, kept for if the compiler is ever obtained
+  signatures.py names functions, exports them to the library, compares binaries
   progress.py   progress accounting
+
+engine/data/ee_syscalls.csv   EE kernel service numbers -> names
+engine/signatures/library.json  named signatures from every game so far
 
 engine/runtime/
   include/ps2rt/  types.h and generated.h, which generated code compiles against

@@ -1,6 +1,6 @@
 # Decompilation progress
 
-_Generated 2026-10-01 21:40 from `SLUS_210.50`._
+_Generated 2026-10-01 22:02 from `SLUS_210.50`._
 
 ## Headline number
 
@@ -20,7 +20,7 @@ This is the only number that means anything on its own. The tiers below track wo
 | - found via prologue scan | 945 |
 | functions using VU0 macro mode | 810 |
 | strings recovered | 5,556 |
-| address cross-references | 8,270 |
+| address cross-references | 9,239 |
 | pointer tables (vtables/jump tables) | 381 |
 
 ## Progress by tier

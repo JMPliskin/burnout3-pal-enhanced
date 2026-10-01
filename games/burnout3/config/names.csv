@@ -1,0 +1,126 @@
+address,name,source
+0x00102628,RFU080,kernel service 0x80
+0x00102D20,sceGsPutDrawEnv,diagnostic string
+0x00102EA0,sceGsSyncPath,status table
+0x00103488,sceGsExecStoreImage,status table
+0x0010BA70,ExecPS2,kernel service 0x07
+0x0010BAD0,SetVTLBRefillHandler,kernel service 0x0D
+0x0010BAE0,SetVCommonHandler,kernel service 0x0E
+0x0010BB00,AddIntcHandler,kernel service 0x10
+0x0010BB10,AddIntcHandler,kernel service 0x10
+0x0010BB20,RemoveIntcHandler,kernel service 0x11
+0x0010BB30,AddDmacHandler,kernel service 0x12
+0x0010BB40,AddDmacHandler,kernel service 0x12
+0x0010BB50,RemoveDmacHandler,kernel service 0x13
+0x0010BB60,_EnableIntc,kernel service 0x14
+0x0010BB70,_DisableIntc,kernel service 0x15
+0x0010BB80,_EnableDmac,kernel service 0x16
+0x0010BB90,_DisableDmac,kernel service 0x17
+0x0010BC20,CreateThread,kernel service 0x20
+0x0010BC30,DeleteThread,kernel service 0x21
+0x0010BC40,StartThread,kernel service 0x22
+0x0010BC60,ExitDeleteThread,kernel service 0x24
+0x0010BC70,TerminateThread,kernel service 0x25
+0x0010BCB0,ChangeThreadPriority,kernel service 0x29
+0x0010BCD0,RotateThreadReadyQueue,kernel service 0x2B
+0x0010BD10,GetThreadId,kernel service 0x2F
+0x0010BD20,ReferThreadStatus,kernel service 0x30
+0x0010BD40,SleepThread,kernel service 0x32
+0x0010BD50,WakeupThread,kernel service 0x33
+0x0010BD90,SuspendThread,kernel service 0x37
+0x0010BDB0,ResumeThread,kernel service 0x39
+0x0010BE00,EndOfHeap,kernel service 0x3E
+0x0010BE20,CreateSema,kernel service 0x40
+0x0010BE30,DeleteSema,kernel service 0x41
+0x0010BE40,SignalSema,kernel service 0x42
+0x0010BE60,WaitSema,kernel service 0x44
+0x0010BE70,PollSema,kernel service 0x45
+0x0010BEC0,GetOsdConfigParam,kernel service 0x4A
+0x0010BED0,SetOsdConfigParam,kernel service 0x4B
+0x0010C0A0,FlushCache,kernel service 0x64
+0x0010C0F0,RFU107,kernel service 0x6B
+0x0010C130,RFU111,kernel service 0x6F
+0x0010C140,GsGetIMR,kernel service 0x70
+0x0010C160,GsPutIMR,kernel service 0x71
+0x0010C190,SetVSyncFlag,kernel service 0x73
+0x0010C1C0,SifDmaStat,kernel service 0x76
+0x0010C1E0,SifSetDma,kernel service 0x77
+0x0010C1F0,iSifSetDma,kernel service -0x77
+0x0010C200,SifSetDChain,kernel service 0x78
+0x0010C210,iSifSetDChain,kernel service -0x78
+0x0010C220,SifSetReg,kernel service 0x79
+0x0010C230,SifGetReg,kernel service 0x7A
+0x0010C250,Deci2Call,kernel service 0x7C
+0x0010C280,RFU127,kernel service 0x7F
+0x0010C290,RFU082,kernel service 0x82
+0x0010FEA0,SignalSemaGlobal,status table
+0x001146A0,MachineType_or_rfu,kernel service 0x5A
+0x001146E8,GetMemorySize_or_rfu,kernel service 0x5B
+0x001146F8,SetSyscall,kernel service 0x74
+0x001147F0,Deci2Call_alt,kernel service 0x56
+0x00114EB8,EnableIntr,status table
+0x00114F28,MachineType_or_rfu,kernel service 0x5A
+0x00114FB0,RFU083,kernel service 0x83
+0x001150F8,SetSyscall,kernel service 0x74
+0x00115160,SetSyscall,kernel service 0x74
+0x00115170,MachineType_or_rfu,kernel service 0x5A
+0x001151B8,GetMemorySize_or_rfu,kernel service 0x5B
+0x001152E0,MachineType_or_rfu,kernel service 0x5A
+0x00115320,SetSyscall,kernel service 0x74
+0x00115580,SetSyscall,kernel service 0x74
+0x00115590,MachineType_or_rfu,kernel service 0x5A
+0x001155D8,GetMemorySize_or_rfu,kernel service 0x5B
+0x00126EC8,StringAppend,status table
+0x001272D0,StringCopy,status table
+0x001273E8,StringLength,status table
+0x002161F8,sceDbcSetWorkAddr,diagnostic string
+0x00216268,sceDbcCreateSocket,diagnostic string
+0x00216340,sceDbcDeleteSocket,diagnostic string
+0x002163C8,sceDbcGetDepNumber,diagnostic string
+0x00216608,sceDbcInitSocket,diagnostic string
+0x00216678,sceDbcResetSocket,diagnostic string
+0x002167E0,sceDbcSRData,diagnostic string
+0x00216928,sceDbcSendData,diagnostic string
+0x00216A58,sceDbcSendData2,status table
+0x00216D20,sceDbcReceiveData,diagnostic string
+0x0021B9B0,LookupVariantC,status table
+0x0021BB60,LookupByPath,status table
+0x0021BD80,LookupVariantB,status table
+0x0021BFA0,HashName,status table
+0x0024FDF0,HashNameAlias,status table
+0x00299550,FindFirstSet,status table
+0x002E0838,lgAudInit,diagnostic string
+0x002E0CF0,lgAudOpen,diagnostic string
+0x002E0E58,lgAudRead,diagnostic string
+0x002E0FC8,lgAudWrite,diagnostic string
+0x002E1138,lgAudWriteVag,diagnostic string
+0x002E12A8,lgAudPrepareForReboot,diagnostic string
+0x002E1398,lgAudARead,diagnostic string
+0x002E1510,lgAudAWrite,diagnostic string
+0x002E1698,lgAudAWriteVag,diagnostic string
+0x002E18F0,lgAudEnumHint,diagnostic string
+0x002E1960,lgAudEnumerate,diagnostic string
+0x00305F18,lgKbMInit,diagnostic string
+0x003B88E0,AdvanceBufferCursor,status table
+0x00404D88,_LobbyApiGlobalCallback,diagnostic string
+0x00404EF0,_LobbyApiCancelOneShotCB,diagnostic string
+0x00405668,_LobbyApiConfigCallback,diagnostic string
+0x0040C078,_LobbyRankSnapCb,diagnostic string
+0x0040DF78,_LobbyStatbookViewCb,diagnostic string
+0x0040E268,_LobbyStatbookRowCb,diagnostic string
+0x0040E440,_LobbyStatbookCreate,diagnostic string
+0x00443C70,lgDevEnumHint,diagnostic string
+0x00443CC8,lgDevEnumerate,diagnostic string
+0x00443DB0,lgDevOpen,diagnostic string
+0x00443EF8,lgDevGetDeviceProperty,diagnostic string
+0x00444070,lgDevRead,diagnostic string
+0x00444168,lgDevReadMulti,diagnostic string
+0x00444330,lgDevDownloadForceEffect,diagnostic string
+0x00444490,lgDevUpdateForceEffect,diagnostic string
+0x00444660,lgDevStartForceEffectMulti,diagnostic string
+0x004447F8,lgDevStopForceEffectMulti,diagnostic string
+0x00444C08,lgDevARead,diagnostic string
+0x00444CD8,lgDevAReadMulti,diagnostic string
+0x00444E48,lgDevAUpdateForceEffect,diagnostic string
+0x00444F98,lgDevAStartForceEffect,diagnostic string
+0x00445148,lgDevAStopForceEffect,diagnostic string

@@ -78,7 +78,18 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
    ```
    A full run on a 4 MB executable takes about 12 minutes. Run it in the
    background, and never start two runs at once: they write the same outputs.
-7. Start `games/<name>/docs/FINDINGS.md` with what the binary revealed: the
+7. Name what the evidence supports, and share it:
+   ```sh
+   python engine/tools/signatures.py --game games/<name> name     # config/names.csv
+   python engine/tools/signatures.py --game games/<name> export   # into the library
+   ```
+   `name` names kernel stubs from `engine/data/ee_syscalls.csv`, functions that
+   print their own name in diagnostics, and functions whose relocation-masked
+   signature is already named in `engine/signatures/library.json`. Every name
+   records its source. Run `export` after names improve, so the next game
+   benefits. `compare --elf <other.elf>` measures how much code two executables
+   share, such as the SDK.
+8. Start `games/<name>/docs/FINDINGS.md` with what the binary revealed: the
    compiler (`.comment` section), middleware (RCS `$Id:` strings), the SDK
    version, and the VU regions.
 

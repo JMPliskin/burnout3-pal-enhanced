@@ -28,6 +28,7 @@ import re
 import struct
 
 from .r5900 import DISASM
+from .signatures import written_register
 
 # A printable run this long is almost certainly a real string rather than noise.
 MIN_STRING_LEN = 4
@@ -53,6 +54,11 @@ class Xref:
     from_addr: int
     target: int
     kind: str  # "lui+addiu" | "lui+load" | "lui+store"
+
+
+_ADDRESSED = {"lw", "lh", "lb", "lbu", "lhu", "lwu", "ld", "lq", "sw", "sh", "sb", "sd",
+              "sq", "lwc1", "swc1"}
+_CALLEE_SAVED = set(range(16, 24)) | {30}     # $s0-$s7, $fp
 
 
 class SymbolRecovery:
@@ -103,46 +109,59 @@ class SymbolRecovery:
     def find_xrefs(self, code_ranges) -> int:
         """Reassemble `lui`+offset pairs into absolute addresses.
 
-        `code_ranges` is an iterable of (start, end) spans to scan.  Tracking is
-        per-register and resets on control transfer, which keeps the pairing
-        conservative: a `lui` whose partner sits past a branch is simply dropped
-        rather than matched to the wrong instruction.
+        `code_ranges` is an iterable of (start, end) spans to scan. Tracking is per
+        register and kept conservative, so a pair is never matched across a write
+        that replaced the upper half:
+
+        * any other write to a register drops its pending upper half;
+        * a branch or jump's delay slot is processed before the transfer, because
+          it executes first - `lui $a0` before a `jal` and `addiu $a0` in its delay
+          slot is how a string argument is usually passed;
+        * a call keeps only the callee-saved registers, which the callee preserves;
+        * any other control transfer drops everything.
         """
         count = 0
+
+        def record(addr, upper, ins, kind):
+            nonlocal count
+            target = (upper + ins.imm) & 0xFFFFFFFF
+            if self.contains(target):
+                xref = Xref(addr, target, kind)
+                self.xrefs.append(xref)
+                self.xrefs_by_target[target].append(xref)
+                count += 1
+
+        def step(addr, pending):
+            word = struct.unpack_from("<I", self.data, addr - self.base)[0]
+            ins = DISASM.decode(word, addr)
+            if ins.mnemonic == "lui":
+                pending[ins.rt] = (ins.imm & 0xFFFF) << 16
+                return ins
+            if ins.mnemonic in ("addiu", "addi", "daddiu") and ins.rs in pending:
+                record(addr, pending[ins.rs], ins, "lui+addiu")
+            elif ins.mnemonic in _ADDRESSED and ins.rs in pending:
+                kind = "lui+store" if ins.mnemonic.startswith("s") else "lui+load"
+                record(addr, pending[ins.rs], ins, kind)
+            written = written_register(word)
+            if written is not None:
+                pending.pop(written, None)
+            return ins
+
         for start, end in code_ranges:
-            pending = {}  # register -> (upper immediate, address of the lui)
+            pending = {}  # register -> upper immediate of the lui that set it
             addr = start
-            while addr < end:
-                if not self.contains(addr):
-                    break
-                word = struct.unpack_from("<I", self.data, addr - self.base)[0]
-                ins = DISASM.decode(word, addr)
-
-                if ins.mnemonic == "lui":
-                    pending[ins.rt] = ((ins.imm & 0xFFFF) << 16, addr)
-                elif ins.mnemonic in ("addiu", "addi") and ins.rs in pending:
-                    upper, _lui_addr = pending.pop(ins.rs)
-                    target = (upper + ins.imm) & 0xFFFFFFFF
-                    if self.contains(target):
-                        xref = Xref(addr, target, "lui+addiu")
-                        self.xrefs.append(xref)
-                        self.xrefs_by_target[target].append(xref)
-                        count += 1
-                elif ins.mnemonic in ("lw", "lh", "lb", "lbu", "lhu", "lwu", "ld", "lq",
-                                      "sw", "sh", "sb", "sd", "sq", "lwc1", "swc1"):
-                    if ins.rs in pending:
-                        upper, _lui_addr = pending.pop(ins.rs)
-                        target = (upper + ins.imm) & 0xFFFFFFFF
-                        if self.contains(target):
-                            kind = "lui+store" if ins.mnemonic.startswith("s") else "lui+load"
-                            xref = Xref(addr, target, kind)
-                            self.xrefs.append(xref)
-                            self.xrefs_by_target[target].append(xref)
-                            count += 1
-                elif ins.is_branch or ins.is_jump:
-                    # Do not carry a pending upper half across control flow.
-                    pending.clear()
-
+            while addr < end and self.contains(addr):
+                ins = step(addr, pending)
+                if ins.is_branch or ins.is_jump:
+                    if addr + 4 < end and self.contains(addr + 4):
+                        step(addr + 4, pending)
+                    if ins.is_call:
+                        for reg in [r for r in pending if r not in _CALLEE_SAVED]:
+                            del pending[reg]
+                    else:
+                        pending.clear()
+                    addr += 8
+                    continue
                 addr += 4
         return count
 

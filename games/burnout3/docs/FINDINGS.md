@@ -688,6 +688,47 @@ explodes now has its branch regions walked again. Merging sides that store - as
 guarded stores - is the natural extension, and where most of the remaining
 "too many paths" functions are.
 
+## Names from evidence, and code shared with other executables
+
+The executable has no symbols, so names come only from evidence, and each name in
+`config/names.csv` records its source:
+
+| source | functions |
+| --- | ---: |
+| kernel stub (`addiu $v1, $zero, N; syscall`), service from the ABI table | 66 |
+| self-identifying diagnostic string (`"sceDbcInitSocket: rpc error"`) | 44 |
+| hand-assigned in the status table | 15 |
+
+The diagnostic strings identify three middleware families besides Sony's own
+libraries: Logitech's wheel and headset libraries (`lgDev*`, `lgAud*`, `lgKbM*`)
+and EA's online lobby code (`_Lobby*`), part of the DirtySock network library.
+The rule is strict, because module tags use the same `Name: message` form
+(`ProtoMangle: ...`, `DirtyElf: ...`, `libpad2: ...`). A name must look like a
+function name, belong to exactly one function, and be the only name that
+function prints. `lgDevInit` is lost to that rule, because a helper prints version
+banners under the same prefix.
+
+Most of those strings were invisible at first. Address pairing dropped its
+pending `lui` at every branch or call *before* executing the delay slot, and the
+usual way to pass a string is `lui $a0` before a `jal`, then `addiu $a0` in its
+delay slot. Executing the delay slot first and keeping callee-saved registers
+across calls raised the recovered cross-references from 8,270 to 9,239. Pairing
+also never dropped a register that something else overwrote. That has been fixed
+too.
+
+Signatures that mask relocations (call targets, `lui`/low-half pairs,
+`$gp` offsets) show how much code is shared with the two other executables on the
+disc:
+
+| other executable | functions of 4+ instructions also present | bytes |
+| --- | ---: | ---: |
+| `NTGUI_UC.ELF` (network GUI) | 441 of 9,039 (4.9%) | 64,700 (2.0%) |
+| `NFSUNDER.ELF` (NFS Underground 2 demo, another EA studio) | 376 (4.2%) | 52,328 (1.6%) |
+
+That is the Sony SDK and runtime the three builds share. The named functions
+seed the cross-game library (`engine/signatures/library.json`), so another game
+linked against the same libraries gets these names for free.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
