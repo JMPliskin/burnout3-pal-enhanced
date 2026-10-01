@@ -51,7 +51,7 @@ from b3lib.symexec import (
 
 from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
 
-MAX_INSTRUCTIONS = 24
+MAX_INSTRUCTIONS = 96
 # The callee's own frame. Writes here are not observable effects, so they are
 # excluded when comparing what the original and the derivation did to memory.
 STACK_LOW = DEFAULT_STACK_TOP - DEFAULT_STACK_SIZE

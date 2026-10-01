@@ -36,6 +36,7 @@ from .symexec import (
     Unsupported,
     FP_COND,
     Not1,
+    children,
     _apply,
     fpr,
     _LOAD_SIZES,
@@ -164,6 +165,30 @@ def _getter(regs: dict):
             raise Unsupported("reads uninitialised register $%d" % index)
         return regs[index]
     return get
+
+
+def _constant_truth(predicate):
+    """Decide a condition that depends on nothing, or return None.
+
+    A condition is only decidable here when every leaf under it is a constant - no
+    argument, and no memory load, since a load's value is not known until the test
+    supplies memory. `Unsupported` from the evaluation is treated as undecidable
+    rather than allowed to escape.
+    """
+    def all_constant(expr) -> bool:
+        kids = children(expr)
+        if not kids:
+            return isinstance(expr, Const)
+        if isinstance(expr, Load):
+            return False
+        return all(all_constant(child) for child in kids)
+
+    try:
+        if not all_constant(predicate):
+            return None
+        return bool(predicate.evaluate((0, 0, 0, 0), None))
+    except Exception:
+        return None
 
 
 def _condition_for(ins, get):
@@ -347,6 +372,23 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             if ins.is_branch:
                 predicate = _condition_for(ins, get)
                 slot = DISASM.decode(word_at(addr + 4), addr + 4)
+
+                # When the condition folds to a constant, only one side can ever
+                # run. Exploring both anyway manufactures an infeasible path, and
+                # `select` picks the first path whose conditions hold - so a path
+                # that can never be taken can still be chosen, which is how a
+                # function that stores a flag and immediately branches on it came
+                # out wrong. Folding also keeps `if (1 != 0)` out of the output.
+                decided = _constant_truth(predicate)
+                if decided is True:
+                    _step(regs, stores, frame, memory, slot, get)
+                    addr = ins.target
+                    continue
+                if decided is False:
+                    if not ins.is_likely:
+                        _step(regs, stores, frame, memory, slot, get)
+                    addr += 8
+                    continue
 
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
