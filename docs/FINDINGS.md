@@ -577,6 +577,43 @@ so a function pointer loaded from it points nowhere and the call faults. Test
 memory that holds real function addresses where code expects them is the obvious
 next improvement to the harness.
 
+## A harness the code can run in
+
+Of the functions that derived but could not be tested, measuring why showed three
+causes: a null pointer read from the null page (712), an instruction the
+interpreter lacked in some *callee* (545 - `syscall`, `mfc0`, the trap
+instructions and the FPU accumulator ops dominate), and wild pointers (237). Only
+113 ran and then failed in the comparison itself.
+
+* Game state is reached through global pointers - a manager object, the current
+  race - that are null in the executable and set up at run time. The recovered
+  types say which globals are dereferenced as pointers; for testing, the 804 still
+  holding zero are pointed at scratch memory. Like the memory profiles this decides
+  only what a test reaches: original and derivation read the same memory.
+* The interpreter gained stubs for `syscall` (does nothing, returns 0) and `mfc0`
+  (reads 0), the trap instructions, and the FPU accumulator. A derived function's
+  own code never contains these; they let the original callees it calls run.
+
+Two modelling bugs surfaced on the way. A 16-byte struct copy (`lq` then `sq`) to
+the stack was treated as a register spill, so a callee given its address read
+memory that was never written; such copies - also to ordinary memory, previously
+refused as 128-bit stores - are now two 8-byte copies, and only the model's
+invented entry values of saved registers (now including the float ones) stay
+symbolic. And the parameter analysis scanned functions in address order, so a
+register written on one branch and read after the paths rejoin looked unused;
+callers then passed nothing in it. It is now live-in analysis over each
+function's control flow, solved to a fixed point over the call graph. That is
+conservative - a call through a register might read anything - so 61 of 527
+underived callees take all sixteen argument registers; a register the caller no
+longer holds a value in is passed as 0, and if the callee really reads it the test
+disagrees and the function is dropped, instead of refusing every such call.
+
+Derived and verified rose from 2,223 to 2,475 functions; verified code from 4.24%
+to 5.17% of code bytes. All 2,415 emitted functions with a verdict agree when
+compiled. Three model disagreements and one compiled one remain among the dropped
+functions; they agree when run alone and depend on interpreter state left by
+earlier tests.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

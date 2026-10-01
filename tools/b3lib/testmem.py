@@ -111,3 +111,29 @@ def float_bits(rng: random.Random) -> int:
     else:
         value = rng.uniform(-1000.0, 1000.0)
     return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def seed_global_pointers(memory, addresses) -> int:
+    """Point zero-valued global pointer variables at the scratch region.
+
+    Game state - a manager object, the current race, a list head - is reached
+    through global pointers that are null in the executable and only set up once
+    the game is running. Any function that dereferences one faulted in every test,
+    whatever the scratch memory held: 712 otherwise derivable functions could not be
+    tested for that reason alone. The recovered types say which globals are
+    dereferenced as pointers; each one still holding zero is given a deterministic
+    address in scratch. Like the memory profiles, this decides only what a test can
+    reach - the original and the derivation read the same memory - and it is
+    written once, outside any test's journal.
+    """
+    seeded = 0
+    for address in sorted(addresses):
+        try:
+            if memory.read_int(address, 4, False) != 0:
+                continue
+        except Exception:
+            continue
+        offset = (zlib.crc32(address.to_bytes(4, "little")) % (SCRATCH_SIZE // 2)) & ~15
+        memory.write_int(address, SCRATCH + offset, 4)
+        seeded += 1
+    return seeded

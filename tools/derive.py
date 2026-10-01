@@ -681,6 +681,11 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     # Which arguments each function reads, so a call to one that is not derived can
     # be made rather than refused.
     parameters = calls.parameters(database, image, base)
+    # Global pointers that are null until the game runs would make every function
+    # using them untestable; point them at scratch (see testmem).
+    seeded = testmem.seed_global_pointers(machine.memory, global_pointers(database, image, base))
+    if verbose:
+        print("  seeded %d null global pointers for testing" % seeded)
     known = {}
     done = set()
     candidates = [
@@ -716,6 +721,16 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
             break
         rejected = pass_rejected
     return verified, rejected
+
+
+def global_pointers(database, image, base) -> set:
+    """Addresses of global variables that some code dereferences as a pointer."""
+    graph = structs.recover(database, image, base)
+    if structs.GLOBALS not in graph.ids:
+        return set()
+    fields = graph.fields[graph.find(graph.ids[structs.GLOBALS])]
+    return {address & 0xFFFFFFFF for address, field in fields.items()
+            if field.target is not None and 4 in field.widths()}
 
 
 def _journal_effects(memory) -> dict:

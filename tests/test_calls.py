@@ -360,5 +360,33 @@ class TestPointerCalls(unittest.TestCase):
         self.assertIn("const u64 r1 = CallPointer(ReadS32(arg0), arg0);", lines)
 
 
+
+class TestStructCopies(unittest.TestCase):
+    """`lq` then `sq` is the EE's 16-byte struct copy, and must not be refused.
+
+    The model is 64 bits wide, so the copy becomes two 8-byte copies.
+    """
+
+    LQ_V0_A1 = (0x1E << 26) | (A1 << 21) | (V0 << 16)
+    SQ_V0_A0 = (0x1F << 26) | (A0 << 21) | (V0 << 16)
+
+    def test_sixteen_byte_copy_is_two_eight_byte_copies(self):
+        words = [self.LQ_V0_A1, JR_RA, self.SQ_V0_A0]
+        image = struct.pack("<%dI" % len(words), *words)
+        derivation = derive_paths(image, BASE, BASE, BASE + 12, known={})
+        stores = derivation.paths[0].stores
+        self.assertEqual([store.size for store in stores], [8, 8])
+
+        machine = Machine(BASE, image, 0x02000000 - BASE)
+        source, dest = 0x01800000, 0x01800100
+        machine.memory.write(source, bytes(range(16)))
+        machine.memory.write(dest, b"\x00" * 16)
+        read = lambda a, size, signed: machine.memory.read_int(a, size, signed)
+        written = derivation.evaluate_stores((dest, source) + (0,) * 14, read)
+        for address, value, size in written:
+            machine.memory.write_int(address, value, size)
+        self.assertEqual(machine.memory.read(dest, 16), bytes(range(16)))
+
+
 if __name__ == "__main__":
     unittest.main()

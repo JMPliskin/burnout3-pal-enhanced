@@ -658,22 +658,40 @@ class Frame(dict):
         if self.escaped:
             return
         for (address, size), value in list(self.items()):
-            if size <= 8 and id(value) in self.seeds:
+            if id(value) in self.seeds:
                 continue
-            if size <= 8:
-                store = Store(Const(address), value, size)
+            for store in _as_stores(Const(address), value, size):
                 stores.append(store)
-                _record_store(memory, store.address, size, value)
-                del self[(address, size)]
+                _record_store(memory, store.address, store.size, store.value)
+            del self[(address, size)]
         self.escaped = True
 
     def symbolic(self, address: int, size: int) -> bool:
         """Whether an access is answered by the symbolic slots rather than memory."""
         if not self.escaped:
             return True
-        return size > 8 or any(
-            not (address + size <= written or written + width <= address)
-            for (written, width) in self)
+        return any(not (address + size <= written or written + width <= address)
+                   for (written, width) in self)
+
+
+def _as_stores(address, value, size: int) -> list:
+    """A write as stores the model can express.
+
+    The expression model is 64 bits wide, so a 16-byte value cannot be stored as
+    one. The common 16-byte write, though, is the EE's struct copy - `lq` then
+    `sq` - and a 16-byte store of exactly a 16-byte load is two 8-byte copies.
+    Anything else that wide is refused.
+    """
+    if size <= 8:
+        return [Store(address, value, size)]
+    if size == 16 and isinstance(value, Load) and value.size == 16:
+        high = address_of(Binary("add", address, Const(8)))
+        return [
+            Store(address, Load(value.address, 8, False, value.epoch), 8),
+            Store(high, Load(address_of(Binary("add", value.address, Const(8))), 8,
+                             False, value.epoch), 8),
+        ]
+    raise Unsupported("%d-bit store to real memory" % (8 * size))
 
 
 def _frame_write(frame: dict, address: int, size: int, value) -> None:
@@ -806,9 +824,17 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
             # cancels if the slot holds exactly what was written.
             _frame_write(frame, simplify(target).value & MASK64, size, get(ins.rt))
             return
-        if size == 16:
-            raise Unsupported("128-bit store to real memory")
         value = get(ins.rt)
+        if size == 16:
+            if (_is_frame_address(target) and isinstance(frame, Frame)
+                    and id(value) in frame.seeds):
+                # A saved register spilled after the frame escaped: still bookkeeping.
+                _frame_write(frame, simplify(target).value & MASK64, size, value)
+                return
+            for store in _as_stores(target, value, size):
+                stores.append(store)
+                _record_store(memory, store.address, store.size, store.value)
+            return
         stores.append(Store(target, value, size))
         _record_store(memory, target, size, value)
         return
@@ -1023,7 +1049,12 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         for index in indices:
             reg = _arg_register(index)
             if reg not in regs:
-                raise Unsupported("passes an argument it never set")
+                # The register holds whatever an earlier callee left there. A callee
+                # that really reads it gets 0 here and garbage in the original, so
+                # the test disagrees and the function is dropped; one that only
+                # might read it (the analysis is conservative) is unaffected.
+                arguments.append((index, Const(0)))
+                continue
             if _is_frame_address(regs[reg]):
                 # An out-parameter: the callee may read or write the frame, so from
                 # here on it is real memory.
@@ -1290,7 +1321,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         regs[reg] = Arg(i)
     for k, reg in enumerate(FLOAT_ARG_REGS):
         regs[fpr(reg)] = Arg(FLOAT_ARG_BASE + k)
-    seeds = frozenset(id(regs[index]) for index in list(range(16, 24)) + [30, 31])
+    seeds = frozenset(id(regs[index]) for index in
+                      list(range(16, 24)) + [30, 31] + [fpr(i) for i in range(20, 32)])
     walk(start, regs, [], Frame(seeds=seeds), Overlay(), (), {})
 
     if not paths:

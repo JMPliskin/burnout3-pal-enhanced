@@ -101,7 +101,10 @@ def externs_in(source: str) -> list:
 
 def harness_source(functions, typed: bool, externs=()) -> str:
     """A dispatch table plus memory helpers that forward to Python callbacks."""
-    lines = ['#include "b3/generated.h"']
+    # The dispatch switch has a case per function - over two thousand - and
+    # optimising it ran the compiler out of heap. Only the generated code has to be
+    # checked at /O2; the harness that calls it does not.
+    lines = ['#pragma optimize("", off)', '#include "b3/generated.h"']
     if typed:
         lines.append('#include "types.h"')
     lines += ["", "namespace generated {"]

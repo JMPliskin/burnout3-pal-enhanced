@@ -179,6 +179,7 @@ class Machine:
         # float-copying function disagreeing with a derivation that was correct.
         self.fpr = [0] * 32
         self.fp_cond = False
+        self.fp_acc = 0      # the FPU accumulator, as a bit pattern
         self.pc = 0
         self.instructions_executed = 0
         self.call_log = []
@@ -805,6 +806,73 @@ _HANDLERS = {
     "sw": _store(4),
     "sd": _store(8),
 }
+
+# -- system instructions, stubbed for testing ---------------------------------
+#
+# These exist so that *callees* reached during a test can run: a derived function's
+# own code never contains them (the symbolic model has no rule for them), but the
+# original functions it calls often do. Original and derivation always run the
+# same stubs, so a stub's choice of behaviour cannot make them disagree - it only
+# decides which functions can be tested at all. The assumptions are deliberately
+# the plainest available:
+#
+#   syscall  - the kernel call does nothing and returns 0.
+#   mfc0     - every system-control register reads as 0. Count in particular is
+#              constant, so a busy-wait on it never ends and the test runs out
+#              of budget, rather than finishing with a made-up time.
+#   traps    - trap exactly as the hardware does, which ends the test.
+
+def _op_syscall(m: Machine, ins) -> None:
+    m.set(2, 0)
+
+
+def _op_mfc0(m: Machine, ins) -> None:
+    m.set(ins.rt, 0)
+
+
+def _trap(condition):
+    def run(m: Machine, ins) -> None:
+        a, b = m.get(ins.rs) & MASK64, m.get(ins.rt) & MASK64
+        if condition(a, b):
+            raise EmulationError("trap (%s) at 0x%08X" % (ins.mnemonic, ins.addr))
+    return run
+
+
+def _s64(v):
+    v &= MASK64
+    return v - (1 << 64) if v >> 63 else v
+
+
+# The EE FPU's accumulator: adda/mula/madda/msuba write it, madd/msub read it.
+def _fp_accumulate(fn, write_fd: bool):
+    def run(m: Machine, ins) -> None:
+        a = _fp_from_bits(m.fpr[_fs(ins)])
+        b = _fp_from_bits(m.fpr[_ft(ins)])
+        value = _f32(fn(_fp_from_bits(m.fp_acc), a, b))
+        if write_fd:
+            m.fpr[_fd(ins)] = _fp_bits(value)
+        else:
+            m.fp_acc = _fp_bits(value)
+    return run
+
+
+_HANDLERS.update({
+    "syscall": _op_syscall,
+    "mfc0": _op_mfc0,
+    "teq": _trap(lambda a, b: a == b),
+    "tne": _trap(lambda a, b: a != b),
+    "tge": _trap(lambda a, b: _s64(a) >= _s64(b)),
+    "tgeu": _trap(lambda a, b: a >= b),
+    "tlt": _trap(lambda a, b: _s64(a) < _s64(b)),
+    "tltu": _trap(lambda a, b: a < b),
+    "adda.s": _fp_accumulate(lambda acc, a, b: a + b, False),
+    "suba.s": _fp_accumulate(lambda acc, a, b: a - b, False),
+    "mula.s": _fp_accumulate(lambda acc, a, b: a * b, False),
+    "madda.s": _fp_accumulate(lambda acc, a, b: acc + a * b, False),
+    "msuba.s": _fp_accumulate(lambda acc, a, b: acc - a * b, False),
+    "madd.s": _fp_accumulate(lambda acc, a, b: acc + a * b, True),
+    "msub.s": _fp_accumulate(lambda acc, a, b: acc - a * b, True),
+})
 
 # Control transfers are handled in _resolve_transfer rather than the dispatch
 # table, so they have to be listed explicitly for coverage reporting to be honest.
