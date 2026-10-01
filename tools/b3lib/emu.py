@@ -177,6 +177,12 @@ class Machine:
         self.pc = 0
         self.instructions_executed = 0
         self.call_log = []
+        # Optional per-address execution counts. Off by default: the derivation
+        # pipeline runs millions of instructions and does not need them, but loop
+        # analysis does, because the number of times a loop header is reached *is*
+        # the trip count.
+        self.count_visits = False
+        self.visit_counts = {}
 
     # -- register access ----------------------------------------------
 
@@ -241,6 +247,8 @@ class Machine:
 
     def step(self) -> None:
         """Execute one instruction, honouring the delay slot."""
+        if self.count_visits:
+            self.visit_counts[self.pc] = self.visit_counts.get(self.pc, 0) + 1
         word = self.memory.read_int(self.pc, 4, False)
         ins = DISASM.decode(word, self.pc)
         if not ins.is_valid:

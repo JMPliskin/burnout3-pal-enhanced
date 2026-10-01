@@ -496,6 +496,60 @@ class TestInterproceduralInlining(unittest.TestCase):
         with self.assertRaises(Unsupported):
             self._derive(words, known={target: callee})
 
+class TestVisitCounting(unittest.TestCase):
+    """The interpreter can count how often each address executes.
+
+    Loop analysis depends on it: the number of times a loop header is reached *is*
+    the trip count, so counting visits answers "is this trip count constant?"
+    directly rather than by static reasoning.
+
+    Counting is off by default because the derivation pipeline runs millions of
+    instructions and would pay for something it never reads.
+    """
+
+    def _machine(self, words):
+        from b3lib.emu import Machine
+
+        image = assemble(words)
+        # Room for the stack the interpreter sets up above the image.
+        return Machine(BASE, image, 0x02000000 - BASE)
+
+    def test_counting_is_off_by_default(self):
+        machine = self._machine([JR_RA, 0])
+        machine.call(BASE, (0, 0, 0, 0))
+        self.assertFalse(machine.count_visits)
+        self.assertEqual(machine.visit_counts, {})
+
+    def test_counts_each_instruction_once_in_straight_line_code(self):
+        # addiu $v0, $zero, 1 ; jr $ra ; nop
+        words = [enc_i(0x09, 0, 2, 1), JR_RA, 0]
+        machine = self._machine(words)
+        machine.count_visits = True
+        machine.call(BASE, (0, 0, 0, 0))
+        self.assertEqual(machine.visit_counts.get(BASE), 1)
+
+    def test_loop_header_count_is_the_trip_count(self):
+        """A counted loop's header should be reached once per iteration."""
+        # addiu $t0, $zero, 3        ; counter = 3
+        # loop: addiu $t0, $t0, -1   ; counter -= 1
+        #       bne $t0, $zero, loop
+        #       nop
+        #       jr $ra
+        #       nop
+        loop = BASE + 4
+        words = [
+            enc_i(0x09, 0, 8, 3),
+            enc_i(0x09, 8, 8, -1),
+            enc_i(0x05, 8, 0, -2),     # bne $t0, $zero, loop
+            0,
+            JR_RA,
+            0,
+        ]
+        machine = self._machine(words)
+        machine.count_visits = True
+        machine.call(BASE, (0, 0, 0, 0))
+        self.assertEqual(machine.visit_counts.get(loop), 3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
