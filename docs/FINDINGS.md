@@ -476,9 +476,27 @@ the original when compiled, their underived callees running as original code.
 
 What the change exposed about the analysis: 1,377 functions call an address that
 the function discovery never recorded as a function start. Every `jal` target is
-one by definition, so discovery is missing functions; until it finds them those
-calls are refused rather than made with guessed arguments. (Making them anyway,
-with no arguments, let seven tail-calling thunks through - and they disagreed.)
+one by definition, so discovery was missing functions; such calls are refused
+rather than made with guessed arguments. (Making them anyway, with no arguments,
+let seven tail-calling thunks through - and they disagreed.)
+
+### Function discovery, corrected
+
+The cause was the "does this look like code" check. It stopped at the first
+block-ending instruction without counting its delay slot, so a function whose
+whole body is `jr $ra; lw $v0, 8($a0)` - a getter - had one instruction of
+"work" and was rejected as data. 424 call targets were lost that way, one called
+from 866 sites. Fixing it, accepting `jal` targets that are an empty function or
+a thunk (`jr $ra; nop`, `j x; nop`), and letting the prologue scan find functions
+whose bytes another function's traversal merely passed through, takes discovery
+from 9,163 to 10,032 functions. Every earlier function is kept, no verified
+function's extent changed, and exactly one `jal` target in the binary is now not
+a function start.
+
+Derived and verified rose from 1,138 to 1,612 functions; verified code from 2.33%
+to 2.52% of code bytes. The calls still refused for "not a known function start"
+are now tail jumps into the middle of other functions - shared code - which is
+also what "control flow leaves the function" is.
 
 ## Open questions
 

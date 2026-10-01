@@ -27,6 +27,7 @@ auditable instead of being an opaque guess.
 
 from __future__ import annotations
 
+import bisect
 import collections
 import dataclasses
 import struct
@@ -126,7 +127,7 @@ class ImageAnalyzer:
 
     # -- stage 2: recursive control-flow traversal ---------------------
 
-    def _looks_like_code(self, addr: int, probe: int = 8) -> bool:
+    def _looks_like_code(self, addr: int, probe: int = 8, called: bool = False) -> bool:
         """Cheap sanity check that `addr` begins a decodable instruction run.
 
         Decoding successfully is not enough on its own: a zero word decodes as a
@@ -148,7 +149,28 @@ class ImageAnalyzer:
             if not ins.is_nop:
                 meaningful += 1
             if ins.ends_block:
+                # The delay slot executes too, and is often the whole body: a getter
+                # is `jr $ra; lw $v0, 8($a0)`. Not counting it rejected 424 call
+                # targets - one of them called from 866 sites - as "not code".
+                # An empty delay slot counts for nothing either way: it is neither
+                # work nor padding, and counting it as padding tipped 37 real
+                # entries over the padding ratio.
+                slot = a + 4
+                if ins.has_delay_slot and self.contains(slot):
+                    slot_ins = DISASM.decode(self.word_at(slot), slot)
+                    if not slot_ins.is_valid:
+                        return False
+                    if not slot_ins.is_nop:
+                        valid += 1
+                        meaningful += 1
                 break
+        if called and valid == 1 and meaningful == 1:
+            # A `jal` target that is just `jr $ra; nop` or `j elsewhere; nop` is an
+            # empty function or a thunk. Data that happens to decode that way is
+            # not what a call instruction points at.
+            first = DISASM.decode(self.word_at(addr), addr)
+            if first.is_return or first.mnemonic in ("j", "b"):
+                return True
         if valid < 2 or meaningful < 2:
             return False
         # Padding-dominated windows are data, not a function body.
@@ -296,13 +318,25 @@ class ImageAnalyzer:
     def scan_prologues(self) -> list:
         """Find `addiu $sp, $sp, -N` in spans not already proven to be code."""
         candidates = []
+        # Skip only what lies inside a known function. Bytes merely *reached* by
+        # another function's traversal - the target of a tail jump or a shared
+        # epilogue - can still begin a function of their own; skipping every
+        # visited byte lost 37 functions, one of them already verified, when
+        # better call-target discovery made more traversals reach them.
+        extents = sorted((f.start, f.end) for f in self.functions.values())
+        starts = [start for start, _end in extents]
+
+        def inside_function(addr):
+            index = bisect.bisect_right(starts, addr) - 1
+            return index >= 0 and extents[index][0] <= addr < extents[index][1]
+
         for i, word in enumerate(self.words):
             if (word & self._PROLOGUE_MASK) != self._PROLOGUE_MATCH:
                 continue
             if not (word & 0x8000):  # immediate must be negative
                 continue
             addr = self.base + i * 4
-            if self.code_bytes[self._index(addr)]:
+            if inside_function(addr):
                 continue
             if not self._looks_like_code(addr):
                 continue
@@ -325,7 +359,7 @@ class ImageAnalyzer:
         for addr, confidence in seeds:
             if addr in self.functions:
                 continue
-            if confidence != CONF_ENTRY and not self._looks_like_code(addr):
+            if confidence != CONF_ENTRY and not self._looks_like_code(addr, called=True):
                 self.stats["rejected_call_targets"] += 1
                 continue
             func = Function(start=addr, confidence=confidence)
