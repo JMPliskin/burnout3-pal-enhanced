@@ -166,6 +166,28 @@ reading the code:
 * **Float bit moves.** Holding float registers as host doubles canonicalises NaN
   payloads, altering values a copy must preserve.
 
+## Calling functions that are not derived
+
+A derived function no longer has to wait for its callees. A call into a function
+that has not been derived is kept as a call (`paths.Call`), passing the arguments
+the callee reads (`calls.parameters`, integer and float). Its `$v0` becomes a
+`CallResult`, and memory after it is a new *epoch*: `Load` carries the epoch it
+reads, so a load after the call is a different value from the same load before.
+
+Such a derivation is no longer a set of guarded expressions over entry memory -
+a branch after a call depends on what the call did - so its paths are merged into
+a decision tree (`PathDerivation.tree`). Verification runs that tree
+(`paths.Execution`): stores within an epoch are held until the next call, the
+*original* callee runs in the interpreter, and a load from an earlier epoch reads
+memory with the journalled writes since then undone. The emitter
+(`derive.StatementEmitter`) writes statements in order, capturing into a local any
+value a later statement needs that a store or a call could change. Callees that
+were not derived are declared; the compiled check links them back to the
+interpreter, so the compiled code is tested against original callees too.
+
+Only call-free derivations are inlined. A derived function that calls an
+underived one is called by its own callers, by its emitted signature.
+
 ## `structs.py` and `typed.py` - struct types
 
 Types are recovered by unification in the style of Steensgaard's points-to

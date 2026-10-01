@@ -27,6 +27,9 @@ MASK64 = (1 << 64) - 1
 
 VSWHERE = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 
+# Functions the emitted code calls but which were not derived: declared, not defined.
+EXTERN = re.compile(r"^u64 (func_([0-9A-F]{8}))\(([^)]*)\);  /\* not yet derived \*/$", re.M)
+
 SIGNATURE = re.compile(r"^(s32|void) (func_([0-9A-F]{8}))\(([^)]*)\) \{$", re.M)
 
 READERS = [
@@ -39,6 +42,8 @@ WRITERS = [("Write8", 1, "u32"), ("Write16", 2, "u32"), ("Write32", 4, "u32"),
 READ_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32,
                                  ctypes.c_uint32)
 WRITE_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_uint32)
+CALL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32,
+                                 ctypes.POINTER(ctypes.c_uint64))
 
 
 _BUILDS = 0
@@ -78,7 +83,18 @@ def functions_in(source: str) -> list:
     return found
 
 
-def harness_source(functions, typed: bool) -> str:
+def externs_in(source: str) -> list:
+    """(address, name, parameter indices) for every not-yet-derived callee."""
+    found = []
+    for match in EXTERN.finditer(source):
+        name, address, params = match.groups()
+        indices = [int(n) + (8 if f else 0)
+                   for f, n in re.findall(r"\b(f?)arg(\d+)\b", params)]
+        found.append((int(address, 16), name, indices))
+    return found
+
+
+def harness_source(functions, typed: bool, externs=()) -> str:
     """A dispatch table plus memory helpers that forward to Python callbacks."""
     lines = ['#include "b3/generated.h"']
     if typed:
@@ -93,11 +109,22 @@ def harness_source(functions, typed: bool) -> str:
         "",
         "typedef u64 (*ReadFn)(u32 address, u32 size, u32 is_signed);",
         "typedef void (*WriteFn)(u32 address, u64 value, u32 size);",
+        "typedef u64 (*CallFn)(u32 address, const u64* arguments);",
         "static ReadFn g_read;",
         "static WriteFn g_write;",
+        "static CallFn g_call;",
         "",
         "namespace generated {",
     ]
+    # A callee that was not derived runs as the original machine code.
+    for address, name, indices in externs:
+        params = ", ".join("u64 p%d" % index for index in indices) or "void"
+        lines.append("u64 %s(%s) {" % (name, params))
+        lines.append("    u64 vector[16] = {0};")
+        for index in indices:
+            lines.append("    vector[%d] = p%d;" % (index, index))
+        lines.append("    return g_call(0x%08X, vector);" % address)
+        lines.append("}")
     for name, size, signed in READERS:
         lines.append("u64 %s(u32 a) { return g_read(a, %d, %d); }" % (name, size, signed))
     for name, size, value_type in WRITERS:
@@ -105,9 +132,10 @@ def harness_source(functions, typed: bool) -> str:
     lines += [
         "}",
         "",
-        'extern "C" __declspec(dllexport) void b3_set_memory(ReadFn r, WriteFn w) {',
+        'extern "C" __declspec(dllexport) void b3_set_memory(ReadFn r, WriteFn w, CallFn c) {',
         "    g_read = r;",
         "    g_write = w;",
+        "    g_call = c;",
         "}",
         "",
         "/* Returns 1 with *result set, 2 for a void function, 0 if unknown. */",
@@ -133,8 +161,10 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
     harness = os.path.join(work_dir, "harness.cpp")
     generated_dir = os.path.dirname(os.path.abspath(generated_path))
     typed = os.path.exists(os.path.join(generated_dir, "types.h"))
+    with open(generated_path, encoding="utf-8") as handle:
+        externs = externs_in(handle.read())
     with open(harness, "w", encoding="utf-8") as handle:
-        handle.write(harness_source(functions, typed))
+        handle.write(harness_source(functions, typed, externs))
 
     # A fresh name per build: Windows keeps a loaded DLL locked, so rebuilding in
     # the same process under the same name would fail.
@@ -169,14 +199,16 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
 class CompiledFunctions:
     """The compiled library, with memory routed to an interpreter's memory."""
 
-    def __init__(self, dll_path: str, memory) -> None:
-        self.memory = memory
-        self.writes = []
+    def __init__(self, dll_path: str, machine, budget: int = 100_000) -> None:
+        self.machine = machine
+        self.budget = budget
+        self.memory = machine.memory
         # Keep the callback objects alive for as long as the library can call them.
         self._read = READ_CALLBACK(self._on_read)
         self._write = WRITE_CALLBACK(self._on_write)
+        self._call = CALL_CALLBACK(self._on_call)
         self.library = ctypes.CDLL(dll_path)
-        self.library.b3_set_memory(self._read, self._write)
+        self.library.b3_set_memory(self._read, self._write, self._call)
         self.library.b3_call.restype = ctypes.c_int
         self.library.b3_call.argtypes = [
             ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_int32)
@@ -191,12 +223,25 @@ class CompiledFunctions:
             return 0
 
     def _on_write(self, address, value, size):
-        self.writes.append((address, value & ((1 << (8 * size)) - 1), size))
+        # Written straight to memory, inside the verifier's journal: a callee run
+        # later in the same function must see it, as it would on the console.
+        try:
+            self.memory.write_int(address, value & ((1 << (8 * size)) - 1), size)
+        except Exception as exc:
+            self.error = exc
+
+    def _on_call(self, address, arguments):
+        try:
+            self.machine.call(address, [arguments[i] for i in range(16)],
+                              max_instructions=self.budget)
+            return self.machine.get(2) & MASK64
+        except Exception as exc:
+            self.error = exc
+            return 0
 
     def evaluator(self, address: int):
         """An `evaluate(args)` for derive.run_cases, backed by compiled code."""
         def evaluate(args):
-            self.writes = []
             self.error = None
             values = (ctypes.c_uint64 * 16)(
                 *[(a & MASK64) for a in (list(args) + [0] * 16)[:16]])
@@ -206,5 +251,5 @@ class CompiledFunctions:
                 raise self.error
             if kind == 0:
                 raise KeyError("0x%08X is not in the compiled library" % address)
-            return (None if kind == 2 else result.value), list(self.writes)
+            return (None if kind == 2 else result.value), []
         return evaluate

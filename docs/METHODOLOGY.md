@@ -172,6 +172,12 @@ inspection, and several were in the *verifier* rather than the reconstruction:
   the simplifier removes wherever only the low 32 bits are used or the value
   provably fits. The first version of that simplification was exponential on the
   shared subtrees of unrolled loops; it is memoised on the (immutable) nodes.
+* The first statement emitter for calls captured a value *after* the store that
+  changed it, and let a local declared in one branch be used in the other. The
+  compiler caught the second; the compiled run would have caught the first.
+* Interpreting the original callees made verification slow - decoding every
+  instruction from scratch dominated. Decodes are now cached per address, and a
+  verification case may run at most 100,000 instructions.
 * Declaring float arguments `u32` instead of `u64` made `farg0 & 0x7FFFFFFF` plus
   -127 wrap at 32 bits. The compiled check caught both affected functions.
 

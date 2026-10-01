@@ -57,6 +57,11 @@ class UnsupportedInstruction(EmulationError):
         self.mnemonic = mnemonic
 
 
+# Decoded instructions by address, shared by every Machine: decoding is a pure
+# function of the word and its address.
+_DECODED = {}
+
+
 class MemoryFault(EmulationError):
     def __init__(self, addr: int, size: int, store: bool) -> None:
         super().__init__(
@@ -249,12 +254,27 @@ class Machine:
                 )
         return _sign32(self.get32(2))
 
+    def _decode(self, word: int, pc: int):
+        """Decode an instruction, reusing an earlier decode of the same word here.
+
+        Decoding dominated the interpreter's time - operand text and all, for every
+        instruction executed - and verifying functions that call into the original
+        code runs a great deal of it. The cache is keyed on the word as well as the
+        address, so code that changed in memory is decoded afresh.
+        """
+        cached = _DECODED.get(pc)
+        if cached is not None and cached[0] == word:
+            return cached[1]
+        ins = DISASM.decode(word, pc)
+        _DECODED[pc] = (word, ins)
+        return ins
+
     def step(self) -> None:
         """Execute one instruction, honouring the delay slot."""
         if self.count_visits:
             self.visit_counts[self.pc] = self.visit_counts.get(self.pc, 0) + 1
         word = self.memory.read_int(self.pc, 4, False)
-        ins = DISASM.decode(word, self.pc)
+        ins = self._decode(word, self.pc)
         if not ins.is_valid:
             raise UnsupportedInstruction(self.pc, word, ".word")
 
@@ -269,7 +289,7 @@ class Machine:
             # cursor that should have stood still.
             if not nullify:
                 slot_word = self.memory.read_int(slot_pc, 4, False)
-                slot_ins = DISASM.decode(slot_word, slot_pc)
+                slot_ins = self._decode(slot_word, slot_pc)
                 if slot_ins.has_delay_slot:
                     raise UnsupportedInstruction(
                         slot_pc, slot_word, "branch in delay slot"

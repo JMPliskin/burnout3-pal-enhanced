@@ -140,6 +140,11 @@ class Load(Expr):
     address: Expr
     size: int
     signed: bool
+    # Which memory the load reads: 0 is memory as the function was entered, and
+    # epoch k is memory as it stood when the k-th call to a function that has not
+    # been derived returned. Such a callee can change anything, so a load after it
+    # is a different value from the same load before it, and must compare unequal.
+    epoch: int = 0
 
     def render(self) -> str:
         if _LOAD_RENDERER is not None:
@@ -151,7 +156,48 @@ class Load(Expr):
         return "*(%s*)(%s)" % (kind, self.address.render())
 
     def evaluate(self, args, read) -> int:
-        return read(self.address.evaluate(args, read) & MASK32, self.size, self.signed)
+        address = self.address.evaluate(args, read) & MASK32
+        if self.epoch:
+            return read(address, self.size, self.signed, self.epoch)
+        return read(address, self.size, self.signed)
+
+
+@dataclasses.dataclass(frozen=True)
+class CallResult(Expr):
+    """What `$v0` held when the `index`-th opaque call on a path returned.
+
+    An opaque call is one into a function that has not been derived: rather than
+    inlining it, the derived code calls it. Evaluating this needs the call to have
+    been made, so it is only meaningful inside a sequential evaluation that makes
+    the calls (see paths.Execution).
+    """
+
+    index: int
+    target: int
+
+    def render(self) -> str:
+        return "r%d" % self.index
+
+    def evaluate(self, args, read) -> int:
+        return read.result(self.index) & MASK64
+
+
+@dataclasses.dataclass(frozen=True)
+class Temp(Expr):
+    """A named value the emitter has already captured into a local.
+
+    Exists only during rendering: the emitter replaces a subexpression with one of
+    these once it has been stored in a `const` local, so later statements refer to
+    the local instead of re-reading memory that may have changed since.
+    """
+
+    name: str
+
+    def render(self) -> str:
+        return self.name
+
+    def evaluate(self, args, read) -> int:
+        raise Unsupported("a rendering temporary has no value of its own")
 
 
 # C operator precedence, tighter binding first. Rendering *must* respect this:
@@ -739,7 +785,7 @@ def children(expr: Expr) -> tuple:
     referencing undeclared parameters. A traversal that cannot see a new node type
     must break loudly, not quietly skip it.
     """
-    if isinstance(expr, (Arg, Const)):
+    if isinstance(expr, (Arg, Const, CallResult, Temp)):
         return ()
     if isinstance(expr, Load):
         return (expr.address,)
@@ -756,10 +802,10 @@ def children(expr: Expr) -> tuple:
 
 def rebuild(expr: Expr, new_children) -> Expr:
     """Reconstruct a node with replaced subexpressions, preserving its type."""
-    if isinstance(expr, (Arg, Const)):
+    if isinstance(expr, (Arg, Const, CallResult, Temp)):
         return expr
     if isinstance(expr, Load):
-        return Load(new_children[0], expr.size, expr.signed)
+        return Load(new_children[0], expr.size, expr.signed, expr.epoch)
     if isinstance(expr, Not):
         return Not(new_children[0])
     if isinstance(expr, Not1):
@@ -877,7 +923,7 @@ def _simplify(expr: Expr) -> Expr:
             )
         return Binary(expr.op, left, right)
     if isinstance(expr, Load):
-        return Load(address_of(expr.address), expr.size, expr.signed)
+        return Load(address_of(expr.address), expr.size, expr.signed, expr.epoch)
     if isinstance(expr, Compare):
         return Compare(expr.op, simplify(expr.left), simplify(expr.right))
     if isinstance(expr, SignExtend32):
@@ -1200,14 +1246,14 @@ def derive(image: bytes, base: int, start: int, end: int,
     raise Unsupported("no return reached")
 
 
-def _apply(regs: dict, ins, get) -> None:
+def _apply(regs: dict, ins, get, epoch: int = 0) -> None:
     """Apply one instruction to the symbolic register state."""
     m = ins.mnemonic
 
     if m in _LOAD_SIZES:
         size, signed = _LOAD_SIZES[m]
         address = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
-        regs[ins.rt] = Load(address, size, signed)
+        regs[ins.rt] = Load(address, size, signed, epoch)
         return
 
     if m == "lui":

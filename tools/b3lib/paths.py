@@ -34,9 +34,13 @@ from .symexec import (
     MASK64,
     Arg,
     Binary,
+    CallResult,
     Const,
     Expr,
     Load,
+    REG_HI,
+    REG_LO,
+    rebuild,
     Predicate,
     SignExtend32,
     Store,
@@ -108,6 +112,20 @@ def _is_frame_address(expr) -> bool:
     return STACK_TOP - MAX_FRAME_SIZE <= value <= STACK_TOP + 0x10
 
 
+@dataclasses.dataclass(frozen=True)
+class Call:
+    """A call the derived code makes to a function that has not been derived.
+
+    `index` numbers the opaque calls along a path; memory after call k is epoch k.
+    `arguments` pairs each argument-vector index the callee reads with the
+    expression the caller passes.
+    """
+
+    index: int
+    target: int
+    arguments: tuple
+
+
 @dataclasses.dataclass
 class Path:
     """One route through a function: the conditions holding, and the outcome."""
@@ -115,6 +133,28 @@ class Path:
     conditions: tuple      # Predicates, all true along this path
     expression: Expr       # what $v0 holds on return
     stores: tuple = ()
+    # Conditions and opaque calls in program order, each as (number of stores
+    # before it, "cond" or "call", the predicate or Call). With the stores this
+    # gives the path's full event order, which matters once a call sits between
+    # them: a callee sees the stores before it and not those after.
+    marks: tuple = ()
+
+    @property
+    def calls(self) -> tuple:
+        return tuple(obj for _count, kind, obj in self.marks if kind == "call")
+
+    def events(self) -> list:
+        """Conditions, stores and calls, in the order the function performs them."""
+        out = []
+        marks = list(self.marks)
+        position = 0
+        for count, store in enumerate(self.stores):
+            while position < len(marks) and marks[position][0] <= count:
+                out.append((marks[position][1], marks[position][2]))
+                position += 1
+            out.append(("store", store))
+        out.extend((kind, obj) for _count, kind, obj in marks[position:])
+        return out
 
     def render_condition(self) -> str:
         if not self.conditions:
@@ -140,6 +180,38 @@ class PathDerivation:
     def is_void(self) -> bool:
         """True when no path produces a value."""
         return all(path.expression is None for path in self.paths)
+
+    @property
+    def has_calls(self) -> bool:
+        """True when the derived code calls a function that was not derived.
+
+        Such a derivation cannot be described as guarded paths over entry memory -
+        a branch after the call depends on what the call did - so it is evaluated
+        and emitted as a decision tree instead (see `tree`).
+        """
+        return any(path.calls for path in self.paths)
+
+    def tree(self) -> list:
+        """The paths merged into one decision tree of statements.
+
+        Statements are ("store", Store), ("call", Call), ("if", predicate, then,
+        else) and ("return", expression or None). Paths share their events up to
+        the condition where they part, and the walk always parts them on a
+        predicate and its negation, so the merge is exact; anything else is
+        refused rather than guessed at.
+        """
+        return _build_tree([(path.events(), path.expression) for path in self.paths])
+
+    def run(self, args, execution) -> object:
+        """Evaluate the tree against real memory, making the calls; see Execution.
+
+        Returns the low 32 bits of $v0 as a signed value, or None when void.
+        """
+        result = _run_tree(self.tree(), args, execution)
+        execution.flush()
+        if result is None:
+            return None
+        return _sign32(result & MASK32)
 
     @property
     def stores(self) -> tuple:
@@ -210,6 +282,151 @@ class PathDerivation:
             value = simplify(store.value).evaluate(args, read)
             out.append((address, value & ((1 << (store.size * 8)) - 1), store.size))
         return out
+
+
+def _same_event(a, b) -> bool:
+    if a[0] != b[0]:
+        return False
+    if a[0] == "cond":
+        return a[1] == b[1]
+    return a[1] is b[1] or a[1] == b[1]
+
+
+def _build_tree(group) -> list:
+    """Merge (events, result) paths that share a prefix into nested statements."""
+    statements = []
+    position = 0
+    while True:
+        heads = [events[position] if position < len(events) else None
+                 for events, _result in group]
+        if all(head is None for head in heads):
+            statements.append(("return", group[0][1]))
+            return statements
+        first = heads[0]
+        if first is not None and all(head is not None and _same_event(head, first)
+                                     for head in heads):
+            statements.append(first)
+            position += 1
+            continue
+        if any(head is None or head[0] != "cond" for head in heads):
+            raise Unsupported("paths diverge without a condition")
+        sides = []
+        for head, member in zip(heads, group):
+            for side in sides:
+                if side[0] == head[1]:
+                    side[1].append(member)
+                    break
+            else:
+                sides.append((head[1], [member]))
+        if len(sides) != 2 or not (_negates(sides[0][0], sides[1][0])):
+            raise Unsupported("paths part on conditions that are not complements")
+        (condition, taken), (_other, untaken) = sides
+        statements.append((
+            "if", condition,
+            _build_tree([(events[position + 1:], result) for events, result in taken]),
+            _build_tree([(events[position + 1:], result) for events, result in untaken]),
+        ))
+        return statements
+
+
+def _negates(a, b) -> bool:
+    try:
+        return a.negate() == b or b.negate() == a
+    except Exception:
+        return False
+
+
+def _run_tree(statements, args, execution):
+    for statement in statements:
+        kind = statement[0]
+        if kind == "store":
+            store = statement[1]
+            execution.store(
+                simplify(store.address).evaluate(args, execution) & MASK32,
+                simplify(store.value).evaluate(args, execution),
+                store.size,
+            )
+        elif kind == "call":
+            call = statement[1]
+            vector = [0] * ARG_COUNT
+            for index, expr in call.arguments:
+                vector[index] = simplify(expr).evaluate(args, execution)
+            execution.call(call.index, call.target, vector)
+        elif kind == "if":
+            taken = statement[1].evaluate(args, execution)
+            return _run_tree(statement[2] if taken else statement[3], args, execution)
+        else:
+            expression = statement[1]
+            if expression is None:
+                return None
+            return simplify(expression).evaluate(args, execution)
+    return None
+
+
+class Execution:
+    """Evaluates a derivation with opaque calls against an interpreter's memory.
+
+    The derivation's expressions refer to memory by epoch. Within one epoch the
+    walk guaranteed that every load is either forwarded from, or provably clear of,
+    the stores before it, so evaluating them against memory as the epoch began is
+    exact - and that is what holding the stores back until the next call achieves.
+    At a call the held stores are written, the *original* callee is run in the
+    interpreter, and a new epoch begins. A load from an earlier epoch reads the
+    current memory with every journalled write since that epoch began undone.
+
+    Memory must be journalling, which the verifier's replay already arranges.
+    """
+
+    def __init__(self, machine, budget: int = 2_000_000) -> None:
+        self.machine = machine
+        self.budget = budget
+        self.memory = machine.memory
+        self.markers = {0: len(self.memory._journal)}
+        self.results = {}
+        self.pending = []
+
+    def __call__(self, address, size, signed, epoch=0):
+        raw = bytearray(self.memory.read(address, size))
+        offset = address - self.memory.base
+        for written, previous in reversed(self.memory._journal[self.markers[epoch]:]):
+            for i, byte in enumerate(previous):
+                position = written + i - offset
+                if 0 <= position < size:
+                    raw[position] = byte
+        return int.from_bytes(bytes(raw), "little", signed=signed)
+
+    def result(self, index):
+        return self.results[index]
+
+    def store(self, address, value, size):
+        self.pending.append((address, value, size))
+
+    def flush(self):
+        for address, value, size in self.pending:
+            self.memory.write_int(address, value, size)
+        self.pending = []
+
+    def call(self, index, target, vector):
+        self.flush()
+        self.machine.call(target, vector, max_instructions=self.budget)
+        self.results[index] = self.machine.get(2) & MASK64
+        self.markers[index] = len(self.memory._journal)
+
+
+def _retag(expr, epoch: int, memo: dict):
+    """A callee's expression, with its entry-memory loads moved to `epoch`."""
+    key = id(expr)
+    if key in memo:
+        return memo[key]
+    kids = children(expr)
+    if isinstance(expr, Load):
+        new = Load(_retag(expr.address, epoch, memo), expr.size, expr.signed, epoch)
+    elif kids:
+        new = rebuild(expr, [_retag(child, epoch, memo) for child in kids])
+    else:
+        new = expr
+    memo[key] = new
+    return new
 
 
 def _getter(regs: dict):
@@ -353,7 +570,7 @@ def _forward(value, size: int, signed: bool):
     raise Unsupported("cannot forward a %d-byte store" % size)
 
 
-def _read_through(memory: dict, target, size: int, signed: bool):
+def _read_through(memory: dict, target, size: int, signed: bool, epoch: int = 0):
     """Answer a load given everything written so far.
 
     Writes are examined newest first. The first one that could touch the loaded
@@ -369,10 +586,11 @@ def _read_through(memory: dict, target, size: int, signed: bool):
         if relation == "same":
             return _forward(value, size, signed)
         raise Unsupported("load may alias an earlier store")
-    return Load(target, size, signed)
+    return Load(target, size, signed, epoch)
 
 
-def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None:
+def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
+          epoch: int = 0) -> None:
     """Apply one non-control instruction.
 
     Accesses that land in the stack frame are routed to `frame` rather than being
@@ -409,7 +627,7 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
             regs[fpr(ins.rt)] = frame[key]
             return
         # Float registers hold bit patterns, so this is an unsigned 32-bit read.
-        regs[fpr(ins.rt)] = _read_through(memory, target, 4, False)
+        regs[fpr(ins.rt)] = _read_through(memory, target, 4, False, epoch)
         return
 
     if m in _STORE_SIZES:
@@ -442,12 +660,12 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get) -> None
             regs[ins.rt] = frame[key]
             return
         if memory:
-            regs[ins.rt] = _read_through(memory, target, size, signed_load)
+            regs[ins.rt] = _read_through(memory, target, size, signed_load, epoch)
             return
 
     if ins.is_branch or ins.is_jump or ins.is_call:
         raise Unsupported("branch in a delay slot")
-    _apply(regs, ins, get)
+    _apply(regs, ins, get, epoch)
 
 
 # Registers a call may clobber. After inlining a callee these are dropped rather
@@ -472,7 +690,7 @@ def _contains_load(expr) -> bool:
     return any(_contains_load(child) for child in children(expr))
 
 
-def _check_callee_loads_are_safe(callee, arguments, memory: dict) -> None:
+def _check_callee_loads_are_safe(callee, arguments, memory: dict, epoch: int = 0) -> None:
     """Refuse an inline whose callee might read what the caller has already written.
 
     A callee's expressions describe memory as it stood when the callee was entered,
@@ -492,10 +710,12 @@ def _check_callee_loads_are_safe(callee, arguments, memory: dict) -> None:
         parts.extend(path.conditions)
         for store in path.stores:
             parts.extend((store.address, store.value))
+        memo = {}
         for part in parts:
-            if not _contains_load(substitute(part, arguments)):
+            moved = _in_caller(part, arguments, epoch, memo)
+            if not _contains_load(moved):
                 continue
-            if not _loads_are_disjoint(substitute(part, arguments), memory):
+            if not _loads_are_disjoint(moved, memory):
                 raise Unsupported("callee may read a location the caller wrote")
 
 
@@ -514,27 +734,38 @@ def _loads_are_disjoint(expr, memory: dict) -> bool:
     return all(_loads_are_disjoint(child, memory) for child in children(expr))
 
 
-def _apply_callee_path(callee_path, arguments, stores: list, memory: dict) -> tuple:
+def _in_caller(expr, arguments, epoch: int, memo: dict):
+    """A callee expression as the caller sees it: arguments substituted, and its
+    loads reading the caller's current epoch rather than entry memory."""
+    if epoch:
+        expr = _retag(expr, epoch, memo)
+    return substitute(expr, arguments)
+
+
+def _apply_callee_path(callee_path, arguments, stores: list, memory: dict,
+                       epoch: int = 0) -> tuple:
     """Fold one callee path into the caller, returning its conditions."""
+    memo = {}
     for store in callee_path.stores:
         moved = Store(
             # The canonical address form, as for the caller's own stores: the
             # argument substituted in may be a sign-extended word result, and left
             # in place that extension hides the base from everything downstream.
-            address_of(substitute(store.address, arguments)),
-            simplify(substitute(store.value, arguments)),
+            address_of(_in_caller(store.address, arguments, epoch, memo)),
+            simplify(_in_caller(store.value, arguments, epoch, memo)),
             store.size,
         )
         stores.append(moved)
         _record_store(memory, moved.address, moved.size, moved.value)
     return tuple(
-        simplify(substitute(condition, arguments))
+        simplify(_in_caller(condition, arguments, epoch, memo))
         for condition in callee_path.conditions
     )
 
 
 def derive_paths(image: bytes, base: int, start: int, end: int,
-                 gp_value: int = None, known: dict = None) -> PathDerivation:
+                 gp_value: int = None, known: dict = None,
+                 parameters: dict = None) -> PathDerivation:
     """Derive a function as guarded paths, handling acyclic control flow.
 
     `known` maps an address to an already-derived `PathDerivation`. A call to one of
@@ -558,8 +789,34 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     # Shared by every fork of this function's walk, so the cap is on total work.
     budget = [MAX_TOTAL_STEPS]
 
+    def opaque_call(target: int, regs: dict, stores: list, marks: tuple, epoch: int):
+        """Record a call to an underived function; returns (marks, new epoch).
+
+        Only the arguments the callee reads are passed, and each must be known. A
+        stack address cannot be passed: the callee could write through it into this
+        function's frame, which the frame model would not see.
+        """
+        if target not in parameters:
+            raise Unsupported("calls an address that is not a known function start")
+        arguments = []
+        for index in parameters[target]:
+            reg = (INT_ARG_REGS[index] if index < FLOAT_ARG_BASE
+                   else fpr(FLOAT_ARG_REGS[index - FLOAT_ARG_BASE]))
+            if reg not in regs:
+                raise Unsupported("passes an argument it never set")
+            if _is_frame_address(regs[reg]):
+                raise Unsupported("passes a stack address to an underived function")
+            arguments.append((index, regs[reg]))
+        call = Call(epoch + 1, target, tuple(arguments))
+        for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
+            regs.pop(index, None)
+        for index in range(20):                 # $f0..$f19 are caller-saved
+            regs.pop(fpr(index), None)
+        regs[2] = CallResult(call.index, target)
+        return marks + ((len(stores), "call", call),), call.index
+
     def walk(addr: int, regs: dict, stores: list, frame: dict, memory: dict,
-             conditions: tuple, visited: dict):
+             conditions: tuple, visited: dict, marks: tuple = (), epoch: int = 0):
         if len(paths) > MAX_PATHS:
             raise Unsupported("too many paths")
         # Each walk owns its counts; a fork must not see its sibling's iterations.
@@ -603,7 +860,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 if not ins.is_return:
                     raise Unsupported("indirect jump")
                 _step(regs, stores, frame, memory,
-                      DISASM.decode(word_at(addr + 4), addr + 4), get)
+                      DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
                 # A function that never writes $v0 returns nothing. Insisting on a
                 # return value refused 514 functions outright - every setter and
                 # initialiser in the binary - because they are simply void.
@@ -611,7 +868,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     result = _getter(regs)(2)
                 except Unsupported:
                     result = None
-                paths.append(Path(conditions, result, tuple(stores)))
+                paths.append(Path(conditions, result, tuple(stores), marks))
                 return
 
             if ins.is_branch:
@@ -626,12 +883,12 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # out wrong. Folding also keeps `if (1 != 0)` out of the output.
                 decided = _constant_truth(predicate)
                 if decided is True:
-                    _step(regs, stores, frame, memory, slot, get)
+                    _step(regs, stores, frame, memory, slot, get, epoch)
                     addr = ins.target
                     continue
                 if decided is False:
                     if not ins.is_likely:
-                        _step(regs, stores, frame, memory, slot, get)
+                        _step(regs, stores, frame, memory, slot, get, epoch)
                     addr += 8
                     continue
 
@@ -639,23 +896,26 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 taken_regs, taken_stores = dict(regs), list(stores)
                 taken_frame, taken_memory = dict(frame), dict(memory)
                 _step(taken_regs, taken_stores, taken_frame, taken_memory,
-                      slot, _getter(taken_regs))
+                      slot, _getter(taken_regs), epoch)
                 walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
-                     conditions + (predicate,), visited)
+                     conditions + (predicate,), visited,
+                     marks + ((len(stores), "cond", predicate),), epoch)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
                 fall_frame, fall_memory = dict(frame), dict(memory)
                 if not ins.is_likely:
                     _step(fall_regs, fall_stores, fall_frame, fall_memory,
-                          slot, _getter(fall_regs))
+                          slot, _getter(fall_regs), epoch)
+                negated = predicate.negate()
                 walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
-                     conditions + (predicate.negate(),), visited)
+                     conditions + (negated,), visited,
+                     marks + ((len(stores), "cond", negated),), epoch)
                 return
 
             if m in ("b", "j"):
                 _step(regs, stores, frame, memory,
-                      DISASM.decode(word_at(addr + 4), addr + 4), get)
+                      DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
                 if start <= ins.target < end:
                     addr = ins.target
                     continue
@@ -664,10 +924,17 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # are common in thunks and were previously all refused as "control
                 # flow leaves the function".
                 if ins.target not in known:
-                    raise Unsupported("tail-calls an underived function: 0x%08X" % ins.target)
+                    if parameters is None:
+                        raise Unsupported(
+                            "tail-calls an underived function: 0x%08X" % ins.target)
+                    # A tail call to an underived function: call it, and its $v0
+                    # is this function's result.
+                    marks, epoch = opaque_call(ins.target, regs, stores, marks, epoch)
+                    paths.append(Path(conditions, regs[2], tuple(stores), marks))
+                    return
                 callee = known[ins.target]
                 arguments = _call_arguments(regs)
-                _check_callee_loads_are_safe(callee, arguments, memory)
+                _check_callee_loads_are_safe(callee, arguments, memory, epoch)
 
                 # Each route through the callee becomes a route through this
                 # function, since a tail call has no return of its own: the callee's
@@ -675,31 +942,44 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 for callee_path in callee.paths:
                     branch_stores = list(stores)
                     branch_memory = dict(memory)
+                    before = len(stores)
                     extra = _apply_callee_path(
-                        callee_path, arguments, branch_stores, branch_memory
+                        callee_path, arguments, branch_stores, branch_memory, epoch
                     )
                     result = (
                         None if callee_path.expression is None
-                        else simplify(substitute(callee_path.expression, arguments))
+                        else simplify(_in_caller(callee_path.expression, arguments,
+                                                 epoch, {}))
                     )
-                    paths.append(
-                        Path(conditions + extra, result, tuple(branch_stores))
-                    )
+                    paths.append(Path(
+                        conditions + extra, result, tuple(branch_stores),
+                        marks + tuple((before, "cond", c) for c in extra),
+                    ))
                 return
 
             if ins.is_call:
                 if ins.target < 0:
                     raise Unsupported("calls through a register")
                 if ins.target not in known:
-                    raise Unsupported("calls an underived function: 0x%08X" % ins.target)
+                    if parameters is None:
+                        raise Unsupported(
+                            "calls an underived function: 0x%08X" % ins.target)
+                    _step(regs, stores, frame, memory,
+                          DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
+                    marks, epoch = opaque_call(ins.target, regs, stores, marks, epoch)
+                    # The callee may have written anything, so nothing this function
+                    # wrote earlier can be forwarded to a later load any more.
+                    memory = {}
+                    addr += 8
+                    continue
                 callee = known[ins.target]
 
                 # The delay slot runs before the call, and often sets the last
                 # argument, so apply it first.
                 _step(regs, stores, frame, memory,
-                      DISASM.decode(word_at(addr + 4), addr + 4), get)
+                      DISASM.decode(word_at(addr + 4), addr + 4), get, epoch)
                 arguments = _call_arguments(regs)
-                _check_callee_loads_are_safe(callee, arguments, memory)
+                _check_callee_loads_are_safe(callee, arguments, memory, epoch)
 
                 # A callee with several paths multiplies the caller's: one caller
                 # path continues for each route through the callee, carrying that
@@ -710,23 +990,24 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     branch_stores = list(stores)
                     branch_frame = dict(frame)
                     branch_memory = dict(memory)
+                    before = len(stores)
                     extra = _apply_callee_path(
-                        callee_path, arguments, branch_stores, branch_memory
+                        callee_path, arguments, branch_stores, branch_memory, epoch
                     )
                     for index in CALLER_SAVED:
                         branch_regs.pop(index, None)
                     if callee_path.expression is not None:
-                        branch_regs[2] = simplify(
-                            substitute(callee_path.expression, arguments)
-                        )
+                        branch_regs[2] = simplify(_in_caller(
+                            callee_path.expression, arguments, epoch, {}))
                     walk(addr + 8, branch_regs, branch_stores, branch_frame,
-                         branch_memory, conditions + extra, visited)
+                         branch_memory, conditions + extra, visited,
+                         marks + tuple((before, "cond", c) for c in extra), epoch)
                 return
 
             if ins.is_jump:
                 raise Unsupported("unhandled jump")
 
-            _step(regs, stores, frame, memory, ins, get)
+            _step(regs, stores, frame, memory, ins, get, epoch)
             addr += 4
 
     # Seed the registers to exactly the state the interpreter starts a call in, so
@@ -765,6 +1046,13 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
     if not paths:
         raise Unsupported("no return reached")
+    # A tail call to an underived function hands on whatever the callee left in
+    # $v0. In a function whose other paths return nothing, that is no value either.
+    if any(path.expression is None for path in paths):
+        for index, path in enumerate(paths):
+            if isinstance(path.expression, CallResult) and path.calls and \
+                    path.expression.index == path.calls[-1].index:
+                paths[index] = Path(path.conditions, None, path.stores, path.marks)
     void_paths = sum(1 for path in paths if path.expression is None)
     if void_paths and void_paths != len(paths):
         # Some paths produce a value and others do not. That is either a function

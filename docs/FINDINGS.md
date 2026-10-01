@@ -466,6 +466,20 @@ obstacle in 958 functions: 582 reading `$t0..$t3` (more than four arguments) and
 294 reading `$f12..$f14` (float arguments). With the full argument vector that
 falls to 86.
 
+## Calls into code that is not derived yet
+
+Requiring every callee to be derived first held back 4,409 functions - more than
+any other obstacle. Letting derived code call the original instead (see
+ARCHITECTURE.md) took derived-and-verified functions from 694 to 1,138, and
+verified code from 1.15% to 2.33% of code bytes. All emitted functions agree with
+the original when compiled, their underived callees running as original code.
+
+What the change exposed about the analysis: 1,377 functions call an address that
+the function discovery never recorded as a function start. Every `jal` target is
+one by definition, so discovery is missing functions; until it finds them those
+calls are refused rather than made with guessed arguments. (Making them anyway,
+with no arguments, let seven tail-calling thunks through - and they disagreed.)
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

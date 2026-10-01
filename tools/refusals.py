@@ -30,6 +30,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import derive
+from b3lib import calls
 from b3lib.elf import ElfFile
 from b3lib.emu import Machine
 from b3lib.paths import derive_paths
@@ -62,16 +63,20 @@ def main(argv=None) -> int:
     started = time.time()
     verified, _rejected = derive.collect(database, image, section.addr, machine,
                                          verbose=False)
-    known = {func["addr"]: derivation for func, derivation, _t, _s in verified}
+    known = {func["addr"]: derivation for func, derivation, _t, _s in verified
+             if not derivation.has_calls}
+    done = {func["addr"] for func, _d, _t, _s in verified}
+    parameters = calls.parameters(database, image, section.addr)
     by_address = {f["addr"]: f for f in database["functions"]}
 
     reasons = {}
     for func in database["functions"]:
-        if not func["size"] or not func["has_return"] or func["addr"] in known:
+        if not func["size"] or not func["has_return"] or func["addr"] in done:
             continue
         long = func["size"] // 4 > derive.MAX_INSTRUCTIONS
         try:
-            derive_paths(image, section.addr, func["addr"], func["end"], known=known)
+            derive_paths(image, section.addr, func["addr"], func["end"], known=known,
+                         parameters=parameters)
             # Derivable, yet not verified: too long for the deriver's size limit, or
             # its test could not run or did not agree.
             reasons[func["addr"]] = ("derives, but over the size limit" if long
@@ -86,7 +91,7 @@ def main(argv=None) -> int:
     for address, reason in reasons.items():
         sizes[category(reason)] += by_address[address]["size"]
     print("derived and verified : %d   remaining with a return: %s   (%.0fs)"
-          % (len(known), format(len(reasons), ","), time.time() - started))
+          % (len(done), format(len(reasons), ","), time.time() - started))
     print()
     print("%-58s %7s %10s" % ("first obstacle the deriver meets", "funcs", "bytes"))
     print("-" * 77)

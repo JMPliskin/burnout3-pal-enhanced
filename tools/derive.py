@@ -34,16 +34,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
-from b3lib.paths import PathDerivation, derive_paths
-from b3lib import structs, testmem, typed
+from b3lib.paths import Execution, PathDerivation, _relation, derive_paths
+from b3lib import calls, structs, testmem, typed
 from b3lib.symexec import (
     Arg,
     Binary,
+    CallResult,
     Compare,
     Const,
     Derivation,
     Load,
     Predicate,
+    Temp,
+    rebuild,
     Unsupported,
     FLOAT_ARG_BASE,
     arg_name,
@@ -58,6 +61,10 @@ from b3lib.symexec import (
 from b3lib.emu import DEFAULT_STACK_SIZE, DEFAULT_STACK_TOP
 
 MAX_INSTRUCTIONS = 96
+# Instructions one verification case may execute, callees included. Interpreting
+# is slow, and a function that calls into a large original routine would otherwise
+# spend minutes per case; one that needs more than this is reported untestable.
+VERIFY_BUDGET = 100_000
 # The callee's own frame. Writes here are not observable effects, so they are
 # excluded when comparing what the original and the derivation did to memory.
 STACK_LOW = DEFAULT_STACK_TOP - DEFAULT_STACK_SIZE
@@ -101,6 +108,9 @@ def derivation_args(derivation) -> set:
         for store in path.stores:
             args |= used_args(store.address)
             args |= used_args(store.value)
+        for call in path.calls:
+            for _index, expr in call.arguments:
+                args |= used_args(expr)
     return args
 
 
@@ -325,6 +335,205 @@ def _loop_index(offset: int, step: int) -> str:
     return "%s %s %d" % (scaled, "+" if offset > 0 else "-", abs(offset))
 
 
+class StatementEmitter:
+    """Render a derivation that calls underived functions, as ordered statements.
+
+    Its expressions refer to memory by epoch - as it was entered, or as it stood
+    after some call - while the emitted C++ simply runs in order against live
+    memory. Two things keep them in step. Before a call, every value from the
+    current epoch that a later statement uses is captured into a local, since the
+    callee may change it. Before a store, every later-used value the store might
+    overwrite is captured, since it was read before the store happened. Everything
+    else is read where it is used, which is when the original read it.
+    """
+
+    def __init__(self, derivation) -> None:
+        self.tree = derivation.tree()
+        self.void = derivation.is_void
+        self.replaced = {}        # id(original node) -> Temp
+        self.counter = 0
+
+    def render(self) -> list:
+        return self._block(self.tree)
+
+    # -- capture -------------------------------------------------------------
+
+    def _apply(self, expr):
+        memo = {}
+
+        def walk(node):
+            key = id(node)
+            if key in self.replaced:
+                return self.replaced[key]
+            if key in memo:
+                return memo[key]
+            kids = children(node)
+            new = rebuild(node, [walk(child) for child in kids]) if kids else node
+            memo[key] = new
+            return new
+        return walk(expr)
+
+    @staticmethod
+    def _expressions(statements) -> list:
+        found = []
+        for statement in statements:
+            kind = statement[0]
+            if kind == "store":
+                found += [statement[1].address, statement[1].value]
+            elif kind == "call":
+                found += [expr for _index, expr in statement[1].arguments]
+            elif kind == "if":
+                found.append(statement[1])
+                found += StatementEmitter._expressions(statement[2])
+                found += StatementEmitter._expressions(statement[3])
+            elif statement[1] is not None:
+                found.append(statement[1])
+        return found
+
+    def _capture(self, later, affected, future) -> list:
+        """Capture maximal subexpressions of `later` that contain an affected load
+        and nothing that only exists in the future; returns declaration lines."""
+        lines = []
+        state = {}
+
+        def contains(node):
+            key = id(node)
+            if key in self.replaced:
+                return (False, False)
+            if key in state:
+                return state[key]
+            hit = isinstance(node, Load) and affected(node)
+            ahead = future(node)
+            for child in children(node):
+                child_hit, child_ahead = contains(child)
+                hit, ahead = hit or child_hit, ahead or child_ahead
+            state[key] = (hit, ahead)
+            return state[key]
+
+        def visit(node):
+            key = id(node)
+            if key in self.replaced:
+                return
+            hit, ahead = contains(node)
+            if not hit:
+                return
+            if not ahead:
+                self.counter += 1
+                temp = Temp("t%d" % self.counter)
+                lines.append("const u64 %s = %s;" % (temp.name, render_cpp(self._apply(node))))
+                self.replaced[key] = temp
+                return
+            for child in children(node):
+                visit(child)
+
+        for expr in later:
+            visit(expr)
+        return lines
+
+    # -- statements ----------------------------------------------------------
+
+    def _block(self, statements, epoch: int = 0) -> list:
+        lines = []
+        for position, statement in enumerate(statements):
+            later = self._expressions(statements[position + 1:])
+            kind = statement[0]
+            if kind == "store":
+                store = statement[1]
+                # Capture first: a value the store may overwrite has to be read
+                # before the write lands, not after.
+                lines += self._capture(
+                    later,
+                    lambda load: load.epoch == epoch and _relation(
+                        store.address, store.size, load.address, load.size) != "disjoint",
+                    lambda node: _beyond(node, epoch),
+                )
+                lines += self._store(store)
+            elif kind == "call":
+                call = statement[1]
+                lines += self._capture(
+                    later,
+                    lambda load: load.epoch < call.index,
+                    lambda node: _beyond(node, call.index - 1),
+                )
+                lines.append(self._call(call, later))
+                epoch = call.index
+            elif kind == "if":
+                lines.append("if (%s) {" % render_cpp(self._apply(statement[1])))
+                # A local captured inside one branch does not exist in the other, so
+                # each branch starts from the captures made before the `if`.
+                outer = dict(self.replaced)
+                lines += ["    " + line for line in self._block(statement[2], epoch)]
+                self.replaced = dict(outer)
+                lines.append("} else {")
+                lines += ["    " + line for line in self._block(statement[3], epoch)]
+                self.replaced = outer
+                lines.append("}")
+            else:
+                if self.void or statement[1] is None:
+                    lines.append("return;")
+                else:
+                    lines.append("return %s;" % _result(self._apply(statement[1])))
+        return lines
+
+    def _store(self, store) -> list:
+        address = self._apply(store.address)
+        moved = type(store)(address, self._apply(store.value), store.size)
+        value = _store_value(moved)
+        target = _TYPING.store_target(moved) if _TYPING is not None else None
+        if target is not None:
+            base, embeds, _owner, offset, index = target
+            return [_TYPING.write(None, base, embeds, offset, value, index)]
+        if store.size not in WRITERS:
+            raise Unsupported("no writer for %d-byte store" % store.size)
+        return ["%s(%s, %s);" % (WRITERS[store.size], render_cpp(address), value)]
+
+    def _call(self, call, later) -> str:
+        passed = dict(call.arguments)
+        signature = _SIGNATURES.get(call.target)
+        if signature is None:
+            indices = [index for index, _expr in call.arguments]
+            _EXTERNS[call.target] = tuple(indices)
+            returns_value = True
+        else:
+            return_type, indices = signature
+            missing = [index for index in indices if index not in passed]
+            if missing:
+                raise Unsupported("callee declares an argument the call does not pass")
+            returns_value = return_type != "void"
+        arguments = ", ".join(render_cpp(self._apply(passed[index])) for index in indices)
+        text = "func_%08X(%s)" % (call.target, arguments)
+        used = any(_mentions_call(expr, call.index) for expr in later)
+        if used and not returns_value:
+            raise Unsupported("uses the result of a call to a void function")
+        if not used:
+            return "%s;" % text
+        temp = Temp("r%d" % call.index)
+        return "const u64 %s = %s;" % (temp.name, text)
+
+
+def _beyond(node, epoch: int) -> bool:
+    """True for a node that only exists after epoch `epoch`: a later load or call."""
+    if isinstance(node, Load):
+        return node.epoch > epoch
+    if isinstance(node, CallResult):
+        return node.index > epoch
+    return False
+
+
+def _mentions_call(expr, index: int) -> bool:
+    seen = set()
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, CallResult) and node.index == index:
+            return True
+        stack.extend(children(node))
+    return False
+
+
 def _reads_memory(expr) -> bool:
     """Whether evaluating an expression loads from memory."""
     if isinstance(expr, Load):
@@ -332,8 +541,17 @@ def _reads_memory(expr) -> bool:
     return any(_reads_memory(child) for child in children(expr))
 
 
+# Emitted functions' signatures, {address: (return type, parameter indices)}, and the
+# underived functions the emitted code calls, {address: parameter indices}. Set by
+# `emit` around rendering, like _TYPING, because the statements need them.
+_SIGNATURES = {}
+_EXTERNS = {}
+
+
 def render_body(derivation) -> list:
     """Render a whole derivation as C++ statement lines, without indentation."""
+    if derivation.has_calls:
+        return StatementEmitter(derivation).render()
     if derivation.is_straight_line:
         return render_path_body(derivation.paths[0], "")
 
@@ -372,6 +590,9 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
         return machine.memory.read_int(addr, size, signed)
 
     verified, rejected = [], {"unsupported": 0, "untestable": 0, "mismatch": 0}
+    # Which arguments each function reads, so a call to one that is not derived can
+    # be made rather than refused.
+    parameters = calls.parameters(database, image, base)
     known = {}
     done = set()
     candidates = [
@@ -385,12 +606,17 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
         for func in candidates:
             if func["addr"] in done:
                 continue
-            outcome = _attempt(func, image, base, machine, read, known, pass_rejected)
+            outcome = _attempt(func, image, base, machine, read, known, pass_rejected,
+                               parameters)
             if outcome is None:
                 continue
             done.add(func["addr"])
             verified.append(outcome)
-            known[func["addr"]] = outcome[1]
+            # Only call-free derivations are inlined into callers. One that calls an
+            # underived function is a sequence of statements, not an expression,
+            # and its callers call it instead.
+            if not outcome[1].has_calls:
+                known[func["addr"]] = outcome[1]
             added += 1
         if verbose:
             print("  pass %d: +%d derived and verified (total %d)"
@@ -439,7 +665,7 @@ def _choose_profile(machine, func, args):
         machine.memory.write(SCRATCH, testmem.build(profile, func["addr"]))
         machine.memory.begin_journal()
         try:
-            machine.call(func["addr"], args)
+            machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
             return profile
         except Exception:
             continue
@@ -494,7 +720,7 @@ def run_cases(func, machine, arg_sets, profile, evaluate):
         # made correct derivations look wrong.
         machine.memory.begin_journal()
         try:
-            expected = machine.call(func["addr"], args)
+            expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
         except Exception:
             machine.memory.rollback()
             machine.memory.end_journal()
@@ -502,13 +728,16 @@ def run_cases(func, machine, arg_sets, profile, evaluate):
         effects = _journal_effects(machine.memory)
         machine.memory.rollback()
 
+        # The candidate runs inside the replay journal: one that calls an underived
+        # function writes memory as it goes - the callee must see the stores made
+        # before it - rather than handing back a list of writes at the end.
+        machine.memory.begin_journal()
         try:
             actual, writes = evaluate(args)
         except Exception:
             machine.memory.rollback()
             machine.memory.end_journal()
             return "failed", tested
-        machine.memory.begin_journal()
         try:
             for address, value, size in writes:
                 machine.memory.write_int(address, value, size)
@@ -531,12 +760,13 @@ def run_cases(func, machine, arg_sets, profile, evaluate):
     return "ok", tested
 
 
-def _attempt(func, image, base, machine, read, known, rejected):
+def _attempt(func, image, base, machine, read, known, rejected, parameters=None):
     """Try to derive and verify one function; returns the record or None."""
     if True:
         try:
             derivation = derive_paths(
-                image, base, func["addr"], func["end"], known=known
+                image, base, func["addr"], func["end"], known=known,
+                parameters=parameters,
             )
         except Unsupported:
             rejected["unsupported"] += 1
@@ -552,6 +782,8 @@ def _attempt(func, image, base, machine, read, known, rejected):
         arg_sets, profile = plan
 
         def evaluate(args):
+            if derivation.has_calls:
+                return derivation.run(args, Execution(machine, VERIFY_BUDGET)), []
             return derivation.evaluate(args, read), derivation.evaluate_stores(args, read)
 
         outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate)
@@ -621,54 +853,71 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     lines.append("")
 
     global _TYPING
-    used_types = set()
-    used_globals, used_objects, used_global_arrays = set(), set(), set()
-    for func, derivation, tested, strong in verified:
-        # Arguments can appear only inside a store, so the signature has to be
-        # built from the stores as well as the return expression - otherwise the
-        # emitted function references an undeclared parameter and will not compile.
-        args = sorted(derivation_args(derivation))
-        _TYPING = typed.Typing(catalog, func["addr"]) if catalog is not None else None
-        params = []
-        for index in args:
-            root = catalog.slot(func["addr"], index) if catalog is not None else None
-            if index >= FLOAT_ARG_BASE:
-                # A float argument holds a 32-bit pattern, but is declared u64 like
-                # every other value: as a u32, `farg0 & 0x7FFFFFFF` + -127 wrapped
-                # at 32 bits instead of going negative, and the compiled check
-                # caught two functions disagreeing.
-                params.append("u64 %s" % arg_name(index))
-            elif root is None:
-                params.append("u64 %s" % arg_name(index))
-            else:
-                _TYPING.used.add(root)
-                params.append("%s %s" % (catalog.names[root], arg_name(index)))
-        params = ", ".join(params) or "void"
-        try:
-            body_lines = render_body(derivation)
-        except Unsupported:
+    # Signatures first: a function that calls another emitted function calls it by
+    # its real signature, so every one must be known before any body is rendered.
+    # A body that cannot be rendered drops its function, which can change how its
+    # callers render, so this repeats until nothing more is dropped.
+    emitted = list(verified)
+    while True:
+        _SIGNATURES.clear()
+        _EXTERNS.clear()
+        headers = {}
+        for func, derivation, _tested, _strong in emitted:
+            headers[func["addr"]] = _signature(func, derivation, catalog)
+            _SIGNATURES[func["addr"]] = (headers[func["addr"]][0], headers[func["addr"]][2])
+        used_types = set()
+        used_globals, used_objects, used_global_arrays = set(), set(), set()
+        chunks, dropped = [], []
+        for func, derivation, tested, strong in emitted:
+            return_type, params, _indices, roots = headers[func["addr"]]
+            _TYPING = typed.Typing(catalog, func["addr"]) if catalog is not None else None
+            if _TYPING is not None:
+                _TYPING.used |= roots
+            try:
+                body_lines = render_body(derivation)
+            except Unsupported:
+                dropped.append(func["addr"])
+                _TYPING = None
+                continue
+            if _TYPING is not None:
+                used_types |= _TYPING.used
+                used_globals |= _TYPING.used_globals
+                used_objects |= _TYPING.used_objects
+                used_global_arrays |= _TYPING.used_global_arrays
             _TYPING = None
-            continue
-        if _TYPING is not None:
-            used_types |= _TYPING.used
-            used_globals |= _TYPING.used_globals
-            used_objects |= _TYPING.used_objects
-            used_global_arrays |= _TYPING.used_global_arrays
-        _TYPING = None
-        lines.append(
-            "/* 0x%08X  %d caller(s)  %s */"
-            % (
-                func["addr"],
-                len(func["callers"]),
-                ("differential-tested over %d argument sets" % tested) if strong
-                else "argument-independent: derived, test near-vacuous",
-            )
-        )
-        return_type = "void" if derivation.is_void else "s32"
-        lines.append("%s func_%08X(%s) {" % (return_type, func["addr"], params))
-        lines.extend("    " + line for line in body_lines)
-        lines.append("}")
+            chunk = [
+                "/* 0x%08X  %d caller(s)  %s */"
+                % (
+                    func["addr"],
+                    len(func["callers"]),
+                    ("differential-tested over %d argument sets" % tested) if strong
+                    else "argument-independent: derived, test near-vacuous",
+                ),
+                "%s func_%08X(%s) {" % (return_type, func["addr"], params),
+            ]
+            chunk += ["    " + line for line in body_lines]
+            chunk += ["}", ""]
+            chunks.append(chunk)
+        if not dropped:
+            break
+        emitted = [item for item in emitted if item[0]["addr"] not in dropped]
+
+    lines.append("/* Every emitted function, so they can call one another in any order. */")
+    for func, _derivation, _tested, _strong in emitted:
+        return_type, params, _indices, _roots = headers[func["addr"]]
+        lines.append("%s func_%08X(%s);" % (return_type, func["addr"], params))
+    lines.append("")
+    if _EXTERNS:
+        lines.append("/* Functions not derived yet. The code above calls them as the original")
+        lines.append("   did; a port links them to their eventual reconstructions, and the")
+        lines.append("   compiled check links them to the original machine code. */")
+        for address, indices in sorted(_EXTERNS.items()):
+            params = ", ".join("u64 %s" % arg_name(index) for index in indices) or "void"
+            lines.append("u64 func_%08X(%s);  /* not yet derived */" % (address, params))
         lines.append("")
+    for chunk in chunks:
+        lines.extend(chunk)
+    verified = emitted
 
     lines.append("}  // namespace generated")
     text = "\n".join(lines) + "\n"
@@ -685,6 +934,29 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
         os.remove(types_path)
     print("wrote %s (%d functions, signature self-check passed)"
           % (path, len(verified)))
+    return verified
+
+
+def _signature(func, derivation, catalog):
+    """(return type, parameter text, parameter indices, types used) for a function."""
+    # Arguments can appear only inside a store, so the signature has to be built
+    # from the stores as well as the return expression - otherwise the emitted
+    # function references an undeclared parameter and will not compile.
+    indices = sorted(derivation_args(derivation))
+    params, roots = [], set()
+    for index in indices:
+        root = catalog.slot(func["addr"], index) if catalog is not None else None
+        if index >= FLOAT_ARG_BASE or root is None:
+            # A float argument holds a 32-bit pattern, but is declared u64 like
+            # every other value: as a u32, `farg0 & 0x7FFFFFFF` + -127 wrapped at
+            # 32 bits instead of going negative, and the compiled check caught two
+            # functions disagreeing.
+            params.append("u64 %s" % arg_name(index))
+        else:
+            roots.add(root)
+            params.append("%s %s" % (catalog.names[root], arg_name(index)))
+    return_type = "void" if derivation.is_void else "s32"
+    return return_type, ", ".join(params) or "void", tuple(indices), roots
 
 
 def check_signatures(text: str) -> None:
@@ -737,7 +1009,7 @@ def check_compiled(verified, machine, out_dir: str, database: dict, catalog=None
         print("compiled check SKIPPED: %s" % exc)
         print("  the emitted source has NOT been run; only its trees were verified")
         return verified
-    compiled = cppcheck.CompiledFunctions(dll, machine.memory)
+    compiled = cppcheck.CompiledFunctions(dll, machine)
 
     kept, disagreed, untestable = [], [], []
     for item in verified:
@@ -834,7 +1106,7 @@ def main(argv=None) -> int:
             catalog = structs.Catalog(graph)
             print("recovered %d struct types in %.1fs (%d fields added from derivations)"
                   % (len(catalog.roots), time.time() - started, evidence))
-        emit(verified, args.emit, database["meta"]["source"], catalog)
+        verified = emit(verified, args.emit, database["meta"]["source"], catalog)
         if not args.no_compile:
             verified = check_compiled(verified, machine, args.emit, database, catalog)
     if args.csv:
@@ -844,6 +1116,11 @@ def main(argv=None) -> int:
         if os.path.exists(args.csv):
             with open(args.csv, newline="", encoding="utf-8") as handle:
                 for row in csv.DictReader(handle):
+                    # Generated rows are rebuilt from this run, so a function that
+                    # is no longer derived - or no longer emitted - does not keep a
+                    # status it can no longer show evidence for.
+                    if row["source"] == "src/generated/accessors.cpp":
+                        continue
                     existing[int(row["address"], 16)] = row
         for func, _derivation, tested, strong in verified:
             if func["addr"] in existing:
