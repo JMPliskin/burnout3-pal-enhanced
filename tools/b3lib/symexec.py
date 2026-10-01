@@ -79,6 +79,8 @@ class Load(Expr):
     signed: bool
 
     def render(self) -> str:
+        if _LOAD_RENDERER is not None:
+            return _LOAD_RENDERER(self, lambda node: node.render())
         kind = {1: "s8" if self.signed else "u8",
                 2: "s16" if self.signed else "u16",
                 4: "s32" if self.signed else "u32",
@@ -98,6 +100,8 @@ PRECEDENCE = {
     "add": 9, "sub": 9,
     "shl": 8, "shr": 8, "sar": 8,
     "ltu": 6, "lt": 6,
+    # Relational and equality operators, for branch conditions.
+    "eq": 5, "ne": 5, "le": 6, "gt": 6, "ge": 6,
     "and": 4,
     "xor": 3,
     "or": 2,
@@ -106,9 +110,46 @@ ATOM_PRECEDENCE = 12
 
 
 def _precedence(expr: "Expr") -> int:
-    if isinstance(expr, (Binary, Compare)):
+    if isinstance(expr, (Binary, Compare, Predicate)):
         return PRECEDENCE[expr.op]
     return ATOM_PRECEDENCE
+
+
+# How a Load is rendered varies by consumer: the default prints a pointer cast,
+# while the C++ emitter prints a Read* helper call. Everything *else* about
+# rendering - precedence, parenthesisation - must not vary, so it lives here once
+# and the Load form is the only hook. An earlier version duplicated the whole
+# renderer in the emitter, and the two drifted: a clarity rule added here never
+# reached the generated source.
+_LOAD_RENDERER = None
+
+
+def set_load_renderer(renderer):
+    """Install a custom Load renderer; returns the previous one.
+
+    `renderer(node, render_child)` returns the text for a Load node, where
+    `render_child(expr)` renders a subexpression at lowest precedence.
+    """
+    global _LOAD_RENDERER
+    previous = _LOAD_RENDERER
+    _LOAD_RENDERER = renderer
+    return previous
+
+
+class load_renderer:
+    """Context manager form of `set_load_renderer`."""
+
+    def __init__(self, renderer):
+        self._renderer = renderer
+        self._previous = None
+
+    def __enter__(self):
+        self._previous = set_load_renderer(self._renderer)
+        return self
+
+    def __exit__(self, *exc):
+        set_load_renderer(self._previous)
+        return False
 
 
 def _wrap(child: "Expr", limit: int) -> str:
@@ -130,13 +171,21 @@ class Binary(Expr):
 
     def render(self) -> str:
         level = PRECEDENCE[self.op]
+        left = _wrap(self.left, level)
+        # `a - b << 4` is valid C and means `(a - b) << 4`, but almost nobody reads
+        # it that way, so an arithmetic operand of a shift gets parenthesised even
+        # though precedence does not require it. Redundant parentheses cannot change
+        # meaning; a misread can.
+        # `_wrap` leaves an add/sub unparenthesised here because precedence allows
+        # it, so wrapping unconditionally cannot double up. Testing the rendered
+        # text for a leading "(" would be wrong: `(a << 3) - b` starts with one
+        # without being parenthesised as a whole.
+        if self.op in ("shl", "shr", "sar") and isinstance(self.left, Binary):
+            if self.left.op in ("add", "sub"):
+                left = "(%s)" % left
         # The right operand of a left-associative operator needs a parenthesis at
         # equal precedence too, or `a - (b - c)` would print as `a - b - c`.
-        return "%s %s %s" % (
-            _wrap(self.left, level),
-            self._SYMBOL[self.op],
-            _wrap(self.right, level + 1),
-        )
+        return "%s %s %s" % (left, self._SYMBOL[self.op], _wrap(self.right, level + 1))
 
     def evaluate(self, args, read) -> int:
         a = self.left.evaluate(args, read)
@@ -183,6 +232,34 @@ class Compare(Expr):
         return 1 if _signed(a) < _signed(b) else 0
 
 
+@dataclasses.dataclass(frozen=True)
+class Predicate(Expr):
+    """A branch condition, evaluated with signed comparison as MIPS does."""
+
+    op: str  # eq ne lt le gt ge
+    left: Expr
+    right: Expr
+
+    _SYMBOL = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}
+
+    def render(self) -> str:
+        return "%s %s %s" % (
+            _wrap(self.left, 7), self._SYMBOL[self.op], _wrap(self.right, 7)
+        )
+
+    def evaluate(self, args, read) -> int:
+        a = _signed(self.left.evaluate(args, read))
+        b = _signed(self.right.evaluate(args, read))
+        return {
+            "eq": a == b, "ne": a != b, "lt": a < b,
+            "le": a <= b, "gt": a > b, "ge": a >= b,
+        }[self.op]
+
+    def negate(self) -> "Predicate":
+        opposite = {"eq": "ne", "ne": "eq", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le"}
+        return Predicate(opposite[self.op], self.left, self.right)
+
+
 def _signed(value: int) -> int:
     value &= MASK64
     return value - (1 << 64) if value & (1 << 63) else value
@@ -194,7 +271,13 @@ def _sign32(value: int) -> int:
 
 
 def simplify(expr: Expr) -> Expr:
-    """Fold constants and drop identities, so the output reads like source."""
+    """Fold constants and drop identities, so the output reads like source.
+
+    Every rule here preserves meaning exactly.  The derived code is
+    differential-tested against the original, so an over-eager rule shows up as a
+    disagreement rather than as quietly wrong source - which is why it is safe to
+    simplify for readability at all.
+    """
     if isinstance(expr, Binary):
         left, right = simplify(expr.left), simplify(expr.right)
         if isinstance(left, Const) and isinstance(right, Const):
@@ -207,11 +290,39 @@ def simplify(expr: Expr) -> Expr:
             return left
         if isinstance(left, Const) and left.value == 0 and expr.op in ("add", "or", "xor"):
             return right
+        # Collapse a chain of constant offsets: (x + c1) + c2 becomes x + (c1 + c2).
+        # These arise constantly from `lui`/`addiu` pairs feeding a further offset,
+        # and leaving them unfolded prints addresses as unreadable sums.
+        if (
+            expr.op == "add"
+            and isinstance(right, Const)
+            and isinstance(left, Binary)
+            and left.op == "add"
+            and isinstance(left.right, Const)
+        ):
+            return simplify(
+                Binary("add", left.left, Const((left.right.value + right.value) & MASK64))
+            )
         return Binary(expr.op, left, right)
     if isinstance(expr, Load):
         return Load(simplify(expr.address), expr.size, expr.signed)
     if isinstance(expr, Compare):
         return Compare(expr.op, simplify(expr.left), simplify(expr.right))
+    if isinstance(expr, Predicate):
+        left, right = simplify(expr.left), simplify(expr.right)
+        # `slt` followed by `bne ..., $zero` is how a compiler spells a plain
+        # comparison, and printing it as `(a < b) ? 1 : 0 != 0` hides that. The
+        # 0/1 result of a Compare is never anything else, so testing it against
+        # zero is exactly the comparison itself, or its negation.
+        if isinstance(left, Compare) and isinstance(right, Const) and right.value == 0:
+            inner = Predicate(
+                "lt" if left.op in ("lt", "ltu") else left.op, left.left, left.right
+            )
+            if expr.op == "ne":
+                return inner
+            if expr.op == "eq":
+                return inner.negate()
+        return Predicate(expr.op, left, right)
     return expr
 
 

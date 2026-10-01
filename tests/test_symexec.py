@@ -53,10 +53,27 @@ class TestRenderingPrecedence(unittest.TestCase):
         expr = Binary("add", Binary("shl", Arg(1), Const(2)), Arg(0))
         self.assertEqual(expr.render(), "(arg1 << 2) + arg0")
 
-    def test_addition_inside_shift_needs_no_parentheses(self):
-        # `+` already binds tighter than `<<`, so this one is unambiguous.
+    def test_arithmetic_inside_shift_is_parenthesised_for_clarity(self):
+        """`a + 4 << 2` is valid C meaning `(a + 4) << 2`, but reads wrong.
+
+        Precedence does not require the parentheses here - `+` binds tighter than
+        `<<` - so these are deliberately redundant. Redundant parentheses cannot
+        change meaning, whereas a misreading can, and this form appears constantly
+        in derived index arithmetic.
+        """
         expr = Binary("shl", Binary("add", Arg(0), Const(4)), Const(2))
-        self.assertEqual(expr.render(), "arg0 + 4 << 2")
+        self.assertEqual(expr.render(), "(arg0 + 4) << 2")
+
+    def test_nested_shift_inside_subtraction_inside_shift(self):
+        """The case that exposed a bad guard.
+
+        An earlier version skipped wrapping when the rendered left operand already
+        started with "(" - but `(a << 3) - b` starts with a parenthesis without
+        being parenthesised as a whole, so the outer shift was left ambiguous.
+        """
+        inner = Binary("sub", Binary("shl", Arg(0), Const(3)), Arg(1))
+        expr = Binary("shl", inner, Const(4))
+        self.assertEqual(expr.render(), "((arg0 << 3) - arg1) << 4")
 
     def test_right_operand_of_subtraction_is_parenthesised(self):
         """`a - (b - c)` must keep its parentheses, or it becomes `a - b - c`."""
@@ -199,6 +216,49 @@ class TestEmitterSelfCheck(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             self.check(bad)
+
+class TestRendererIsNotDuplicated(unittest.TestCase):
+    """The emitter must reuse the one renderer, not keep a copy of it.
+
+    derive.py originally reimplemented the precedence logic so it could print
+    Read* helper calls instead of pointer casts. The two copies drifted: a clarity
+    rule added to symexec never reached the generated source, so the emitted C
+    differed from what these tests were checking. The Load form is now the only
+    thing the emitter overrides, and this pins that down.
+    """
+
+    def setUp(self):
+        from derive import render_cpp
+
+        self.render_cpp = render_cpp
+
+    def _sample(self):
+        # Deliberately exercises the clarity rule and a nested load.
+        inner = Binary("sub", Binary("shl", Arg(0), Const(3)), Arg(1))
+        return Load(Binary("shl", inner, Const(2)), 4, True)
+
+    def test_only_the_load_form_differs(self):
+        expr = self._sample()
+        default = expr.render()
+        emitted = self.render_cpp(expr)
+        self.assertIn("*(s32*)", default)
+        self.assertIn("ReadS32", emitted)
+        # Strip the differing load syntax; the remaining structure must be identical.
+        self.assertEqual(
+            default.replace("*(s32*)(", "<L>").replace(")", "", 1),
+            emitted.replace("ReadS32(", "<L>").replace(")", "", 1),
+        )
+
+    def test_emitter_keeps_the_clarity_parentheses(self):
+        """The rule added in symexec has to show up in the generated source."""
+        emitted = self.render_cpp(self._sample())
+        self.assertIn("((arg0 << 3) - arg1) << 2", emitted)
+
+    def test_load_renderer_is_restored_afterwards(self):
+        """The hook must not leak, or later default rendering changes silently."""
+        expr = self._sample()
+        self.render_cpp(expr)
+        self.assertIn("*(s32*)", expr.render())
 
 
 if __name__ == "__main__":

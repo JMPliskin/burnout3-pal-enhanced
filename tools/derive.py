@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from b3lib.elf import ElfFile
 from b3lib.emu import EmulationError, Machine
+from b3lib.paths import PathDerivation, derive_paths
 from b3lib.symexec import (
     Arg,
     Binary,
@@ -41,12 +42,13 @@ from b3lib.symexec import (
     Const,
     Derivation,
     Load,
+    Predicate,
     Unsupported,
-    derive as derive_expression,
+    load_renderer,
     simplify,
 )
 
-MAX_INSTRUCTIONS = 12
+MAX_INSTRUCTIONS = 24
 SCRATCH = 0x01800000
 SCRATCH_SIZE = 0x20000
 ARG_SETS = 8
@@ -69,40 +71,96 @@ def used_args(expr) -> set:
         return {expr.index}
     if isinstance(expr, Load):
         return used_args(expr.address)
-    if isinstance(expr, (Binary, Compare)):
+    if isinstance(expr, (Binary, Compare, Predicate)):
         return used_args(expr.left) | used_args(expr.right)
     return set()
 
 
+def derivation_args(derivation) -> set:
+    """Every argument a derivation mentions, across conditions and stores.
+
+    Missing any of these produces a signature that does not declare a parameter the
+    body uses, so this has to consider path conditions too - not just the returned
+    expression.
+    """
+    args = set()
+    for path in derivation.paths:
+        args |= used_args(path.expression)
+        for predicate in path.conditions:
+            args |= used_args(predicate)
+        for store in path.stores:
+            args |= used_args(store.address)
+            args |= used_args(store.value)
+    return args
+
+
+def _render_load_as_helper(node, render_child) -> str:
+    """Render a Load as a Read* helper call rather than a pointer cast."""
+    reader = READERS.get((node.size, node.signed))
+    if reader is None:
+        raise Unsupported("no reader for %d-byte load" % node.size)
+    return "%s(%s)" % (reader, render_child(node.address))
+
+
 def render_cpp(expr) -> str:
-    """Render an expression using the Read* helpers instead of pointer casts."""
-    expr = simplify(expr)
+    """Render an expression using the Read* helpers instead of pointer casts.
 
-    def walk(node, limit=0) -> str:
-        if isinstance(node, Load):
-            reader = READERS.get((node.size, node.signed))
-            if reader is None:
-                raise Unsupported("no reader for %d-byte load" % node.size)
-            return "%s(%s)" % (reader, walk(node.address))
-        if isinstance(node, Arg):
-            return "arg%d" % node.index
-        if isinstance(node, Const):
-            return node.render()
-        if isinstance(node, Binary):
-            from b3lib.symexec import PRECEDENCE
+    This deliberately reuses the one renderer in symexec rather than reimplementing
+    it. An earlier version had its own copy of the precedence logic, and the two
+    drifted: a clarity rule added to symexec never reached the generated source, so
+    the emitted C differed from what the tests were checking.
+    """
+    with load_renderer(_render_load_as_helper):
+        return simplify(expr).render()
 
-            level = PRECEDENCE[node.op]
-            left = walk(node.left, level)
-            right = walk(node.right, level + 1)
-            text = "%s %s %s" % (left, Binary._SYMBOL[node.op], right)
-            return "(%s)" % text if level < limit else text
-        if isinstance(node, Compare):
-            left = walk(node.left, 7)
-            right = walk(node.right, 7)
-            return "(%s < %s) ? 1 : 0" % (left, right)
-        raise Unsupported("cannot render %r" % type(node).__name__)
 
-    return walk(expr)
+def render_path_body(path, prefix: str) -> list:
+    """Render one path's statements: stores, then the return.
+
+    Every expression on a path was derived against memory as it stood on entry, so
+    the returned value and each store's operands are captured into locals *before*
+    any write lands. Emitting the writes first inverts a read-modify-write, which
+    is precisely what an increment is.
+    """
+    value = render_cpp(path.expression)
+    if not path.stores:
+        return ["return %s;" % value]
+
+    for store in path.stores:
+        if store.size not in WRITERS:
+            raise Unsupported("no writer for %d-byte store" % store.size)
+
+    lines = [
+        "/* Captured before any store: every expression below refers to",
+        "   memory as it stood on entry. */",
+        "const s32 %sresult = %s;" % (prefix, value),
+    ]
+    for index, store in enumerate(path.stores):
+        lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
+        lines.append("const u64 %sval%d = %s;" % (prefix, index, render_cpp(store.value)))
+    for index, store in enumerate(path.stores):
+        lines.append("%s(%saddr%d, %sval%d);" % (WRITERS[store.size], prefix, index, prefix, index))
+    lines.append("return %sresult;" % prefix)
+    return lines
+
+
+def render_body(derivation) -> list:
+    """Render a whole derivation as C++ statement lines, without indentation."""
+    if derivation.is_straight_line:
+        return render_path_body(derivation.paths[0], "")
+
+    lines = []
+    for index, path in enumerate(derivation.paths[:-1]):
+        condition = " && ".join(
+            "(%s)" % render_cpp(predicate) for predicate in path.conditions
+        )
+        lines.append("if (%s) {" % condition)
+        lines.extend("    " + line for line in render_path_body(path, "p%d_" % index))
+        lines.append("}")
+    # The final path is the fall-through: its conditions are the negation of every
+    # branch above, so restating them would be redundant and could drift.
+    lines.extend(render_path_body(derivation.paths[-1], "end_"))
+    return lines
 
 
 def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
@@ -117,7 +175,7 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         if func["size"] // 4 > MAX_INSTRUCTIONS or not func["has_return"]:
             continue
         try:
-            derivation = derive_expression(image, base, func["addr"], func["end"])
+            derivation = derive_paths(image, base, func["addr"], func["end"])
         except Unsupported:
             rejected["unsupported"] += 1
             continue
@@ -184,10 +242,10 @@ def collect(database: dict, image: bytes, base: int, machine: Machine) -> tuple:
         # exercises one input eight times, and calling that "verified over 8 sets"
         # would inflate the figure. Those are still derived and almost certainly
         # right, but the evidence is weaker, so they land a tier lower.
-        argument_dependent = bool(used_args(derivation.expression))
-        for store in derivation.stores:
-            if used_args(store.address) or used_args(store.value):
-                argument_dependent = True
+        # A branching function is argument-dependent if any of its path conditions
+        # mentions an argument, even when every returned value is constant: the
+        # test then genuinely exercised different routes.
+        argument_dependent = bool(derivation_args(derivation))
         verified.append((func, derivation, tested, argument_dependent))
     return verified, rejected
 
@@ -223,19 +281,10 @@ def emit(verified, out_dir: str, source_name: str) -> None:
         # Arguments can appear only inside a store, so the signature has to be
         # built from the stores as well as the return expression - otherwise the
         # emitted function references an undeclared parameter and will not compile.
-        args = set(used_args(derivation.expression))
-        for store in derivation.stores:
-            args |= used_args(store.address)
-            args |= used_args(store.value)
-        args = sorted(args)
+        args = sorted(derivation_args(derivation))
         params = ", ".join("u32 arg%d" % i for i in args) or "void"
         try:
-            body = render_cpp(derivation.expression)
-            for store in derivation.stores:
-                if store.size not in WRITERS:
-                    raise Unsupported("no writer for %d-byte store" % store.size)
-                render_cpp(store.address)
-                render_cpp(store.value)
+            body_lines = render_body(derivation)
         except Unsupported:
             continue
         lines.append(
@@ -248,22 +297,7 @@ def emit(verified, out_dir: str, source_name: str) -> None:
             )
         )
         lines.append("s32 func_%08X(%s) {" % (func["addr"], params))
-        if derivation.stores:
-            # Every expression was derived against memory as it stood on entry, so
-            # the values have to be captured *before* any write lands. Emitting the
-            # stores first would change the meaning whenever a function reads and
-            # writes the same location - which is exactly what an increment does.
-            lines.append("    /* Captured before any store: the derived expressions")
-            lines.append("       all refer to memory as it was on entry. */")
-            lines.append("    const s32 result = %s;" % body)
-            for index, store in enumerate(derivation.stores):
-                lines.append("    const u32 addr%d = %s;" % (index, render_cpp(store.address)))
-                lines.append("    const u64 val%d = %s;" % (index, render_cpp(store.value)))
-            for index, store in enumerate(derivation.stores):
-                lines.append("    %s(addr%d, val%d);" % (WRITERS[store.size], index, index))
-            lines.append("    return result;")
-        else:
-            lines.append("    return %s;" % body)
+        lines.extend("    " + line for line in body_lines)
         lines.append("}")
         lines.append("")
 
@@ -343,11 +377,16 @@ def main(argv=None) -> int:
         verified, key=lambda item: -len(item[0]["callers"])
     )[: args.limit]:
         try:
-            body = render_cpp(derivation.expression)
+            body_lines = render_body(derivation)
         except Unsupported:
             continue
-        print("  0x%08X (%3d callers)  return %s;"
-              % (func["addr"], len(func["callers"]), body[:78]))
+        # A branching function prints as several statements; collapse it to one
+        # line here so the summary stays scannable, and note the path count.
+        summary = " ".join(line.strip() for line in body_lines
+                           if not line.strip().startswith(("/*", "memory as")))
+        shape = "" if derivation.is_straight_line else " [%d paths]" % len(derivation.paths)
+        print("  0x%08X (%3d callers)%s  %s"
+              % (func["addr"], len(func["callers"]), shape, summary[:96]))
 
     if args.emit:
         emit(verified, args.emit, database["meta"]["source"])
