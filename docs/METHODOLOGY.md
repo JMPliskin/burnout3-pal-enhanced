@@ -108,6 +108,34 @@ Two honesty rules apply to that output:
   verified but no struct types are recovered yet, and a descriptive name invented now
   would read as a finding later.
 
+### The emitted source is compiled and run too
+
+Verifying a derivation means evaluating its expression tree. What ships is the C++
+that tree is rendered to, and for a long time nothing checked that the two agree.
+They did not. The renderer printed signed and unsigned comparisons identically, and
+C++ promotion rules quietly narrowed 64-bit register arithmetic: `ReadU8(p) << 24`
+was an `int` shift, and 419 shifts in the file were undefined behaviour. It all
+compiled without a single error.
+
+So `derive.py --emit` now compiles the generated file with MSVC (`/O2`, so the
+optimiser gets its chance to exploit undefined behaviour) into a library with a
+dispatch table, and runs every function on the same cases its derivation was
+verified on, with memory routed back to the interpreter
+(`tools/b3lib/cppcheck.py`). A function whose compiled form disagrees is dropped
+and the file re-emitted. Where no compiler is installed the check says it was
+skipped; it never passes by default.
+
+The rules the rendering follows to make this hold:
+
+* Every value is a `u64` register image. Arguments are `u64`, and the `Read*`
+  helpers return the loaded value already sign- or zero-extended.
+* Operators whose meaning depends on width or signedness carry it explicitly:
+  `(s64)` on signed comparisons, `(u64)((s32)x >> n)` for `sra`,
+  `(x & 0xFFFFFFFF) >> n` for `srl`, masked variable shift counts, `1ull` for a
+  shifted literal.
+* Float constants print as exact literals: `FloatBits(-1.0f)`, not `0xBF800000`.
+* The reference EE FPU helpers live in `src/runtime/eefpu.cpp`.
+
 ### Bugs this process caught
 
 Worth listing, because each argues for the approach. None were visible to
@@ -126,6 +154,12 @@ inspection, and several were in the *verifier* rather than the reconstruction:
 * An overflowing `mul.s` crashed the interpreter outright, because the EE's FPU is
   not IEEE-754: it has no infinities and saturates to the largest representable
   magnitude. A port must reproduce that rather than "fix" it.
+* `simplify` turned an unsigned `sltu` tested against zero into a signed comparison.
+  The tests passed only small positive pointers, so both readings agreed.
+* Branching void functions were emitted without a `return;` at the end of each
+  early path, so it fell through into the later paths' stores. Their multi-store
+  paths were also not captured before writing. Compiling and running the output
+  found 12 such functions, all of which had passed as trees.
 
 ## The original toolchain, for the record
 

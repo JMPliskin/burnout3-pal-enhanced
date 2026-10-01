@@ -124,7 +124,7 @@ PRECEDENCE = {
     "add": 9, "sub": 9,
     "shl": 8, "shr": 8, "sar": 8,
     "dshl": 8, "dshr": 8, "dsar": 8,
-    "ltu": 6, "lt": 6,
+    "ltu": 6, "lt": 6, "geu": 6,
     # Relational and equality operators, for branch conditions.
     "eq": 5, "ne": 5, "le": 6, "gt": 6, "ge": 6,
     "and": 4,
@@ -135,9 +135,112 @@ ATOM_PRECEDENCE = 12
 
 
 def _precedence(expr: "Expr") -> int:
+    # Arithmetic shifts render as a parenthesised cast expression, which is an atom.
+    if isinstance(expr, Binary) and expr.op in ("sar", "dsar"):
+        return ATOM_PRECEDENCE
     if isinstance(expr, (Binary, Compare, Predicate)):
         return PRECEDENCE[expr.op]
+    if isinstance(expr, Select):
+        return 1
     return ATOM_PRECEDENCE
+
+
+# -- C++ value semantics -------------------------------------------------
+#
+# The rendered text is C++, and it has to mean what the tree means, not merely
+# look like it. The tree computes on 64-bit register values, so the rendering
+# makes every value a `u64`: arguments are declared `u64`, the Read* helpers
+# return the register image of the loaded value (sign- or zero-extended), and
+# the operators whose meaning depends on width or signedness carry explicit
+# casts. Left to C++'s own promotion rules, `ReadU8(p) << 24` is an `int` shift
+# and a signed compare of two `u64`s is unsigned - an earlier version emitted
+# exactly that, and only compiling and running the output exposed it.
+
+def fits_u32(expr: "Expr") -> bool:
+    """True when the value is provably below 2**32."""
+    if isinstance(expr, Const):
+        return (expr.value & MASK64) <= MASK32
+    if isinstance(expr, Load):
+        return not expr.signed and expr.size <= 4
+    if isinstance(expr, (Compare, Predicate, FloatPredicate, Not1, FloatOp,
+                         IntToFloat, FloatToInt)):
+        return True
+    if isinstance(expr, Binary):
+        if expr.op == "shr":
+            return True
+        if expr.op == "and":
+            return fits_u32(expr.left) or fits_u32(expr.right)
+        if expr.op in ("or", "xor"):
+            return fits_u32(expr.left) and fits_u32(expr.right)
+        if expr.op == "dshr" and isinstance(expr.right, Const):
+            return (expr.right.value & 0x3F) >= 32
+    if isinstance(expr, Select):
+        return fits_u32(expr.when_true) and fits_u32(expr.when_false)
+    return False
+
+
+def nonnegative(expr: "Expr") -> bool:
+    """True when the value is below 2**63, so signed and unsigned order agree."""
+    if fits_u32(expr):
+        return True
+    if isinstance(expr, Const):
+        return _signed(expr.value) >= 0
+    if isinstance(expr, Binary):
+        if expr.op == "dshr" and isinstance(expr.right, Const):
+            return (expr.right.value & 0x3F) >= 1
+        if expr.op == "and":
+            return nonnegative(expr.left) or nonnegative(expr.right)
+        if expr.op in ("or", "xor"):
+            return nonnegative(expr.left) and nonnegative(expr.right)
+    return False
+
+
+def _signed_literal(value: int) -> str:
+    """A constant spelled so C++ gives it its signed 64-bit value.
+
+    Negative values are written in decimal on purpose: `-0x80000000` is unsigned
+    in C++ (the hex literal is an `unsigned int` and negating it wraps), whereas
+    the decimal literal 2147483648 is a `long long`.
+    """
+    s = _signed(value)
+    if s == -(1 << 63):
+        return "INT64_MIN"
+    if s < 0:
+        return "-%d" % -s if s <= -256 else str(s)
+    return Const(value).render()
+
+
+def _signed_operand(expr: "Expr", limit: int) -> str:
+    """Render an operand of a signed 64-bit comparison."""
+    if isinstance(expr, Const):
+        return _signed_literal(expr.value)
+    if isinstance(expr, SignExtend32):
+        # (s32) already yields the right signed value; widening it to u64 and back
+        # would only add noise.
+        return "(s32)%s" % _wrap(expr.value, ATOM_PRECEDENCE)
+    return "(s64)%s" % _wrap(expr, ATOM_PRECEDENCE)
+
+
+def _render_order(op: str, left: "Expr", right: "Expr", symbol: str, level: int) -> str:
+    """Render a relational comparison with the signedness the tree specifies."""
+    if op in ("eq", "ne", "ltu", "geu") or (nonnegative(left) and nonnegative(right)):
+        return "%s %s %s" % (_wrap(left, level), symbol, _wrap(right, level + 1))
+    return "%s %s %s" % (
+        _signed_operand(left, level), symbol, _signed_operand(right, level + 1)
+    )
+
+
+def _shift_amount(amount: "Expr", bits: int) -> str:
+    """The shift count, masked as the hardware masks it.
+
+    A C++ shift by the operand width or more is undefined, while the R5900 simply
+    uses the low 5 (word) or 6 (doubleword) bits, so a variable count is masked
+    explicitly and a constant one is reduced before printing.
+    """
+    mask = bits - 1
+    if isinstance(amount, Const):
+        return str(amount.value & mask)
+    return "(%s & %d)" % (amount.render(), mask)
 
 
 # How a Load is rendered varies by consumer: the default prints a pointer cast,
@@ -197,6 +300,28 @@ class Binary(Expr):
 
     def render(self) -> str:
         level = PRECEDENCE[self.op]
+        if self.op in ("sar", "dsar"):
+            # An arithmetic shift needs a signed operand of the right width: `sra`
+            # shifts the low word as an s32, `dsra` the whole register as an s64.
+            # The result is widened back to the u64 every value is.
+            cast, bits = ("s32", 32) if self.op == "sar" else ("s64", 64)
+            return "(u64)((%s)%s >> %s)" % (
+                cast, _wrap(self.left, ATOM_PRECEDENCE), _shift_amount(self.right, bits)
+            )
+        if self.op in ("shl", "shr", "dshl", "dshr"):
+            bits = 32 if self.op in ("shl", "shr") else 64
+            left = _wrap(self.left, level)
+            if isinstance(self.left, Const):
+                # A bare literal is an `int`, and `1 << 31` on an int overflows.
+                left = "%sull" % Const(self.left.value & MASK64).render().lstrip("-")
+                if _signed(self.left.value) < 0:
+                    left = "0x%Xull" % (self.left.value & MASK64)
+            if isinstance(self.left, Binary) and self.left.op in ("add", "sub"):
+                left = "(%s)" % left
+            if self.op == "shr" and not fits_u32(self.left):
+                # `srl` shifts the low word only; the upper half must not shift in.
+                left = "(%s & 0xFFFFFFFF)" % self.left.render()
+            return "%s %s %s" % (left, self._SYMBOL[self.op], _shift_amount(self.right, bits))
         left = _wrap(self.left, level)
         # `a - b << 4` is valid C and means `(a - b) << 4`, but almost nobody reads
         # it that way, so an arithmetic operand of a shift gets parenthesised even
@@ -254,10 +379,10 @@ class Compare(Expr):
     right: Expr
 
     def render(self) -> str:
-        symbol = {"ltu": "<", "lt": "<"}[self.op]
-        level = PRECEDENCE[self.op]
-        return "(%s %s %s) ? 1 : 0" % (
-            _wrap(self.left, level), symbol, _wrap(self.right, level + 1)
+        # `slt`/`sltu` produce 0 or 1 as a register value; the cast keeps it a u64
+        # so a later `<< 31` cannot become a signed int overflow.
+        return "(u64)(%s)" % _render_order(
+            self.op, self.left, self.right, "<", PRECEDENCE[self.op]
         )
 
     def evaluate(self, args, read) -> int:
@@ -301,6 +426,28 @@ def _float_to_bits(value: float) -> int:
     return struct.unpack("<I", struct.pack("<f", value))[0]
 
 
+def _float_operand(expr: "Expr") -> str:
+    """Render a float operand; a constant becomes a float literal.
+
+    `FloatBits(-1.0f)` says what `0xBF800000` means. The literal is the shortest
+    decimal that converts back to exactly the same bits, so nothing is lost; a
+    NaN or infinity pattern has no literal and stays hexadecimal.
+    """
+    if not isinstance(expr, Const):
+        return expr.render()
+    bits = expr.value & MASK32
+    value = _bits_to_float(bits)
+    if value != value or value in (float("inf"), float("-inf")):
+        return "0x%08X" % bits
+    for digits in range(1, 10):
+        text = "%.*g" % (digits, value)
+        if struct.unpack("<I", struct.pack("<f", float(text)))[0] == bits:
+            break
+    if not any(c in text for c in ".en"):
+        text += ".0"
+    return "FloatBits(%sf)" % text
+
+
 @dataclasses.dataclass(frozen=True)
 class FloatOp(Expr):
     """A single-precision arithmetic operation over bit-pattern operands."""
@@ -318,8 +465,8 @@ class FloatOp(Expr):
     def render(self) -> str:
         name = self._NAMES[self.op]
         if self.right is None:
-            return "%s(%s)" % (name, self.left.render())
-        return "%s(%s, %s)" % (name, self.left.render(), self.right.render())
+            return "%s(%s)" % (name, _float_operand(self.left))
+        return "%s(%s, %s)" % (name, _float_operand(self.left), _float_operand(self.right))
 
     def evaluate(self, args, read) -> int:
         a = _bits_to_float(self.left.evaluate(args, read))
@@ -355,6 +502,8 @@ class IntToFloat(Expr):
     value: Expr
 
     def render(self) -> str:
+        if isinstance(self.value, Const):
+            return "FloatFromInt(%d)" % _sign32(self.value.value)
         return "FloatFromInt(%s)" % self.value.render()
 
     def evaluate(self, args, read) -> int:
@@ -368,7 +517,7 @@ class FloatToInt(Expr):
     value: Expr
 
     def render(self) -> str:
-        return "IntFromFloat(%s)" % self.value.render()
+        return "IntFromFloat(%s)" % _float_operand(self.value)
 
     def evaluate(self, args, read) -> int:
         return int(_bits_to_float(self.value.evaluate(args, read))) & MASK32
@@ -388,7 +537,7 @@ class FloatPredicate(Expr):
         if self.op == "false":
             return "false"
         return "FloatValue(%s) %s FloatValue(%s)" % (
-            self.left.render(), self._SYMBOL[self.op], self.right.render()
+            _float_operand(self.left), self._SYMBOL[self.op], _float_operand(self.right)
         )
 
     def evaluate(self, args, read) -> int:
@@ -429,7 +578,7 @@ class SignExtend32(Expr):
     value: Expr
 
     def render(self) -> str:
-        return "(s32)%s" % _wrap(self.value, ATOM_PRECEDENCE)
+        return "(u64)(s32)%s" % _wrap(self.value, ATOM_PRECEDENCE)
 
     def evaluate(self, args, read) -> int:
         return _sign32(self.value.evaluate(args, read)) & MASK64
@@ -478,27 +627,32 @@ class Select(Expr):
 class Predicate(Expr):
     """A branch condition, evaluated with signed comparison as MIPS does."""
 
-    op: str  # eq ne lt le gt ge
+    op: str  # eq ne lt le gt ge, plus ltu geu for an unsigned `sltu` result
     left: Expr
     right: Expr
 
-    _SYMBOL = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}
+    _SYMBOL = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">=",
+               "ltu": "<", "geu": ">="}
 
     def render(self) -> str:
-        return "%s %s %s" % (
-            _wrap(self.left, 7), self._SYMBOL[self.op], _wrap(self.right, 7)
-        )
+        return _render_order(self.op, self.left, self.right, self._SYMBOL[self.op], 7)
 
     def evaluate(self, args, read) -> int:
-        a = _signed(self.left.evaluate(args, read))
-        b = _signed(self.right.evaluate(args, read))
+        a = self.left.evaluate(args, read)
+        b = self.right.evaluate(args, read)
+        if self.op == "ltu":
+            return (a & MASK64) < (b & MASK64)
+        if self.op == "geu":
+            return (a & MASK64) >= (b & MASK64)
+        a, b = _signed(a), _signed(b)
         return {
             "eq": a == b, "ne": a != b, "lt": a < b,
             "le": a <= b, "gt": a > b, "ge": a >= b,
         }[self.op]
 
     def negate(self) -> "Predicate":
-        opposite = {"eq": "ne", "ne": "eq", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le"}
+        opposite = {"eq": "ne", "ne": "eq", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le",
+                    "ltu": "geu", "geu": "ltu"}
         return Predicate(opposite[self.op], self.left, self.right)
 
 
@@ -654,9 +808,10 @@ def simplify(expr: Expr) -> Expr:
         # 0/1 result of a Compare is never anything else, so testing it against
         # zero is exactly the comparison itself, or its negation.
         if isinstance(left, Compare) and isinstance(right, Const) and right.value == 0:
-            inner = Predicate(
-                "lt" if left.op in ("lt", "ltu") else left.op, left.left, left.right
-            )
+            # The Compare's signedness carries over. An earlier version mapped `ltu`
+            # to a signed `lt` here, which the tests missed because they only ever
+            # passed small positive pointers.
+            inner = Predicate(left.op, left.left, left.right)
             if expr.op == "ne":
                 return inner
             if expr.op == "eq":

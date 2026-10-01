@@ -119,47 +119,70 @@ def render_cpp(expr) -> str:
         return simplify(expr).render()
 
 
-def render_path_body(path, prefix: str) -> list:
+def _store_value(store) -> str:
+    """A store's value, with a constant narrowed to the width actually written."""
+    value = simplify(store.value)
+    if isinstance(value, Const) and store.size < 8:
+        return Const(value.value & ((1 << (8 * store.size)) - 1)).render()
+    return render_cpp(value)
+
+
+def _result(expression) -> str:
+    """A returned value; a constant is shown as the s32 the caller receives."""
+    value = simplify(expression)
+    if isinstance(value, Const):
+        low = value.value & 0xFFFFFFFF
+        return str(low - (1 << 32) if low & 0x80000000 else low)
+    return render_cpp(value)
+
+
+def render_path_body(path, prefix: str, final: bool = True) -> list:
     """Render one path's statements: stores, then the return.
 
     Every expression on a path was derived against memory as it stood on entry, so
     the returned value and each store's operands are captured into locals *before*
     any write lands. Emitting the writes first inverts a read-modify-write, which
     is precisely what an increment is.
+
+    A path that is not the last must end in a return, void or not: the paths are
+    emitted as a sequence of `if` blocks, and one that does not leave falls through
+    into the stores of the paths after it. Void paths used to omit it - and the
+    capture too - and both were found by compiling and running the output.
     """
-    if path.expression is None:
-        # Void: the stores *are* the function, so there is nothing to capture into a
-        # temporary first and nothing to return.
-        if not path.stores:
-            return ["/* no observable effect */"]
-        for store in path.stores:
-            if store.size not in WRITERS:
-                raise Unsupported("no writer for %d-byte store" % store.size)
-        return [
-            "%s(%s, %s);"
-            % (WRITERS[store.size], render_cpp(store.address), render_cpp(store.value))
-            for store in path.stores
-        ]
-
-    value = render_cpp(path.expression)
-    if not path.stores:
-        return ["return %s;" % value]
-
     for store in path.stores:
         if store.size not in WRITERS:
             raise Unsupported("no writer for %d-byte store" % store.size)
 
+    if path.expression is None and len(path.stores) <= 1:
+        # A single store reads memory before writing anything, so there is nothing
+        # it could disturb and no need for temporaries.
+        lines = [
+            "%s(%s, %s);"
+            % (WRITERS[store.size], render_cpp(store.address), _store_value(store))
+            for store in path.stores
+        ]
+        if not final:
+            lines.append("return;")
+        return lines or ["/* no observable effect */"]
+
+    if path.expression is not None and not path.stores:
+        return ["return %s;" % _result(path.expression)]
+
     lines = [
         "/* Captured before any store: every expression below refers to",
         "   memory as it stood on entry. */",
-        "const s32 %sresult = %s;" % (prefix, value),
     ]
+    if path.expression is not None:
+        lines.append("const s32 %sresult = %s;" % (prefix, _result(path.expression)))
     for index, store in enumerate(path.stores):
         lines.append("const u32 %saddr%d = %s;" % (prefix, index, render_cpp(store.address)))
-        lines.append("const u64 %sval%d = %s;" % (prefix, index, render_cpp(store.value)))
+        lines.append("const u64 %sval%d = %s;" % (prefix, index, _store_value(store)))
     for index, store in enumerate(path.stores):
         lines.append("%s(%saddr%d, %sval%d);" % (WRITERS[store.size], prefix, index, prefix, index))
-    lines.append("return %sresult;" % prefix)
+    if path.expression is not None:
+        lines.append("return %sresult;" % prefix)
+    elif not final:
+        lines.append("return;")
     return lines
 
 
@@ -174,7 +197,9 @@ def render_body(derivation) -> list:
             "(%s)" % render_cpp(predicate) for predicate in path.conditions
         )
         lines.append("if (%s) {" % condition)
-        lines.extend("    " + line for line in render_path_body(path, "p%d_" % index))
+        lines.extend(
+            "    " + line for line in render_path_body(path, "p%d_" % index, final=False)
+        )
         lines.append("}")
     # The final path is the fall-through: its conditions are the negation of every
     # branch above, so restating them would be redundant and could drift.
@@ -278,6 +303,87 @@ def _choose_profile(machine, func, args):
     return None
 
 
+def test_plan(func, machine):
+    """The argument sets and memory profile a function is tested with, or None.
+
+    Separate from the test itself so that anything else that must face exactly the
+    same cases - the compiled C++ check - can ask for them.
+    """
+    # Seeded from the address so argument sets are stable across passes: a
+    # function retried in a later pass must be tested on the same inputs, or a
+    # pass-dependent result would be impossible to reproduce.
+    local_rng = random.Random(func["addr"])
+    arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
+    arg_sets.append((SCRATCH, SCRATCH + 16, SCRATCH + 32, SCRATCH + 48))
+    profile = _choose_profile(machine, func, arg_sets[0])
+    if profile is None:
+        return None
+    return arg_sets, profile
+
+
+def run_cases(func, machine, arg_sets, profile, evaluate):
+    """Run the original and a candidate on every case; return (outcome, tested).
+
+    `evaluate(args)` returns the candidate's (result, writes) for one case, with
+    memory as the original saw it on entry; result is None for a void function and
+    writes are (address, value, size) triples. The outcome is "ok", "mismatch" or
+    "failed" (the case could not be run at all).
+    """
+    tested = 0
+    for case, args in enumerate(arg_sets):
+        # Fresh memory of the chosen shape for every case, so the test varies
+        # memory as well as arguments. Written outside the journal on purpose:
+        # the journal does not nest, and this region is rewritten before every
+        # case anyway, so nothing leaks between them.
+        machine.memory.end_journal()
+        machine.memory.write(SCRATCH, testmem.build(profile, func["addr"] + case))
+        # A function with stores is only verified if its *memory effects* match
+        # too, so let the original run under a journal, and then check that
+        # applying the candidate's stores to the same starting state reproduces
+        # exactly what the original produced.
+        # Journalling rather than snapshotting a region: these functions write
+        # to globals well outside the scratch area, and restoring only scratch
+        # left those changes in place - which both corrupted later cases and
+        # made correct derivations look wrong.
+        machine.memory.begin_journal()
+        try:
+            expected = machine.call(func["addr"], args)
+        except Exception:
+            machine.memory.rollback()
+            machine.memory.end_journal()
+            return "failed", tested
+        effects = _journal_effects(machine.memory)
+        machine.memory.rollback()
+
+        try:
+            actual, writes = evaluate(args)
+        except Exception:
+            machine.memory.rollback()
+            machine.memory.end_journal()
+            return "failed", tested
+        machine.memory.begin_journal()
+        try:
+            for address, value, size in writes:
+                machine.memory.write_int(address, value, size)
+        except Exception:
+            machine.memory.rollback()
+            machine.memory.end_journal()
+            return "failed", tested
+        replayed = _journal_effects(machine.memory)
+        machine.memory.rollback()
+        machine.memory.end_journal()
+
+        tested += 1
+        # A void function leaves whatever the caller had in $v0, so there is no
+        # return value to compare - only its memory effects carry meaning.
+        # Comparing $v0 anyway registered 175 correct derivations as failures.
+        if actual is not None and expected != actual:
+            return "mismatch", tested
+        if replayed != effects:
+            return "mismatch", tested
+    return "ok", tested
+
+
 def _attempt(func, image, base, machine, read, known, rejected):
     """Try to derive and verify one function; returns the record or None."""
     if True:
@@ -292,84 +398,23 @@ def _attempt(func, image, base, machine, read, known, rejected):
             rejected["unsupported"] += 1
             return None
 
-        # Seeded from the address so argument sets are stable across passes: a
-        # function retried in a later pass must be tested on the same inputs, or a
-        # pass-dependent result would be impossible to reproduce.
-        local_rng = random.Random(func["addr"])
-        arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
-        arg_sets.append((SCRATCH, SCRATCH + 16, SCRATCH + 32, SCRATCH + 48))
-
-        profile = _choose_profile(machine, func, arg_sets[0])
-        if profile is None:
+        plan = test_plan(func, machine)
+        if plan is None:
             rejected["untestable"] += 1
             return None
+        arg_sets, profile = plan
 
-        tested = 0
-        failed = False
-        mismatched = False
-        for case, args in enumerate(arg_sets):
-            # Fresh memory of the chosen shape for every case, so the test varies
-            # memory as well as arguments. Written outside the journal on purpose:
-            # the journal does not nest, and this region is rewritten before every
-            # case anyway, so nothing leaks between them.
-            machine.memory.end_journal()
-            machine.memory.write(SCRATCH, testmem.build(profile, func["addr"] + case))
-            # A function with stores is only verified if its *memory effects* match
-            # too, so snapshot the scratch region, let the original run, and then
-            # check that applying the derived stores to the same starting state
-            # reproduces exactly what the original produced.
-            # Journalling rather than snapshotting a region: these functions write
-            # to globals well outside the scratch area, and restoring only scratch
-            # left those changes in place - which both corrupted later cases and
-            # made correct derivations look wrong.
-            machine.memory.begin_journal()
-            try:
-                expected = machine.call(func["addr"], args)
-            except (EmulationError, Exception):
-                machine.memory.rollback()
-                failed = True
-                break
-            effects = _journal_effects(machine.memory)
-            machine.memory.rollback()
+        def evaluate(args):
+            return derivation.evaluate(args, read), derivation.evaluate_stores(args, read)
 
-            try:
-                actual = derivation.evaluate(args, read)
-                writes = derivation.evaluate_stores(args, read)
-            except Exception:
-                machine.memory.rollback()
-                failed = True
-                break
-            machine.memory.begin_journal()
-            for address, value, size in writes:
-                try:
-                    machine.memory.write_int(address, value, size)
-                except Exception:
-                    failed = True
-                    break
-            replayed = _journal_effects(machine.memory)
-            machine.memory.rollback()
-            machine.memory.end_journal()
-            if failed:
-                break
-
-            tested += 1
-            # A void function leaves whatever the caller had in $v0, so there is no
-            # return value to compare - only its memory effects carry meaning.
-            # Comparing $v0 anyway registered 175 correct derivations as failures.
-            if actual is not None and expected != actual:
-                mismatched = True
-                break
-            if replayed != effects:
-                mismatched = True
-                break
-        machine.memory.end_journal()
+        outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate)
         # A disagreement and an untestable function are different findings and are
         # counted once each. An earlier version fell through from one to the other
         # and so reported every disagreement twice.
-        if mismatched:
+        if outcome == "mismatch":
             rejected["mismatch"] += 1
             return None
-        if failed or tested < 5:
+        if outcome == "failed" or tested < 5:
             rejected["untestable"] += 1
             return None
 
@@ -410,6 +455,13 @@ def emit(verified, out_dir: str, source_name: str) -> None:
     lines.append("")
     lines.append('#include "b3/generated.h"')
     lines.append("")
+    lines.append("/* Every value here is a u64 register image, so narrowing one to a u32 address")
+    lines.append("   or float word is the intended truncation, not an accident; MSVC warns about")
+    lines.append("   each of the thousands of them. */")
+    lines.append("#ifdef _MSC_VER")
+    lines.append("#pragma warning(disable : 4244)")
+    lines.append("#endif")
+    lines.append("")
     lines.append("namespace generated {")
     lines.append("")
 
@@ -418,7 +470,7 @@ def emit(verified, out_dir: str, source_name: str) -> None:
         # built from the stores as well as the return expression - otherwise the
         # emitted function references an undeclared parameter and will not compile.
         args = sorted(derivation_args(derivation))
-        params = ", ".join("u32 arg%d" % i for i in args) or "void"
+        params = ", ".join("u64 arg%d" % i for i in args) or "void"
         try:
             body_lines = render_body(derivation)
         except Unsupported:
@@ -477,6 +529,58 @@ def check_signatures(text: str) -> None:
         )
 
 
+def check_compiled(verified, machine, out_dir: str, database: dict) -> list:
+    """Compile the emitted C++, run it on every function's cases, keep what agrees.
+
+    The derivations were verified as expression trees; this verifies the source
+    that is actually shipped. A function whose compiled form disagrees with the
+    original is dropped and the file re-emitted without it - a disagreement here
+    is a rendering bug, and counting the function anyway would certify source
+    nobody tested.
+    """
+    from b3lib import cppcheck
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    work = os.path.join(root, "build", "cppcheck")
+    runtime = [os.path.join(root, "src", "runtime", "eefpu.cpp")]
+    try:
+        dll, _functions = cppcheck.build(
+            os.path.join(out_dir, "accessors.cpp"), runtime,
+            os.path.join(root, "include"), work,
+        )
+    except cppcheck.CompilerUnavailable as exc:
+        print("compiled check SKIPPED: %s" % exc)
+        print("  the emitted source has NOT been run; only its trees were verified")
+        return verified
+    compiled = cppcheck.CompiledFunctions(dll, machine.memory)
+
+    kept, disagreed, untestable = [], [], []
+    for item in verified:
+        func = item[0]
+        plan = test_plan(func, machine)
+        if plan is None:
+            untestable.append(func["addr"])
+            continue
+        outcome, tested = run_cases(
+            func, machine, plan[0], plan[1], compiled.evaluator(func["addr"])
+        )
+        if outcome == "ok":
+            kept.append(item)
+        elif outcome == "mismatch":
+            disagreed.append(func["addr"])
+        else:
+            untestable.append(func["addr"])
+    print("compiled C++ run against the original: %d agree, %d disagree, %d could not run"
+          % (len(kept), len(disagreed), len(untestable)))
+    for address in disagreed[:20]:
+        print("  disagrees: func_%08X" % address)
+    for address in untestable[:20]:
+        print("  could not run: func_%08X" % address)
+    if len(kept) != len(verified):
+        emit(kept, out_dir, database["meta"]["source"])
+    return kept
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("database")
@@ -484,6 +588,8 @@ def main(argv=None) -> int:
     parser.add_argument("--emit", help="directory to write generated C++ into")
     parser.add_argument("--csv", help="append verified rows to this status table")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--no-compile", action="store_true",
+                        help="skip compiling the emitted C++ and running it")
     args = parser.parse_args(argv)
 
     with open(args.database, encoding="utf-8") as handle:
@@ -531,6 +637,8 @@ def main(argv=None) -> int:
 
     if args.emit:
         emit(verified, args.emit, database["meta"]["source"])
+        if not args.no_compile:
+            verified = check_compiled(verified, machine, args.emit, database)
     if args.csv:
         import csv
 

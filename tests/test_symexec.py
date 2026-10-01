@@ -19,7 +19,10 @@ from b3lib.symexec import (
     Binary,
     Compare,
     Const,
+    FloatPredicate,
     Load,
+    Predicate,
+    SignExtend32,
     Unsupported,
     derive,
     simplify,
@@ -99,6 +102,73 @@ class TestRenderingPrecedence(unittest.TestCase):
             "and", Binary("or", Arg(0), Arg(1)), Binary("or", Arg(2), Arg(3))
         )
         self.assertEqual(expr.render(), "(arg0 | arg1) & (arg2 | arg3)")
+
+
+class TestCppValueSemantics(unittest.TestCase):
+    """The rendering must mean, in C++, what the tree means.
+
+    Every value is a u64 register image. These cover the operators whose C++
+    meaning depends on operand types, each of which the emitter once got wrong in
+    a way that compiled cleanly. The end-to-end check is tools/b3lib/cppcheck.py,
+    which compiles the output and runs it; these pin the individual rules.
+    """
+
+    def test_signed_comparison_casts_operands(self):
+        expr = Predicate("lt", Arg(0), Arg(1))
+        self.assertEqual(expr.render(), "(s64)arg0 < (s64)arg1")
+
+    def test_unsigned_comparison_has_no_casts(self):
+        self.assertEqual(Predicate("ltu", Arg(0), Arg(1)).render(), "arg0 < arg1")
+
+    def test_comparison_of_nonnegative_values_needs_no_cast(self):
+        expr = Predicate("lt", Load(Arg(0), 1, False), Const(10))
+        self.assertEqual(expr.render(), "*(u8*)(arg0) < 10")
+
+    def test_negative_constant_in_signed_comparison_is_decimal(self):
+        """`-0x80000000` is unsigned in C++; the decimal spelling is not."""
+        expr = Predicate("ge", Arg(0), Const((-0x80000000) & ((1 << 64) - 1)))
+        self.assertEqual(expr.render(), "(s64)arg0 >= -2147483648")
+
+    def test_unsigned_compare_stays_unsigned_through_simplify(self):
+        """`sltu` tested against zero must not become a signed `<`."""
+        expr = simplify(Predicate("ne", Compare("ltu", Arg(0), Arg(1)), Const(0)))
+        self.assertEqual(expr.op, "ltu")
+        big = 0xFFFFFFFFFFFFFFFF
+        self.assertTrue(expr.evaluate((1, big, 0, 0), None))
+        self.assertEqual(expr.negate().op, "geu")
+
+    def test_word_arithmetic_shift_narrows_to_s32(self):
+        expr = Binary("sar", Arg(0), Const(3))
+        self.assertEqual(expr.render(), "(u64)((s32)arg0 >> 3)")
+
+    def test_logical_word_shift_masks_upper_half(self):
+        self.assertEqual(Binary("shr", Arg(0), Const(4)).render(),
+                         "(arg0 & 0xFFFFFFFF) >> 4")
+        # An operand already below 2**32 needs no mask.
+        self.assertEqual(Binary("shr", Load(Arg(0), 2, False), Const(4)).render(),
+                         "*(u16*)(arg0) >> 4")
+
+    def test_variable_shift_count_is_masked(self):
+        self.assertEqual(Binary("shl", Arg(0), Arg(1)).render(), "arg0 << (arg1 & 31)")
+        self.assertEqual(Binary("dshl", Arg(0), Arg(1)).render(), "arg0 << (arg1 & 63)")
+
+    def test_shifted_literal_is_64_bit(self):
+        """`1 << 31` on an int overflows; the literal must be a u64."""
+        self.assertEqual(Binary("shl", Const(1), Arg(1)).render(), "1ull << (arg1 & 31)")
+
+    def test_sign_extension_widens_back_to_u64(self):
+        self.assertEqual(SignExtend32(Arg(0)).render(), "(u64)(s32)arg0")
+
+    def test_set_less_than_is_a_u64(self):
+        self.assertEqual(Compare("ltu", Arg(0), Arg(1)).render(), "(u64)(arg0 < arg1)")
+
+    def test_float_constant_renders_as_exact_literal(self):
+        minus_one = FloatPredicate("eq", Const(0xBF800000), Arg(0))
+        self.assertEqual(minus_one.render(), "FloatValue(FloatBits(-1.0f)) == FloatValue(arg0)")
+        # A value with no short exact decimal still round-trips.
+        odd = FloatPredicate("eq", Const(0x3DCCCCCD), Arg(0))
+        literal = odd.render().split("FloatBits(")[1].split("f)")[0]
+        self.assertEqual(struct.unpack("<I", struct.pack("<f", float(literal)))[0], 0x3DCCCCCD)
 
 
 class TestEvaluation(unittest.TestCase):
@@ -405,6 +475,31 @@ class TestVoidFunctions(unittest.TestCase):
 
         with self.assertRaises(Unsupported):
             self._derive(words)
+
+    def test_branching_void_paths_return_and_capture(self):
+        """Each non-final void path must leave, and capture before it writes.
+
+        The paths are emitted as a run of `if` blocks. Without a `return;` an
+        early path fell through into the later paths' stores, and without the
+        capture a second store re-read memory the first had just overwritten.
+        Both compiled cleanly; running the compiled code caught them.
+        """
+        from derive import render_body
+        from b3lib.paths import Path, PathDerivation
+        from b3lib.symexec import Predicate, Store
+
+        first = Path(
+            (Predicate("eq", Arg(1), Const(0)),), None,
+            (Store(Arg(0), Const(1), 4), Store(Arg(2), Load(Arg(0), 4, False), 4)),
+        )
+        rest = Path((Predicate("ne", Arg(1), Const(0)),), None, (Store(Arg(0), Const(2), 4),))
+        lines = render_body(PathDerivation(0, (first, rest)))
+        block = lines[: lines.index("}")]
+        self.assertIn("    return;", block)
+        captured = [i for i, line in enumerate(block) if "const u64" in line]
+        written = [i for i, line in enumerate(block) if "Write32(" in line]
+        self.assertLess(max(captured), min(written))
+
 
 class TestInterproceduralInlining(unittest.TestCase):
     """Calls are inlined by substituting the caller's arguments into the callee.
