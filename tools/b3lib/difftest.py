@@ -106,6 +106,44 @@ class StringFunctionTester:
         return report
 
 
+class IntFunctionTester:
+    """Differential-tests a function whose arguments and result are integers.
+
+    This is the simplest and strongest case: with no memory involved, the corpus
+    can cover the input space densely rather than sampling it, so a passing result
+    is close to exhaustive for single-argument bit functions.
+    """
+
+    def __init__(self, machine: Machine) -> None:
+        self.machine = machine
+
+    def run(self, name: str, address: int, reference, cases) -> Report:
+        report = Report(name=name, address=address)
+        for case in cases:
+            args = case if isinstance(case, tuple) else (case,)
+            try:
+                actual = self.machine.call(address, args)
+            except EmulationError as exc:
+                report.errors.append("args %r: %s" % (args, exc))
+                continue
+            expected = reference(*args)
+            report.cases_run += 1
+            if actual != expected:
+                report.mismatches.append(Mismatch(args, expected, actual))
+        return report
+
+
+def bit_corpus() -> list:
+    """Inputs chosen to exercise every bit position and the usual edge values."""
+    cases = [0, 1, 2, 3, 0xFFFFFFFF, 0x80000000, 0x55555555, 0xAAAAAAAA]
+    cases += [1 << i for i in range(32)]
+    # Two bits set, so a routine that stops at the first cannot pass by accident.
+    cases += [(1 << i) | (1 << ((i + 7) % 32)) for i in range(32)]
+    rng = random.Random(777)
+    cases += [rng.getrandbits(32) for _ in range(120)]
+    return cases
+
+
 class StringTransformTester:
     """Differential-tests a function that writes into a destination buffer.
 

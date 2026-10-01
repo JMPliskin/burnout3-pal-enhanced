@@ -17,7 +17,13 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 ELF_PATH = os.path.join(ROOT, "extracted", "SLUS_210.50")
 
-from b3lib.difftest import StringFunctionTester, StringTransformTester, ascii_corpus
+from b3lib.difftest import (
+    IntFunctionTester,
+    StringFunctionTester,
+    StringTransformTester,
+    ascii_corpus,
+    bit_corpus,
+)
 from b3lib.vdbhash import crc32_textbook, hash_name
 
 # Addresses of the original functions under test.
@@ -25,6 +31,7 @@ ADDR_STRLEN = 0x001273E8
 ADDR_STRCPY = 0x001272D0
 ADDR_STRCAT = 0x00126EC8
 ADDR_HASH_NAME = 0x0021BFA0
+ADDR_FIND_FIRST_SET = 0x00299550
 
 
 @unittest.skipUnless(os.path.exists(ELF_PATH), "extracted executable not present")
@@ -38,6 +45,7 @@ class TestAgainstOriginal(unittest.TestCase):
         cls.machine = Machine.from_elf(cls.elf)
         cls.tester = StringFunctionTester(cls.machine)
         cls.transform = StringTransformTester(cls.machine)
+        cls.ints = IntFunctionTester(cls.machine)
         cls.corpus = ascii_corpus()
         # The transform tester multiplies each case by prefixes and alignments, so
         # a trimmed corpus keeps the suite fast without losing the edge cases.
@@ -116,6 +124,34 @@ class TestAgainstOriginal(unittest.TestCase):
                 name, address, reference, [b"", b"a", b"x" * 17, b"y" * 33]
             )
             self.assertTrue(report.passed, report.detail())
+
+
+    def test_find_first_set(self):
+        """func_00299550 returns the index of the lowest set bit.
+
+        Covered densely rather than sampled: every single-bit value, every
+        two-bit pair, the usual edge words, and 120 deterministic random ones.
+        """
+        def reference(value):
+            value &= 0xFFFFFFFF
+            for index in range(32):
+                if value & (1 << index):
+                    return index
+            return 32
+
+        report = self.ints.run(
+            "runtime::FindFirstSet", ADDR_FIND_FIRST_SET, reference, bit_corpus()
+        )
+        self.assertTrue(report.passed, report.detail())
+        self.assertGreaterEqual(report.cases_run, 150)
+
+    def test_find_first_set_returns_32_for_zero(self):
+        """The zero case is the one a port is most likely to get wrong.
+
+        A `ctz` intrinsic is undefined for zero, so substituting one would change
+        behaviour here. Pinning the sentinel down stops that happening quietly.
+        """
+        self.assertEqual(self.machine.call(ADDR_FIND_FIRST_SET, (0,)), 32)
 
     def test_hash_name_matches_reconstruction(self):
         """valuedb::HashName reproduces func_0021BFA0 exactly."""
