@@ -58,29 +58,74 @@ that fails loudly on a regression - which untested source does not.
 
 ## Verifying a reconstruction
 
-`tools/b3lib/difftest.py` provides the harness; `tests/test_reconstruction.py`
-holds the actual comparisons, so `python -m unittest discover -s tests` re-checks
-every verified function.
+`tools/b3lib/difftest.py` provides the harness for hand-written reconstructions, and
+`tests/test_reconstruction.py` holds those comparisons, so
+`python -m unittest discover -s tests` re-checks every verified function.
+
+`tools/derive.py` does the same job for derived functions, in bulk.
 
 The interpreter covers the integer core, the common loads and stores, 128-bit
-`lq`/`sq`, a COP1 single-precision subset, and the MMI operations the string
-routines need - enough to execute **80.9%** of the 9,163 discovered functions.
-Anything outside that raises `UnsupportedInstruction` rather than being
+`lq`/`sq`, COP1 single precision, and the MMI operations the string routines need -
+enough to execute **84.8%** of the 9,163 discovered functions. `$gp` is seeded with
+`0x004E8670`, recovered from the startup code, since many functions reach globals
+through it.
+
+Anything outside the subset raises `UnsupportedInstruction` rather than being
 approximated: an interpreter that quietly guessed would manufacture exactly the
 false confidence this exists to remove. The remaining gap is almost entirely VU0
 macro mode.
 
-### A bug this caught
+### What is actually compared
 
-The first run of the `strlen` test disagreed with `len()` on every single input.
-The cause was in the interpreter, not the reconstruction: `beql`/`bnel` are
-*branch-likely* instructions, which **nullify their delay slot when not taken**,
-and `step()` was executing it unconditionally. In this function that clobbered the
-`0x80808080...` mask register and advanced the scan cursor early.
+Return values are not sufficient. The harness compares **memory effects** too,
+because a derivation with the right return value and the wrong store address would
+otherwise pass.
 
-Worth noting as the justification for the whole approach: that bug was invisible
-to the disassembler, to the tests over synthetic encodings, and to inspection. It
-took running real code against a known-good reference to surface it.
+Writes are journalled and rolled back rather than restored from a snapshot of a
+chosen region. These functions write to globals far outside any such region, and an
+earlier version that snapshotted only a scratch area left those changes in place -
+which corrupted later cases and made correct derivations look wrong. It could
+equally have produced false passes.
+
+Writes into the callee's own stack frame are excluded. The frame is dead the moment
+the function returns, and the original spills registers into it constantly while a
+derived expression writes none, so counting them would fail every function with a
+prologue.
+
+### Automated derivation
+
+Roughly a third of verified functions were not written by hand at all. Small
+branch-free and acyclic functions are derived symbolically, differential-tested, and
+only then emitted as C++ - see [ARCHITECTURE.md](ARCHITECTURE.md). A derivation that
+fails or cannot be executed is dropped rather than emitted with a caveat.
+
+Two honesty rules apply to that output:
+
+* A function counts as `verified` only if the test varied something. A constant or a
+  fixed-global read ignores its arguments, so eight argument sets exercise one input
+  eight times; those land a tier lower.
+* Generated functions keep placeholder `func_XXXXXXXX` names. The behaviour is
+  verified but no struct types are recovered yet, and a descriptive name invented now
+  would read as a finding later.
+
+### Bugs this process caught
+
+Worth listing, because each argues for the approach. None were visible to
+inspection, and several were in the *verifier* rather than the reconstruction:
+
+* `beql`/`bnel` nullify their delay slot when not taken; executing it unconditionally
+  clobbered a mask register in the SIMD `strlen`.
+* Word and doubleword shifts share one mask in the expression model, and the 5-bit
+  one turns a shift of 32 into a shift of zero.
+* `lui` was not sign-extended into the 64-bit register.
+* The verification harness restored only a scratch region, so writes to globals
+  persisted across cases.
+* Journalling then exposed that stack-frame writes must be excluded.
+* Float registers held as host doubles canonicalised NaN payloads, so a `lwc1`/`swc1`
+  copy altered the value. Here the derivation was right and the interpreter wrong.
+* An overflowing `mul.s` crashed the interpreter outright, because the EE's FPU is
+  not IEEE-754: it has no infinities and saturates to the largest representable
+  magnitude. A port must reproduce that rather than "fix" it.
 
 ## The original toolchain, for the record
 

@@ -41,8 +41,14 @@ differential testing against an interpreter as the verification mechanism. See
 * [x] Build the differential-test harness (`tools/b3lib/difftest.py`) and wire it
       into the test suite.
 * [x] First verified functions: `valuedb::StringLength` and `valuedb::HashName`.
-* [ ] Extend interpreter coverage to VU0 macro mode, which is the bulk of the
-      remaining 19%.
+* [x] Automate the mechanical cases: symbolic derivation with differential
+      verification (`symexec.py`, `paths.py`, `derive.py`). 327 functions derived
+      and verified without being written by hand.
+* [ ] Extend interpreter coverage to VU0 macro mode, the bulk of the remaining 15%.
+* [ ] Loop summarisation, or accept that looping functions need hand reconstruction.
+* [ ] Pass float arguments in the harness. Functions taking a float in `$f12` are
+      currently refused rather than derived against a zero, which would pass
+      vacuously.
 
 ## Phase 3 - Runtime and library layer
 
@@ -91,5 +97,9 @@ objective way to verify a reconstruction without the original compiler. Phases 3
 are years of incremental function-by-function work. Phase 6 follows from them.
 
 Progress is measured by verified bytes, reported by `tools/progress.py`, and by
-nothing else. Two functions are verified so far - 0.0130% of code bytes - and that
+nothing else. 285 functions are verified so far, 0.5539% of code bytes, and that
 figure is deliberately not flattered by counting untested source.
+
+Most of that came from tooling rather than from reconstructing functions one by one,
+which is the only way the remaining 99% becomes tractable. The limits are now
+concrete: loops, calls into underived functions, and VU0 macro mode.

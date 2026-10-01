@@ -21,9 +21,9 @@ objective way to verify reconstructed functions without the original compiler.
 | Image proven to be MIPS code | 86.2% |
 | VU microcode located | 108,096 bytes (~173 microprograms) |
 | Instructions failing to decode | 0 of 814,598 |
-| Strings / xrefs / pointer tables | 5,556 / 8,159 / 355 |
-| Functions executable in the interpreter | 7,412 (80.9%) |
-| **Verified reconstructions** | **2 functions, 0.0130% of code bytes** |
+| Functions executable in the interpreter | 7,771 (84.8%) |
+| Functions derived and verified automatically | 327 |
+| **Verified reconstructions** | **285 functions, 0.5539% of code bytes** |
 
 See [docs/PROGRESS.md](docs/PROGRESS.md) for live numbers.
 
@@ -96,7 +96,8 @@ python -m unittest discover -s tests -v
 ```
 tools/           analysis toolchain (Python)
   b3lib/         library: iso9660, elf, r5900/vu disassemblers, analysis,
-                 symbols, vdbhash, emu (R5900 interpreter), symexec, difftest
+                 symbols, vdbhash, emu (R5900 interpreter), symexec + paths
+                 (symbolic derivation), difftest
   isotool.py     disc inspection and extraction
   analyze.py     full static-analysis pipeline
   disasm.py      annotated assembly emitter

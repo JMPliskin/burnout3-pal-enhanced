@@ -67,31 +67,95 @@ Two correctness details that cost real debugging:
   because Metrowerks spills callee-saved registers with them. Dropping those bits
   corrupts every restore.
 
-## `symexec.py` and `derive.py` - deriving accessors
+## Deriving functions automatically
 
-Roughly 150 discovered functions are tiny branch-free accessors. Rather than read
-each by hand, `symexec.py` walks one with expressions in the registers instead of
-values and reports what ends up in `$v0`, plus any stores as
-(address, value, size) triples.
+Reading and reconstructing one function at a time does not scale. Three modules
+turn the mechanical cases into a batch process:
 
-`derive.py` then differential-tests each derivation against the original machine
-code - for stores, by snapshotting memory, running the original, and requiring a
-replay of the derived writes to reproduce the same bytes - and emits C++ only for
-derivations that agreed.
+```
+symexec.py   expression model + straight-line symbolic execution
+paths.py     acyclic control flow, the stack frame, memory, call inlining
+derive.py    differential verification and C++ emission
+```
 
-Three traps here are worth recording, because all three produced plausible-looking
-wrong output:
+### `symexec.py` - the expression model
 
-* **Operator precedence.** An expression tree evaluates from its structure, so a
-  rendering bug leaves the arithmetic correct while the printed C means something
-  else: `arg1 << 2 + arg0` is `arg1 << (2 + arg0)` in C. Rendering is
-  precedence-aware and tested.
-* **Store ordering.** Every derived expression refers to memory as it stood on
-  entry, so emitting stores before the return inverts a read-modify-write. Values
-  are captured into temporaries first.
-* **Incomplete signatures.** Parameter lists built from the return expression alone
-  omit arguments used only inside a store. `check_signatures()` now refuses to
-  write source that references an undeclared parameter.
+Registers hold *expressions* instead of values. The tree does two jobs: it renders
+as C for a human, and it evaluates against concrete inputs so the derivation can be
+tested. Both come from the same tree deliberately - a derivation that cannot be
+tested is worth very little.
+
+Floats are modelled as 32-bit **patterns**, not as a separate value domain. That
+mirrors the hardware: a float register holds 32 bits, and `lwc1`/`swc1`/`mtc1`/
+`mfc1` move them without interpreting anything. Interpretation is confined to the
+arithmetic nodes, which is what makes bit moves exact.
+
+Two traversal helpers, `children` and `rebuild`, are the basis of every walk over a
+tree, and they **raise** on an unrecognised node type. That is not pedantry: the
+earlier hand-written versions silently returned nothing for node types added later,
+so arguments nested inside `Not`, `Select` and `SignExtend32` became invisible and
+the emitter produced functions referencing undeclared parameters.
+
+### `paths.py` - control flow, frames, memory
+
+Most small functions have a conditional. Those are derived exactly by enumerating
+every route from entry to a return and recording the branch conditions along each,
+so the function becomes an ordered list of guarded results.
+
+* **Loops and underived calls are refused.** A loop's result depends on a trip count
+  that is not a function of the arguments, so no finite expression describes it.
+* **The stack frame is modelled separately** from real memory, so a prologue's
+  register spills and the matching epilogue reloads cancel instead of looking like
+  writes a caller could observe.
+* **Stores feed an overlay that later loads consult.** Every derived expression
+  refers to memory as it stood on entry, so a setter that returns the field it just
+  wrote would otherwise be derived against stale contents. Where aliasing cannot be
+  ruled out, the function is refused rather than guessed at.
+* **Constant conditions are folded.** A flag stored and immediately loaded back
+  yields a constant-true branch; exploring both sides anyway manufactures a path
+  that can never run, and `select` picks the first path whose conditions hold, so an
+  infeasible path could be chosen.
+* **Derived callees are inlined**, which is why derivation runs to a fixed point -
+  each pass unlocks the callers of what the previous pass proved. Only *verified*
+  callees are offered, so one bad derivation cannot propagate upward.
+
+### `derive.py` - verification and emission
+
+Each derivation is differential-tested against the original machine code before any
+source is written, and only the ones that agreed are emitted.
+
+Memory effects are compared, not just return values. Writes are **journalled and
+rolled back** rather than restored from a snapshot of a chosen region: these
+functions write to globals far outside any such region, and leaving those changes in
+place both corrupted later cases and made correct derivations look wrong. Writes
+into the callee's own frame are excluded from the comparison, since the frame is
+dead on return and the original makes many such writes while a derived expression
+makes none.
+
+A function only counts as `verified` when the test actually varied something. A
+constant or a fixed-global read ignores its arguments, so eight argument sets
+exercise one input eight times; those are recorded a tier lower rather than
+inflating the figure.
+
+### Traps worth knowing about
+
+Every one of these produced plausible-looking wrong output, and none were caught by
+reading the code:
+
+* **Operator precedence.** A tree evaluates from its structure, so a rendering bug
+  leaves the arithmetic right while the printed C means something else:
+  `arg1 << 2 + arg0` is `arg1 << (2 + arg0)` in C.
+* **A duplicated renderer.** The emitter kept its own copy of the precedence logic
+  so it could print `Read*` helpers, and the two drifted. There is now one renderer
+  with the Load form as its only hook.
+* **Store ordering.** Expressions refer to entry-state memory, so emitting stores
+  before the return inverts a read-modify-write.
+* **Shift widths.** Word shifts mask the amount to 5 bits and doubleword shifts to
+  6. One mask for both turns a shift of 32 into a shift of zero.
+* **`lui` sign extension.** The result is sign-extended into the 64-bit register, so
+  `lui 0xFFFF` then `dsrl32 32` is `0xFFFFFFFF`, not 0.
+* **Float bit moves.** Holding float registers as host doubles canonicalises NaN
+  payloads, altering values a copy must preserve.
 
 ## `r5900.py` - the disassembler
 
