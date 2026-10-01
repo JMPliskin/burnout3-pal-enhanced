@@ -61,8 +61,9 @@ one `jr $ra`, no indirect jumps and no internal `jal` target. Two others of
 75,704 and 37,836 bytes share that shape. Roughly 19,000 instructions each, which
 points at aggressive Metrowerks inlining.
 
-The largest non-code spans - `0x004856C8..0x004D3E00` (321 KB) and
-`0x00469D90..0x004843D0` (108 KB) - are the main read-only data blocks.
+The largest non-MIPS span is `0x004856C8..0x004D3E00` (321 KB), the main read-only
+data block. The next largest, `0x00469D90..0x004843D0` (108 KB), is **not** data at
+all but VU microcode - see below.
 
 ## Build toolchain
 
@@ -213,6 +214,44 @@ MIPS code - some of it is not MIPS at all.
 `NFSUNDER.ELF` is the bundled *Need for Speed Underground 2* demo, a different EA
 studio's codebase: it carries no RenderWare `$Id` tags, so it does not share the
 game's middleware.
+
+## VU microcode located in the game executable
+
+Roughly 108 KB of `SLUS_210.50` is **VU microcode**, not data, and had been
+written off as "non-code" because it is not MIPS.
+
+The region is `0x00469D90..0x004843D0` (108,096 bytes). It was found by taking the
+confirmed `.vutext` of `NFSUNDER.ELF` as ground truth rather than guessing at the
+instruction set. VU microcode is stored as 8-byte pairs - a lower instruction then
+an upper one - and two constants are highly distinctive: `0x8000033C` is the lower
+`nop` and `0x000002FF` (with flag bits) the upper `nop`. Every one of the 2,354
+lower-`nop` words in the image falls inside a single cluster spanning that region,
+with none anywhere else.
+
+Comparing the region against the known-good section:
+
+| | lower `nop` | upper `nop` | `E` bits | dominant upper opcode |
+| --- | ---: | ---: | ---: | ---: |
+| `SLUS_210.50` candidate | 17.4% | 27.8% | 173 | `0x3F` (4,681) |
+| `NFSUNDER.ELF` `.vutext` | 26.3% | 43.6% | 16 | `0x3F` (1,238) |
+
+Same signature - opcode `0x3F` dominant, destination masks concentrated on 0, 15
+and 14 - with lower padding density in the game, which is what denser real code
+looks like. The `E` (end) bit marks the last instruction of a microprogram, so the
+game carries roughly **173 VU microprograms** against the demo's 16. That is
+consistent with Burnout 3 pushing most of its geometry work through VU1.
+
+Two consequences:
+
+* The MIPS code-coverage figure is a more complete picture than it looks. A
+  meaningful part of what is not MIPS code is not *meant* to be.
+* Decoding this needs a **separate VU disassembler** - the VU ISA is unrelated to
+  MIPS, with paired upper/lower instruction slots and its own register file. That
+  is a prerequisite for a port, since this is where the geometry pipeline lives.
+
+Exact boundaries are approximate: they come from the `nop` cluster combined with
+the surrounding non-MIPS gap, not from a section header, because the game
+executable has none.
 
 ## Middleware: RenderWare 3.6
 
