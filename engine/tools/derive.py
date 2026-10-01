@@ -943,6 +943,11 @@ def prepare_test_memory(machine, database, image, base, functions, verbose=False
     if verbose:
         print("  seeded %d null global pointers for testing, and %d more found by "
               "running (%.0fs)" % (seeded, found, time.time() - started))
+    # From here on a test that faults on unmapped memory maps the page and runs
+    # again. Only after the discovery above, which finds null pointers by their
+    # faults.
+    machine.memory.page_source = testmem.page_contents
+    machine.map_faults = True
 
 
 def global_pointers(database, image, base) -> set:

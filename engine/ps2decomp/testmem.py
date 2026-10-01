@@ -202,3 +202,18 @@ def discover_null_pointers(machine, functions, is_global, budget: int = 20_000,
         memory.watch_zero = False
         memory.last_zero_read = None
     return seeded
+
+
+def page_contents(page: int) -> bytes:
+    """What a page mapped on demand holds: the "mixed" shape, seeded by its address.
+
+    Pointers into scratch in even words and small integers in odd ones, as the
+    mixed profile has, so code that faulted following a wild pointer finds the
+    kind of memory the tests are built on - and its own page differs from every
+    other page, deterministically.
+    """
+    rng = random.Random(zlib.crc32(page.to_bytes(4, "little")) ^ 0x9A6E)
+    scratch, size = layout.CURRENT.scratch, layout.CURRENT.scratch_size
+    words = [scratch + rng.randrange(0, size - 0x100, 16) if i % 2 == 0
+             else rng.randrange(SMALL_LIMIT) for i in range(0x1000 // 4)]
+    return struct.pack("<%dI" % len(words), *words)

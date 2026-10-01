@@ -203,6 +203,33 @@ class TestWindows(unittest.TestCase):
         self.assertEqual(m.memory.read_int(0x1000A000, 4, False), 0)
 
 
+class TestFaultPages(unittest.TestCase):
+    # lw $t0, 0($a2) ; addiu $t0, $t0, 1 ; sw $t0, 0($a2) ; lw $v0, 0($a0) ; jr $ra ; nop
+    INCREMENT_THEN_LOAD = [0x8CC80000, 0x25080001, 0xACC80000, 0x8C820000, JR_RA, 0]
+    WILD = 0x03000010
+
+    def _machine(self):
+        m = machine(self.INCREMENT_THEN_LOAD)
+        m.memory.page_source = testmem.page_contents
+        m.map_faults = True
+        return m
+
+    def test_a_fault_maps_the_page_and_the_call_runs_again(self):
+        m = self._machine()
+        counter = layout.CURRENT.scratch
+        m.memory.begin_journal()
+        result = m.call(BASE, (self.WILD, 0, counter))
+        expected = struct.unpack_from("<i", testmem.page_contents(self.WILD & ~0xFFF), 0x10)[0]
+        self.assertEqual(result, expected)
+        # The increment before the fault was undone before the rerun: it happened once.
+        self.assertEqual(m.memory.read_int(counter, 4, False), 1)
+
+    def test_without_a_journal_the_fault_stands(self):
+        m = self._machine()
+        with self.assertRaises(EmulationError):
+            m.call(BASE, (self.WILD, 0, layout.CURRENT.scratch))
+
+
 class TestGlobalPointerSeeding(unittest.TestCase):
     def test_only_null_globals_are_seeded_and_into_scratch(self):
         m = machine([0] * 64)

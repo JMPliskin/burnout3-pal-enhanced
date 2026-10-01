@@ -805,6 +805,23 @@ What still blocks lifting is VU0 macro mode (`lqc2`, `qmtc2`, `vadd`...: about 6
 functions). What blocks *testing* lifted functions is the same as for derivation:
 memory faults on test data (2,480) and the instruction budget (1,076).
 
+## Pages mapped on demand
+
+Test data reaches addresses no real program state does: a pointer field of a
+seeded object, an index scaled past the scratch region. Every fault there made a
+function untestable, though it said nothing about the function. A journalled test
+that faults on unmapped memory now undoes its writes, maps the 4 KB page with
+deterministic "mixed" data (pointers into scratch, small integers), and runs
+again. Pages stay mapped, so the derivation, the compiled code and the lifted code
+all read what the original read. Derived and verified: 3,386 -> 3,669 functions
+(10.29% -> 11.48%). Lifted and verified: 4,865 -> 5,401 (32.9% -> 38.3%).
+Machine-checked: 32.0% -> 37.7%.
+
+The cost is time, since functions now run further: a full lift run went from 10
+to 25 minutes. The largest remaining obstacle moved from memory faults to the
+instruction budget (2,023 lifted functions), as loops now reach data that keeps
+them going.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

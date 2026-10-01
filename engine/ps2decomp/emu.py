@@ -79,6 +79,11 @@ def _sign64(value: int) -> int:
     return value - (1 << 64) if value & (1 << 63) else value
 
 
+PAGE_SIZE = 0x1000
+PAGE_MASK = PAGE_SIZE - 1
+# At most this many pages are mapped on demand in one process: 16 MB.
+MAX_PAGES = 4096
+
 # Address windows mapped as plain memory besides main RAM. The scratchpad is real
 # RAM on the console. The hardware registers (DMA, VIF, GIF, timers...) are not,
 # but as plain memory they read zero - idle, done - until written, so code that
@@ -109,6 +114,9 @@ class Memory:
         self.bytes = bytearray(at)
         self.bytes[: len(data)] = data
         self._journal = None
+        # Pages mapped on demand (see map_page), after the windows in the buffer.
+        self.pages = {}
+        self.page_source = None      # page address -> its initial contents
         # When watching, the address of the last word read as zero: what a null
         # pointer dereference most likely loaded its base from (testmem uses it).
         self.watch_zero = False
@@ -121,7 +129,34 @@ class Memory:
         for start, end, at in self.windows:
             if start <= addr and addr + size <= end:
                 return at + addr - start
+        at = self.pages.get(addr & ~PAGE_MASK)
+        if at is not None and (addr & PAGE_MASK) + size <= PAGE_SIZE:
+            return at + (addr & PAGE_MASK)
         raise MemoryFault(addr, size, store)
+
+    def map_page(self, addr: int) -> bool:
+        """Map the page holding `addr`, filled by `page_source`; False if it cannot be.
+
+        For tests only: test data reaches addresses no real program state does, and
+        a fault there says nothing about the function. Mapping the page and running
+        again lets the test go on, and since every form of the function reads the
+        same memory afterwards, the comparison is as sound as before.
+        """
+        page = addr & ~PAGE_MASK & MASK32
+        if (self.page_source is None or page in self.pages
+                or len(self.pages) >= MAX_PAGES):
+            return False
+        self.pages[page] = len(self.bytes)
+        self.bytes.extend(self.page_source(page))
+        return True
+
+    def undo_to(self, mark: int) -> None:
+        """Undo the journalled writes after the first `mark` entries."""
+        journal = self._journal
+        while len(journal) > mark:
+            offset, previous = journal.pop()
+            self.bytes[offset : offset + len(previous)] = previous
+            self._journal_bytes -= len(previous)
 
     def offset_of(self, addr: int) -> int:
         """Where an address lives in the backing buffer, as the journal records it."""
@@ -266,8 +301,29 @@ class Machine:
 
     # -- execution -----------------------------------------------------
 
+    # When set, a journalled call that faults on an unmapped page maps the page
+    # and runs again (Memory.map_page). Off by default: a fault is real
+    # information everywhere except in a differential test.
+    map_faults = False
+    FAULT_RETRIES = 16
+
     def call(self, addr: int, args=(), max_instructions: int = 2_000_000,
              stack_top: int = None) -> int:
+        """Run the function at `addr`; see _call_once. Retries after mapping a page
+        when `map_faults` is set and the memory is journalled."""
+        for _attempt in range(self.FAULT_RETRIES):
+            journal = self.memory._journal
+            mark = len(journal) if journal is not None else None
+            try:
+                return self._call_once(addr, args, max_instructions, stack_top)
+            except MemoryFault as exc:
+                if not self.map_faults or mark is None or not self.memory.map_page(exc.addr):
+                    raise
+                self.memory.undo_to(mark)
+        return self._call_once(addr, args, max_instructions, stack_top)
+
+    def _call_once(self, addr: int, args=(), max_instructions: int = 2_000_000,
+                   stack_top: int = None) -> int:
         """Run the function at `addr` and return its $v0 as a signed 32-bit value.
 
         `args` follows the register calling convention: entries 0..7 go to $a0..$a3
