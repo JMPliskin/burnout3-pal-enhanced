@@ -196,6 +196,7 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
         else:
             returned = _result(path.expression)
     writes = []
+    holders = {}
     for index, store in enumerate(path.stores):
         if _reads_memory(store.value):
             lines.append("const u64 %sval%d = %s;" % (prefix, index, _store_value(store)))
@@ -207,9 +208,14 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
             base, embeds, owner, offset, element = target
             holder = None
             if _TYPING.needs_capture(base):
-                holder = "%sobj%d" % (prefix, index)
-                lines.append("const %s %s = %s;" % (
-                    _TYPING.type_name(owner), holder, _TYPING.object(base, embeds)))
+                # One holder per distinct object, so stores through the same one
+                # read alike - which is also what lets an unrolled loop re-roll.
+                view = _TYPING.object(base, embeds)
+                holder = holders.get(view)
+                if holder is None:
+                    holder = holders[view] = "%sobj%d" % (prefix, index)
+                    lines.append("const %s %s = %s;" % (
+                        _TYPING.type_name(owner), holder, view))
             if element is not None and not isinstance(element, int) and _reads_memory(element):
                 # An index computed from memory must be read before any store too.
                 lines.append("const u64 %sidx%d = %s;" % (prefix, index, render_cpp(element)))
@@ -226,12 +232,90 @@ def render_path_body(path, prefix: str, final: bool = True) -> list:
             "/* Captured before any store: every expression below refers to",
             "   memory as it stood on entry. */",
         ] + lines
-    lines.extend(writes)
+    lines.extend(reroll(writes))
     if path.expression is not None:
         lines.append("return %s;" % returned)
     elif not final:
         lines.append("return;")
     return lines
+
+
+# An element write with a literal index: `arg0.set_f_40(3, 0);`, `set_g_00670BD8(2, v);`
+_ELEMENT_WRITE = re.compile(r"^(?P<head>(?:.*\.)?set_[fg]_[0-9A-Fm]+\()(?P<index>\d+), (?P<rest>.*)$")
+MIN_ITERATIONS = 3
+MAX_LOOP_BODY = 16
+
+
+def reroll(statements: list) -> list:
+    """Fold unrolled loops back into `for` loops.
+
+    The derivation unrolls every loop it can, so a loop that cleared 24 records
+    arrives as 120 statements. Wherever a block of statements repeats with every
+    element index advanced by the same step and nothing else different, the block
+    becomes the body of a loop. Each statement keeps its own starting index, so a
+    body that writes `a[i]` and `a[i + 20]` re-rolls too. Iterations run in the
+    original order, and the statements write only constants or values captured
+    before any store, so the loop does exactly what the sequence did - and the
+    compiled check runs it.
+    """
+    def template(statement):
+        match = _ELEMENT_WRITE.match(statement)
+        if match is None:
+            return None
+        return (match.group("head"), match.group("rest")), int(match.group("index"))
+
+    shapes = [template(statement) for statement in statements]
+    out = []
+    position = 0
+    while position < len(statements):
+        best = None
+        for body in range(1, MAX_LOOP_BODY + 1):
+            first = shapes[position:position + body]
+            if len(first) < body or any(shape is None for shape in first):
+                break
+            second = shapes[position + body:position + 2 * body]
+            if len(second) < body or any(shape is None for shape in second):
+                continue
+            step = second[0][1] - first[0][1]
+            if step < 1:
+                continue
+            iterations = 1
+            while True:
+                block = shapes[position + iterations * body:position + (iterations + 1) * body]
+                if len(block) < body or any(
+                        shape is None or shape[0] != first[k][0]
+                        or shape[1] != first[k][1] + iterations * step
+                        for k, shape in enumerate(block)):
+                    break
+                iterations += 1
+            if iterations >= MIN_ITERATIONS and (
+                    best is None or iterations * body > best[0] * best[1]):
+                best = (iterations, body, step)
+        if best is None:
+            out.append(statements[position])
+            position += 1
+            continue
+        iterations, body, step = best
+        block = shapes[position:position + body]
+        if step == 1:
+            origin = block[0][1]
+            out.append("for (u64 i = %d; i < %d; i++) {" % (origin, origin + iterations))
+        else:
+            origin = 0
+            out.append("for (u64 i = 0; i < %d; i++) {" % iterations)
+        for (head, rest), index in block:
+            out.append("    %s%s, %s" % (head, _loop_index(index - origin, step), rest))
+        out.append("}")
+        position += iterations * body
+    return out
+
+
+def _loop_index(offset: int, step: int) -> str:
+    """The element index inside a re-rolled loop: step * i + offset."""
+    scaled = "i" if step == 1 else "%d * i" % step
+    if offset == 0:
+        return scaled
+    return "%s %s %d" % (scaled, "+" if offset > 0 else "-", abs(offset))
 
 
 def _reads_memory(expr) -> bool:

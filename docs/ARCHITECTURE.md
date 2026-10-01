@@ -218,6 +218,12 @@ stride * index (`typed.linear`, exact through shifts, multiplies and sums) rende
 as `arg0.f_10(i)`; a constant offset on a detected run of fields renders as the
 element it is, `arg0.set_f_40(3, 0)`. The derived accesses supply the stride
 evidence, since the scan cannot follow a variable index.
+
+`derive.reroll` then folds unrolled loops back up: a block of element writes that
+repeats with every index advanced by one common step, and nothing else different,
+becomes a `for` loop. It works on the emitted statements, which are generated in a
+fixed shape, and only ever on writes of constants or already-captured values, so
+the order and content of memory writes are unchanged.
 Before emitting, the derived functions' own accesses are added to the graph as
 evidence: the scan cannot follow a variable index, but an unrolled loop shows
 every concrete access it makes, each already verified.

@@ -171,6 +171,49 @@ class TestCppValueSemantics(unittest.TestCase):
         self.assertEqual(struct.unpack("<I", struct.pack("<f", float(literal)))[0], 0x3DCCCCCD)
 
 
+class TestReroll(unittest.TestCase):
+    """Unrolled element writes fold back into loops, and nothing else does."""
+
+    def setUp(self):
+        from derive import reroll
+
+        self.reroll = reroll
+
+    def test_repeated_block_becomes_a_loop(self):
+        statements = []
+        for i in range(4):
+            statements += ["a.set_f_0(%d, 0);" % i, "a.set_f_40(%d, 0);" % i]
+        self.assertEqual(self.reroll(statements), [
+            "for (u64 i = 0; i < 4; i++) {",
+            "    a.set_f_0(i, 0);",
+            "    a.set_f_40(i, 0);",
+            "}",
+        ])
+
+    def test_statements_keep_their_own_starting_index(self):
+        statements = []
+        for i in range(3):
+            statements += ["a.set_f_10(%d, 7);" % i, "a.set_f_10(%d, 7);" % (i + 20)]
+        self.assertEqual(self.reroll(statements)[1:3],
+                         ["    a.set_f_10(i, 7);", "    a.set_f_10(i + 20, 7);"])
+
+    def test_step_other_than_one(self):
+        statements = ["set_g_00670BD8(%d, 0);" % i for i in (0, 2, 4, 6)]
+        self.assertEqual(self.reroll(statements), [
+            "for (u64 i = 0; i < 4; i++) {",
+            "    set_g_00670BD8(2 * i, 0);",
+            "}",
+        ])
+
+    def test_differing_values_are_left_alone(self):
+        statements = ["a.set_f_0(%d, %d);" % (i, i) for i in range(5)]
+        self.assertEqual(self.reroll(statements), statements)
+
+    def test_two_iterations_are_not_a_loop(self):
+        statements = ["a.set_f_0(0, 0);", "a.set_f_0(1, 0);", "x = 1;"]
+        self.assertEqual(self.reroll(statements), statements)
+
+
 class TestEvaluation(unittest.TestCase):
     def _read(self, addr, size, signed):
         # A predictable stand-in: each address reads back as itself.

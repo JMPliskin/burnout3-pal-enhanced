@@ -433,6 +433,21 @@ run detection at all.
 Examples: `func_0013D4D0` clears an array of 24 records of 0x50 bytes, and
 `arg0.f_362E0((arg1 & 255) >> 5) & 1ull << (arg1 & 31)` is a bitset lookup.
 
+### Loops, re-rolled
+
+The derivation unrolls every loop it can, so the emitted code used to show a loop
+that clears 24 records as 120 statements. Where a block of element writes repeats
+with every index advanced by the same step and nothing else different, it is now
+folded back into a `for` loop; each statement keeps its own starting index, so a
+body writing `a[i]` and `a[i + 20]` re-rolls too. 28 loops are recovered this way,
+and the generated file shrinks from 12,255 to 11,237 lines.
+
+What does not re-roll yet: two-dimensional layouts - records 0x90 bytes apart that
+each contain a small array of their own. The run detection finds the inner arrays,
+so successive records' writes are labelled against different arrays and the outer
+loop is invisible. Fixing that needs nested arrays (records containing arrays) in
+the type model.
+
 ### In the emitted source
 
 480 of the 647 derived functions take at least one typed argument. Plain field
