@@ -509,7 +509,7 @@ class Execution:
 
     def __call__(self, address, size, signed, epoch=0):
         raw = bytearray(self.memory.read(address, size))
-        offset = address - self.memory.base
+        offset = self.memory.offset_of(address)
         for written, previous in reversed(self.memory._journal[self.markers[epoch]:]):
             for i, byte in enumerate(previous):
                 position = written + i - offset

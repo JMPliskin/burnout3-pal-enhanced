@@ -23,6 +23,9 @@ emitted with a caveat.
 from __future__ import annotations
 
 import argparse
+import bisect
+import collections
+import hashlib
 import json
 import os
 import random
@@ -87,6 +90,26 @@ VERIFY_BUDGET = 100_000
 # The stack, scratch memory and the rest of the layout come from the game; see
 # ps2decomp/layout.py.
 ARG_SETS = 8
+
+# Why the last test that could not be run failed: (stage, exception). Set wherever
+# a test run is abandoned, and read by _attempt to explain an untestable verdict.
+_LAST_FAILURE = None
+_HEX = re.compile(r"0x[0-9A-Fa-f]+|\b\d+\b")
+
+
+def _failed(stage, exc) -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = (stage, exc)
+
+
+def failure_reason() -> str:
+    """The last failure as a category: numbers and addresses blanked so that
+    failures of one kind count together."""
+    if _LAST_FAILURE is None:
+        return "unknown"
+    stage, exc = _LAST_FAILURE
+    message = _HEX.sub("N", str(exc).splitlines()[0] if str(exc) else "")
+    return "%s: %s: %s" % (stage, type(exc).__name__, message[:90])
 
 # Loads become calls on these helpers rather than raw pointer casts, so the
 # emitted source stays readable and a port can define them over its own memory
@@ -819,9 +842,11 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     one would let a single bad derivation propagate into everything above it, and
     the whole point of the pipeline is that nothing unchecked gets used.
     """
-    rng = random.Random(0xB3)
-    machine.memory.write(layout.CURRENT.scratch,
-                         bytes(rng.randrange(256) for _ in range(layout.CURRENT.scratch_size)))
+    candidates = [
+        f for f in database["functions"]
+        if f["size"] // 4 <= MAX_INSTRUCTIONS and f["has_return"]
+    ]
+    prepare_test_memory(machine, database, image, base, candidates, verbose)
 
     def read(addr, size, signed):
         return machine.memory.read_int(addr, size, signed)
@@ -830,18 +855,8 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     # Which arguments each function reads, so a call to one that is not derived can
     # be made rather than refused.
     parameters = calls.parameters(database, image, base)
-    # Global pointers that are null until the game runs would make every function
-    # using them untestable; point them at scratch (see testmem).
-    seeded = testmem.seed_global_pointers(machine.memory,
-                                          global_pointers(database, image, base))
-    if verbose:
-        print("  seeded %d null global pointers for testing" % seeded)
     known = {}
     done = set()
-    candidates = [
-        f for f in database["functions"]
-        if f["size"] // 4 <= MAX_INSTRUCTIONS and f["has_return"]
-    ]
 
     # A refused function can only come out differently in a later pass if one of
     # its callees has since been derived and so can be inlined; anything else about
@@ -849,6 +864,7 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     # of the derivation time.
     callees = {f["addr"]: direct_callees(image, base, f) for f in candidates}
     last = {}                    # address -> the refusal category it last got
+    reasons = {}                 # address -> why it last could not be tested
     mismatched = []
     newly_known = None
     for pass_number in range(1, max_passes + 1):
@@ -864,8 +880,9 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
                                parameters)
             if outcome is None:
                 for category, count in outcome_counts.items():
-                    if count and category != "mismatched":
+                    if count and category not in ("mismatched", "reason"):
                         last[func["addr"]] = category
+                reasons[func["addr"]] = outcome_counts.get("reason")
                 if outcome_counts.get("mismatched"):
                     mismatched.append(func["addr"])
                 continue
@@ -889,7 +906,43 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     for category in last.values():
         rejected[category] += 1
     rejected["mismatched"] = sorted(a for a in set(mismatched) if last.get(a) == "mismatch")
+    rejected["untestable_reasons"] = collections.Counter(
+        reasons.get(address) or "unknown"
+        for address, category in last.items() if category == "untestable")
     return verified, rejected
+
+
+def prepare_test_memory(machine, database, image, base, functions, verbose=False) -> None:
+    """Fill scratch and seed null global pointers, identically for every tool.
+
+    Global pointers that are null until the game runs would make every function
+    using them untestable, so they are pointed at scratch: first the ones the
+    recovered types mark as pointers, then the ones found by running the
+    functions (see testmem.discover_null_pointers).
+    """
+    rng = random.Random(0xB3)
+    machine.memory.write(layout.CURRENT.scratch,
+                         bytes(rng.randrange(256) for _ in range(layout.CURRENT.scratch_size)))
+    seeded = testmem.seed_global_pointers(machine.memory,
+                                          global_pointers(database, image, base))
+    spans = sorted((f["addr"], f["end"]) for f in database["functions"])
+    starts = [start for start, _end in spans]
+    scratch_low = layout.CURRENT.scratch
+    scratch_high = scratch_low + layout.CURRENT.scratch_size
+
+    def is_global(address):
+        if not base <= address < machine.memory.base + machine.memory.size:
+            return False
+        if scratch_low <= address < scratch_high:
+            return False
+        index = bisect.bisect_right(starts, address) - 1
+        return index < 0 or address >= spans[index][1]
+
+    started = time.time()
+    found = testmem.discover_null_pointers(machine, functions, is_global)
+    if verbose:
+        print("  seeded %d null global pointers for testing, and %d more found by "
+              "running (%.0fs)" % (seeded, found, time.time() - started))
 
 
 def global_pointers(database, image, base) -> set:
@@ -900,6 +953,23 @@ def global_pointers(database, image, base) -> set:
     fields = graph.fields[graph.find(graph.ids[structs.GLOBALS])]
     return {address & 0xFFFFFFFF for address, field in fields.items()
             if field.target is not None and 4 in field.widths()}
+
+
+def _effects_digest(memory) -> bytes:
+    """A function's net memory effects, reduced to a digest for comparison.
+
+    Only equality is ever asked of the effects in a test, and the original's are
+    kept for every verified function so the compiled check can reuse them. As
+    dictionaries, a function filling a large buffer cost about a hundred bytes per
+    byte written, eight cases over, for every such function - enough to exhaust
+    memory once seeded globals let those functions run to completion.
+    """
+    effects = _journal_effects(memory)
+    digest = hashlib.sha1()
+    for position in sorted(effects):
+        digest.update(position.to_bytes(4, "little"))
+        digest.update(bytes((effects[position],)))
+    return digest.digest()
 
 
 def _journal_effects(memory) -> dict:
@@ -939,7 +1009,8 @@ def _choose_profile(machine, func, args):
         try:
             machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
             return profile
-        except Exception:
+        except Exception as exc:
+            _failed("original, every memory profile", exc)
             continue
         finally:
             machine.memory.rollback()
@@ -1002,11 +1073,12 @@ def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=
             machine.memory.begin_journal()
             try:
                 expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
-            except Exception:
+            except Exception as exc:
+                _failed("original", exc)
                 machine.memory.rollback()
                 machine.memory.end_journal()
                 return "failed", tested
-            effects = _journal_effects(machine.memory)
+            effects = _effects_digest(machine.memory)
             machine.memory.rollback()
             if record is not None:
                 record.append((expected, effects))
@@ -1017,18 +1089,20 @@ def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=
         machine.memory.begin_journal()
         try:
             actual, writes = evaluate(args)
-        except Exception:
+        except Exception as exc:
+            _failed("derivation", exc)
             machine.memory.rollback()
             machine.memory.end_journal()
             return "failed", tested
         try:
             for address, value, size in writes:
                 machine.memory.write_int(address, value, size)
-        except Exception:
+        except Exception as exc:
+            _failed("derivation's stores", exc)
             machine.memory.rollback()
             machine.memory.end_journal()
             return "failed", tested
-        replayed = _journal_effects(machine.memory)
+        replayed = _effects_digest(machine.memory)
         machine.memory.rollback()
         machine.memory.end_journal()
 
@@ -1055,9 +1129,12 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
             rejected["unsupported"] += 1
             return None
 
+        global _LAST_FAILURE
+        _LAST_FAILURE = None
         plan = test_plan(func, machine)
         if plan is None:
             rejected["untestable"] += 1
+            rejected["reason"] = failure_reason()
             return None
         arg_sets, profile = plan
 
@@ -1077,6 +1154,8 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
             return None
         if outcome == "failed" or tested < 5:
             rejected["untestable"] += 1
+            rejected["reason"] = (failure_reason() if outcome == "failed"
+                                  else "only %d cases could run" % tested)
             return None
 
         # Only count a function as verified when the test actually varied
@@ -1389,6 +1468,8 @@ def main(argv=None) -> int:
     print("symbolically derived and verified : %d functions" % len(verified))
     print("  rejected, not derivable         : %d" % rejected["unsupported"])
     print("  rejected, could not be tested   : %d" % rejected["untestable"])
+    for reason, count in rejected["untestable_reasons"].most_common(12):
+        print("    %5d  %s" % (count, reason))
     print("  rejected, derivation disagreed  : %d%s" % (
         rejected["mismatch"],
         "  (%s)" % ", ".join("0x%08X" % a for a in rejected.get("mismatched", [])[:8])

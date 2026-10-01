@@ -42,8 +42,9 @@ def main(argv=None) -> int:
     image = elf.section_data(section)
     machine = Machine.from_elf(elf)
     parameters = calls.parameters(database, image, section.addr)
-    testmem.seed_global_pointers(machine.memory,
-                                 derive.global_pointers(database, image, section.addr))
+    derive.prepare_test_memory(machine, database, image, section.addr, [
+        f for f in database["functions"]
+        if f["size"] // 4 <= derive.MAX_INSTRUCTIONS and f["has_return"]])
     func = next(f for f in database["functions"] if f["addr"] == args.address)
 
     try:

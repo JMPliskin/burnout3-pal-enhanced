@@ -141,3 +141,59 @@ def seed_global_pointers(memory, addresses) -> int:
         memory.write_int(address, layout.CURRENT.scratch + offset, 4)
         seeded += 1
     return seeded
+
+
+# A dereference this close to address zero is a null pointer plus a field offset.
+NULL_PAGE = 0x1000
+
+
+def discover_null_pointers(machine, functions, is_global, budget: int = 20_000,
+                           attempts: int = 8) -> int:
+    """Seed the global pointers that running the code shows to be dereferenced.
+
+    `seed_global_pointers` covers the globals the recovered types mark as pointers,
+    but not pointer fields of global *objects* - a singleton whose address is
+    passed to its methods, which then follow a pointer inside it that is null until
+    the game runs. Recovering those statically drowns in merged types, so they are
+    found by running instead: each function is run once, and when it faults just
+    above address zero, the last word it read as zero is taken to be the null
+    pointer, seeded like any other global, and the function run again.
+
+    `is_global(address)` limits seeding to the program's own data - never code,
+    the stack or the scratch region. The functions are visited in the order given
+    and every seed is written outside any journal, so the result is deterministic
+    and the same for every test that follows. Returns the number of words seeded.
+    """
+    from .emu import MemoryFault
+
+    memory = machine.memory
+    scratch = layout.CURRENT.scratch
+    seeded = 0
+    memory.watch_zero = True
+    try:
+        for func in functions:
+            args = arguments(random.Random(func["addr"]))
+            for _attempt in range(attempts):
+                memory.end_journal()
+                memory.write(scratch, build("pointers", func["addr"]))
+                memory.begin_journal()
+                memory.last_zero_read = None
+                fault = None
+                try:
+                    machine.call(func["addr"], args, max_instructions=budget)
+                except MemoryFault as exc:
+                    fault = exc
+                except Exception:
+                    pass
+                source = memory.last_zero_read
+                stack_pointer = machine.get(29) & 0xFFFFFFFF
+                memory.rollback()
+                memory.end_journal()
+                if (fault is None or fault.addr >= NULL_PAGE or source is None
+                        or source >= stack_pointer or not is_global(source)):
+                    break
+                seeded += seed_global_pointers(memory, {source})
+    finally:
+        memory.watch_zero = False
+        memory.last_zero_read = None
+    return seeded

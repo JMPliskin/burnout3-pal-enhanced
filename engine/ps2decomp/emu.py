@@ -79,23 +79,53 @@ def _sign64(value: int) -> int:
     return value - (1 << 64) if value & (1 << 63) else value
 
 
+# Address windows mapped as plain memory besides main RAM. The scratchpad is real
+# RAM on the console. The hardware registers (DMA, VIF, GIF, timers...) are not,
+# but as plain memory they read zero - idle, done - until written, so code that
+# configures a DMA transfer or polls for its end runs to completion instead of
+# faulting. Every form of a function under test sees the same window, so this
+# decides what can be tested, never whether two forms agree.
+WINDOWS = (
+    (0x10000000, 0x10010000),     # EE hardware registers
+    (0x70000000, 0x70004000),     # scratchpad RAM, 16 KB
+)
+
+
 class Memory:
-    """A flat mapped span, backed by the loaded image plus a stack."""
+    """Main RAM from the image's base, plus the fixed windows; all else faults."""
 
     def __init__(self, base: int, data: bytes, total_size: int) -> None:
         if total_size < len(data):
             total_size = len(data)
         self.base = base
         self.size = total_size
-        self.bytes = bytearray(total_size)
+        # The windows live after main RAM in the same buffer, so one journal of
+        # (offset, previous bytes) covers every write.
+        self.windows = []
+        at = total_size
+        for start, end in WINDOWS:
+            self.windows.append((start, end, at))
+            at += end - start
+        self.bytes = bytearray(at)
         self.bytes[: len(data)] = data
         self._journal = None
+        # When watching, the address of the last word read as zero: what a null
+        # pointer dereference most likely loaded its base from (testmem uses it).
+        self.watch_zero = False
+        self.last_zero_read = None
 
     def _offset(self, addr: int, size: int, store: bool) -> int:
         off = addr - self.base
-        if off < 0 or off + size > self.size:
-            raise MemoryFault(addr, size, store)
-        return off
+        if 0 <= off and off + size <= self.size:
+            return off
+        for start, end, at in self.windows:
+            if start <= addr and addr + size <= end:
+                return at + addr - start
+        raise MemoryFault(addr, size, store)
+
+    def offset_of(self, addr: int) -> int:
+        """Where an address lives in the backing buffer, as the journal records it."""
+        return self._offset(addr, 1, False)
 
     # -- journalling ---------------------------------------------------
     #
@@ -106,8 +136,14 @@ class Memory:
     # the harness that moved. Journalling every write makes the undo exact and
     # cheap, whatever the function touches.
 
+    # A test that writes more than this is abandoned rather than allowed to grow
+    # the journal - and the per-byte effect maps built from it - until the process
+    # runs out of memory.
+    JOURNAL_LIMIT = 1 << 16
+
     def begin_journal(self) -> None:
         self._journal = []
+        self._journal_bytes = 0
 
     def rollback(self) -> None:
         """Undo every write since `begin_journal`, most recent first."""
@@ -117,6 +153,7 @@ class Memory:
         for offset, previous in reversed(journal):
             self.bytes[offset : offset + len(previous)] = previous
         self._journal = []
+        self._journal_bytes = 0
 
     def end_journal(self) -> None:
         self._journal = None
@@ -128,12 +165,18 @@ class Memory:
     def write(self, addr: int, payload: bytes) -> None:
         off = self._offset(addr, len(payload), True)
         if self._journal is not None:
+            self._journal_bytes += len(payload)
+            if self._journal_bytes > self.JOURNAL_LIMIT:
+                raise EmulationError("a test wrote more than %d bytes" % self.JOURNAL_LIMIT)
             self._journal.append((off, bytes(self.bytes[off : off + len(payload)])))
         self.bytes[off : off + len(payload)] = payload
 
     def read_int(self, addr: int, size: int, signed: bool) -> int:
         raw = self.read(addr, size)
-        return int.from_bytes(raw, "little", signed=signed)
+        value = int.from_bytes(raw, "little", signed=signed)
+        if self.watch_zero and value == 0 and size == 4:
+            self.last_zero_read = addr
+        return value
 
     def write_int(self, addr: int, value: int, size: int) -> None:
         self.write(addr, (value & ((1 << (size * 8)) - 1)).to_bytes(size, "little"))
@@ -155,6 +198,11 @@ class Machine:
         if total_size is None:
             total_size = max(len(data), layout.CURRENT.stack_top + layout.CURRENT.stack_size - base)
         self.memory = Memory(base, data, total_size)
+        # The executable's own bytes. A call to anything outside them is stubbed
+        # (see _stubbed_call) rather than executed.
+        self.code_start = base
+        self.code_end = base + len(data)
+        self.stubbed_calls = 0
         self.regs = [0] * 32
         # The EE's registers are 128 bits wide. Full SIMD arithmetic is out of
         # scope, but `lq`/`sq` must preserve the upper half, because Metrowerks
@@ -163,6 +211,8 @@ class Machine:
         self.regs_hi = [0] * 32
         self.hi = 0
         self.lo = 0
+        self.hi1 = 0       # HI/LO of the second multiply pipeline
+        self.lo1 = 0
         # Coprocessor 1: 32 single-precision registers held as raw 32-bit patterns,
         # plus the condition flag that `c.<cond>.s` sets and `bc1t`/`bc1f` test.
         #
@@ -233,7 +283,7 @@ class Machine:
         # before - and the same test could pass alone and fail in the pipeline.
         self.regs = [0] * 32
         self.regs_hi = [0] * 32
-        self.hi = self.lo = 0
+        self.hi = self.lo = self.hi1 = self.lo1 = 0
         self.fpr = [0] * 32
         self.fp_cond = False
         self.fp_acc = 0
@@ -247,6 +297,9 @@ class Machine:
         self.set(31, RETURN_SENTINEL)     # $ra
         self.pc = addr
         self.instructions_executed = 0
+        if not self._is_code(addr):
+            self._stubbed_call()
+            return 0
 
         budget = max_instructions
         while True:
@@ -305,10 +358,31 @@ class Machine:
             if link is not None:
                 self.set(31, saved + 8)
             self.pc = target if target is not None else saved + 8
+            indirect = ins.mnemonic == "jalr" or (ins.mnemonic == "jr" and ins.rs != 31)
+            if indirect and target != RETURN_SENTINEL and not self._is_code(target):
+                self._stubbed_call()
+                # A jalr returns past its delay slot; a jr through a pointer is a
+                # tail call, so it returns to this function's caller.
+                self.pc = saved + 8 if ins.mnemonic == "jalr" else self.get32(31)
             return
 
         self._execute(ins)
         self.pc += 4
+
+    def _is_code(self, address: int) -> bool:
+        return self.code_start <= address < self.code_end
+
+    def _stubbed_call(self) -> None:
+        """A call to an address outside the executable: return 0, do nothing.
+
+        Test memory is random, so a function pointer read from it points nowhere
+        real, and executing it ran random bytes until something trapped. Every form
+        of a function under test - the original, its derivation, the compiled C++ -
+        reaches an indirect callee through this interpreter, so all of them meet
+        the same stub, and the test checks the function's own logic around it.
+        """
+        self.stubbed_calls += 1
+        self.set(2, 0)
 
     def _resolve_transfer(self, ins):
         """Decide the branch outcome.
@@ -415,7 +489,8 @@ def _store(size: int):
 
 def _shift(fn, use_reg: bool, width: int = 32):
     def run(m: Machine, ins) -> None:
-        amount = (m.get32(ins.rs) & 0x1F) if use_reg else ins.imm
+        # Word shifts take the amount mod 32, doubleword shifts mod 64.
+        amount = (m.get(ins.rs) & (width - 1)) if use_reg else ins.imm
         if width == 32:
             m.set32(ins.rd, fn(m.get32(ins.rt), amount))
         else:
@@ -510,6 +585,37 @@ def _op_mthi(m: Machine, ins) -> None:
 
 def _op_mtlo(m: Machine, ins) -> None:
     m.lo = m.get(ins.rs)
+
+
+# The EE has a second multiply/divide pipeline: HI1/LO1 are the upper halves of the
+# 128-bit HI/LO, and mult1/div1/... are the ordinary operations aimed at them.
+# madd/maddu accumulate a 32x32 product into the 64-bit value in HI:LO's low
+# words. Each is written in terms of the pipeline-0 version on a swapped-in HI/LO.
+
+def _pipeline1(op):
+    def run(m: Machine, ins) -> None:
+        m.hi, m.hi1 = m.hi1, m.hi
+        m.lo, m.lo1 = m.lo1, m.lo
+        try:
+            op(m, ins)
+        finally:
+            m.hi, m.hi1 = m.hi1, m.hi
+            m.lo, m.lo1 = m.lo1, m.lo
+    return run
+
+
+def _madd(signed: bool):
+    def run(m: Machine, ins) -> None:
+        if signed:
+            product = _sign32(m.get32(ins.rs)) * _sign32(m.get32(ins.rt))
+        else:
+            product = m.get32(ins.rs) * m.get32(ins.rt)
+        total = (((m.hi & MASK32) << 32) | (m.lo & MASK32)) + product
+        m.lo = _sign32(total & MASK32) & MASK64
+        m.hi = _sign32((total >> 32) & MASK32) & MASK64
+        if ins.rd:
+            m.set(ins.rd, m.lo)
+    return run
 
 
 def _op_movz(m: Machine, ins) -> None:
@@ -788,6 +894,9 @@ _HANDLERS = {
     "dsll32": _shift(lambda v, n: v << (n + 32), False, 64),
     "dsrl32": _shift(lambda v, n: (v & MASK64) >> (n + 32), False, 64),
     "dsra32": _shift(lambda v, n: _sign64(v) >> (n + 32), False, 64),
+    "dsllv": _shift(lambda v, n: v << n, True, 64),
+    "dsrlv": _shift(lambda v, n: (v & MASK64) >> n, True, 64),
+    "dsrav": _shift(lambda v, n: _sign64(v) >> n, True, 64),
     # Multiply and divide
     "mult": _op_mult,
     "multu": _op_multu,
@@ -797,6 +906,18 @@ _HANDLERS = {
     "mflo": _op_mflo,
     "mthi": _op_mthi,
     "mtlo": _op_mtlo,
+    "madd": _madd(True),
+    "maddu": _madd(False),
+    "mult1": _pipeline1(_op_mult),
+    "multu1": _pipeline1(_op_multu),
+    "div1": _pipeline1(_op_div),
+    "divu1": _pipeline1(_op_divu),
+    "mfhi1": _pipeline1(_op_mfhi),
+    "mflo1": _pipeline1(_op_mflo),
+    "mthi1": _pipeline1(_op_mthi),
+    "mtlo1": _pipeline1(_op_mtlo),
+    "madd1": _pipeline1(_madd(True)),
+    "maddu1": _pipeline1(_madd(False)),
     # Loads
     "lb": _load(1, True),
     "lbu": _load(1, False),
@@ -826,6 +947,10 @@ _HANDLERS = {
 #              constant, so a busy-wait on it never ends and the test runs out
 #              of budget, rather than finishing with a made-up time.
 #   traps    - trap exactly as the hardware does, which ends the test.
+#   calls outside the executable - return 0 and do nothing (Machine._stubbed_call).
+#   ei/di    - do nothing. No interrupt ever arrives during a test, so whether
+#              they are enabled changes nothing observable, and mfc0 reading
+#              Status as 0 already reports them disabled either way.
 
 def _op_syscall(m: Machine, ins) -> None:
     m.set(2, 0)
@@ -864,6 +989,8 @@ def _fp_accumulate(fn, write_fd: bool):
 _HANDLERS.update({
     "syscall": _op_syscall,
     "mfc0": _op_mfc0,
+    "ei": lambda m, ins: None,
+    "di": lambda m, ins: None,
     "teq": _trap(lambda a, b: a == b),
     "tne": _trap(lambda a, b: a != b),
     "tge": _trap(lambda a, b: _s64(a) >= _s64(b)),

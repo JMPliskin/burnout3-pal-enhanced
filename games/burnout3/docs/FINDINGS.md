@@ -729,6 +729,45 @@ That is the Sony SDK and runtime the three builds share. The named functions
 seed the cross-game library (`engine/signatures/library.json`), so another game
 linked against the same libraries gets these names for free.
 
+## Why derived functions could not be tested
+
+A derivation counts only once it has been run against the original, and 2,106
+derived functions could not be, because the *original* failed under the test
+harness. `derive.py` now records why each one failed and prints the breakdown.
+The first breakdown pointed at the harness rather than at the functions:
+
+| cause | functions | fix |
+| --- | ---: | --- |
+| `ei`, `dsllv`, `mult1` not in the interpreter | 174 | implemented, with `di`, `dsrlv`, `dsrav`, `madd`, and the pipeline-1 `multu1`/`div1`/`mfhi1`/... |
+| a trap: execution had jumped into the test scratch region | 337 | calls outside the executable are stubbed |
+| null pointer read from a global *object*'s field | about 1,200 | found by running, and seeded |
+| access to the EE hardware registers or scratchpad | about 320 | both mapped as plain memory |
+
+The traps were all at addresses in scratch. A function calling through a pointer
+read from random test memory executed random bytes until one decoded as a trap.
+A call or pointer jump to anywhere outside the executable now returns 0 without
+running anything. The original, its derivation and the compiled C++ all reach
+indirect callees through the same interpreter, so all three meet the same stub.
+
+The null pointers mostly came from one place. Static seeding handled global
+pointer *variables*, but a global *object*, such as the singleton at `0x0051BA44`
+passed as `this` to 978 call sites, holds pointer fields that stay null until the
+game runs, and its methods dereference them. Recovering those fields statically
+drowned in merged types (30,000 candidate addresses, two thirds of them inside
+the executable). Running each function once is precise: a fault just above zero,
+right after a word was read as zero, names the word. Seeding it and retrying finds
+548 such words in 50 seconds.
+
+Letting functions run further exposed a cost. The original's memory effects were
+kept per byte for the compiled check to reuse, and functions that now complete a
+large `memset` made the pipeline exhaust 60 GB of commit. Effects are now kept as
+a digest, and a test that writes more than 64 KB is abandoned (90 functions).
+
+Derived and verified: 2,811 -> 3,357 functions. Agreeing when compiled: 2,754 ->
+3,260. Verified code: 8.06% -> 10.20%. Remaining causes, by size: loads from
+unmapped memory (693), the instruction budget (491), stores to unmapped memory
+(124), the 64 KB write cap (90), and VU0 macro instructions (`lqc2`, `vadd`).
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

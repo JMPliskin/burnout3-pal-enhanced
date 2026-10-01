@@ -39,12 +39,68 @@ class TestStubs(unittest.TestCase):
         m = machine([0x24020007, 0x40024800, JR_RA, 0])
         self.assertEqual(m.call(BASE, ()), 0)
 
+    def test_calling_outside_the_executable_returns_zero(self):
+        """A function pointer read from random test memory points nowhere real."""
+        m = machine([0x24020007, JR_RA, 0])
+        self.assertEqual(m.call(0x01800000, ()), 0)
+        self.assertEqual(m.stubbed_calls, 1)
+
+    def test_tail_call_through_a_pointer_outside_the_executable(self):
+        # addiu $v0, $zero, 7 ; jr $a0 ; nop
+        m = machine([0x24020007, 0x00800008, 0])
+        self.assertEqual(m.call(BASE, (0x01800000,)), 0)
+        self.assertEqual(m.stubbed_calls, 1)
+
+    def test_indirect_call_inside_the_executable_runs(self):
+        # 0: addiu $v0, $zero, 7 ; jr $a0 ; nop    3: addiu $v0, $zero, 9 ; jr $ra ; nop
+        m = machine([0x24020007, 0x00800008, 0, 0x24020009, JR_RA, 0])
+        self.assertEqual(m.call(BASE, (BASE + 12,)), 9)
+        self.assertEqual(m.stubbed_calls, 0)
+
     def test_trap_fires_only_when_its_condition_holds(self):
         # tge $a1, $a0 ; jr $ra ; nop
         m = machine([0x00A40030, JR_RA, 0])
         m.call(BASE, (5, 4))             # 4 >= 5 is false: no trap
         with self.assertRaises(EmulationError):
             m.call(BASE, (5, 6))         # 6 >= 5: trap
+
+
+class TestInstructions(unittest.TestCase):
+    """Instructions added because callees of untestable functions used them."""
+
+    MASK64 = (1 << 64) - 1
+
+    def test_ei_and_di_do_nothing(self):
+        m = machine([0x42000038, 0x42000039, JR_RA, 0x24020007])   # ei ; di ; addiu $v0, 7
+        self.assertEqual(m.call(BASE, ()), 7)
+
+    def test_doubleword_variable_shift_takes_the_amount_mod_64(self):
+        dsllv = 0x00A41014                       # dsllv $v0, $a0, $a1
+        m = machine([dsllv, JR_RA, 0])
+        m.call(BASE, (1, 40))
+        self.assertEqual(m.regs[2], 1 << 40)
+        m.call(BASE, (1, 104))
+        self.assertEqual(m.regs[2], 1 << 40)
+
+    def test_dsrav_keeps_the_sign(self):
+        m = machine([0x00A41017, JR_RA, 0])      # dsrav $v0, $a0, $a1
+        m.call(BASE, (-256 & self.MASK64, 4))
+        self.assertEqual(m.regs[2], -16 & self.MASK64)
+
+    def test_second_pipeline_leaves_hi_lo_alone(self):
+        mult = 0x00850018                        # mult $a0, $a1
+        mult1 = 0x70000000 | (6 << 21) | (7 << 16) | (2 << 11) | 0x18   # mult1 $v0, $a2, $a3
+        mflo = 0x00001812                        # mflo $v1
+        mflo1 = 0x70004012                       # mflo1 $t0
+        m = machine([mult, mult1, mflo, mflo1, JR_RA, 0])
+        m.call(BASE, (2, 3, 4, 5))
+        self.assertEqual((m.regs[2], m.regs[3], m.regs[8]), (20, 6, 20))
+
+    def test_madd_accumulates_into_hi_lo(self):
+        mult = 0x00850018                        # mult $a0, $a1
+        madd = 0x70000000 | (6 << 21) | (7 << 16) | (2 << 11)          # madd $v0, $a2, $a3
+        m = machine([mult, madd, JR_RA, 0])
+        self.assertEqual(m.call(BASE, (2, 3, 4, 5)), 26)
 
 
 class TestAccumulator(unittest.TestCase):
@@ -67,6 +123,29 @@ class TestAccumulator(unittest.TestCase):
         self.assertEqual(m.call(BASE, ()), 0)
 
 
+class TestWindows(unittest.TestCase):
+    def test_hardware_registers_and_scratchpad_are_plain_memory(self):
+        m = machine([JR_RA, 0])
+        for address in (0x10008000, 0x7000_3FFC):
+            self.assertEqual(m.memory.read_int(address, 4, False), 0)
+            m.memory.write_int(address, 0xCAFE, 4)
+            self.assertEqual(m.memory.read_int(address, 4, False), 0xCAFE)
+
+    def test_outside_every_window_still_faults(self):
+        m = machine([JR_RA, 0])
+        for address in (0x10010000, 0x70004000, 0x0FFFFFFC):
+            with self.assertRaises(EmulationError):
+                m.memory.read_int(address, 4, False)
+
+    def test_window_writes_are_rolled_back(self):
+        m = machine([JR_RA, 0])
+        m.memory.begin_journal()
+        m.memory.write_int(0x1000A000, 7, 4)
+        m.memory.rollback()
+        m.memory.end_journal()
+        self.assertEqual(m.memory.read_int(0x1000A000, 4, False), 0)
+
+
 class TestGlobalPointerSeeding(unittest.TestCase):
     def test_only_null_globals_are_seeded_and_into_scratch(self):
         m = machine([0] * 64)
@@ -77,6 +156,28 @@ class TestGlobalPointerSeeding(unittest.TestCase):
         pointer = m.memory.read_int(null_global, 4, False)
         self.assertTrue(layout.CURRENT.scratch <= pointer < layout.CURRENT.scratch + layout.CURRENT.scratch_size)
         self.assertEqual(m.memory.read_int(set_global, 4, False), 0x12345678)
+
+    # lui $t0, 0x10 ; lw $t1, 0x100($t0) ; lw $v0, 8($t1) ; jr $ra ; nop
+    FOLLOWS_GLOBAL = [0x3C080010, 0x8D090100, 0x8D220008, JR_RA, 0]
+
+    def test_a_null_pointer_found_by_running_is_seeded(self):
+        """The global at BASE+0x100 holds null; the function reads a field through
+        it. Running finds it, seeds it, and the function then runs."""
+        m = machine(self.FOLLOWS_GLOBAL + [0] * 64)
+        func = {"addr": BASE, "end": BASE + 20}
+        with self.assertRaises(EmulationError):
+            m.call(BASE, ())
+        seeded = testmem.discover_null_pointers(m, [func], lambda a: a >= BASE + 0x40)
+        self.assertEqual(seeded, 1)
+        pointer = m.memory.read_int(BASE + 0x100, 4, False)
+        self.assertTrue(layout.CURRENT.scratch <= pointer < layout.CURRENT.scratch + layout.CURRENT.scratch_size)
+        m.call(BASE, ())
+
+    def test_nothing_outside_the_program_data_is_seeded(self):
+        m = machine(self.FOLLOWS_GLOBAL + [0] * 64)
+        func = {"addr": BASE, "end": BASE + 20}
+        self.assertEqual(testmem.discover_null_pointers(m, [func], lambda a: False), 0)
+        self.assertEqual(m.memory.read_int(BASE + 0x100, 4, False), 0)
 
 
 if __name__ == "__main__":
