@@ -1185,11 +1185,17 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
             arguments.append((index, regs[reg]))
         index = memory.next_epoch() if isinstance(memory, Overlay) else epoch + 1
         call = Call(index, target, tuple(arguments), pointer)
+        before_v0 = regs.get(2)
         for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
             regs.pop(index, None)
         for index in range(20):                 # $f0..$f19 are caller-saved
             regs.pop(fpr(index), None)
-        regs[2] = CallResult(call.index, target)
+        if pointer is None and target in getattr(parameters, "preserves_v0", ()):
+            # The callee never touches $v0: it still holds the caller's value.
+            if before_v0 is not None:
+                regs[2] = before_v0
+        else:
+            regs[2] = CallResult(call.index, target)
         return marks + ((len(stores), "call", call),), call.index
 
     def enter_loop(head, regs, stores, frame, memory, conditions, visited, marks,

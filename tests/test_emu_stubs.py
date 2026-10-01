@@ -49,14 +49,22 @@ class TestStubs(unittest.TestCase):
 
 class TestAccumulator(unittest.TestCase):
     def test_madd_adds_the_product_to_the_accumulator(self):
-        # adda.s $f0, $f2 ; madd.s $f4, $f0, $f2 ; jr $ra ; mfc1 $v0, $f4
-        adda = 0x46020018
-        madd = 0x4602011C                 # madd.s $f4, $f0, $f2
+        # adda.s $f12, $f14 ; madd.s $f4, $f12, $f14 ; jr $ra ; mfc1 $v0, $f4
+        adda = 0x460E6018
+        madd = 0x460E611C
         mfc1 = 0x44022000                 # mfc1 $v0, $f4
         m = machine([adda, madd, JR_RA, mfc1])
-        m.fpr[0], m.fpr[2] = bits(3.0), bits(2.0)
+        # The operands arrive as float arguments: $f12 = 3, $f14 = 2.
+        args = (0,) * 8 + (bits(3.0), 0, bits(2.0))
         # ACC = 3 + 2 = 5; f4 = ACC + 3 * 2 = 11
-        self.assertEqual(m.call(BASE, ()) & 0xFFFFFFFF, bits(11.0))
+        self.assertEqual(m.call(BASE, args) & 0xFFFFFFFF, bits(11.0))
+
+    def test_every_call_starts_from_clean_registers(self):
+        """A register left over from an earlier run must not leak into the next."""
+        # jr $ra ; daddu $v0, $t4, $zero   (returns whatever $t4 holds)
+        m = machine([JR_RA, 0x0180102D])
+        m.regs[12] = 0x1234
+        self.assertEqual(m.call(BASE, ()), 0)
 
 
 class TestGlobalPointerSeeding(unittest.TestCase):

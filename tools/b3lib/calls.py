@@ -80,13 +80,63 @@ def float_argument_use(database, image, base) -> set:
     return used
 
 
+class Parameters(dict):
+    """{function: argument-vector indices it reads}, plus `preserves_v0`: the
+    functions after a call to which $v0 still holds the caller's value."""
+
+    preserves_v0 = frozenset()
+
+
 def parameters(database, image, base) -> dict:
     """{function: argument-vector indices it reads}, for every known function.
 
     Live-in analysis over each function's control flow, to a fixed point over the
     call graph (see live_parameters).
     """
-    return live_parameters(database, image, base)
+    found = Parameters(live_parameters(database, image, base))
+    found.preserves_v0 = v0_preserving(database, image, base)
+    return found
+
+
+def v0_preserving(database, image, base) -> frozenset:
+    """Functions that leave $v0 exactly as the caller had it.
+
+    A function that never writes $v0, and calls only functions that never write it
+    either, returns with the caller's $v0 still in place - and callers do rely on
+    that, returning a value they set before the call. Treating such a call's $v0 as
+    the callee's result made the model return whatever the callee happened to start
+    with. A call through a register or a kernel call (which returns in $v0) rules
+    a function out; the rest is a fixed point over the call graph.
+    """
+    from .structs import _written_register
+
+    functions = {f["addr"]: f for f in database["functions"] if f["size"]}
+    candidates, needs = set(), {}
+    for address, func in functions.items():
+        writes, callees = False, set()
+        for pc in range(func["addr"], func["end"], 4):
+            ins = DISASM.decode(struct.unpack_from("<I", image, pc - base)[0], pc)
+            if _written_register(ins) == 2 or ins.mnemonic in ("syscall", "jalr"):
+                writes = True
+                break
+            if ins.is_call or (ins.is_jump and not ins.is_return and ins.mnemonic != "jr"):
+                if not (func["addr"] <= ins.target < func["end"]):
+                    callees.add(ins.target)
+            elif ins.mnemonic == "jr" and not ins.is_return:
+                writes = True                     # a jump table: unknown targets
+                break
+        if not writes:
+            candidates.add(address)
+            needs[address] = callees
+    preserving = set(candidates)
+    changed = True
+    while changed:
+        changed = False
+        for address in list(preserving):
+            if not needs[address] <= preserving:
+                preserving.discard(address)
+                changed = True
+    return frozenset(preserving)
 
 
 def scanned_parameters(database, image, base) -> dict:

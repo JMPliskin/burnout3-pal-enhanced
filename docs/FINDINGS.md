@@ -640,6 +640,27 @@ has been derived since, struct recovery runs once per run, and the compiled
 check reuses the original's results recorded during verification; a full run
 is back under half an hour.
 
+## Deterministic tests
+
+Every interpreter call now starts from the same register state. Registers used to
+keep whatever the previous run left, so a callee reading one the analysis did not
+attribute to it saw different garbage depending on what had run before: the same
+function could pass alone and fail in the pipeline, and the compiled check -
+which reuses the original's results from verification - disagreed on 22
+functions for that reason alone. With clean registers it disagrees on 2.
+
+That also exposed functions that had been passing by luck, and one real pattern
+behind them: a function that sets `$v0`, calls a function that never touches
+`$v0`, and returns - handing back its own earlier value. The model took every
+call's `$v0` to be the callee's result. Calls to functions that provably leave
+`$v0` alone (940 of them, a fixed point over the call graph) now keep the caller's
+value, which is exact. Callees that leave it alone on only some paths remain; a
+"result" that is a leftover register is meaningless to a port, and those
+functions stay dropped. Model disagreements went from 23 to 11.
+
+Derived and verified: 2,670 functions; 2,624 emitted functions agree when
+compiled. Verified code: 6.01% of code bytes.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

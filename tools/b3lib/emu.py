@@ -232,6 +232,16 @@ class Machine:
         """
         if len(args) > 16:
             raise EmulationError("only register arguments are supported")
+        # Every call starts from the same register state. Registers used to keep
+        # whatever the previous run left, so a callee reading one the analysis did
+        # not attribute to it saw different garbage depending on what had run
+        # before - and the same test could pass alone and fail in the pipeline.
+        self.regs = [0] * 32
+        self.regs_hi = [0] * 32
+        self.hi = self.lo = 0
+        self.fpr = [0] * 32
+        self.fp_cond = False
+        self.fp_acc = 0
         for i, value in enumerate(args):
             if i < 8:
                 self.set((4, 5, 6, 7, 8, 9, 10, 11)[i], value & MASK64)
