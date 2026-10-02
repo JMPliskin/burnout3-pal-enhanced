@@ -4,6 +4,7 @@
     python engine/tools/lift.py                  # lift, build, verify, report
     python engine/tools/lift.py --emit           # also write the verified ones out
     python engine/tools/lift.py --limit 500      # the first 500 functions only
+    python engine/tools/lift.py --no-cache       # verify everything afresh
 
 Lifting (engine/ps2decomp/lift.py) is the mechanical tier under derivation:
 every instruction becomes a statement over an explicit register context. Each
@@ -28,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 import derive
-from ps2decomp import cppcheck, layout, lift, liftcheck, testmem
+from ps2decomp import cppcheck, layout, lift, liftcheck, testmem, verdicts
 from ps2decomp import game as game_config
 from ps2decomp.emu import Machine
 
@@ -252,7 +253,36 @@ def _verify(func, machine, library, abi) -> str:
     return "verified" if tested >= 5 else "untestable: only %d cases ran" % tested
 
 
-def structure_verified(chosen, functions, image, base, game, seeds, jobs, strings=None) -> dict:
+def verify_texts(texts: dict, work: str, game, seeds, jobs, cache, abi=False,
+                 machine=None, functions=None) -> dict:
+    """{address: outcome} for each C++ text that compiles; remembered verdicts
+    (verdicts.py) are reused, and only the rest are built and run."""
+    outcomes, missing = {}, {}
+    for address, text in texts.items():
+        outcome = cache.get(text, abi)
+        if outcome is None:
+            missing[address] = text
+        else:
+            outcomes[address] = outcome
+    if missing:
+        dll, built = build(missing, work)
+        if jobs > 1 and len(built) > 50:
+            fresh = verify_parallel(sorted(built), game, seeds, dll, jobs, abi)
+        else:
+            library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
+            fresh = {address: verify(functions[address], machine, library, abi)
+                     for address in sorted(built)}
+        for address, outcome in fresh.items():
+            cache.put(built[address], abi, outcome)
+            outcomes[address] = outcome
+        cache.save()
+    print("  %d verdicts remembered, %d verified afresh"
+          % (len(texts) - len(missing), len(missing)))
+    return outcomes
+
+
+def structure_verified(chosen, functions, image, base, game, seeds, jobs, strings=None,
+                       cache=None, machine=None) -> dict:
     """Swap in the structured form of every function whose structured form verifies too.
 
     Structuring (structure.py) is a second translation of the same code, so it is
@@ -283,8 +313,9 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs, string
         if not structured:
             break
         work = game.path(os.path.join(game.build, "structure_" + label.split()[-1]))
-        dll, structured = build(structured, work)
-        outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs, abi)
+        outcomes = verify_texts(structured, work, game, seeds, jobs, cache, abi,
+                                machine, functions)
+        structured = {a: t for a, t in structured.items() if a in outcomes}
         passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
         for address in passed:
             result[address] = structured[address]
@@ -403,6 +434,9 @@ def main(argv=None) -> int:
                              "(loops, ifs, named locals) where that verifies too")
     parser.add_argument("--csv", action="store_true",
                         help="mark the verified functions `lifted` in the status table")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="verify every function afresh instead of reusing the verdicts "
+                             "of unchanged ones (the remembered verdicts are refreshed)")
     args = parser.parse_args(argv)
 
     game = game_config.from_args(args)
@@ -426,20 +460,24 @@ def main(argv=None) -> int:
     for reason, count in refused.most_common(10):
         print("  %5d  %s" % (count, reason))
 
-    stage = time.time()
-    work = game.path(os.path.join(game.build, "lift"))
-    dll, lifted = build(lifted, work)
-    print("  compiling took %.0fs" % (time.time() - stage))
+    # A verdict holds while the function's text and everything it is tested
+    # against stay the same: the image, its analysis and the test memory's seeds
+    # are part of that, with the code (verdicts.fingerprint).
+    with open(game.database_path, "rb") as handle:
+        analysis = handle.read()
+    environment = verdicts.fingerprint(os.path.dirname(os.path.dirname(HERE)),
+                                       (bytes(image), analysis, sorted(seeds)))
+    cache = verdicts.Verdicts(game.path(os.path.join(game.build, "verdicts.json")),
+                              environment, use=not args.no_cache)
 
     stage = time.time()
     by_address = {f["addr"]: f for f in functions}
-    if args.jobs > 1 and len(lifted) > 50:
-        outcomes = verify_parallel(sorted(lifted), game, seeds, dll, args.jobs)
-    else:
-        library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
-        outcomes = {address: verify(by_address[address], machine, library)
-                    for address in sorted(lifted)}
-    print("  verifying took %.0fs (%d processes)" % (time.time() - stage, max(1, args.jobs)))
+    work = game.path(os.path.join(game.build, "lift"))
+    outcomes = verify_texts(lifted, work, game, seeds, args.jobs, cache, False,
+                            machine, by_address)
+    lifted = {a: t for a, t in lifted.items() if a in outcomes}
+    print("  building and verifying took %.0fs (%d processes)"
+          % (time.time() - stage, max(1, args.jobs)))
     import json
     with open(game.path(os.path.join(game.build, "lift_outcomes.json")), "w",
               encoding="utf-8") as handle:
@@ -462,7 +500,7 @@ def main(argv=None) -> int:
     if args.structure:
         strings = {entry["addr"]: entry["text"] for entry in database["strings"]}
         chosen = structure_verified(chosen, by_address, image, section.addr, game, seeds,
-                                    args.jobs, strings)
+                                    args.jobs, strings, cache, machine)
     # Everything else that lifted is emitted too, marked: a complete translation,
     # with each function saying whether it was checked.
     unverified = {a: outcomes[a] for a in lifted if a not in chosen}

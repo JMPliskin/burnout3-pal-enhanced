@@ -19,6 +19,7 @@ operations sign-extend their result into the destination register.
 from __future__ import annotations
 
 import struct
+import sys
 
 from . import layout, vu0
 from .r5900 import DISASM, GPR
@@ -81,8 +82,11 @@ def _sign64(value: int) -> int:
 
 PAGE_SIZE = 0x1000
 PAGE_MASK = PAGE_SIZE - 1
-# At most this many pages are mapped on demand in one process: 16 MB.
-MAX_PAGES = 4096
+# At most this many pages are mapped on demand in one process: 64 MB. Pages a
+# test keeps accumulate over a whole run - the derivation tests some 10,000
+# functions in one process - and at 4,096 the later functions faulted for want
+# of a page; Memory.map_page warns when the cap is reached.
+MAX_PAGES = 16384
 
 # Address windows mapped as plain memory besides main RAM. The scratchpad is real
 # RAM on the console. The hardware registers (DMA, VIF, GIF, timers...) are not,
@@ -117,6 +121,7 @@ class Memory:
         # Pages mapped on demand (see map_page), after the windows in the buffer.
         self.pages = {}
         self.page_source = None      # page address -> its initial contents
+        self.pages_exhausted = False
         # When watching, the address of the last word read as zero: what a null
         # pointer dereference most likely loaded its base from (testmem uses it).
         self.watch_zero = False
@@ -143,8 +148,13 @@ class Memory:
         same memory afterwards, the comparison is as sound as before.
         """
         page = addr & ~PAGE_MASK & MASK32
-        if (self.page_source is None or page in self.pages
-                or len(self.pages) >= MAX_PAGES):
+        if self.page_source is None or page in self.pages:
+            return False
+        if len(self.pages) >= MAX_PAGES:
+            if not self.pages_exhausted:
+                self.pages_exhausted = True
+                print("warning: %d pages mapped for tests, the most allowed; later "
+                      "tests may fault for want of a page" % MAX_PAGES, file=sys.stderr)
             return False
         self.pages[page] = len(self.bytes)
         self.bytes.extend(self.page_source(page))

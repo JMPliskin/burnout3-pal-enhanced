@@ -1005,6 +1005,40 @@ tested against zero is the comparison, small sign-extended literals are plain,
 and a sign extension nested inside a sum the outer one already truncates is
 dropped. 7,678 of the 7,897 verified functions pass in structured form.
 
+## A page budget that decided results, and remembered verdicts
+
+Test memory maps pages on demand, up to a fixed number per process. Two things
+spent that budget on nothing: memory profiles that failed - in derivation as in
+lifting - kept the pages they had mapped, and the pages of every function tested
+stayed mapped for the rest of the run. Derivation tests some 10,000 functions in
+one process; it reached the cap of 4,096 pages part-way through, and from then on
+functions faulted for want of a page. Whether a function verified depended on
+how far through the run it came. Adding the two forward-pointer profiles spent
+the budget sooner and lost eleven verified functions; that is how it showed.
+
+Pages a failed profile or attempt mapped are now unmapped (Memory.unmap_to), the
+cap is 16,384 pages, and reaching it prints a warning. Derivation now verifies
+4,235 functions, up from 4,058: VERIFIED goes from 14.04% to 14.86%. No run
+reaches the cap.
+
+A full lift run took 40 minutes and was repeated for every change, even one that
+only changes how structured code is written. A verdict depends only on the
+function's C++ text and the environment - callees run in the interpreter, from
+the original code - so verdicts are now remembered, keyed by the text, the form
+of comparison and a fingerprint of the environment (verdicts.py). A change to
+structuring re-verifies only the functions whose text changed. On a 600-function
+sample a repeated run verifies nothing again and agrees exactly; switching one
+rewrite off re-verifies the 359 functions it touched. `--no-cache` recomputes
+everything, the check on what the key cannot see.
+
+Structured code: a test straight after a delay slot that cannot affect it is a
+plain `if`; an empty then-arm is inverted; a loop that ends `if (c) { ...
+continue; } else break;` tests `if (!c) break;` and, where that test comes
+first, is a `while (c)`; and the link register a `jal` sets is passed to the
+call. `for (;;)` loops fall from 5,129 to 3,611, with 2,136 do-while and 388
+while loops, and 36,600 `ra = ...` lines go. 7,679 of 7,898 verified functions
+pass in structured form, one more than before.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

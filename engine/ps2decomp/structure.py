@@ -531,6 +531,142 @@ def _loop_test(lines, k):
     return None
 
 
+_FLIP = {"==": "!=", "!=": "==", "<": ">=", ">=": "<", ">": "<=", "<=": ">"}
+
+
+def negate(condition: str) -> str:
+    """The opposite condition, spelled as plainly as it safely can be."""
+    match = re.match(r"^([^ ()]*(?:\([us]64\)[^ ()]+)?) (==|!=|<|>=|>|<=) ([^ ()]+)$", condition)
+    if match:
+        return "%s %s %s" % (match.group(1), _FLIP[match.group(2)], match.group(3))
+    if condition.startswith("!(") and _closing(condition, 1) == len(condition) - 1:
+        return condition[2:-1]
+    return "!(%s)" % condition
+
+
+def _close_of(lines, k, texts):
+    """The first line after k that is exactly one of `texts`, or None."""
+    return next((j for j in range(k + 1, len(lines)) if lines[j] in texts), None)
+
+
+_PLAIN_SLOT = re.compile(r"^([a-z][a-z0-9]*) = [^;]*;$")
+
+
+def hoist_delay_slots(lines):
+    """`{ const bool t = C; S; if (t) {...} else {...} }` is `S; if (C) {...}
+    else {...}` when S cannot change C: S is a plain assignment to a name C does
+    not mention, writing no memory and calling nothing. With the slot elided, it
+    is just `if (C)`."""
+    lines = list(lines)
+    k = 0
+    while k + 1 < len(lines):
+        head = lines[k].strip()
+        if not (head.startswith("{ const bool t = ") and head.endswith(";")):
+            k += 1
+            continue
+        pad = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+        condition = head[len("{ const bool t = "):-1]
+        if lines[k + 1] == pad + "  if (t) {":
+            slot, test = None, k + 1
+        else:
+            slot, test = lines[k + 1].strip(), k + 2
+            match = _PLAIN_SLOT.match(slot)
+            if (test >= len(lines) or lines[test] != pad + "  if (t) {" or not match
+                    or re.search(r"\b%s\b" % match.group(1), condition)
+                    or any(word in slot for word in ("Write", "Call", "(c"))
+                    or "(c" in condition):
+                k += 1
+                continue
+        middle = _close_of(lines, test, (pad + "  } else {", pad + "  } }"))
+        if middle is None:
+            k += 1
+            continue
+        end = middle if lines[middle] == pad + "  } }" else _close_of(lines, middle, (pad + "  } }",))
+        if end is None:
+            k += 1
+            continue
+        lines[end] = pad + "}"
+        if middle != end:
+            lines[middle] = pad + "} else {"
+        lines[k:test + 1] = ([pad + slot] if slot else []) + [pad + "if (%s) {" % condition]
+        k += 1
+    return lines
+
+
+def invert_empty_then(lines):
+    """`if (C) { } else { A }` is `if (!C) { A }`."""
+    out = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if (out and stripped == "} else {" and out[-1].strip().startswith("if (")
+                and out[-1].strip().endswith(") {")
+                and out[-1][:len(out[-1]) - len(out[-1].lstrip())]
+                == line[:len(line) - len(line.lstrip())]):
+            pad = line[:len(line) - len(line.lstrip())]
+            out[-1] = pad + "if (%s) {" % negate(out[-1].strip()[4:-3])
+            continue
+        out.append(line)
+    return out
+
+
+def loop_guards(lines):
+    """A loop ending in `if (C) { A continue; } else { break; }` is `if (!C)
+    break; A`; and a loop whose first test that is - `for (;;) { Tick; if (!C)
+    break; ...}` - is `while (C) { Tick; ... }`."""
+    lines = list(lines)
+    k = 0
+    while k < len(lines):
+        if lines[k].strip() != "for (;;) {":
+            k += 1
+            continue
+        pad = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+        close = _close_of(lines, k, (pad + "}",))
+        if close is None:
+            k += 1
+            continue
+        inner = pad + "    "
+        arm = inner + "        "
+        if (lines[close - 1] == inner + "}" and lines[close - 2] == arm + "break;"
+                and lines[close - 3] == inner + "} else {" and lines[close - 4] == arm + "continue;"):
+            start = next((j for j in range(close - 5, k, -1)
+                          if lines[j].startswith(inner + "if (") and lines[j].endswith(") {")
+                          and not lines[j].startswith(inner + " ")), None)
+            body = lines[start + 1:close - 4] if start is not None else None
+            if body is not None and all(line.startswith(arm) or line.startswith("L_")
+                                        or not line.strip() for line in body):
+                condition = lines[start].strip()[4:-3]
+                lines[start:close] = ([inner + "if (%s) break;" % negate(condition)]
+                                      + [line[8:] if line.startswith(arm) else line for line in body])
+                close = _close_of(lines, k, (pad + "}",))
+        # The guard straight after the tick: a while loop.
+        if (k + 2 < close and lines[k + 1].strip().startswith("Tick(c, ")
+                and re.match(r"^if \((.*)\) break;$", lines[k + 2].strip())
+                and lines[k + 2].startswith(inner + "if (")):
+            condition = lines[k + 2].strip()[4:-len(") break;")]
+            lines[k:k + 3] = [pad + "while (%s) {" % negate(condition), lines[k + 1]]
+        k += 1
+    return lines
+
+
+_LINK = re.compile(r"^(\s*)ra = 0x(00[0-7][0-9A-F]{5})ull;$")
+_PLAIN_CALL = re.compile(r"^(\s*)out\(\); Call\(c, (0x[0-9A-F]{8}u)\); in\(\);$")
+
+
+def fold_links(lines):
+    """`ra = R; out(); Call(c, T); in();` is `out(); Call(c, T, R); in();` - the
+    link a jal sets, given to the call that uses it."""
+    out = []
+    for line in lines:
+        call = _PLAIN_CALL.match(line)
+        link = _LINK.match(out[-1]) if out else None
+        if call and link and link.group(1) == call.group(1):
+            out[-1] = "%sout(); Call(c, %s, 0x%su); in();" % (call.group(1), call.group(2),
+                                                         link.group(2))
+            continue
+        out.append(line)
+    return out
+
+
 def loops_to_do_while(lines):
     """`for (;;) { ...; if (C) continue; else break; }` is `do { ... } while (C);`
     when nothing else in the body continues - a `continue` in a do-while goes to
@@ -775,6 +911,7 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     # The context is lifted::Context; everything else reads without the prefixes.
     lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in synced))
     lines.append("    (void)out; (void)in; (void)leave;")
-    lines += loops_to_do_while(drop_empty_else(fold_constants(out_lines, strings)))
+    body = drop_empty_else(hoist_delay_slots(fold_links(fold_constants(out_lines, strings))))
+    lines += loop_guards(loops_to_do_while(invert_empty_then(body)))
     lines.append("}")
     return "\n".join(lines) + "\n"

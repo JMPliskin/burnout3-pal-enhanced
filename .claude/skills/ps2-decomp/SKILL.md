@@ -95,6 +95,14 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
    ```sh
    python -u engine/tools/lift.py --game games/<name> --structure --emit --csv > games/<name>/build/lift.log
    ```
+   lift.py remembers each verdict (`build/verdicts.json`, see
+   `engine/ps2decomp/verdicts.py`): a function whose C++ text is unchanged, in an
+   unchanged environment, is not verified again. A change to structuring only
+   re-verifies the functions whose structured text changed - minutes, not the
+   forty a cold run takes. Any change to the interpreter, test memory, runtime,
+   verification code or the game's analysis invalidates every verdict. Run with
+   `--no-cache` before reporting a milestone: it recomputes everything, which
+   checks what the cache key cannot see (compiler version, run order).
 7. Name what the evidence supports, and share it:
    ```sh
    python engine/tools/signatures.py --game games/<name> name     # config/names.csv

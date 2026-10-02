@@ -49,6 +49,12 @@ struct Abort {
    callee returns. Defined by whatever hosts the lifted code. */
 void Call(Context& c, u32 target);
 
+/* The same, with the link register set first: a jal written as one call. */
+inline void Call(Context& c, u32 target, u32 return_address) {
+    c.r[31] = return_address;
+    Call(c, target);
+}
+
 /* Transfers control to `target` for good, as a jump out of the function does:
    it runs until control comes back to `return_address` with the stack pointer at
    or above `entry_sp`, which is when the lifted function itself has returned. */

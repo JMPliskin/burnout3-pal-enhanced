@@ -38,6 +38,15 @@ results and callee-saved float registers, and memory. That is the level derived
 functions are verified at. Every other form is compared on the whole register
 file.
 
+Verdicts are remembered between runs (`engine/ps2decomp/verdicts.py`). A
+function's verdict depends only on its own C++ text and the environment it is
+tested in - its callees run in the interpreter from the original code - so the
+key is the text, the form of comparison, and a fingerprint of the interpreter,
+test memory, runtime, verification code, image, analysis and seeds. A verdict
+is reused only when all of these are unchanged. A `--no-cache` run recomputes
+every verdict and is the check on the two things the key cannot see: the
+compiler's version, and the order functions run in within a process.
+
 Lifted source is correct and complete, and enough to run the game on a host, but
 it is not readable: it says `c.r[2] = c.r[4] + 5`, not what the function means.
 So it is reported as its own tier and never counted as `verified`. A function

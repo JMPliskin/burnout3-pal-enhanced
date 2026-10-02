@@ -63,5 +63,92 @@ class TestDoWhile(unittest.TestCase):
         self.assertEqual(structure.loops_to_do_while(loop), loop)
 
 
+class TestLoopShapes(unittest.TestCase):
+    def test_negate(self):
+        self.assertEqual(structure.negate("v1 != 0ull"), "v1 == 0ull")
+        self.assertEqual(structure.negate("(s64)s1 < 6"), "(s64)s1 >= 6")
+        self.assertEqual(structure.negate("!(a && b)"), "a && b")
+        self.assertEqual(structure.negate("ReadS32((u32)a0) == 0ull"), "!(ReadS32((u32)a0) == 0ull)")
+
+    def test_independent_delay_slot_is_hoisted(self):
+        lines = ["    { const bool t = v1 != 0ull;",
+                 "      s2 = Sx32(s2 + s4);",
+                 "      if (t) {",
+                 "            a0 = s2;",
+                 "      } else {",
+                 "            a0 = s3;",
+                 "      } }"]
+        self.assertEqual(structure.hoist_delay_slots(lines),
+                         ["    s2 = Sx32(s2 + s4);",
+                          "    if (v1 != 0ull) {",
+                          "            a0 = s2;",
+                          "    } else {",
+                          "            a0 = s3;",
+                          "    }"])
+
+    def test_dependent_delay_slot_stays(self):
+        lines = ["    { const bool t = v1 != 0ull;",
+                 "      v1 = Sx32(s2 + s4);",
+                 "      if (t) {",
+                 "      } }"]
+        self.assertEqual(structure.hoist_delay_slots(lines), lines)
+        stored = ["    { const bool t = v1 != 0ull;",
+                  "      Write32((u32)a0, (u32)v1);",
+                  "      if (t) {",
+                  "      } }"]
+        self.assertEqual(structure.hoist_delay_slots(stored), stored)
+
+    def test_empty_then_is_inverted(self):
+        lines = ["    if (at == 0ull) {", "    } else {", "            v1 = 0x1ull;", "    }"]
+        self.assertEqual(structure.invert_empty_then(lines),
+                         ["    if (at != 0ull) {", "            v1 = 0x1ull;", "    }"])
+
+    def test_guarded_loop_becomes_while(self):
+        lines = ["    for (;;) {",
+                 "        Tick(c, 0x00101D78u);",
+                 "        if (v0 == v1) {",
+                 "                a0 = Sx32(a0 + 0x1u);",
+                 "                continue;",
+                 "        } else {",
+                 "                break;",
+                 "        }",
+                 "    }"]
+        self.assertEqual(structure.loop_guards(lines),
+                         ["    while (v0 == v1) {",
+                          "        Tick(c, 0x00101D78u);",
+                          "        a0 = Sx32(a0 + 0x1u);",
+                          "    }"])
+
+    def test_guard_after_other_statements_breaks(self):
+        lines = ["    for (;;) {",
+                 "        Tick(c, 0x00101D78u);",
+                 "        v0 = ReadU8((u32)a0);",
+                 "        if (v0 == v1) {",
+                 "                a0 = Sx32(a0 + 0x1u);",
+                 "                continue;",
+                 "        } else {",
+                 "                break;",
+                 "        }",
+                 "    }"]
+        self.assertEqual(structure.loop_guards(lines),
+                         ["    for (;;) {",
+                          "        Tick(c, 0x00101D78u);",
+                          "        v0 = ReadU8((u32)a0);",
+                          "        if (v0 != v1) break;",
+                          "        a0 = Sx32(a0 + 0x1u);",
+                          "    }"])
+
+
+class TestLinks(unittest.TestCase):
+    def test_link_joins_its_call(self):
+        self.assertEqual(structure.fold_links(["    ra = 0x0014ECF4ull;",
+                                               "    out(); Call(c, 0x0015E8A0u); in();"]),
+                         ["    out(); Call(c, 0x0015E8A0u, 0x0014ECF4u); in();"])
+
+    def test_link_without_a_call_stays(self):
+        lines = ["    ra = 0x0014ECF4ull;", "    a0 = s0;", "    out(); Call(c, 0x0015E8A0u); in();"]
+        self.assertEqual(structure.fold_links(lines), lines)
+
+
 if __name__ == "__main__":
     unittest.main()

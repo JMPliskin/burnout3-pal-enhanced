@@ -1030,18 +1030,25 @@ def _choose_profile(machine, func, args):
     and the derivation always read the same memory, so it never changes a verdict.
     """
     for profile in testmem.PROFILES:
+        # Pages a failing profile mapped are given back: they would otherwise use
+        # up the mapping budget (emu.MAX_PAGES), and the functions tested later
+        # would fault for want of a page - a loss that depends on the order.
+        mark = machine.memory.page_mark()
         machine.memory.end_journal()
         machine.memory.write(layout.CURRENT.scratch, testmem.build(profile, func["addr"]))
         machine.memory.begin_journal()
         try:
             machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
-            return profile
+            ran = True
         except Exception as exc:
             _failed("original, every memory profile", exc)
-            continue
+            ran = False
         finally:
             machine.memory.rollback()
             machine.memory.end_journal()
+        if ran:
+            return profile
+        machine.memory.unmap_to(mark)
     return None
 
 
