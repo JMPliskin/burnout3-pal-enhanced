@@ -1100,7 +1100,7 @@ address,name,status,source,notes
 0x00144D00,lifted::F_00144D00,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00144E70,lifted::F_00144E70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001450C0,lifted::F_001450C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00145700,lifted::F_00145700,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00145700,generated::func_00145700,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001459E0,generated::func_001459E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00145A10,lifted::F_00145A10,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00145D10,lifted::F_00145D10,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -1132,8 +1132,8 @@ address,name,status,source,notes
 0x00147E90,lifted::F_00147E90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00147EE0,generated::func_00147EE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00147F50,generated::func_00147F50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00147FC0,lifted::F_00147FC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00148080,lifted::F_00148080,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00147FC0,generated::func_00147FC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00148080,generated::func_00148080,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00148140,lifted::F_00148140,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00148440,lifted::F_00148440,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00148690,lifted::F_00148690,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1146,7 +1146,7 @@ address,name,status,source,notes
 0x00149180,lifted::F_00149180,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001495C0,lifted::F_001495C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00149B50,lifted::F_00149B50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00149C90,lifted::F_00149C90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00149C90,generated::func_00149C90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00149E80,generated::func_00149E80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00149EB0,generated::func_00149EB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00149EC0,lifted::F_00149EC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1156,7 +1156,7 @@ address,name,status,source,notes
 0x0014A43C,lifted::F_0014A43C,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0014A480,generated::func_0014A480,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0014A560,lifted::F_0014A560,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0014A940,lifted::F_0014A940,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0014A940,generated::func_0014A940,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0014A980,lifted::F_0014A980,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x0014B010,lifted::F_0014B010,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x0014B4B0,lifted::F_0014B4B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1288,7 +1288,7 @@ address,name,status,source,notes
 0x00156220,generated::func_00156220,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00156260,lifted::F_00156260,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00156320,lifted::F_00156320,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001566F0,lifted::F_001566F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001566F0,generated::func_001566F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001568C0,lifted::F_001568C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00156BD0,lifted::F_00156BD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00156E20,generated::func_00156E20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -1485,12 +1485,12 @@ address,name,status,source,notes
 0x0019F780,lifted::F_0019F780,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0019F790,lifted::F_0019F790,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x0019FCF0,lifted::F_0019FCF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0019FE40,lifted::F_0019FE40,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0019FF30,lifted::F_0019FF30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0019FE40,generated::func_0019FE40,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0019FF30,generated::func_0019FF30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001A0020,lifted::F_001A0020,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001A00B0,lifted::F_001A00B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001A0240,lifted::F_001A0240,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001A02C0,lifted::F_001A02C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001A0240,generated::func_001A0240,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001A02C0,generated::func_001A02C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001A0370,generated::func_001A0370,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001A03A0,lifted::F_001A03A0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x001A0560,lifted::F_001A0560,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -1522,7 +1522,7 @@ address,name,status,source,notes
 0x001A1484,lifted::F_001A1484,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x001A14C8,lifted::F_001A14C8,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x001A152C,lifted::F_001A152C,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x001A1920,lifted::F_001A1920,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001A1920,generated::func_001A1920,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001A1CD0,lifted::F_001A1CD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001A2030,generated::func_001A2030,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001A2100,lifted::F_001A2100,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1581,7 +1581,7 @@ address,name,status,source,notes
 0x001AC470,lifted::F_001AC470,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001AD380,lifted::F_001AD380,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001AD850,generated::func_001AD850,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x001AD890,lifted::F_001AD890,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001AD890,generated::func_001AD890,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001ADA00,lifted::F_001ADA00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001ADC70,lifted::F_001ADC70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001AE360,generated::func_001AE360,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -1632,7 +1632,7 @@ address,name,status,source,notes
 0x001B6380,lifted::F_001B6380,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001B7220,lifted::F_001B7220,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001B7C00,lifted::F_001B7C00,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x001B7E10,lifted::F_001B7E10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001B7E10,generated::func_001B7E10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001B7F30,lifted::F_001B7F30,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x001B82F0,lifted::F_001B82F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001B84A0,lifted::F_001B84A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -1675,8 +1675,8 @@ address,name,status,source,notes
 0x001BE8F0,generated::func_001BE8F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001BE990,lifted::F_001BE990,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x001BEA70,generated::func_001BEA70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x001BEAA0,lifted::F_001BEAA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001BEBD0,lifted::F_001BEBD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001BEAA0,generated::func_001BEAA0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001BEBD0,generated::func_001BEBD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001BED00,lifted::F_001BED00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001BEEE0,lifted::F_001BEEE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001BF030,lifted::F_001BF030,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1720,7 +1720,7 @@ address,name,status,source,notes
 0x001CBE90,lifted::F_001CBE90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001CC200,lifted::F_001CC200,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001CC3B0,lifted::F_001CC3B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001CC4C0,lifted::F_001CC4C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001CC4C0,generated::func_001CC4C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001CC520,generated::func_001CC520,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001CC580,lifted::F_001CC580,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001CC900,lifted::F_001CC900,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -1737,7 +1737,7 @@ address,name,status,source,notes
 0x001D0A90,lifted::F_001D0A90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001D0B50,lifted::F_001D0B50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001D0CB0,generated::func_001D0CB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x001D0D00,lifted::F_001D0D00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001D0D00,generated::func_001D0D00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D0E00,lifted::F_001D0E00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001D0F50,lifted::F_001D0F50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001D1130,lifted::F_001D1130,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -1792,13 +1792,13 @@ address,name,status,source,notes
 0x001D51C0,lifted::F_001D51C0,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x001D53B0,lifted::F_001D53B0,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x001D5B10,lifted::F_001D5B10,reconstructed,src/lifted/,lifted; not verified: untestable: only 2 cases ran
-0x001D5CE0,lifted::F_001D5CE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001D5D60,lifted::F_001D5D60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001D5DC0,lifted::F_001D5DC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x001D5E00,lifted::F_001D5E00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001D5CE0,generated::func_001D5CE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001D5D60,generated::func_001D5D60,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001D5DC0,generated::func_001D5DC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x001D5E00,generated::func_001D5E00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D5E70,generated::func_001D5E70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D5EA0,lifted::F_001D5EA0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: store of N byte(s) at unmapped N"
-0x001D5F20,lifted::F_001D5F20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001D5F20,generated::func_001D5F20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D5FB0,lifted::F_001D5FB0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: store of N byte(s) at unmapped N"
 0x001D6070,generated::func_001D6070,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D6080,generated::func_001D6080,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -1814,7 +1814,7 @@ address,name,status,source,notes
 0x001D6D60,lifted::F_001D6D60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x001D6E80,lifted::F_001D6E80,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x001D7100,lifted::F_001D7100,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: store of N byte(s) at unmapped N"
-0x001D7380,lifted::F_001D7380,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x001D7380,generated::func_001D7380,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D7560,generated::func_001D7560,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D7580,generated::func_001D7580,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x001D75C0,lifted::F_001D75C0,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
@@ -2769,7 +2769,7 @@ address,name,status,source,notes
 0x0021DC50,generated::func_0021DC50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0021DDD0,lifted::F_0021DDD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0021DE50,lifted::F_0021DE50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0021DF80,lifted::F_0021DF80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0021DF80,generated::func_0021DF80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0021E0F0,lifted::F_0021E0F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0021E100,lifted::F_0021E100,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0021E350,lifted::F_0021E350,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3127,7 +3127,7 @@ address,name,status,source,notes
 0x0023F5B0,lifted::F_0023F5B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0023F7F0,generated::func_0023F7F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0023F860,generated::func_0023F860,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x0023F960,lifted::F_0023F960,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0023F960,generated::func_0023F960,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0023FA70,lifted::F_0023FA70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00240660,generated::func_00240660,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00240730,lifted::F_00240730,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3150,7 +3150,7 @@ address,name,status,source,notes
 0x00241040,lifted::F_00241040,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: store of N byte(s) at unmapped N"
 0x002413E0,lifted::F_002413E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002416E0,lifted::F_002416E0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x002419C0,lifted::F_002419C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002419C0,generated::func_002419C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00241BC0,generated::func_00241BC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00241D08,lifted::F_00241D08,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00241DC8,generated::func_00241DC8,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -3353,7 +3353,7 @@ address,name,status,source,notes
 0x0024FE90,lifted::F_0024FE90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0024FFC0,lifted::F_0024FFC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00250120,generated::func_00250120,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00250160,lifted::F_00250160,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00250160,generated::func_00250160,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002502D0,lifted::F_002502D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00250300,lifted::F_00250300,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00250310,generated::func_00250310,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -3406,7 +3406,7 @@ address,name,status,source,notes
 0x00254A80,lifted::F_00254A80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00254C90,generated::func_00254C90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00254D40,generated::func_00254D40,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00254D50,lifted::F_00254D50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00254D50,generated::func_00254D50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00254F10,lifted::F_00254F10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00254F20,lifted::F_00254F20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00255230,lifted::F_00255230,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3417,7 +3417,7 @@ address,name,status,source,notes
 0x002556F0,lifted::F_002556F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002558A0,lifted::F_002558A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00255C50,generated::func_00255C50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00255C90,lifted::F_00255C90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00255C90,generated::func_00255C90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00255E60,generated::func_00255E60,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00255EA0,generated::func_00255EA0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00255EE0,lifted::F_00255EE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3438,7 +3438,7 @@ address,name,status,source,notes
 0x00257904,lifted::F_00257904,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0025790C,lifted::F_0025790C,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00257914,lifted::F_00257914,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00257C70,lifted::F_00257C70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00257C70,generated::func_00257C70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00257E10,lifted::F_00257E10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00257FD0,lifted::F_00257FD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00258490,lifted::F_00258490,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3492,7 +3492,7 @@ address,name,status,source,notes
 0x00262B80,lifted::F_00262B80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00262CD0,lifted::F_00262CD0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x002630F0,generated::func_002630F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00263120,lifted::F_00263120,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00263120,generated::func_00263120,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00263350,lifted::F_00263350,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002633A0,lifted::F_002633A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00263420,lifted::F_00263420,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3503,7 +3503,7 @@ address,name,status,source,notes
 0x00263C00,lifted::F_00263C00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00263C10,lifted::F_00263C10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00263C40,lifted::F_00263C40,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00263E80,lifted::F_00263E80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00263E80,generated::func_00263E80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00263F70,generated::func_00263F70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00263F80,generated::func_00263F80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00264030,lifted::F_00264030,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3873,7 +3873,7 @@ address,name,status,source,notes
 0x0027BEF0,generated::func_0027BEF0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027BF00,lifted::F_0027BF00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027C070,lifted::F_0027C070,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027C370,lifted::F_0027C370,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0027C370,generated::func_0027C370,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027C5A0,lifted::F_0027C5A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027CB90,lifted::F_0027CB90,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x0027CC20,lifted::F_0027CC20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3885,14 +3885,14 @@ address,name,status,source,notes
 0x0027E540,lifted::F_0027E540,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027E570,lifted::F_0027E570,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027E900,lifted::F_0027E900,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027EC10,lifted::F_0027EC10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027EE40,lifted::F_0027EE40,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0027EC10,generated::func_0027EC10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0027EE40,generated::func_0027EE40,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027EEC0,lifted::F_0027EEC0,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
-0x0027EF30,lifted::F_0027EF30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027EF60,lifted::F_0027EF60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027EF90,lifted::F_0027EF90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0027EF30,generated::func_0027EF30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0027EF60,generated::func_0027EF60,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0027EF90,generated::func_0027EF90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027EFD0,lifted::F_0027EFD0,reconstructed,src/lifted/,lifted; not verified: untestable: only 2 cases ran
-0x0027F040,lifted::F_0027F040,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0027F040,generated::func_0027F040,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027F0B0,lifted::F_0027F0B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027F0F4,lifted::F_0027F0F4,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027F124,generated::func_0027F124,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -3904,7 +3904,7 @@ address,name,status,source,notes
 0x0027F250,lifted::F_0027F250,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027F2A0,lifted::F_0027F2A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027F480,lifted::F_0027F480,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0027F5E0,lifted::F_0027F5E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0027F5E0,generated::func_0027F5E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0027F8D0,lifted::F_0027F8D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0027FFF0,lifted::F_0027FFF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002802B0,lifted::F_002802B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -3923,7 +3923,7 @@ address,name,status,source,notes
 0x00283510,lifted::F_00283510,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00283560,generated::func_00283560,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002835C0,generated::func_002835C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00283800,lifted::F_00283800,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00283800,generated::func_00283800,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00283920,lifted::F_00283920,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00283A50,generated::func_00283A50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00283B20,generated::func_00283B20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -4100,7 +4100,7 @@ address,name,status,source,notes
 0x0028E120,generated::func_0028E120,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0028E210,lifted::F_0028E210,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0028E2E0,lifted::F_0028E2E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0028EA10,lifted::F_0028EA10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0028EA10,generated::func_0028EA10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0028EBE0,generated::func_0028EBE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0028ED30,lifted::F_0028ED30,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x0028FAD0,lifted::F_0028FAD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -4287,7 +4287,7 @@ address,name,status,source,notes
 0x00298420,lifted::F_00298420,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0029876C,lifted::F_0029876C,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00298790,lifted::F_00298790,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x002988E0,lifted::F_002988E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002988E0,generated::func_002988E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00298A20,lifted::F_00298A20,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00298D80,lifted::F_00298D80,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x00298DA0,lifted::F_00298DA0,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
@@ -4611,7 +4611,7 @@ address,name,status,source,notes
 0x002AE920,generated::func_002AE920,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002AE9A0,generated::func_002AE9A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002AE9F0,generated::func_002AE9F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x002AEA50,lifted::F_002AEA50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002AEA50,generated::func_002AEA50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002AEB50,lifted::F_002AEB50,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x002AEBA0,lifted::F_002AEBA0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x002AEF00,lifted::F_002AEF00,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -4687,7 +4687,7 @@ address,name,status,source,notes
 0x002B15DC,lifted::F_002B15DC,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002B1614,lifted::F_002B1614,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002B1628,lifted::F_002B1628,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x002B1C10,lifted::F_002B1C10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002B1C10,generated::func_002B1C10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002B1E00,lifted::F_002B1E00,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x002B1E50,generated::func_002B1E50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002B2130,lifted::F_002B2130,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -4791,8 +4791,8 @@ address,name,status,source,notes
 0x002B9C10,lifted::F_002B9C10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BA0F0,lifted::F_002BA0F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BA3A0,lifted::F_002BA3A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x002BA420,lifted::F_002BA420,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x002BA650,lifted::F_002BA650,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002BA420,generated::func_002BA420,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x002BA650,generated::func_002BA650,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BA7A0,lifted::F_002BA7A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BA9F0,generated::func_002BA9F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BAEE0,generated::func_002BAEE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -4816,7 +4816,7 @@ address,name,status,source,notes
 0x002BCE90,generated::func_002BCE90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BCEC0,lifted::F_002BCEC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BCF60,lifted::F_002BCF60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x002BD320,lifted::F_002BD320,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002BD320,generated::func_002BD320,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BD560,lifted::F_002BD560,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x002BD6A0,lifted::F_002BD6A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BD7E0,lifted::F_002BD7E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -4839,7 +4839,7 @@ address,name,status,source,notes
 0x002BECF0,lifted::F_002BECF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BED00,generated::func_002BED00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BEDB0,lifted::F_002BEDB0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x002BEDC0,lifted::F_002BEDC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002BEDC0,generated::func_002BEDC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002BEEB0,lifted::F_002BEEB0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x002BF0F0,lifted::F_002BF0F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002BF2E0,lifted::F_002BF2E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5243,7 +5243,7 @@ address,name,status,source,notes
 0x002F0370,lifted::F_002F0370,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002F0380,generated::func_002F0380,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002F03A0,generated::func_002F03A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x002F0440,lifted::F_002F0440,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002F0440,generated::func_002F0440,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002F0640,lifted::F_002F0640,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002F2A00,lifted::F_002F2A00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002F2CD0,lifted::F_002F2CD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5330,7 +5330,7 @@ address,name,status,source,notes
 0x002FAF40,lifted::F_002FAF40,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002FAF50,lifted::F_002FAF50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x002FAFB0,generated::func_002FAFB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x002FB120,lifted::F_002FB120,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x002FB120,generated::func_002FB120,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002FB220,generated::func_002FB220,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x002FB240,lifted::F_002FB240,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x002FB2E0,generated::func_002FB2E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -5467,7 +5467,7 @@ address,name,status,source,notes
 0x0030A970,generated::func_0030A970,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0030A990,generated::func_0030A990,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0030A9D0,generated::func_0030A9D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x0030AAE0,lifted::F_0030AAE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0030AAE0,generated::func_0030AAE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0030ABA0,lifted::F_0030ABA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0030B100,lifted::F_0030B100,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0030B110,lifted::F_0030B110,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5501,7 +5501,7 @@ address,name,status,source,notes
 0x0030D960,lifted::F_0030D960,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0030DD70,lifted::F_0030DD70,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x0030DE10,lifted::F_0030DE10,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x0030DF10,lifted::F_0030DF10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0030DF10,generated::func_0030DF10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0030E340,lifted::F_0030E340,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0030E930,generated::func_0030E930,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0030EB10,generated::func_0030EB10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -5539,7 +5539,7 @@ address,name,status,source,notes
 0x00313090,generated::func_00313090,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003131A0,generated::func_003131A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00313230,lifted::F_00313230,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00313450,lifted::F_00313450,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00313450,generated::func_00313450,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00313580,generated::func_00313580,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00313650,generated::func_00313650,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003137B0,lifted::F_003137B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5639,7 +5639,7 @@ address,name,status,source,notes
 0x0031A570,generated::func_0031A570,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031A590,generated::func_0031A590,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031A5D0,lifted::F_0031A5D0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x0031A840,lifted::F_0031A840,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0031A840,generated::func_0031A840,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031A9C0,lifted::F_0031A9C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0031ABC0,generated::func_0031ABC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031B0F0,generated::func_0031B0F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -5664,8 +5664,8 @@ address,name,status,source,notes
 0x0031CDA0,lifted::F_0031CDA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0031CF00,generated::func_0031CF00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031CF30,lifted::F_0031CF30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0031D340,generated::func_0031D340,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x0031D660,generated::func_0031D660,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x0031D340,lifted::F_0031D340,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0031D660,lifted::F_0031D660,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0031D920,generated::func_0031D920,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0031D930,lifted::F_0031D930,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: EmulationError: execution left the program at N"
 0x0031DA0C,lifted::F_0031DA0C,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5697,7 +5697,7 @@ address,name,status,source,notes
 0x0031FE40,lifted::F_0031FE40,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x0031FE70,lifted::F_0031FE70,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x0031FF80,lifted::F_0031FF80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00320E20,generated::func_00320E20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00320E20,lifted::F_00320E20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00320EB0,lifted::F_00320EB0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x003210D0,generated::func_003210D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00321430,lifted::F_00321430,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5767,8 +5767,8 @@ address,name,status,source,notes
 0x00326770,lifted::F_00326770,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x003268E0,lifted::F_003268E0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x00326960,lifted::F_00326960,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x00326CF0,lifted::F_00326CF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00326E70,lifted::F_00326E70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00326CF0,generated::func_00326CF0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00326E70,generated::func_00326E70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00326FC0,generated::func_00326FC0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00327310,lifted::F_00327310,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00327540,lifted::F_00327540,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -5818,7 +5818,7 @@ address,name,status,source,notes
 0x0032F360,generated::func_0032F360,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0032F550,generated::func_0032F550,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0032F840,lifted::F_0032F840,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0032FB30,lifted::F_0032FB30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0032FB30,generated::func_0032FB30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0032FD90,lifted::F_0032FD90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0032FF80,lifted::F_0032FF80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00330370,lifted::F_00330370,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
@@ -6011,7 +6011,7 @@ address,name,status,source,notes
 0x0033EF20,lifted::F_0033EF20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0033EFF0,lifted::F_0033EFF0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x0033F0E0,lifted::F_0033F0E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0033F1B0,lifted::F_0033F1B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0033F1B0,generated::func_0033F1B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0033F260,lifted::F_0033F260,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x0033F420,lifted::F_0033F420,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0033F4A0,lifted::F_0033F4A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -6259,7 +6259,7 @@ address,name,status,source,notes
 0x00357600,lifted::F_00357600,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00357B90,lifted::F_00357B90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003580B0,lifted::F_003580B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003582A0,lifted::F_003582A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003582A0,generated::func_003582A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003586B0,generated::func_003586B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00358780,generated::func_00358780,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00358850,lifted::F_00358850,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -6459,7 +6459,7 @@ address,name,status,source,notes
 0x003658E0,generated::func_003658E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00365910,lifted::F_00365910,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00365920,lifted::F_00365920,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00365E80,lifted::F_00365E80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00365E80,generated::func_00365E80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00366040,generated::func_00366040,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00366050,generated::func_00366050,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00366150,lifted::F_00366150,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -6632,7 +6632,7 @@ address,name,status,source,notes
 0x00372090,generated::func_00372090,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003720E0,generated::func_003720E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003720F0,lifted::F_003720F0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x00372400,lifted::F_00372400,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00372400,generated::func_00372400,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003724E0,lifted::F_003724E0,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x00372600,lifted::F_00372600,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00372AF0,generated::func_00372AF0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -6689,13 +6689,13 @@ address,name,status,source,notes
 0x00375520,generated::func_00375520,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003755D0,generated::func_003755D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003755E0,lifted::F_003755E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00375840,lifted::F_00375840,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00375840,generated::func_00375840,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00375AA0,lifted::F_00375AA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00375BF0,lifted::F_00375BF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00375D80,lifted::F_00375D80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00375D90,generated::func_00375D90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00375E80,lifted::F_00375E80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00375E90,lifted::F_00375E90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00375E90,generated::func_00375E90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00376220,lifted::F_00376220,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00376230,lifted::F_00376230,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00376260,lifted::F_00376260,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -6754,7 +6754,7 @@ address,name,status,source,notes
 0x00379140,lifted::F_00379140,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00379230,generated::func_00379230,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00379280,lifted::F_00379280,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003792C0,generated::func_003792C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003792C0,lifted::F_003792C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00379380,generated::func_00379380,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00379450,generated::func_00379450,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003795C0,lifted::F_003795C0,reconstructed,src/lifted/,lifted; not verified: untestable: only 2 cases ran
@@ -6831,10 +6831,10 @@ address,name,status,source,notes
 0x0037FDAC,lifted::F_0037FDAC,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x0037FDD4,lifted::F_0037FDD4,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00380250,lifted::F_00380250,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003808A0,lifted::F_003808A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00380970,lifted::F_00380970,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003808A0,generated::func_003808A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00380970,generated::func_00380970,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00380A50,lifted::F_00380A50,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x00380F10,lifted::F_00380F10,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00380F10,generated::func_00380F10,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00381030,lifted::F_00381030,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x003816E0,lifted::F_003816E0,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x00381AB0,lifted::F_00381AB0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -6843,7 +6843,7 @@ address,name,status,source,notes
 0x003827B0,lifted::F_003827B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00382950,lifted::F_00382950,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00382BE0,generated::func_00382BE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00382C00,lifted::F_00382C00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00382C00,generated::func_00382C00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00382CF0,lifted::F_00382CF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00382FC0,lifted::F_00382FC0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003835C0,lifted::F_003835C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -6871,17 +6871,17 @@ address,name,status,source,notes
 0x00384590,lifted::F_00384590,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003845D0,lifted::F_003845D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00384610,lifted::F_00384610,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00384650,lifted::F_00384650,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00384700,lifted::F_00384700,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003847B0,lifted::F_003847B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00384650,generated::func_00384650,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00384700,generated::func_00384700,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003847B0,generated::func_003847B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00384920,generated::func_00384920,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00384930,lifted::F_00384930,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x00384970,lifted::F_00384970,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00384980,lifted::F_00384980,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00384980,generated::func_00384980,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003849F0,lifted::F_003849F0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x00384A30,generated::func_00384A30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00384A50,generated::func_00384A50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00384A60,lifted::F_00384A60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00384A60,generated::func_00384A60,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00384B80,generated::func_00384B80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00384BF0,lifted::F_00384BF0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x00384C70,lifted::F_00384C70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -7277,9 +7277,9 @@ address,name,status,source,notes
 0x00399130,lifted::F_00399130,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00399600,generated::func_00399600,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003999E0,generated::func_003999E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x00399BA0,lifted::F_00399BA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00399BA0,generated::func_00399BA0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00399C30,lifted::F_00399C30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00399E20,lifted::F_00399E20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00399E20,generated::func_00399E20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00399EC0,lifted::F_00399EC0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: UnsupportedInstruction: unsupported instruction at N: 70052ec8 (ppacb)"
 0x0039A360,lifted::F_0039A360,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: UnsupportedInstruction: unsupported instruction at N: 70052ec8 (ppacb)"
 0x0039AD20,generated::func_0039AD20,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -7362,7 +7362,7 @@ address,name,status,source,notes
 0x003A2510,lifted::F_003A2510,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003A25F0,lifted::F_003A25F0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x003A2850,lifted::F_003A2850,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x003A3190,lifted::F_003A3190,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003A3190,generated::func_003A3190,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003A3250,lifted::F_003A3250,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x003A3890,lifted::F_003A3890,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x003A3D30,lifted::F_003A3D30,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
@@ -7388,7 +7388,7 @@ address,name,status,source,notes
 0x003A6CC0,lifted::F_003A6CC0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003A6DE0,lifted::F_003A6DE0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003A6E30,lifted::F_003A6E30,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x003A6E80,lifted::F_003A6E80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003A6E80,generated::func_003A6E80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003A6FD0,generated::func_003A6FD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003A7000,generated::func_003A7000,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003A7010,generated::func_003A7010,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -7399,8 +7399,8 @@ address,name,status,source,notes
 0x003A74D0,lifted::F_003A74D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003A7CB0,lifted::F_003A7CB0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003A7F20,lifted::F_003A7F20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003A8570,lifted::F_003A8570,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x003A86C0,lifted::F_003A86C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003A8570,generated::func_003A8570,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003A86C0,generated::func_003A86C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003A87F0,lifted::F_003A87F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003A89A0,lifted::F_003A89A0,reconstructed,src/lifted/,lifted; not verified: untestable: only 1 cases ran
 0x003A8A90,lifted::F_003A8A90,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -7427,7 +7427,7 @@ address,name,status,source,notes
 0x003AB0A0,lifted::F_003AB0A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x003AB2E0,lifted::F_003AB2E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003AB430,generated::func_003AB430,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003AB540,generated::func_003AB540,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x003AB540,lifted::F_003AB540,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003AB640,lifted::F_003AB640,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003AB850,lifted::F_003AB850,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003AC170,lifted::F_003AC170,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -7452,7 +7452,7 @@ address,name,status,source,notes
 0x003B54D0,generated::func_003B54D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B54F0,generated::func_003B54F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B5510,generated::func_003B5510,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003B5560,lifted::F_003B5560,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003B5560,generated::func_003B5560,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B55A0,lifted::F_003B55A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003B61F0,lifted::F_003B61F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003B6200,generated::func_003B6200,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -7482,7 +7482,7 @@ address,name,status,source,notes
 0x003B8900,generated::func_003B8900,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B8930,generated::func_003B8930,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B89C0,lifted::F_003B89C0,reconstructed,src/lifted/,lifted; not verified: untestable: only 2 cases ran
-0x003B8A50,lifted::F_003B8A50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003B8A50,generated::func_003B8A50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B8BE0,generated::func_003B8BE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003B8C70,lifted::F_003B8C70,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x003B8E80,generated::func_003B8E80,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -7675,7 +7675,7 @@ address,name,status,source,notes
 0x003CD430,generated::func_003CD430,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003CD4D0,generated::func_003CD4D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003CD610,generated::func_003CD610,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003CD820,lifted::F_003CD820,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003CD820,generated::func_003CD820,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003CD920,lifted::F_003CD920,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003CDB80,lifted::F_003CDB80,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003CE0A0,lifted::F_003CE0A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
@@ -7765,7 +7765,7 @@ address,name,status,source,notes
 0x003D45F0,generated::func_003D45F0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D4628,generated::func_003D4628,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D46A0,generated::func_003D46A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003D47D0,lifted::F_003D47D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003D47D0,generated::func_003D47D0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D4990,lifted::F_003D4990,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003D4C70,lifted::F_003D4C70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003D4FE0,lifted::F_003D4FE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -7779,15 +7779,15 @@ address,name,status,source,notes
 0x003D62A0,lifted::F_003D62A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003D6660,lifted::F_003D6660,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003D6AB0,generated::func_003D6AB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003D6BA0,lifted::F_003D6BA0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003D6BA0,generated::func_003D6BA0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D6C30,lifted::F_003D6C30,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x003D6FE0,lifted::F_003D6FE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003D6FE0,generated::func_003D6FE0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D7100,generated::func_003D7100,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D7190,generated::func_003D7190,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D7340,lifted::F_003D7340,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x003D76C0,lifted::F_003D76C0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x003D7B40,lifted::F_003D7B40,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x003D7EB0,lifted::F_003D7EB0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003D7EB0,generated::func_003D7EB0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D7F70,lifted::F_003D7F70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003D8070,generated::func_003D8070,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003D80E0,generated::func_003D80E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -7862,7 +7862,7 @@ address,name,status,source,notes
 0x003E6C20,lifted::F_003E6C20,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003E6F50,generated::func_003E6F50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003E6F90,generated::func_003E6F90,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x003E6FD0,lifted::F_003E6FD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x003E6FD0,generated::func_003E6FD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x003E7110,lifted::F_003E7110,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003E7390,lifted::F_003E7390,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x003E7600,generated::func_003E7600,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -8916,11 +8916,11 @@ address,name,status,source,notes
 0x0041D8E0,generated::func_0041D8E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041D910,lifted::F_0041D910,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
 0x0041DA20,lifted::F_0041DA20,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x0041DD70,lifted::F_0041DD70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0041DD70,generated::func_0041DD70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041DF90,lifted::F_0041DF90,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x0041E120,lifted::F_0041E120,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0041E1B0,lifted::F_0041E1B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0041E260,lifted::F_0041E260,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0041E260,generated::func_0041E260,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041E3C0,generated::func_0041E3C0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041E8A0,generated::func_0041E8A0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041E8B0,generated::func_0041E8B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -8938,7 +8938,7 @@ address,name,status,source,notes
 0x0041EAD0,generated::func_0041EAD0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041EAF0,generated::func_0041EAF0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041EB70,lifted::F_0041EB70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0041ED50,lifted::F_0041ED50,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0041ED50,generated::func_0041ED50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041F0B0,generated::func_0041F0B0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0041F0C0,lifted::F_0041F0C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0041FAD0,lifted::F_0041FAD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -9041,7 +9041,7 @@ address,name,status,source,notes
 0x004278B0,lifted::F_004278B0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00427A30,lifted::F_00427A30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00427AD0,lifted::F_00427AD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00427C30,lifted::F_00427C30,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00427C30,generated::func_00427C30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00427D00,lifted::F_00427D00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00429BE0,lifted::F_00429BE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0042A4E0,lifted::F_0042A4E0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -9327,7 +9327,7 @@ address,name,status,source,notes
 0x0043DC30,generated::func_0043DC30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0043DE50,generated::func_0043DE50,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0043DE60,lifted::F_0043DE60,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
-0x0043E000,lifted::F_0043E000,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0043E000,generated::func_0043E000,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0043E120,generated::func_0043E120,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0043E130,lifted::F_0043E130,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x0043E170,generated::func_0043E170,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -9547,7 +9547,7 @@ address,name,status,source,notes
 0x00452ED0,lifted::F_00452ED0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00453380,lifted::F_00453380,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
 0x00453560,lifted::F_00453560,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00453680,generated::func_00453680,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
+0x00453680,lifted::F_00453680,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004538E0,generated::func_004538E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00453980,lifted::F_00453980,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x00453C80,lifted::F_00453C80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -9664,7 +9664,7 @@ address,name,status,source,notes
 0x0045B130,lifted::F_0045B130,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0045B140,lifted::F_0045B140,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0045B1F0,lifted::F_0045B1F0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
-0x0045B460,lifted::F_0045B460,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0045B460,generated::func_0045B460,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0045B510,lifted::F_0045B510,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x0045B920,lifted::F_0045B920,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0045BB10,lifted::F_0045BB10,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: ExecutionLimit: exceeded N instructions; likely an infinite loop"
@@ -9714,7 +9714,7 @@ address,name,status,source,notes
 0x00461A70,lifted::F_00461A70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x00461CD0,lifted::F_00461CD0,reconstructed,src/lifted/,lifted; not verified: untestable: only 3 cases ran
 0x00461D60,lifted::F_00461D60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x00461DF0,lifted::F_00461DF0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x00461DF0,generated::func_00461DF0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00461F30,generated::func_00461F30,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00461F40,generated::func_00461F40,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x00462130,generated::func_00462130,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
@@ -9848,7 +9848,7 @@ address,name,status,source,notes
 0x00485300,lifted::F_00485300,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: MemoryFault: load of N byte(s) at unmapped N"
 0x004854A0,lifted::F_004854A0,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: EmulationError: execution left the program at N"
 0x004854E8,lifted::F_004854E8,reconstructed,src/lifted/,"lifted; not verified: untestable: original, every memory profile: EmulationError: execution left the program at N"
-0x004D3E00,lifted::F_004D3E00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x004D3E00,generated::func_004D3E00,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x004D3E60,lifted::F_004D3E60,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D42F0,lifted::F_004D42F0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D4410,lifted::F_004D4410,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -9888,7 +9888,7 @@ address,name,status,source,notes
 0x004D8980,lifted::F_004D8980,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D89C0,lifted::F_004D89C0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D8A80,lifted::F_004D8A80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x004D8B70,lifted::F_004D8B70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x004D8B70,generated::func_004D8B70,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x004D8DD0,lifted::F_004D8DD0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D8E00,lifted::F_004D8E00,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x004D8E70,lifted::F_004D8E70,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original

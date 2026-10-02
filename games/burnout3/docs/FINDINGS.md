@@ -1105,6 +1105,24 @@ out as always. Remembered lift verdicts are now keyed by the import closure
 of the verification code alone, so changes to the symbolic deriver no longer
 cost a cold lift run.
 
+## Stack slots assembled byte by byte
+
+The frame model answered a stack read from the single newest write covering it,
+and refused a read spanning several writes ("partly overwritten", 4.6% of the
+code) or the upper half of a 16-byte spill ("beyond the modelled 64 bits",
+2.8%). A read is now assembled byte by byte from the newest writes covering each
+byte, and a 16-byte spill keeps both halves - its reload still returns exactly
+what was saved, so callee-saved round trips cancel as before. Both refusals are
+gone; 4,450 functions derive (4,315 before).
+
+The new expressions shift float results into the upper word of a 64-bit value.
+The float helpers return `u32` in C++, so `FloatDiv(...) << 32` shifted at 32
+bits and lost the value: 32 functions agreed as expressions and disagreed once
+compiled. A 64-bit shift of an operand that may be 32 bits wide in C++ is now
+cast to `u64` first. The compiled check is back to 18 disagreements.
+
+VERIFIED: 16.18%, from 15.31%.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

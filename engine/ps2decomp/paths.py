@@ -796,6 +796,10 @@ class Frame(dict):
         for (address, size), value in list(self.items()):
             if id(value) in self.seeds:
                 continue
+            if value is UNKNOWN_HALF:
+                if id(self.get((address - 8, 8))) in self.seeds:
+                    continue            # the upper half of a saved register's spill
+                raise Unsupported("128-bit store to real memory")
             for store in _as_stores(Const(address), value, size):
                 stores.append(store)
                 _record_store(memory, store.address, store.size, store.value)
@@ -830,6 +834,23 @@ def _as_stores(address, value, size: int) -> list:
     raise Unsupported("%d-bit store to real memory" % (8 * size))
 
 
+class _UnknownHalf:
+    """The upper half of a 128-bit spill whose register's upper half is unknown."""
+
+    def __repr__(self):
+        return "UNKNOWN_HALF"
+
+
+UNKNOWN_HALF = _UnknownHalf()
+
+
+def _frame_spill_quad(frame: dict, address: int, low, high) -> None:
+    """A 16-byte spill, as its two 8-byte halves - so that a read of either half,
+    or of bytes spanning them, finds what was written there."""
+    _frame_write(frame, address, 8, low)
+    _frame_write(frame, address + 8, 8, UNKNOWN_HALF if high is None else high)
+
+
 def _frame_write(frame: dict, address: int, size: int, value) -> None:
     """Record a write to the stack frame, newest last."""
     if getattr(frame, "frozen", False):
@@ -839,29 +860,57 @@ def _frame_write(frame: dict, address: int, size: int, value) -> None:
 
 
 def _frame_read(frame: dict, address: int, size: int, signed: bool):
-    """A stack-frame read, answered from the newest write that covers it.
+    """A stack-frame read, answered byte by byte from the newest writes covering it.
 
-    Slots used to be looked up by exact (address, width), so a value spilled 8
-    bytes wide and reloaded 4 bytes wide counted as never written, and a 4-byte
-    reload returned the whole 64-bit register instead of its sign-extended low
-    word. A same-width reload of an 8- or 16-byte spill still returns exactly what
-    was saved - a callee-saved register round trip must cancel - while a narrower
-    one takes the right bytes and extends them as the load does.
+    A same-width reload of an 8-byte spill returns exactly what was saved - a
+    callee-saved register round trip must cancel - and a narrower one takes the
+    right bytes and extends them as the load does. A read spanning several
+    writes - a word written in two halves, a field stored over part of a wider
+    one - is assembled from the bytes each contributes. Slots used to be looked up
+    by exact (address, width), and then by the single newest overlapping write,
+    which refused every such read.
     """
-    for (written, width), value in reversed(list(frame.items())):
-        if address + size <= written or written + width <= address:
-            continue
-        if not (written <= address and address + size <= written + width):
-            raise Unsupported("reads a partly overwritten stack slot")
+    entries = list(frame.items())
+    pieces = []
+    for offset in range(size):
+        byte = address + offset
+        for (written, width), value in reversed(entries):
+            if written <= byte < written + width:
+                pieces.append((written, width, value))
+                break
+        else:
+            pieces.append(None)
+    if all(piece is None for piece in pieces):
+        raise Unsupported("reads an unwritten stack slot")
+    if any(piece is None for piece in pieces):
+        raise Unsupported("reads a partly overwritten stack slot")
+    if any(piece[2] is UNKNOWN_HALF for piece in pieces):
+        raise Unsupported("reads beyond the modelled 64 bits of a stack slot")
+    written, width, value = pieces[0]
+    if all(piece[:2] == (written, width) for piece in pieces):
         if size == width and size >= 8:
             return value
         delta = address - written
-        if delta + size > 8:
-            raise Unsupported("reads beyond the modelled 64 bits of a stack slot")
         if delta:
             value = simplify(Binary("dshr", value, Const(8 * delta)))
         return _forward(value, size, signed)
-    raise Unsupported("reads an unwritten stack slot")
+    result, offset = None, 0
+    while offset < size:
+        written, width, value = pieces[offset]
+        run = 1
+        while offset + run < size and pieces[offset + run][:2] == (written, width):
+            run += 1
+        part = value
+        delta = address + offset - written
+        if delta:
+            part = Binary("dshr", part, Const(8 * delta))
+        if run < 8:
+            part = Binary("and", part, Const((1 << (8 * run)) - 1))
+        if offset:
+            part = Binary("dshl", part, Const(8 * offset))
+        result = part if result is None else Binary("or", result, part)
+        offset += run
+    return _forward(simplify(result), size, signed)
 
 
 def _symbolic_frame(frame, target, size: int) -> bool:
@@ -987,11 +1036,15 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
         size = _STORE_SIZES[m]
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target) and _symbolic_frame(frame, target, size):
-            # A spill. Record the full value regardless of width: a 128-bit `sq`
-            # of a callee-saved register is reloaded by a matching `lq`, and the
-            # expression model has no notion of the upper half, so the pair only
-            # cancels if the slot holds exactly what was written.
-            _frame_write(frame, simplify(target).value & MASK64, size, get(ins.rt))
+            # A spill. A 128-bit `sq` of a callee-saved register is reloaded by a
+            # matching `lq`; the slot keeps both halves as written, so the pair
+            # cancels, and a read of either half finds its value.
+            slot = simplify(target).value & MASK64
+            if size == 16:
+                high = Const(0) if ins.rt == 0 else regs.get(upper(ins.rt))
+                _frame_spill_quad(frame, slot, get(ins.rt), high)
+            else:
+                _frame_write(frame, slot, size, get(ins.rt))
             return
         value = get(ins.rt)
         if size == 16 and (ins.rt == 0 or upper(ins.rt) in regs) and not (
@@ -1010,7 +1063,8 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
             if (_is_frame_address(target) and isinstance(frame, Frame)
                     and id(value) in frame.seeds):
                 # A saved register spilled after the frame escaped: still bookkeeping.
-                _frame_write(frame, simplify(target).value & MASK64, size, value)
+                _frame_spill_quad(frame, simplify(target).value & MASK64, value,
+                                  regs.get(upper(ins.rt)))
                 return
             for store in _as_stores(target, value, size):
                 stores.append(store)
@@ -1024,11 +1078,17 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
         size, signed_load = _LOAD_SIZES[m]
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target) and _symbolic_frame(frame, target, size):
-            regs[ins.rt] = _frame_read(frame, simplify(target).value & MASK64, size,
-                                       signed_load)
+            slot = simplify(target).value & MASK64
             if m == "lq":
-                # A spill slot holds the low half only: the upper is unknown again.
-                regs.pop(upper(ins.rt), None)
+                # Both halves, as the slot holds them; an upper half not known
+                # when it was spilled is unknown again.
+                regs[ins.rt] = _frame_read(frame, slot, 8, False)
+                try:
+                    regs[upper(ins.rt)] = _frame_read(frame, slot + 8, 8, False)
+                except Unsupported:
+                    regs.pop(upper(ins.rt), None)
+                return
+            regs[ins.rt] = _frame_read(frame, slot, size, signed_load)
             return
         if m == "lq" and memory:
             aligned = address_of(Binary("and", target, Const(~0xF & MASK64)))

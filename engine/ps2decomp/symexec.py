@@ -467,6 +467,19 @@ def _wrap(child: "Expr", limit: int) -> str:
     return "(%s)" % text if _precedence(child) < limit else text
 
 
+def _narrow_in_cpp(expr) -> bool:
+    """Whether an expression's rendered C++ may have a 32-bit type: the float and
+    VU helpers return u32, and a bitwise combination of such values and literals
+    stays u32. Everything else - loads, arguments, arithmetic - is u64."""
+    if isinstance(expr, Const):
+        return True
+    if type(expr).__name__ in ("FloatOp", "VuOp", "IntToFloat", "FloatToInt"):
+        return True
+    if isinstance(expr, Binary) and expr.op in ("and", "or", "xor"):
+        return _narrow_in_cpp(expr.left) and _narrow_in_cpp(expr.right)
+    return False
+
+
 @dataclasses.dataclass(frozen=True)
 class Binary(Expr):
     op: str
@@ -502,6 +515,10 @@ class Binary(Expr):
             if self.op == "shr" and not fits_u32(self.left):
                 # `srl` shifts the low word only; the upper half must not shift in.
                 left = "(%s & 0xFFFFFFFF)" % self.left.render()
+            if self.op in ("dshl", "dshr") and _narrow_in_cpp(self.left):
+                # A float or VU helper returns u32, and so does a mask of one: a
+                # 64-bit shift of it in C++ would shift at 32 bits and lose it.
+                left = "(u64)%s" % _wrap(self.left, ATOM_PRECEDENCE)
             return "%s %s %s" % (left, self._SYMBOL[self.op], _shift_amount(self.right, bits))
         left = _wrap(self.left, level)
         # `a - b << 4` is valid C and means `(a - b) << 4`, but almost nobody reads
