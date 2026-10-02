@@ -912,6 +912,27 @@ every function whose structured form verifies as well.
 
 Of the 7,743 lifted and verified functions, 7,526 are emitted structured; every structured form tried passed verification. The rest (jump tables, linking branches) stay in the goto form. 2,296 of the structured functions still contain a `goto`, mostly compound conditions: two tests leading to one shared block.
 
+## A complete translation
+
+Every function that lifts is now emitted, not just the verified ones: 9,940 of
+10,032. The 2,197 that could not be checked are marked `NOT VERIFIED`, with the
+reason, and sit in the `reconstructed` tier. That tier means "source exists and
+is believed correct but is untested", which is exactly what they are, and they
+never count as verified or lifted. Calls to functions named in `names.csv` say
+the name.
+
+| tier | functions | code bytes |
+| --- | ---: | ---: |
+| verified (readable, derived) | 3,117 | 13.0% |
+| lifted (verified translation) | 3,909 | 51.3% |
+| reconstructed (mostly translated, not checkable on test data) | 2,915 | 34.0% |
+| undecompiled | 91 | 1.7% |
+
+The unverified functions are mostly ones whose original never finishes on random
+test memory: walks that need a sorted range, a terminated list, a matching key.
+They need realistic data, such as a memory snapshot of the running game, to be
+checked.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

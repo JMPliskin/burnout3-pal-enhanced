@@ -216,6 +216,34 @@ class _Emitter:
         self.body = {h: self._natural_loop(h, sources, preds) for h, sources in self.loops.items()}
         self.emitted = set()
         self.labels = set()
+        # Small blocks reached a second time are emitted again rather than jumped
+        # to - a shared error path, the tail of an `a || b` - up to this many.
+        self.copies_left = 64
+
+    def _duplicable(self, node):
+        """Whether a jump to this already-emitted block may be a copy of it instead."""
+        block = self.blocks.get(node)
+        if block is None or node in self.headers or self.copies_left <= 0:
+            return False
+        if len([s for s in block.code if s]) > 6 or block.kind == "cond":
+            return False
+        self.copies_left -= 1
+        return True
+
+    def _returns_soon(self, node, budget=6):
+        """A short run of blocks that ends the function: emitting it at a loop exit
+        costs less than a goto past the loop to it."""
+        block = self.blocks.get(node)
+        if block is None or node in self.headers:
+            return False
+        size = len([x for x in block.code if x]) + (1 if block.slot else 0)
+        if size > budget:
+            return False
+        if block.kind in ("return", "tail"):
+            return True
+        if block.kind in ("fall", "jump") and block.next in self.blocks:
+            return self._returns_soon(block.next, budget - size)
+        return False
 
     def _dominates(self, a, b):
         while True:
@@ -248,10 +276,17 @@ class _Emitter:
                 lines.append(pad + "out(); lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp); return;" % node)
                 return lines
             if loops and node not in self.body[loops[-1][0]]:
-                # Leaving the loop: break, or a goto to wherever it goes.
-                lines.append(self._transfer(node, loops, depth) or (pad + "break;"))
-                return lines
+                # Leaving the loop: break, a goto to wherever it goes, or - for a
+                # small block that returns - that block, right here.
+                jump = self._transfer(node, loops, depth)
+                if jump is not None:
+                    lines.append(jump)
+                    return lines
             if node in self.emitted:
+                if self._duplicable(node):
+                    body, node = self._chain(node, stop, loops, depth, copy=True)
+                    lines += body
+                    continue
                 lines.append(pad + "goto L_%08X;" % node)
                 self.labels.add(node)
                 return lines
@@ -287,19 +322,25 @@ class _Emitter:
             if target == follow:
                 return pad + "break;"
             if target not in self.body[header]:
+                if self._returns_soon(target):
+                    return None
                 self.labels.add(target)
                 return pad + "goto L_%08X;" % target
-        if target in self.emitted:
+        if target in self.emitted and not self._duplicable(target):
             self.labels.add(target)
             return pad + "goto L_%08X;" % target
         return None
 
-    def _chain(self, node, stop, loops, depth):
-        """Emit one block; returns (lines, the block to continue with or None)."""
+    def _chain(self, node, stop, loops, depth, copy=False):
+        """Emit one block; returns (lines, the block to continue with or None).
+
+        A copy - a second emission of a small block - carries no label: the label
+        stays with the first.
+        """
         pad = "    " * depth
         block = self.blocks[node]
         self.emitted.add(node)
-        lines = ["@L_%08X" % node]          # a label placeholder, kept if targeted
+        lines = [] if copy else ["@L_%08X" % node]   # a label placeholder, kept if targeted
         lines += [pad + s for s in block.code if s]
         if block.kind == "return":
             lines += [pad + s for s in (block.slot,) if s]
@@ -378,6 +419,7 @@ def tidy(line: str) -> str:
     line = re.sub(r"= (%s) [+|] 0ull;" % _ATOM, r"= \1;", line)
     line = re.sub(r"= 0ull [+|] (%s);" % _ATOM, r"= \1;", line)
     line = re.sub(r"Sx32\((%s) \+ 0x0u\)" % _ATOM, r"Sx32(\1)", line)
+    line = re.sub(r"Sx32\(0ull \+ (%s)\)" % _ATOM, r"Sx32(\1)", line)
     line = re.sub(r"\(u32\)(%s) \+ 0x0u\b" % _ATOM, r"(u32)\1", line)
     return line
 

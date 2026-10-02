@@ -49,7 +49,22 @@ def lift_all(functions, image, base):
     return lifted, refused
 
 
-def write_chunks(lifted: dict, directory: str, prefix: str) -> list:
+_CALL = re.compile(r"\b(Call|TailCall)\(c, 0x([0-9A-F]{8})u")
+
+
+def _annotated(text: str, names: dict) -> str:
+    """Calls to a named function say its name."""
+    def name(match):
+        known = names.get(int(match.group(2), 16))
+        return match.group(0) + (" /* %s */" % known[0] if known else "")
+    return _CALL.sub(name, text)
+
+
+def write_chunks(lifted: dict, directory: str, prefix: str, unverified=None,
+                 names=None) -> list:
+    """Write functions in files of CHUNK. A function in `unverified` is preceded by
+    why it could not be checked; a named one by its name."""
+    unverified, names = unverified or {}, names or {}
     os.makedirs(directory, exist_ok=True)
     for stale in os.listdir(directory):
         if stale.startswith(prefix) and stale.endswith(".cpp"):
@@ -60,12 +75,17 @@ def write_chunks(lifted: dict, directory: str, prefix: str) -> list:
         path = os.path.join(directory, "%s_%03d.cpp" % (prefix, index // CHUNK))
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("/* Lifted from the original machine code by engine/tools/lift.py:\n"
-                         " * one statement per instruction, verified against the original.\n"
-                         " * Generated - do not edit. */\n\n")
+                         " * one statement per instruction. Every function was checked\n"
+                         " * against the original - registers and memory - unless marked\n"
+                         " * NOT VERIFIED. Generated - do not edit. */\n\n")
             handle.write('#include "ps2rt/lifted.h"\n\n')
             handle.write("using namespace generated;\nusing namespace lifted;\n\n")
             for address in addresses[index:index + CHUNK]:
-                handle.write(lifted[address])
+                if address in names:
+                    handle.write("/* %s (%s) */\n" % names[address])
+                if address in unverified:
+                    handle.write("/* NOT VERIFIED: %s */\n" % unverified[address])
+                handle.write(_annotated(lifted[address], names))
                 handle.write("\n")
         paths.append(path)
     return paths
@@ -184,7 +204,7 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs) -> dic
     return {a: (structured[a] if a in passed else text) for a, text in chosen.items()}
 
 
-def update_status(path: str, verified, outcomes, names=None) -> None:
+def update_status(path: str, verified, outcomes, names=None, unverified=None) -> None:
     """Rebuild the `lifted` rows; any other row - derived, hand-written - stays.
 
     A function verified both ways keeps its derived row: readable source that is
@@ -199,7 +219,7 @@ def update_status(path: str, verified, outcomes, names=None) -> None:
     if os.path.exists(path):
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                if row["status"] != "lifted":
+                if row["source"] != "src/lifted/":
                     rows[int(row["address"], 16)] = row
     added = 0
     for address in verified:
@@ -216,6 +236,20 @@ def update_status(path: str, verified, outcomes, names=None) -> None:
                      "differential-tested against the original",
         }
         added += 1
+    # Lifted but not checked: source exists and is believed right, which is what
+    # `reconstructed` means - never `lifted`, which says it was verified.
+    for address, reason in sorted((unverified or {}).items()):
+        existing = rows.get(address)
+        if existing and existing["status"] in ("verified", "reconstructed"):
+            continue
+        rows[address] = {
+            "address": "0x%08X" % address,
+            "name": (names[address][0] if address in names else
+                     existing["name"] if existing else "lifted::F_%08X" % address),
+            "status": "reconstructed",
+            "source": "src/lifted/",
+            "notes": "lifted; not verified: %s" % reason,
+        }
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["address", "name", "status", "source", "notes"])
         writer.writeheader()
@@ -335,14 +369,27 @@ def main(argv=None) -> int:
     if args.structure:
         chosen = structure_verified(chosen, by_address, image, section.addr, game, seeds,
                                     args.jobs)
+    # Everything else that lifted is emitted too, marked: a complete translation,
+    # with each function saying whether it was checked.
+    unverified = {a: outcomes[a] for a in lifted if a not in chosen}
+    for address in unverified:
+        chosen[address] = lifted[address]
+        if args.structure:
+            from ps2decomp import structure
+            try:
+                chosen[address] = structure.structure_function(
+                    image, section.addr, address, by_address[address]["end"])
+            except lift.Refused:
+                pass
+    from ps2decomp import naming
+    names = naming.load(game.path(os.path.join(os.path.dirname(game.status), "names.csv")))
     if args.emit:
         out = game.path(os.path.join(os.path.dirname(game.generated), "lifted"))
-        paths = write_chunks(chosen, out, "lifted")
-        print("wrote %d files to %s" % (len(paths), out))
+        paths = write_chunks(chosen, out, "lifted", unverified, names)
+        print("wrote %d files to %s (%d functions, %d not verified)"
+              % (len(paths), out, len(chosen), len(unverified)))
     if args.csv:
-        from ps2decomp import naming
-        names_path = game.path(os.path.join(os.path.dirname(game.status), "names.csv"))
-        update_status(game.path(game.status), verified, outcomes, naming.load(names_path))
+        update_status(game.path(game.status), verified, outcomes, names, unverified)
     print("  elapsed %.0fs" % (time.time() - started))
     return 0
 

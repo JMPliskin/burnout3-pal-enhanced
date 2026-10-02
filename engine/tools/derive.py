@@ -1567,7 +1567,7 @@ def main(argv=None) -> int:
                     # is verified supersedes the mechanical translation.
                     if row["source"] == "src/generated/accessors.cpp":
                         continue
-                    if row["status"] == "lifted" and int(row["address"], 16) in derived:
+                    if row["source"] == "src/lifted/" and int(row["address"], 16) in derived:
                         continue
                     existing[int(row["address"], 16)] = row
         for func, _derivation, tested, strong in verified:
