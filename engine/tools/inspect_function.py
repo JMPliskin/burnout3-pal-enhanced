@@ -22,7 +22,7 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 import derive
 from ps2decomp import game as game_config
-from ps2decomp import calls, cppcheck, layout, testmem
+from ps2decomp import calls, cppcheck, layout, testmem, testplan
 from ps2decomp.elf import ElfFile
 from ps2decomp.emu import Machine
 from ps2decomp.paths import Execution, derive_paths
@@ -87,7 +87,7 @@ def main(argv=None) -> int:
                             machine.memory.write_int(address, data, size)
                 else:
                     value = compiled.evaluator(func["addr"])(case_args)[0]
-                effects = derive._journal_effects(machine.memory)
+                effects = testplan._journal_effects(machine.memory)
             except Exception as exc:
                 value, effects = "error: %s" % exc, {}
             machine.memory.rollback()

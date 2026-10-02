@@ -23,12 +23,9 @@ emitted with a caveat.
 from __future__ import annotations
 
 import argparse
-import bisect
 import collections
-import hashlib
 import json
 import os
-import random
 import re
 import struct
 import sys
@@ -44,7 +41,7 @@ from ps2decomp.emu import EmulationError, Machine
 from ps2decomp.paths import (Execution, PathDerivation, _is_frame_address,
                          tree_expressions,
                          _relation, derive_paths)
-from ps2decomp import calls, structs, testmem, typed
+from ps2decomp import calls, structs, typed
 from ps2decomp.symexec import (
     MASK64,
     Arg,
@@ -71,6 +68,11 @@ from ps2decomp.symexec import (
 )
 
 from ps2decomp import layout
+from ps2decomp import testplan
+from ps2decomp.testplan import (ARG_SETS, VERIFY_BUDGET, _effects_digest,  # noqa: F401
+                                _failed, failure_reason, global_pointers,
+                                prepare_test_memory, recovered_graph, run_cases,
+                                test_plan)
 
 # Longer functions are not attempted. The limit was 96 while a full run took half
 # an hour; with the pipeline fast, 256 added 114 functions and 1.6% of the code,
@@ -81,36 +83,6 @@ MAX_INSTRUCTIONS = 512
 # retried with loops derived as loops.
 LOOP_SHAPED = {"loop", "too many paths", "exploration budget exhausted",
                "path too long", "expression too large"}
-# Instructions one verification case may execute, callees included. Interpreting
-# is slow, and a function that calls into a large original routine would otherwise
-# spend minutes per case; one that needs more than this is reported untestable.
-VERIFY_BUDGET = 100_000
-# The callee's own frame. Writes here are not observable effects, so they are
-# excluded when comparing what the original and the derivation did to memory.
-# The stack, scratch memory and the rest of the layout come from the game; see
-# ps2decomp/layout.py.
-ARG_SETS = 8
-
-# Why the last test that could not be run failed: (stage, exception). Set wherever
-# a test run is abandoned, and read by _attempt to explain an untestable verdict.
-_LAST_FAILURE = None
-_HEX = re.compile(r"0x[0-9A-Fa-f]+|\b\d+\b")
-
-
-def _failed(stage, exc) -> None:
-    global _LAST_FAILURE
-    _LAST_FAILURE = (stage, exc)
-
-
-def failure_reason() -> str:
-    """The last failure as a category: numbers and addresses blanked so that
-    failures of one kind count together."""
-    if _LAST_FAILURE is None:
-        return "unknown"
-    stage, exc = _LAST_FAILURE
-    message = _HEX.sub("N", str(exc).splitlines()[0] if str(exc) else "")
-    return "%s: %s: %s" % (stage, type(exc).__name__, message[:90])
-
 # Loads become calls on these helpers rather than raw pointer casts, so the
 # emitted source stays readable and a port can define them over its own memory
 # model. Recovering real struct types is later work.
@@ -826,19 +798,235 @@ def direct_callees(image, base, func) -> set:
     return found
 
 
-_GRAPHS = {}
+def call_levels(addresses, callees) -> list:
+    """The addresses in bottom-up layers: every function after all the functions
+    it calls, except those in its own cycle of calls, which share its layer.
 
-
-def recovered_graph(database, image, base):
-    """The struct-type graph for this binary, recovered once per run.
-
-    It is needed to seed global pointers before testing and again to type the
-    emitted source; recovering it twice was a fifth of a whole run.
+    Tarjan's algorithm yields each strongly connected component after every one
+    reachable from it - callees first - so a layer is one above the highest of
+    its callees' layers.
     """
-    key = (id(database), base)
-    if key not in _GRAPHS:
-        _GRAPHS[key] = structs.recover(database, image, base)
-    return _GRAPHS[key]
+    addresses = set(addresses)
+    graph = {a: sorted(c for c in callees.get(a, ()) if c in addresses and c != a)
+             for a in addresses}
+    index, low, on_stack, stack, order = {}, {}, set(), [], []
+    counter = 0
+    for root in sorted(addresses):
+        if root in index:
+            continue
+        work = [(root, 0)]
+        while work:
+            node, child = work.pop()
+            if child == 0:
+                index[node] = low[node] = counter
+                counter += 1
+                stack.append(node)
+                on_stack.add(node)
+            successors = graph[node]
+            if child < len(successors):
+                work.append((node, child + 1))
+                successor = successors[child]
+                if successor not in index:
+                    work.append((successor, 0))
+                elif successor in on_stack:
+                    low[node] = min(low[node], index[successor])
+                continue
+            if low[node] == index[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                order.append(component)
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+    level, component_of = {}, {}
+    for number, component in enumerate(order):
+        for member in component:
+            component_of[member] = number
+        outside = [component_of[c] for m in component for c in graph[m]
+                   if component_of.get(c, number) != number]
+        level[number] = 1 + max((level[c] for c in outside), default=-1)
+    layers = collections.defaultdict(list)
+    for number, component in enumerate(order):
+        layers[level[number]].extend(component)
+    return [sorted(layers[k]) for k in sorted(layers)]
+
+
+def worker_machine(game_directory, seeds):
+    """(game, database, image, section, machine) with test memory as every
+    derivation worker has it: the seeds written, no discovery run. The parent's
+    machine ran the discovery, which can leave memory changed; whatever checks
+    results recorded in a worker must use a machine made this way."""
+    game = game_config.load(game_directory)
+    database = game.load_database()
+    elf = game.load_elf()
+    section = elf.exec_sections[0]
+    image = elf.section_data(section)
+    machine = Machine.from_elf(elf)
+    prepare_test_memory(machine, database, image, section.addr, [], seeds=seeds)
+    return game, database, image, section, machine
+
+
+def _derive_worker(connection, game_directory, seeds):
+    """One derivation process: tests whatever addresses it is sent, against the
+    derivations it has been told are verified so far."""
+    _game, database, image, section, machine = worker_machine(game_directory, seeds)
+    parameters = calls.parameters(database, image, section.addr)
+    functions = {f["addr"]: f for f in database["functions"]}
+
+    def read(addr, size, signed):
+        return machine.memory.read_int(addr, size, signed)
+
+    known = {}
+    while True:
+        message = connection.recv()
+        if message is None:
+            # The pages it mapped, for the compiled check in the parent: that
+            # replays the recorded cases and must find the same memory.
+            connection.send(sorted(machine.memory.pages))
+            return
+        new_known, addresses = message
+        known.update(new_known)
+        results = []
+        for address in addresses:
+            func = functions[address]
+            counts = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+            outcome = _attempt(func, image, section.addr, machine, read, known, counts,
+                               parameters)
+            if outcome is None and counts["unsupported"]:
+                # Inlining is not always a gain: a callee's paths multiply the
+                # caller's, and past the limits the caller cannot be derived at
+                # all. Calling the callees instead is how it would have been
+                # derived had it come first - as in a serial run in address order.
+                callees = direct_callees(image, section.addr, func)
+                if callees & known.keys():
+                    plain = {a: d for a, d in known.items() if a not in callees}
+                    counts = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+                    outcome = _attempt(func, image, section.addr, machine, read, plain,
+                                       counts, parameters)
+            if outcome is not None:
+                outcome = outcome[1:]            # the function is the parent's to supply
+            results.append((address, outcome, counts, EXPECTATIONS.pop(address, None)))
+        connection.send(results)
+
+
+def collect_parallel(database: dict, image: bytes, base: int, machine: Machine,
+                     game_directory: str, jobs: int, max_passes: int = 6,
+                     verbose: bool = True) -> tuple:
+    """collect(), over `jobs` processes, bottom-up through the call graph; also
+    returns the machine to check the emitted source on (see worker_machine).
+
+    A function can inline only callees already derived. Serially that means
+    whatever came before it in address order; here every function is attempted
+    after all its callees (call_levels), each layer in parallel, so it sees every
+    callee that will ever be derived - except one in its own cycle of calls,
+    which the passes after the sweep pick up as collect() does.
+    """
+    import multiprocessing
+
+    candidates = [
+        f for f in database["functions"]
+        if f["size"] // 4 <= MAX_INSTRUCTIONS and f["has_return"]
+    ]
+    seeds = prepare_test_memory(machine, database, image, base, candidates, verbose)
+    by_address = {f["addr"]: f for f in candidates}
+    callees = {f["addr"]: direct_callees(image, base, f) for f in candidates}
+
+    context = multiprocessing.get_context("spawn")
+    workers = []
+    for _ in range(jobs):
+        parent_end, child_end = context.Pipe()
+        process = context.Process(target=_derive_worker,
+                                  args=(child_end, game_directory, seeds), daemon=True)
+        process.start()
+        workers.append((process, parent_end))
+
+    verified, known, known_order, done = [], {}, [], set()
+    last, reasons, mismatched = {}, {}, []
+    pending = {}                                  # verified, not yet sent to the workers
+    seen_at = {}                                  # address -> len(known_order) when tried
+
+    def run(addresses):
+        nonlocal pending
+        shares = [addresses[k::len(workers)] for k in range(len(workers))]
+        for (_process, connection), share in zip(workers, shares):
+            connection.send((pending, share))
+        pending = {}
+        for address in addresses:
+            seen_at[address] = len(known_order)
+        added = 0
+        results = []
+        for _process, connection in workers:
+            results.extend(connection.recv())
+        for address, outcome, counts, expectation in sorted(results, key=lambda r: r[0]):
+            if outcome is None:
+                for category, count in counts.items():
+                    if count and category not in ("mismatched", "reason"):
+                        last[address] = category
+                reasons[address] = counts.get("reason")
+                if counts.get("mismatched"):
+                    mismatched.append(address)
+                continue
+            last.pop(address, None)
+            done.add(address)
+            derivation, tested, strong = outcome
+            verified.append((by_address[address], derivation, tested, strong))
+            if expectation is not None:
+                EXPECTATIONS[address] = expectation
+            if not derivation.sequential:
+                known[address] = derivation
+                known_order.append(address)
+                pending[address] = derivation
+            added += 1
+        return added
+
+    try:
+        started = time.time()
+        added = sum(run(layer) for layer in call_levels(by_address, callees))
+        if verbose:
+            print("  bottom-up sweep: +%d derived and verified (total %d, %.0fs, %d processes)"
+                  % (added, len(verified), time.time() - started, jobs))
+        # Retry what a callee derived since its attempt could change - in practice
+        # the members of a cycle of calls, tried side by side in one layer.
+        for pass_number in range(2, max_passes + 1):
+            retry = sorted(a for a in by_address if a not in done
+                           and callees[a] & set(known_order[seen_at.get(a, 0):]))
+            if not retry:
+                break
+            added = run(retry)
+            if verbose:
+                print("  pass %d: +%d derived and verified (total %d)"
+                      % (pass_number, added, len(verified)))
+            if not added:
+                break
+        pages = set()
+        for _process, connection in workers:
+            connection.send(None)
+            pages.update(connection.recv())
+    finally:
+        for process, _connection in workers:
+            process.join(timeout=30)
+            if process.is_alive():
+                process.terminate()
+    # The machine the compiled check replays the recorded cases on: as a worker's,
+    # with every page any worker mapped.
+    machine = worker_machine(game_directory, seeds)[4]
+    for page in sorted(pages):
+        machine.memory.map_page(page)
+
+    verified.sort(key=lambda item: item[0]["addr"])
+    rejected = {"unsupported": 0, "untestable": 0, "mismatch": 0}
+    for category in last.values():
+        rejected[category] += 1
+    rejected["mismatched"] = sorted(a for a in set(mismatched) if last.get(a) == "mismatch")
+    rejected["untestable_reasons"] = collections.Counter(
+        reasons.get(address) or "unknown"
+        for address, category in last.items() if category == "untestable")
+    return verified, rejected, machine
 
 
 def collect(database: dict, image: bytes, base: int, machine: Machine,
@@ -923,234 +1111,6 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     return verified, rejected
 
 
-def prepare_test_memory(machine, database, image, base, functions, verbose=False,
-                        seeds=None) -> list:
-    """Fill scratch and seed null global pointers, identically for every tool.
-
-    Global pointers that are null until the game runs would make every function
-    using them untestable, so they are pointed at scratch: first the ones the
-    recovered types mark as pointers, then the ones found by running the
-    functions (see testmem.discover_null_pointers).
-
-    Returns the addresses seeded. Passing them back as `seeds` reproduces the same
-    memory without the discovery - how a worker process matches its parent.
-    """
-    rng = random.Random(0xB3)
-    machine.memory.write(layout.CURRENT.scratch,
-                         bytes(rng.randrange(256) for _ in range(layout.CURRENT.scratch_size)))
-    testmem.fill_caller_frame(machine.memory)
-    if seeds is not None:
-        testmem.seed_global_pointers(machine.memory, seeds)
-        machine.memory.page_source = testmem.page_contents
-        machine.map_faults = True
-        return seeds
-    static = global_pointers(database, image, base)
-    seeded = testmem.seed_global_pointers(machine.memory, static)
-    spans = sorted((f["addr"], f["end"]) for f in database["functions"])
-    starts = [start for start, _end in spans]
-    scratch_low = layout.CURRENT.scratch
-    scratch_high = scratch_low + layout.CURRENT.scratch_size
-
-    def is_global(address):
-        if not base <= address < machine.memory.base + machine.memory.size:
-            return False
-        if scratch_low <= address < scratch_high:
-            return False
-        index = bisect.bisect_right(starts, address) - 1
-        return index < 0 or address >= spans[index][1]
-
-    started = time.time()
-    found = testmem.discover_null_pointers(machine, functions, is_global)
-    if verbose:
-        print("  seeded %d null global pointers for testing, and %d more found by "
-              "running (%.0fs)" % (seeded, len(found), time.time() - started))
-    # From here on a test that faults on unmapped memory maps the page and runs
-    # again. Only after the discovery above, which finds null pointers by their
-    # faults.
-    machine.memory.page_source = testmem.page_contents
-    machine.map_faults = True
-    return sorted(set(static) | set(found))
-
-
-def global_pointers(database, image, base) -> set:
-    """Addresses of global variables that some code dereferences as a pointer."""
-    graph = recovered_graph(database, image, base)
-    if structs.GLOBALS not in graph.ids:
-        return set()
-    fields = graph.fields[graph.find(graph.ids[structs.GLOBALS])]
-    return {address & 0xFFFFFFFF for address, field in fields.items()
-            if field.target is not None and 4 in field.widths()}
-
-
-def _effects_digest(memory) -> bytes:
-    """A function's net memory effects, reduced to a digest for comparison.
-
-    Only equality is ever asked of the effects in a test, and the original's are
-    kept for every verified function so the compiled check can reuse them. As
-    dictionaries, a function filling a large buffer cost about a hundred bytes per
-    byte written, eight cases over, for every such function - enough to exhaust
-    memory once seeded globals let those functions run to completion.
-    """
-    effects = _journal_effects(memory)
-    digest = hashlib.sha1()
-    for position in sorted(effects):
-        digest.update(position.to_bytes(4, "little"))
-        digest.update(bytes((effects[position],)))
-    return digest.digest()
-
-
-def _journal_effects(memory) -> dict:
-    """Collapse a write journal into a net address -> byte map.
-
-    Comparing journals directly would be wrong: the original and the derivation may
-    write the same bytes in a different order, or write one location twice. What has
-    to match is the resulting memory, so the journal is reduced to final values.
-
-    Writes into the callee's own stack frame are excluded. They are not observable
-    effects - the frame is dead the moment the function returns - and the original
-    makes plenty of them spilling registers while a derived expression makes none,
-    so counting them would fail every function that has a prologue.
-    """
-    frame_low = layout.CURRENT.stack_low - memory.base
-    frame_high = layout.CURRENT.stack_top + 0x10 - memory.base
-    effects = {}
-    for offset, previous in getattr(memory, "_journal", None) or ():
-        for index in range(len(previous)):
-            position = offset + index
-            if frame_low <= position <= frame_high:
-                continue
-            effects[position] = memory.bytes[position]
-    return effects
-
-
-def _choose_profile(machine, func, args):
-    """Return the first memory profile under which the original executes, or None.
-
-    The profile only decides whether the test can *reach* the function; the original
-    and the derivation always read the same memory, so it never changes a verdict.
-    """
-    for profile in testmem.PROFILES:
-        # Pages a failing profile mapped are given back: they would otherwise use
-        # up the mapping budget (emu.MAX_PAGES), and the functions tested later
-        # would fault for want of a page - a loss that depends on the order.
-        mark = machine.memory.page_mark()
-        machine.memory.end_journal()
-        machine.memory.write(layout.CURRENT.scratch, testmem.build(profile, func["addr"]))
-        machine.memory.begin_journal()
-        try:
-            machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
-            ran = True
-        except Exception as exc:
-            _failed("original, every memory profile", exc)
-            ran = False
-        finally:
-            machine.memory.rollback()
-            machine.memory.end_journal()
-        if ran:
-            return profile
-        machine.memory.unmap_to(mark)
-    return None
-
-
-def test_plan(func, machine):
-    """The argument sets and memory profile a function is tested with, or None.
-
-    Separate from the test itself so that anything else that must face exactly the
-    same cases - the compiled C++ check - can ask for them.
-    """
-    # Seeded from the address so argument sets are stable across passes: a
-    # function retried in a later pass must be tested on the same inputs, or a
-    # pass-dependent result would be impossible to reproduce.
-    local_rng = random.Random(func["addr"])
-    arg_sets = [testmem.arguments(local_rng) for _ in range(ARG_SETS - 1)]
-    arg_sets.append(tuple(layout.CURRENT.scratch + 16 * i for i in range(8))
-                    + tuple(testmem.float_bits(local_rng) for _ in range(8)))
-    profile = _choose_profile(machine, func, arg_sets[0])
-    if profile is None:
-        return None
-    return arg_sets, profile
-
-
-def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=None):
-    """Run the original and a candidate on every case; return (outcome, tested).
-
-    `evaluate(args)` returns the candidate's (result, writes) for one case, with
-    memory as the original saw it on entry; result is None for a void function and
-    writes are (address, value, size) triples. The outcome is "ok", "mismatch" or
-    "failed" (the case could not be run at all).
-
-    `record`, a list, receives the original's (result, effects) for each case;
-    `recorded` supplies them instead of running the original again. The compiled
-    check uses the results recorded while the derivation was verified: they are
-    the same runs on the same memory, and repeating them doubled its cost.
-    """
-    tested = 0
-    for case, args in enumerate(arg_sets):
-        # Fresh memory of the chosen shape for every case, so the test varies
-        # memory as well as arguments. Written outside the journal on purpose:
-        # the journal does not nest, and this region is rewritten before every
-        # case anyway, so nothing leaks between them.
-        machine.memory.end_journal()
-        machine.memory.write(layout.CURRENT.scratch,
-                             testmem.build(profile, func["addr"] + case))
-        # A function with stores is only verified if its *memory effects* match
-        # too, so let the original run under a journal, and then check that
-        # applying the candidate's stores to the same starting state reproduces
-        # exactly what the original produced.
-        # Journalling rather than snapshotting a region: these functions write
-        # to globals well outside the scratch area, and restoring only scratch
-        # left those changes in place - which both corrupted later cases and
-        # made correct derivations look wrong.
-        if recorded is not None:
-            expected, effects = recorded[case]
-        else:
-            machine.memory.begin_journal()
-            try:
-                expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
-            except Exception as exc:
-                _failed("original", exc)
-                machine.memory.rollback()
-                machine.memory.end_journal()
-                return "failed", tested
-            effects = _effects_digest(machine.memory)
-            machine.memory.rollback()
-            if record is not None:
-                record.append((expected, effects))
-
-        # The candidate runs inside the replay journal: one that calls an underived
-        # function writes memory as it goes - the callee must see the stores made
-        # before it - rather than handing back a list of writes at the end.
-        machine.memory.begin_journal()
-        try:
-            actual, writes = evaluate(args)
-        except Exception as exc:
-            _failed("derivation", exc)
-            machine.memory.rollback()
-            machine.memory.end_journal()
-            return "failed", tested
-        try:
-            for address, value, size in writes:
-                machine.memory.write_int(address, value, size)
-        except Exception as exc:
-            _failed("derivation's stores", exc)
-            machine.memory.rollback()
-            machine.memory.end_journal()
-            return "failed", tested
-        replayed = _effects_digest(machine.memory)
-        machine.memory.rollback()
-        machine.memory.end_journal()
-
-        tested += 1
-        # A void function leaves whatever the caller had in $v0, so there is no
-        # return value to compare - only its memory effects carry meaning.
-        # Comparing $v0 anyway registered 175 correct derivations as failures.
-        if actual is not None and expected != actual:
-            return "mismatch", tested
-        if replayed != effects:
-            return "mismatch", tested
-    return "ok", tested
-
-
 def _attempt(func, image, base, machine, read, known, rejected, parameters=None):
     """Try to derive and verify one function; returns the record or None."""
     if True:
@@ -1163,8 +1123,7 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
             rejected["unsupported"] += 1
             return None
 
-        global _LAST_FAILURE
-        _LAST_FAILURE = None
+        testplan.reset_failure()
         plan = test_plan(func, machine)
         if plan is None:
             rejected["untestable"] += 1
@@ -1488,6 +1447,9 @@ def main(argv=None) -> int:
                         help="emit plain addresses instead of recovered struct types")
     parser.add_argument("--no-compile", action="store_true",
                         help="skip compiling the emitted C++ and running it")
+    parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2),
+                        help="processes deriving in parallel (default: all but two cores; "
+                             "1 derives serially, in address order)")
     args = parser.parse_args(argv)
 
     game = game_config.from_args(args)
@@ -1498,7 +1460,11 @@ def main(argv=None) -> int:
     machine = Machine.from_elf(elf)
 
     started = time.time()
-    verified, rejected = collect(database, image, section.addr, machine)
+    if args.jobs > 1:
+        verified, rejected, machine = collect_parallel(database, image, section.addr,
+                                                       machine, game.directory, args.jobs)
+    else:
+        verified, rejected = collect(database, image, section.addr, machine)
     print("symbolically derived and verified : %d functions" % len(verified))
     print("  rejected, not derivable         : %d" % rejected["unsupported"])
     print("  rejected, could not be tested   : %d" % rejected["untestable"])
@@ -1564,6 +1530,7 @@ def main(argv=None) -> int:
 
         existing = {}
         derived = {func["addr"] for func, _d, _t, _s in verified}
+        weak = {func["addr"] for func, _d, _t, strong in verified if not strong}
         if os.path.exists(args.csv):
             with open(args.csv, newline="", encoding="utf-8") as handle:
                 for row in csv.DictReader(handle):
@@ -1574,7 +1541,11 @@ def main(argv=None) -> int:
                     # is verified supersedes the mechanical translation.
                     if row["source"] == "src/generated/accessors.cpp":
                         continue
-                    if row["source"] == "src/lifted/" and int(row["address"], 16) in derived:
+                    # A near-vacuous derivation does not displace a verified
+                    # lifted copy, which was tested on its whole state.
+                    address = int(row["address"], 16)
+                    if (row["source"] == "src/lifted/" and address in derived
+                            and not (row["status"] == "lifted" and address in weak)):
                         continue
                     existing[int(row["address"], 16)] = row
         for func, _derivation, tested, strong in verified:

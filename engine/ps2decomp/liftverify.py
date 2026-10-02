@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import random
 
-import derive                       # engine/tools, on the path wherever this is used
-
-from . import layout, liftcheck, testmem
+from . import layout, liftcheck, testmem, testplan
 
 STATE_PARTS = ("registers", "upper register halves", "HI", "LO", "HI1", "LO1",
                "FPU registers", "FPU accumulator", "FPU condition",
@@ -61,7 +59,7 @@ def _cases(func, machine):
     are searched for instead. Any input the original completes on is as valid a
     test as any other; this only decides which inputs are tried.
     """
-    plan = derive.test_plan(func, machine)
+    plan = testplan.test_plan(func, machine)
     if plan is not None:
         arg_sets, profile = plan
         return [(args, profile, func["addr"] + case) for case, args in enumerate(arg_sets)]
@@ -110,7 +108,7 @@ def verify(func, machine, library, abi=False) -> str:
 def _verify(func, machine, library, abi) -> str:
     cases = _cases(func, machine)
     if cases is None:
-        return "untestable: " + derive.failure_reason()
+        return "untestable: " + testplan.failure_reason()
     memory = machine.memory
     tested = 0
     for args, profile, seed in cases:
@@ -118,13 +116,13 @@ def _verify(func, machine, library, abi) -> str:
         memory.write(layout.CURRENT.scratch, testmem.build(profile, seed))
         memory.begin_journal()
         try:
-            machine.call(func["addr"], args, max_instructions=derive.VERIFY_BUDGET)
+            machine.call(func["addr"], args, max_instructions=testplan.VERIFY_BUDGET)
         except Exception:
             memory.rollback()
             memory.end_journal()
             continue
         expected = liftcheck.machine_state(machine)
-        effects = derive._effects_digest(memory)
+        effects = testplan._effects_digest(memory)
         memory.rollback()
         context = liftcheck.entry_context(args)
         why = library.run(func["addr"], context)
@@ -133,7 +131,7 @@ def _verify(func, machine, library, abi) -> str:
             memory.end_journal()
             return "lifted run failed: " + why
         actual = liftcheck.context_state(context)
-        replayed = derive._effects_digest(memory)
+        replayed = testplan._effects_digest(memory)
         memory.rollback()
         memory.end_journal()
         if abi:

@@ -1039,6 +1039,33 @@ call. `for (;;)` loops fall from 5,129 to 3,611, with 2,136 do-while and 388
 while loops, and 36,600 `ra = ...` lines go. 7,679 of 7,898 verified functions
 pass in structured form, one more than before.
 
+## Parallel derivation, and effects keyed by address
+
+Derivation ran in one process, over half an hour. It now runs on 14, bottom-up
+through the call graph: each layer of functions after every function it calls,
+so a function can inline any callee that will ever be derived - serially, only
+those earlier in address order. Inlining is not always a gain: a callee's paths
+multiply the caller's, and some callers that derived when they called the callee
+cannot be derived with it inlined. Those are retried with their callees called.
+4,300 functions derive, 65 more than serially, in 9 minutes instead of 34.
+
+The first parallel run failed 280 functions in the compiled check, which replays
+in the parent process the cases a worker recorded. Recorded memory effects were
+keyed by position in the interpreter's buffer, and a page mapped on demand lands
+wherever the buffer ends at the time: the same address sat at different
+positions in different processes. Serially, recording and checking happened in
+one process and never showed it. Effects are now keyed by address
+(Memory.address_at). The compiled check passes 4,166 functions, with the same
+17 disagreements as before (16 serially). VERIFIED goes from 14.86% to 15.25%.
+
+The status table had one precedence wrong. A function whose derivation ignores
+its arguments is derived but only `reconstructed` - its test exercises one input
+eight times - and that row displaced a `lifted` row for the same function, which
+was tested on its whole state. 739 functions verified by lifting were reported
+as merely reconstructed. A weak derivation now gives way to a verified lifted
+copy. MACHINE-CHECKED goes from 67.6% to 69.1%; nothing was newly verified, it
+was under-reported.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

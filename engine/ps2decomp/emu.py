@@ -120,6 +120,7 @@ class Memory:
         self._journal = None
         # Pages mapped on demand (see map_page), after the windows in the buffer.
         self.pages = {}
+        self.page_order = []         # the same pages, in the order they sit in the buffer
         self.page_source = None      # page address -> its initial contents
         self.pages_exhausted = False
         # When watching, the address of the last word read as zero: what a null
@@ -157,6 +158,7 @@ class Memory:
                       "tests may fault for want of a page" % MAX_PAGES, file=sys.stderr)
             return False
         self.pages[page] = len(self.bytes)
+        self.page_order.append(page)
         self.bytes.extend(self.page_source(page))
         return True
 
@@ -169,8 +171,9 @@ class Memory:
         entries may point into the pages dropped."""
         assert self._journal is None, "unmapping inside a journal"
         count, size = mark
-        for page in list(self.pages)[count:]:
+        for page in self.page_order[count:]:
             del self.pages[page]
+        del self.page_order[count:]
         del self.bytes[size:]
 
     def undo_to(self, mark: int) -> None:
@@ -184,6 +187,24 @@ class Memory:
     def offset_of(self, addr: int) -> int:
         """Where an address lives in the backing buffer, as the journal records it."""
         return self._offset(addr, 1, False)
+
+    def address_at(self, offset: int) -> int:
+        """The address a position in the backing buffer holds; offset_of's inverse.
+
+        A page mapped on demand lands wherever the buffer ends at the time, so
+        the same address sits at different positions in two processes that
+        mapped pages in a different order. Anything compared across processes -
+        recorded effects - must name addresses, not positions.
+        """
+        if offset < self.size:
+            return self.base + offset
+        for start, end, at in self.windows:
+            if at <= offset < at + (end - start):
+                return start + offset - at
+        page_area = self.windows[-1][2] + (self.windows[-1][1] - self.windows[-1][0]) \
+            if self.windows else self.size
+        index, within = divmod(offset - page_area, PAGE_SIZE)
+        return self.page_order[index] + within
 
     # -- journalling ---------------------------------------------------
     #

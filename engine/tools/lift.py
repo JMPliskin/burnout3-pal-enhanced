@@ -27,8 +27,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
-import derive
-from ps2decomp import cppcheck, lift, liftcheck, verdicts
+from ps2decomp import cppcheck, lift, liftcheck, testplan, verdicts
 from ps2decomp.liftverify import abi_view, verify  # noqa: F401  (also used by tests)
 from ps2decomp import game as game_config
 from ps2decomp.emu import Machine
@@ -142,7 +141,7 @@ def verify_texts(texts: dict, work: str, game, seeds, jobs, cache, abi=False,
         if jobs > 1 and len(built) > 50:
             fresh = verify_parallel(sorted(built), game, seeds, dll, jobs, abi)
         else:
-            library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
+            library = liftcheck.LiftedFunctions(dll, machine, testplan.VERIFY_BUDGET)
             fresh = {address: verify(functions[address], machine, library, abi)
                      for address in sorted(built)}
         for address in missing:
@@ -207,6 +206,8 @@ def update_status(path: str, verified, outcomes, names=None, unverified=None) ->
 
     A function verified both ways keeps its derived row: readable source that is
     verified is the better tier, and the lifted copy is only the fallback. A
+    derivation that is only `reconstructed` - its test near-vacuous - gives way
+    to a verified lifted copy, which was tested on its whole state. A
     lifted row takes its name from the game's names.csv, where every name keeps
     its evidence, so rebuilding the rows never loses one.
     """
@@ -222,7 +223,7 @@ def update_status(path: str, verified, outcomes, names=None, unverified=None) ->
     added = 0
     for address in verified:
         existing = rows.get(address)
-        if existing and existing["status"] in ("verified", "reconstructed"):
+        if existing and existing["status"] == "verified":
             continue
         rows[address] = {
             "address": "0x%08X" % address,
@@ -266,9 +267,9 @@ def _start_worker(game_directory, seeds, dll):
     elf = game.load_elf()
     section = elf.exec_sections[0]
     machine = Machine.from_elf(elf)
-    derive.prepare_test_memory(machine, database, elf.section_data(section), section.addr,
+    testplan.prepare_test_memory(machine, database, elf.section_data(section), section.addr,
                                [], seeds=seeds)
-    library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
+    library = liftcheck.LiftedFunctions(dll, machine, testplan.VERIFY_BUDGET)
     _WORKER = (machine, library, {f["addr"]: f for f in database["functions"]})
 
 
@@ -326,7 +327,7 @@ def main(argv=None) -> int:
     if args.limit:
         functions = functions[:args.limit]
     started = time.time()
-    seeds = derive.prepare_test_memory(machine, database, image, section.addr, functions,
+    seeds = testplan.prepare_test_memory(machine, database, image, section.addr, functions,
                                        verbose=True)
 
     lifted, refused = lift_all(functions, image, section.addr)

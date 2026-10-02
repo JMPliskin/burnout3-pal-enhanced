@@ -89,8 +89,11 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
    python -u engine/tools/derive.py --game games/<name> --emit --csv > games/<name>/build/derive.log
    python engine/tools/progress.py --game games/<name> --markdown > games/<name>/docs/PROGRESS.md
    ```
-   A full run on a 4 MB executable takes about 14 minutes. Run it in the
-   background, and never start two runs at once: they write the same outputs.
+   Derivation runs on all but two cores (`--jobs`), bottom-up through the call
+   graph so every function sees its derived callees; on a 4 MB executable a
+   full run takes about 11 minutes (`--jobs 1`: serial, in address order, over
+   half an hour). Run it in the background, and never start two runs at once:
+   they write the same outputs.
    Then lift, after derivation, because lifted rows yield to derived ones:
    ```sh
    python -u engine/tools/lift.py --game games/<name> --structure --emit --csv > games/<name>/build/lift.log
