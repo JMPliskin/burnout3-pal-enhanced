@@ -1167,6 +1167,40 @@ same work. In bytes: 9,025 functions lift and verify (7,915 before), 5,241
 derive (4,450), VERIFIED is 551,268 bytes (531,816), 15.71%; MACHINE-CHECKED
 69.14%. Undecompiled code falls to 1.50%.
 
+## Two structuring bugs that verification missed
+
+Running natively, the game's software double multiplication (`__muldf3`,
+0x12E370) looped forever on 4915200.0 x 2^-32, though every form of it had been
+verified - the random test inputs never reached the path. Run on those inputs,
+the plain lifted form was right and both structured forms with saves elided
+looped. Two bugs:
+
+* Eliding callee-saved saves dropped every load of a saved register from the
+  stack - but `ld $s3, 0x10($sp)` there loads data, a fraction a callee stored.
+  Only the prologue's own save slots are elided now, and a function that
+  writes a saved register it never saves elides nothing.
+* Folding single-use temporaries read a conditional move (`if (v1 != 0) s1 =
+  v0;`) as a definite assignment, so `s1 = s1 << 1` looked dead after its one
+  use and moved into the conditional branch. A conditional assignment now reads
+  its target and does not kill it.
+
+641 functions' structured forms changed and were verified again. Random inputs
+proved too weak to catch either; the next safeguard is to compare each
+structured form with its plain lifted form - verified against the interpreter,
+and mechanical - natively, over thousands of inputs.
+
+## The IOP over SIF
+
+The host answers the SDK's SIF commands as the IOP would (engine/host/src/
+iop.cpp): the EE's receive buffer from command 0x80000000, RPC bind and call
+answered with RPC-end packets in that buffer and the SIF0 DMA interrupt, run by
+the scheduler. Burnout 3 binds the CD/DVD file system's servers (0x80000592,
+0x80000593, 0x8000059C) and file I/O (0x80000001); none has a host
+implementation yet, so their calls are answered with zeros and noted.
+`sceGsSyncPath`, which polls VU1's status, is replaced by name (sdk.cpp).
+Boot now reaches 665 functions, six threads and its first GIF and VIF1
+transfers.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

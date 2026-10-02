@@ -38,16 +38,57 @@ SCALARS = ("hi", "lo", "hi1", "lo1", "acc", "fcc", "sa")
 # cannot observe - are left out. A function that breaks the convention fails its
 # verification and keeps the plain lifted form.
 CALLEE_SAVED = (16, 17, 18, 19, 20, 21, 22, 23, 30)
-_SAVED = r"(?:s[0-7]|fp|ra)"
-_SLOT = r"\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?\)"
+_SAVED = r"(?P<reg>s[0-7]|fp|ra)"
+_OFFSET = r"(?: \+ (?P<off>0x[0-9A-F]+)u)?"
+_SLOT = r"\(\(u32\)sp%s\)" % _OFFSET
 _SPILLS = [
     re.compile(r"^\s*\{ u32 q = %s & ~0xFu; Write64\(q, %s\); Write64\(q \+ 8, c\.rh\[\d+\]\); \}$"
                % (_SLOT, _SAVED)),
-    re.compile(r"^\s*Write64\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?, %s\);$" % _SAVED),
+    re.compile(r"^\s*Write64\(\(u32\)sp%s, %s\);$" % (_OFFSET, _SAVED)),
     re.compile(r"^\s*\{ u32 q = %s & ~0xFu; u64 lo = Read64\(q\); u64 hi = Read64\(q \+ 8\); "
                r"%s = lo; c\.rh\[\d+\] = hi; \}$" % (_SLOT, _SAVED)),
-    re.compile(r"^\s*%s = ReadU64\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?\);$" % _SAVED),
+    re.compile(r"^\s*%s = ReadU64\(\(u32\)sp%s\);$" % (_SAVED, _OFFSET)),
 ]
+
+
+def _save_slots(code, start: int):
+    """{(register name, stack offset)} the prologue saves callee-saved registers
+    in: the stores of them to the stack before the first branch, jump or call.
+    None when the function writes a callee-saved register it never saves - its
+    callers would see the change, so nothing about its saves can be elided."""
+    slots, saved, written = set(), set(), set()
+    in_prologue = True
+    for ins in code:
+        if in_prologue and ins.mnemonic in ("sd", "sq", "sw") and ins.rs == 29 \
+                and (ins.rt in CALLEE_SAVED or ins.rt == 31):
+            slots.add((GPR_NAMES[ins.rt], ins.imm & 0xFFFF))
+            saved.add(ins.rt)
+        if ins.is_branch or ins.is_jump or ins.is_call:
+            in_prologue = False
+        rd = _written_gpr(ins)
+        if rd in CALLEE_SAVED:
+            written.add(rd)
+    return slots if written <= saved else None
+
+
+def _written_gpr(ins):
+    """The general register an instruction writes, or None (from the analysis)."""
+    from .structs import _written_register
+    return _written_register(ins)
+
+
+def _is_spill(text: str, slots) -> bool:
+    """Whether `text` saves or restores a callee-saved register in its own save
+    slot - bookkeeping no caller can see. A load of one from any other stack slot
+    is data (a local the code keeps in a saved register) and is kept: dropping
+    such a load once made software double multiplication loop forever."""
+    if not slots:
+        return False
+    for pattern in _SPILLS:
+        match = pattern.match(text)
+        if match and (match.group("reg"), int(match.group("off") or "0", 16)) in slots:
+            return True
+    return False
 
 
 class Unstructurable(lift.Refused):
@@ -789,7 +830,7 @@ _TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c
 ABI_RETURNED = ("v0", "v1", "sp", "gp", "f0", "f1")
 
 
-def _prepare_readable(blocks, elide):
+def _prepare_readable(blocks, elide, slots=None):
     """Localise every block's statements, then fold single-use temporaries.
 
     Returns the names to synchronise around calls. Folding needs the statements
@@ -809,10 +850,10 @@ def _prepare_readable(blocks, elide):
     for block in blocks.values():
         code = [finish(s) for s in block.code if s]
         if elide:
-            code = [s for s in code if not any(p.match(s) for p in _SPILLS)]
+            code = [s for s in code if not _is_spill(s, slots)]
         block.code = code
         block.slot = finish(block.slot) if block.slot else block.slot
-        if block.slot and elide and any(p.match(block.slot) for p in _SPILLS):
+        if block.slot and elide and _is_spill(block.slot, slots):
             block.slot = ""
         if block.condition:
             block.condition = finish(block.condition)
@@ -849,13 +890,15 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     words = struct.unpack_from("<%dI" % count, image, start - base)
     code = [DISASM.decode(word, start + 4 * i) for i, word in enumerate(words)]
     blocks = _blocks(code, start, end)
+    slots = _save_slots(code, start)
+    elide = elide and slots is not None
     if readable:
         has_tail = any(b.kind == "tail"
                        or (b.taken is not None and b.taken not in blocks)
                        or (b.next is not None and b.next not in blocks and b.kind != "return")
                        for b in blocks.values())
         elide = elide and not has_tail
-        seen = _prepare_readable(blocks, elide)
+        seen = _prepare_readable(blocks, elide, slots)
     emitter = _Emitter(blocks, start, end)
     body = emitter.emit(start, None, [], 1)
     # Blocks only reachable by a goto - from inside a loop, say - follow the main
@@ -878,7 +921,7 @@ def structure_function(image: bytes, base: int, start: int, end: int,
             continue
         localized = tidy(_localize(line, gprs, fprs, scalars))
         if elide:
-            if any(pattern.match(localized) for pattern in _SPILLS):
+            if _is_spill(localized, slots):
                 continue
             localized = localized.replace("out(); return;", "leave(); return;")
         if _TAKES_CONTEXT.search(localized) and "out();" not in localized:

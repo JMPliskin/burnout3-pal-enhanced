@@ -23,8 +23,6 @@ namespace {
 struct Kernel {
     u32 heap_end = 0;
     u32 stack_base = 0;
-    std::map<u32, u32> dmac_handlers;    // id -> handler
-    u32 next_handler = 1;
     u64 gs_imr = 0;
     std::map<u32, u32> sif_registers;
 };
@@ -138,12 +136,6 @@ void KernelSyscall(lifted::Context& c) {
         case 0x3E:                                   // EndOfHeap()
             Return(c, k.heap_end);
             return;
-        case 0x12: {                                 // AddDmacHandler(channel, handler, next, arg)
-            const u32 id = k.next_handler++;
-            k.dmac_handlers[id] = Arg(c, 1);
-            Return(c, id);
-            return;
-        }
         case 0x70:                                   // GsGetIMR
             Return(c, k.gs_imr);
             return;
@@ -166,7 +158,26 @@ void KernelSyscall(lifted::Context& c) {
         case 0x76:                                   // SifDmaStat(id): < 0 when done
             Return(c, u64(-1));
             return;
-        case 0x77: case 0x78:                        // SifSetDma / SifSetDChain
+        case 0x77: {                                 // SifSetDma(transfers*, count)
+            if (Tracing()) {
+                // struct SifDmaTransfer { void* src; void* dest; int size; int attr; }
+                Memory& m = GuestMemory();
+                for (u32 i = 0; i < Arg(c, 1); ++i) {
+                    const u32 t = Arg(c, 0) + 16 * i;
+                    const u32 src = u32(m.Read(t, 4)), dest = u32(m.Read(t + 4, 4));
+                    const u32 size = u32(m.Read(t + 8, 4)), attr = u32(m.Read(t + 12, 4));
+                    std::fprintf(stderr, "  [sif dma] src=0x%08X dest=0x%08X size=%u attr=0x%X:",
+                                 src, dest, size, attr);
+                    for (u32 w = 0; w < size && w < 64; w += 4)
+                        std::fprintf(stderr, " %08X", u32(m.Read(src + w, 4)));
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            SifDma(Arg(c, 0), Arg(c, 1));
+            Return(c, 1);
+            return;
+        }
+        case 0x78:                                   // SifSetDChain
             Return(c, 1);
             return;
         case 0x79:                                   // SifSetReg(reg, value)

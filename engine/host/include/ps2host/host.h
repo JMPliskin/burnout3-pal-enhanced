@@ -19,7 +19,10 @@
 #define PS2HOST_HOST_H
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "ps2rt/lifted.h"
 
@@ -47,13 +50,23 @@ void Override(u32 address, GuestFunction function, const char* name);
 /* The name of the function at `address`, or null. */
 const char* FunctionName(u32 address);
 
+/* A host implementation of an IOP RPC server: given the procedure number and the
+   data the EE sent, returns what the EE receives. Servers every game uses (file
+   I/O, CD/DVD, pads, memory cards) belong to the engine; a game whose IOP
+   modules are its own registers its servers from its port. */
+using RpcServer = std::function<std::vector<u8>(u32 procedure, const std::vector<u8>& data)>;
+void RegisterRpcServer(u32 sid, RpcServer server);
+
 struct Options {
     std::string elf_path;          /* the game's executable, from the user's own disc */
-    s64 loop_budget = 2000000000;  /* loop iterations before a run is called stuck */
+    /* Loop iterations a run may take in all; unlimited by default, since a game
+       runs indefinitely - the timeout is what stops a run that is stuck. */
+    s64 loop_budget = INT64_MAX;
     bool trace_calls = false;      /* log every call, not just the first of each */
     int report_limit = 40;         /* how many entries each report section lists */
     int timeout_seconds = 30;      /* stop and report a run that goes on longer */
     std::string discover_path;     /* where to record code found copied at run time */
+    std::vector<u32> watch;        /* functions whose every call logs its argument registers */
 };
 
 /* Load the executable, run it from its entry point, and report how far it got.

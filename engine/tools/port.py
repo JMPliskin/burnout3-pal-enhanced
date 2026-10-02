@@ -199,6 +199,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     game_config.add_argument(parser)
     parser.add_argument("action", nargs="?", default="all", choices=("all", "build", "run"))
+    parser.add_argument("--rounds", type=int, default=60,
+                        help="build-and-run rounds to translate code found at run time")
     parser.add_argument("extra", nargs=argparse.REMAINDER,
                         help="options for the port itself, after --")
     args = parser.parse_args(argv)
@@ -212,7 +214,7 @@ def main(argv=None) -> int:
         build(game, generate(game))
         return 0
     # Build and run until a run finds no more code copied at run time.
-    for _round in range(8):
+    for _round in range(args.rounds):
         executable = build(game, generate(game))
         before = _count_lines(discoveries_path(game))
         code = run(game, executable, extra)
@@ -225,8 +227,10 @@ def main(argv=None) -> int:
 def _count_lines(path: str) -> int:
     if not os.path.exists(path):
         return 0
+    # Distinct entries: code that cannot be translated is met - and recorded -
+    # again on every run, and must not count as something new.
     with open(path, encoding="utf-8") as handle:
-        return sum(1 for line in handle if line.strip())
+        return len({line.strip() for line in handle if line.strip()})
 
 
 if __name__ == "__main__":

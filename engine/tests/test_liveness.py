@@ -49,5 +49,13 @@ class TestFold(unittest.TestCase):
         self.assertEqual(code[0], "t0 = lo + 1;")
 
 
+class TestConditionalAssignment(unittest.TestCase):
+    def test_a_conditional_assignment_does_not_kill_its_target(self):
+        # movn after a shift: the shifted value survives when the condition fails.
+        code = ["s1 = (s1 << 1);", "v0 = s1 | a3;", "if (v1 != 0) s1 = v0;"]
+        folded, _ = liveness.fold(code, "v0 == 0ull", {"s1"}, {"s1", "v0", "v1", "a3"}, set())
+        self.assertIn("s1 = (s1 << 1);", folded)
+
+
 if __name__ == "__main__":
     unittest.main()

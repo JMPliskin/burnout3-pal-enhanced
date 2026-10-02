@@ -68,7 +68,7 @@ struct Semaphore {
 };
 
 struct Handler {
-    u32 cause, function, argument;
+    u32 cause, function, argument;      // cause: the INTC cause, or the DMA channel
 };
 
 // INTC causes the frame delivers: vertical blank start and end.
@@ -85,9 +85,11 @@ struct Scheduler {
     std::exception_ptr stop;
     std::map<u32, Semaphore> semaphores;
     u32 next_semaphore = 1;
-    std::map<u32, Handler> handlers;
+    std::map<u32, Handler> handlers;        // INTC handlers, by id
+    std::map<u32, Handler> dmac_handlers;   // DMA-completion handlers, by id
     u32 next_handler = 1;
     u32 intc_mask = 0;
+    u32 dmac_mask = 0;
     s64 loop_budget = 0;
     u64 frames = 0;
     bool in_interrupt = false;
@@ -147,31 +149,43 @@ Thread* PickReady() {
     return best;
 }
 
+// Run the handlers registered for `cause` among `handlers`, in interrupt context.
+bool RunHandlers(const std::map<u32, Handler>& handlers, u32 cause) {
+    Scheduler& s = S();
+    bool ran = false;
+    for (const auto& [id, h] : handlers) {
+        if (h.cause != cause) continue;
+        lifted::Context& c = s.interrupt_context;
+        c.r[4] = cause;
+        c.r[5] = h.argument;
+        c.r[29] = 0x01F80000u;                  // an interrupt stack clear of the threads'
+        c.r[31] = 0;
+        c.budget = s.loop_budget;
+        const bool nested = s.in_interrupt;
+        s.in_interrupt = true;
+        Dispatch(c, h.function);
+        s.in_interrupt = nested;
+        ran = true;
+    }
+    return ran;
+}
+
 // One frame's interrupts, delivered to the handlers registered for them.
 bool DeliverFrame() {
     Scheduler& s = S();
     ++s.frames;
     bool ran = false;
-    for (u32 cause : {kVblankStart, kVblankEnd}) {
-        if (!(s.intc_mask & (1u << cause))) continue;
-        for (auto& [id, h] : s.handlers) {
-            if (h.cause != cause) continue;
-            lifted::Context& c = s.interrupt_context;
-            c.r[4] = cause;
-            c.r[5] = h.argument;
-            c.r[29] = 0x01F80000u;              // an interrupt stack clear of the threads'
-            c.r[31] = 0;
-            c.budget = s.loop_budget;
-            s.in_interrupt = true;
-            Dispatch(c, h.function);
-            s.in_interrupt = false;
-            ran = true;
-        }
-    }
+    for (u32 cause : {kVblankStart, kVblankEnd})
+        if (s.intc_mask & (1u << cause)) ran |= RunHandlers(s.handlers, cause);
     return ran;
 }
 
 }  // namespace
+
+void RaiseDmac(u32 channel) {
+    Scheduler& s = S();
+    if (s.dmac_mask & (1u << channel)) RunHandlers(s.dmac_handlers, channel);
+}
 
 std::vector<u32>& CurrentCalls() {
     Scheduler& s = S();
@@ -200,6 +214,9 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     u64 idle = 0;
     for (;;) {
         if (s.stop) std::rethrow_exception(s.stop);
+        // Answers from the IOP arrive between threads, as interrupts.
+        while (DeliverIopReply()) {
+        }
         Thread* next = PickReady();
         if (!next) {
             if (first.state == State::Dormant)
@@ -397,6 +414,24 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
         case 0x11: case -0x11:                       // RemoveIntcHandler(cause, id)
             s.handlers.erase(a1);
             result = 0;
+            return true;
+        case 0x12: case -0x12: {                     // AddDmacHandler(channel, handler, next, arg)
+            const u32 id = s.next_handler++;
+            s.dmac_handlers[id] = Handler{a0, a1, u32(c.r[7])};
+            result = id;
+            return true;
+        }
+        case 0x13: case -0x13:                       // RemoveDmacHandler(channel, id)
+            s.dmac_handlers.erase(a1);
+            result = 0;
+            return true;
+        case 0x16: case -0x16:                       // _EnableDmac(channel)
+            s.dmac_mask |= 1u << (a0 & 31);
+            result = 1;
+            return true;
+        case 0x17: case -0x17:                       // _DisableDmac(channel)
+            s.dmac_mask &= ~(1u << (a0 & 31));
+            result = 1;
             return true;
         case 0x14: case -0x14:                       // _EnableIntc(cause)
             s.intc_mask |= 1u << (a0 & 31);

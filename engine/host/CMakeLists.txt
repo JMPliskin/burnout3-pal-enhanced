@@ -19,7 +19,9 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/memory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/kernel.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/devices.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/threads.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/src/threads.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/iop.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/sdk.cpp)
 target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ps2host PUBLIC ps2rt)
 

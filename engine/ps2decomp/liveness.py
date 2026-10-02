@@ -52,6 +52,12 @@ def uses_defs(statement: str, synced: set, returned: set):
     if "out();" in statement or "in();" in statement:
         # A call: it may read every synchronised register and change them all.
         return set(synced) | names(statement), set(synced)
+    if re.match(r"^\s*if \(", statement):
+        # A conditional assignment (movn, movz): when the condition fails the
+        # target keeps its old value, so it is read, and not certainly written.
+        # Counting it as a definition once folded `s1 = s1 << 1` into the
+        # conditional branch only, and software double multiplication looped.
+        return names(statement), set()
     target = simple(statement)
     if target is not None:
         return names(target[1]), {target[0]}

@@ -25,6 +25,7 @@ std::size_t g_count = 0;
 u32 g_image_start = 0, g_image_end = 0;       // the executable's bytes, as loaded
 std::unordered_map<u32, FunctionEntry> g_overrides;
 bool g_trace = false;
+std::vector<u32> g_watch;
 std::set<std::string> g_noted;
 
 const FunctionEntry* Find(u32 address) {
@@ -113,6 +114,8 @@ u32 FindSource(u32 address) {
 void RegisterFunctions(const FunctionEntry* table, std::size_t count) {
     g_table = table;
     g_count = count;
+    // Before the game's own overrides, which may replace these in turn.
+    ApplySdkOverrides(table, count);
 }
 
 void Override(u32 address, GuestFunction function, const char* name) {
@@ -156,6 +159,13 @@ void Dispatch(lifted::Context& c, u32 address) {
     u64& count = RunStats().calls[address];
     if (++count == 1 || g_trace)
         std::fprintf(stderr, "[call] %s\n", Describe(address).c_str());
+    if (std::find(g_watch.begin(), g_watch.end(), address) != g_watch.end()) {
+        std::fprintf(stderr, "[watch] %s a0=%016llX a1=%016llX a2=%016llX a3=%016llX "
+                     "f12=%08X f13=%08X ra=%08X\n", Describe(address).c_str(),
+                     (unsigned long long)c.r[4], (unsigned long long)c.r[5],
+                     (unsigned long long)c.r[6], (unsigned long long)c.r[7], c.f[12], c.f[13],
+                     unsigned(c.r[31]));
+    }
     Frame frame(address);
     try {
         entry->function(c);
@@ -280,6 +290,7 @@ private:
 
 int Run(const Options& options) {
     g_trace = options.trace_calls;
+    g_watch = options.watch;
     InstallDevices();
     lifted::Context c{};
     Watchdog watchdog(options.timeout_seconds);
@@ -322,6 +333,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
         else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);
         else if (arg == "--discover" && i + 1 < argc) options.discover_path = argv[++i];
+        else if (arg == "--watch" && i + 1 < argc)
+            options.watch.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg.rfind("--", 0) != 0) options.elf_path = arg;
         else {
             std::fprintf(stderr, "unknown option %s\n", arg.c_str());

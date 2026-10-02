@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "ps2host/host.h"
 #include "ps2rt/lifted.h"
 
 namespace ps2host {
@@ -57,6 +58,16 @@ void ForEachContext(void (*visit)(lifted::Context&));
 std::string ThreadReport();
 /* The thread, semaphore and interrupt services; false for any other service. */
 bool ThreadSyscall(lifted::Context& c, s32 number, u64& result);
+
+/* The IOP over SIF (iop.cpp): the transfers SifSetDma queues, and delivering
+   one queued answer to the EE (false when none waits). */
+void SifDma(u32 transfers, u32 count);
+bool DeliverIopReply();
+/* Run the DMA-completion handlers registered for a channel, as its interrupt. */
+void RaiseDmac(u32 channel);
+
+/* SDK library routines the host implements, applied by name (sdk.cpp). */
+void ApplySdkOverrides(const FunctionEntry* table, std::size_t count);
 
 /* The EE kernel: lifted::Syscall's implementation (kernel.cpp). */
 void KernelSyscall(lifted::Context& c);
