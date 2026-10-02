@@ -26,6 +26,18 @@ def sq(rt, base, imm): return (0x1F << 26) | (base << 21) | (rt << 16) | (imm & 
 def daddu(rd, rs, rt): return (rs << 21) | (rt << 16) | (rd << 11) | 0x2D
 
 
+def _outside_frame(memory):
+    """Bytes written, as production verification compares them: not the stack
+    frame, which belongs to the function."""
+    from ps2decomp import layout
+
+    low = layout.CURRENT.stack_low - memory.base
+    high = layout.CURRENT.stack_top + 0x10 - memory.base
+    return {offset: memory.bytes[offset]
+            for offset, previous in memory._journal
+            for offset in range(offset, offset + len(previous)) if not low <= offset <= high}
+
+
 def check(test, words, args_for, cases=30):
     """Derive `words`; compare its result and memory writes with the interpreter's."""
     image = struct.pack("<%dI" % len(words), *words)
@@ -42,9 +54,7 @@ def check(test, words, args_for, cases=30):
         machine.memory.write(SCRATCH, bytes(rng.getrandbits(8) for _ in range(256)))
         machine.memory.begin_journal()
         expected = machine.call(BASE, args)
-        written = {offset: machine.memory.bytes[offset]
-                   for offset, previous in machine.memory._journal
-                   for offset in range(offset, offset + len(previous))}
+        written = _outside_frame(machine.memory)
         machine.memory.rollback()
         read = lambda a, s, g: machine.memory.read_int(a, s, g)
         if derivation.sequential:
@@ -54,9 +64,7 @@ def check(test, words, args_for, cases=30):
             actual = derivation.evaluate(args, read)
             for address, value, size in derivation.evaluate_stores(args, read):
                 machine.memory.write_int(address, value, size)
-        replayed = {offset: machine.memory.bytes[offset]
-                    for offset, previous in machine.memory._journal
-                    for offset in range(offset, offset + len(previous))}
+        replayed = _outside_frame(machine.memory)
         machine.memory.rollback()
         machine.memory.end_journal()
         if actual is not None:
@@ -143,6 +151,19 @@ class TestVu0Derivation(unittest.TestCase):
                  (0x05 << 26) | (A2 << 21) | (((loop - (BASE + 20) - 4) >> 2) & 0xFFFF), 0,
                  JR_RA, sqc2(1, A0, 0)]
         check(self, words, lambda rng: (SCRATCH, SCRATCH + 64, rng.randrange(1, 5)))
+
+    def test_a_vector_spilled_to_the_stack_and_reloaded(self):
+        SP = 29
+        addiu = lambda rt, rs, imm: (0x09 << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+        words = [addiu(SP, SP, -32), lqc2(1, A0, 0), sqc2(1, SP, 0), s1(0x28, 1, 1, 1),
+                 lqc2(1, SP, 0), addiu(SP, SP, 32), JR_RA, sqc2(1, A0, 16)]
+        check(self, words, pointers)
+
+    def test_x_and_y_of_a_64_bit_value_moved_to_vu0(self):
+        ld = (0x37 << 26) | (A0 << 21) | (T0 << 16)                 # ld $t0, 0($a0)
+        words = [ld, qmtc2(T0, 1), lqc2(2, A1, 0), s1(0x28, 2, 1, 1, dest=0b1100),
+                 JR_RA, sqc2(2, A1, 16)]
+        check(self, words, pointers)
 
     def test_a_vector_register_never_written_is_refused(self):
         image = struct.pack("<3I", JR_RA, qmfc2(V0, 5), 0)

@@ -1511,8 +1511,16 @@ def _apply_vu0(regs: dict, ins, get) -> None:
         index = (word >> 11) & 0x1F
         if index:
             low = get(ins.rt) if ins.rt else Const(0)
-            high = _upper_or_zero(get, ins.rt)
+            try:
+                high = _upper_or_zero(get, ins.rt)
+            except Unsupported:
+                # The upper half is the caller's: z and w are unknown, and refused
+                # only if something reads them - code using x and y still derives.
+                high = None
             for which, (half, shift) in enumerate(((low, 0), (low, 32), (high, 0), (high, 32))):
+                if half is None:
+                    regs.pop(vf_lane(index, which), None)
+                    continue
                 part = Binary("dshr", half, Const(shift)) if shift else half
                 regs[vf_lane(index, which)] = Binary("and", part, Const(MASK32))
         return
@@ -1544,21 +1552,25 @@ def _apply_vu0(regs: dict, ins, get) -> None:
 
     op, to_acc, operand = vu0._split(base)
     if op is not None and base not in ("vopmula", "vopmsub"):
+        # Only the lanes the mask selects are read: x/y-only maths on a register
+        # whose z and w are unknown is fine.
         if operand in ("x", "y", "z", "w"):
-            b = [lane(ft, "xyzw".index(operand))] * 4
+            broadcast = lane(ft, "xyzw".index(operand))
+            second = lambda which: broadcast
         elif operand in ("q", "i"):
-            b = [get(VC_BASE + (vu0.REG_Q if operand == "q" else vu0.REG_I))] * 4
+            special = get(VC_BASE + (vu0.REG_Q if operand == "q" else vu0.REG_I))
+            second = lambda which: special
         elif operand == "":
-            b = [lane(ft, which) for which in range(4)]
+            second = lambda which: lane(ft, which)
         else:
             raise Unsupported("VU0 %s" % base)
         out = [None] * 4
         for which in lanes:
             a = lane(fs, which)
             if op in ("madd", "msub"):
-                out[which] = VuOp(op, get(VACC_BASE + which), a, b[which])
+                out[which] = VuOp(op, get(VACC_BASE + which), a, second(which))
             else:
-                out[which] = VuOp(op, a, b[which])
+                out[which] = VuOp(op, a, second(which))
         if to_acc:
             for which in lanes:
                 regs[VACC_BASE + which] = out[which]

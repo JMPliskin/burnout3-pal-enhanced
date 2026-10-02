@@ -441,6 +441,43 @@ def tidy(line: str) -> str:
     return line
 
 
+_SET_CONSTANT = re.compile(r"^(\s*)([a-z][a-z0-9]*) = (0x[0-9A-F]+)ull;$")
+_ADD_CONSTANT = re.compile(r"^(\s*)([a-z][a-z0-9]*) = Sx32\(([a-z][a-z0-9]*) \+ (0x[0-9A-F]+)u\);$")
+
+
+def fold_constants(lines, strings=None):
+    """Join `x = 0x520000; x = Sx32(x + 0xFFFFC220u)` into one constant: how MIPS
+    builds a 32-bit address in two steps. Only within straight-line code - any
+    line that is not a plain assignment forgets what is known. A constant that
+    is the address of a known string says so."""
+    strings = strings or {}
+    known, out = {}, []
+    for line in lines:
+        match = _ADD_CONSTANT.match(line)
+        if match and match.group(3) in known:
+            pad, target, source, addend = match.groups()
+            value = (known[source] + int(addend, 16)) & 0xFFFFFFFF
+            value = (value - (1 << 32) if value & 0x80000000 else value) & ((1 << 64) - 1)
+            line = "%s%s = 0x%08Xull;" % (pad, target, value)
+        match = _SET_CONSTANT.match(line)
+        if match:
+            pad, target, literal = match.groups()
+            known[target] = int(literal, 16)
+            text = strings.get(known[target] & 0xFFFFFFFF)
+            if text is not None:
+                shown = text if len(text) <= 48 else text[:45] + "..."
+                line += '  /* "%s" */' % shown.encode("unicode_escape").decode("ascii").replace("*/", "*\\/")
+            out.append(line)
+            continue
+        assigned = re.match(r"^\s*([a-z][a-z0-9]*) = ", line)
+        if assigned and ";" in line and "{" not in line and "}" not in line:
+            known.pop(assigned.group(1), None)
+        else:
+            known = {}
+        out.append(line)
+    return out
+
+
 def _localize(text, gprs, fprs, scalars):
     text = re.sub(r"c\.r\[(\d+)\]", lambda m: _gpr(int(m.group(1)), gprs), text)
     text = re.sub(r"c\.f\[(\d+)\]", lambda m: _fpr(int(m.group(1)), fprs), text)
@@ -467,7 +504,7 @@ _TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c
 
 
 def structure_function(image: bytes, base: int, start: int, end: int,
-                       elide: bool = True) -> str:
+                       elide: bool = True, strings=None) -> str:
     """Structured C++ for one function; raises lift.Refused if it cannot be.
 
     `elide` drops the saves and restores of callee-saved registers (see
@@ -529,6 +566,6 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     # The context is lifted::Context; everything else reads without the prefixes.
     lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in synced))
     lines.append("    (void)out; (void)in; (void)leave;")
-    lines += out_lines
+    lines += fold_constants(out_lines, strings)
     lines.append("}")
     return "\n".join(lines) + "\n"

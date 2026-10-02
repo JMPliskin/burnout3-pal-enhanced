@@ -943,7 +943,18 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
         for which in range(4):
             target = address_of(Binary("add", base_address, Const(4 * which)))
             if _is_frame_address(target):
-                raise Unsupported("VU0 register spilled to the stack frame")
+                # A spill: lane by lane through the frame model, like any other.
+                if not _symbolic_frame(frame, target, 4):
+                    raise Unsupported("VU0 register spilled to the stack frame")
+                slot = simplify(target).value & MASK64
+                if m == "lqc2":
+                    if ins.rt:
+                        regs[vf_lane(ins.rt, which)] = _frame_read(frame, slot, 4, False)
+                else:
+                    value = (Const((0, 0, 0, 0x3F800000)[which]) if ins.rt == 0
+                             else get(vf_lane(ins.rt, which)))
+                    _frame_write(frame, slot, 4, value)
+                continue
             if m == "lqc2":
                 if ins.rt:
                     regs[vf_lane(ins.rt, which)] = _read_through(memory, target, 4, False,

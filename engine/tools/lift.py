@@ -175,7 +175,7 @@ def verify(func, machine, library) -> str:
     return "verified" if tested >= 5 else "untestable: only %d cases ran" % tested
 
 
-def structure_verified(chosen, functions, image, base, game, seeds, jobs) -> dict:
+def structure_verified(chosen, functions, image, base, game, seeds, jobs, strings=None) -> dict:
     """Swap in the structured form of every function whose structured form verifies too.
 
     Structuring (structure.py) is a second translation of the same code, so it is
@@ -196,7 +196,7 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs) -> dic
             func = functions[address]
             try:
                 structured[address] = structure.structure_function(
-                    image, base, func["addr"], func["end"], elide=elide)
+                    image, base, func["addr"], func["end"], elide=elide, strings=strings)
             except lift.Refused:
                 pass
         if not structured:
@@ -379,8 +379,9 @@ def main(argv=None) -> int:
         print("  disagreeing: %s" % ", ".join("0x%08X" % a for a in disagreeing[:20]))
     chosen = {a: lifted[a] for a in verified}
     if args.structure:
+        strings = {entry["addr"]: entry["text"] for entry in database["strings"]}
         chosen = structure_verified(chosen, by_address, image, section.addr, game, seeds,
-                                    args.jobs)
+                                    args.jobs, strings)
     # Everything else that lifted is emitted too, marked: a complete translation,
     # with each function saying whether it was checked.
     unverified = {a: outcomes[a] for a in lifted if a not in chosen}
@@ -390,7 +391,7 @@ def main(argv=None) -> int:
             from ps2decomp import structure
             try:
                 chosen[address] = structure.structure_function(
-                    image, section.addr, address, by_address[address]["end"])
+                    image, section.addr, address, by_address[address]["end"], strings=strings)
             except lift.Refused:
                 pass
     from ps2decomp import naming
