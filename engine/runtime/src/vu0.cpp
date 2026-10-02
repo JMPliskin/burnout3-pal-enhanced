@@ -1,0 +1,303 @@
+/*
+ * VU0 macro mode for lifted code: a line-for-line mirror of engine/ps2decomp/vu0.py,
+ * which documents the arithmetic model (and where it departs from the hardware).
+ * The two are tested against each other through the lifted-code check.
+ */
+
+#include "ps2rt/lifted.h"
+
+#include <cmath>
+#include <cstring>
+
+namespace lifted {
+
+namespace {
+
+const u32 kSign = 0x80000000u;
+const u32 kMax = 0x7F7FFFFFu;
+const u32 kOne = 0x3F800000u;
+const int kRegR = 20, kRegI = 21, kRegQ = 22;
+
+u32 Clean(u32 bits) {
+    const u32 exponent = bits & 0x7F800000u;
+    if (exponent == 0) return bits & kSign;
+    if (exponent == 0x7F800000u) return (bits & kSign) | kMax;
+    return bits;
+}
+
+double Value(u32 bits) {
+    const u32 cleaned = Clean(bits);
+    float value;
+    std::memcpy(&value, &cleaned, sizeof value);
+    return value;
+}
+
+u32 Result(double number) {
+    if (number != number) return kMax;
+    const float narrowed = static_cast<float>(number);
+    u32 bits;
+    std::memcpy(&bits, &narrowed, sizeof bits);
+    if ((bits & 0x7F800000u) == 0x7F800000u) return (bits & kSign) | kMax;
+    if ((bits & 0x7F800000u) == 0) return bits & kSign;
+    return bits;
+}
+
+enum Op { kAdd, kSub, kMul, kMadd, kMsub, kMax_, kMini };
+
+u32 Binary(int op, u32 a, u32 b, u32 acc) {
+    const double x = Value(a), y = Value(b);
+    switch (op) {
+        case kAdd: return Result(x + y);
+        case kSub: return Result(x - y);
+        case kMul: return Result(x * y);
+        case kMadd: return Result(Value(acc) + Value(Result(x * y)));
+        case kMsub: return Result(Value(acc) - Value(Result(x * y)));
+        case kMax_: return x < y ? Clean(b) : Clean(a);
+        case kMini: return y < x ? Clean(b) : Clean(a);
+    }
+    return 0;
+}
+
+u32 FloatToInt(double number) {
+    if (number >= 2147483647.0) return 0x7FFFFFFFu;
+    if (number <= -2147483648.0) return 0x80000000u;
+    return (u32)(s32)number;
+}
+
+/* The special1 FMAC table: (operation, operand: 0-3 a lane of ft, 4 Q, 5 I, 6 ft). */
+struct Fmac { int op; int operand; bool to_acc; };
+
+bool Special1(u32 funct, Fmac* out) {
+    static const int kBroadcast[7] = {kAdd, kSub, kMadd, kMsub, kMax_, kMini, kMul};
+    if (funct <= 0x1B) { *out = {kBroadcast[funct >> 2], (int)(funct & 3), false}; return true; }
+    switch (funct) {
+        case 0x1C: *out = {kMul, 4, false}; return true;
+        case 0x1D: *out = {kMax_, 5, false}; return true;
+        case 0x1E: *out = {kMul, 5, false}; return true;
+        case 0x1F: *out = {kMini, 5, false}; return true;
+        case 0x20: *out = {kAdd, 4, false}; return true;
+        case 0x21: *out = {kMadd, 4, false}; return true;
+        case 0x22: *out = {kAdd, 5, false}; return true;
+        case 0x23: *out = {kMadd, 5, false}; return true;
+        case 0x24: *out = {kSub, 4, false}; return true;
+        case 0x25: *out = {kMsub, 4, false}; return true;
+        case 0x26: *out = {kSub, 5, false}; return true;
+        case 0x27: *out = {kMsub, 5, false}; return true;
+        case 0x28: *out = {kAdd, 6, false}; return true;
+        case 0x29: *out = {kMadd, 6, false}; return true;
+        case 0x2A: *out = {kMul, 6, false}; return true;
+        case 0x2B: *out = {kMax_, 6, false}; return true;
+        case 0x2C: *out = {kSub, 6, false}; return true;
+        case 0x2D: *out = {kMsub, 6, false}; return true;
+        case 0x2F: *out = {kMini, 6, false}; return true;
+    }
+    return false;
+}
+
+/* The special2 accumulator forms, by their index. */
+bool AccumulatorForm(u32 index, Fmac* out) {
+    static const int kBroadcast[4] = {kAdd, kSub, kMadd, kMsub};
+    if (index <= 0x0F) { *out = {kBroadcast[index >> 2], (int)(index & 3), true}; return true; }
+    if (index >= 0x18 && index <= 0x1B) { *out = {kMul, (int)(index & 3), true}; return true; }
+    switch (index) {
+        case 0x1C: *out = {kMul, 4, true}; return true;
+        case 0x1E: *out = {kMul, 5, true}; return true;
+        case 0x20: *out = {kAdd, 4, true}; return true;
+        case 0x21: *out = {kMadd, 4, true}; return true;
+        case 0x22: *out = {kAdd, 5, true}; return true;
+        case 0x23: *out = {kMadd, 5, true}; return true;
+        case 0x24: *out = {kSub, 4, true}; return true;
+        case 0x25: *out = {kMsub, 4, true}; return true;
+        case 0x26: *out = {kSub, 5, true}; return true;
+        case 0x27: *out = {kMsub, 5, true}; return true;
+        case 0x28: *out = {kAdd, 6, true}; return true;
+        case 0x29: *out = {kMadd, 6, true}; return true;
+        case 0x2A: *out = {kMul, 6, true}; return true;
+        case 0x2C: *out = {kSub, 6, true}; return true;
+        case 0x2D: *out = {kMsub, 6, true}; return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+void Cop2(Context& c, u32 word) {
+    const u32 fd = (word >> 6) & 0x1F, fs = (word >> 11) & 0x1F, ft = (word >> 16) & 0x1F;
+    const u32 dest = (word >> 21) & 0xF;
+    const bool lane_on[4] = {(dest & 8) != 0, (dest & 4) != 0, (dest & 2) != 0, (dest & 1) != 0};
+    auto write = [&](u32 index, const u32 values[4]) {
+        if (index == 0) return;
+        for (int lane = 0; lane < 4; ++lane)
+            if (lane_on[lane]) c.vf[index][lane] = values[lane];
+    };
+
+    const u32 funct = word & 0x3F;
+    Fmac fmac;
+    bool is_fmac = false;
+    u32 index = 0;
+    if (funct < 0x3C) {
+        is_fmac = Special1(funct, &fmac);
+    } else {
+        index = (word & 3) | ((word >> 4) & 0x7C);
+        is_fmac = AccumulatorForm(index, &fmac);
+    }
+    if (is_fmac) {
+        u32 b[4];
+        for (int lane = 0; lane < 4; ++lane) {
+            b[lane] = fmac.operand < 4 ? c.vf[ft][fmac.operand]
+                    : fmac.operand == 4 ? c.vc[kRegQ]
+                    : fmac.operand == 5 ? c.vc[kRegI] : c.vf[ft][lane];
+        }
+        u32 out[4];
+        for (int lane = 0; lane < 4; ++lane)
+            out[lane] = Binary(fmac.op, c.vf[fs][lane], b[lane], c.vacc[lane]);
+        if (fmac.to_acc) {
+            for (int lane = 0; lane < 4; ++lane)
+                if (lane_on[lane]) c.vacc[lane] = out[lane];
+        } else {
+            write(fd, out);
+        }
+        return;
+    }
+
+    const u32* a = c.vf[fs];
+    if (funct == 0x2E) {                                   /* vopmsub */
+        const u32* bb = c.vf[ft];
+        const u32 out[3] = {Binary(kMsub, a[1], bb[2], c.vacc[0]),
+                            Binary(kMsub, a[2], bb[0], c.vacc[1]),
+                            Binary(kMsub, a[0], bb[1], c.vacc[2])};
+        if (fd != 0)
+            for (int lane = 0; lane < 3; ++lane)
+                if (lane_on[lane]) c.vf[fd][lane] = out[lane];
+        return;
+    }
+    if (funct >= 0x30 && funct <= 0x35) {                  /* integer unit */
+        const u32 x = c.vc[fs], y = c.vc[ft];
+        if (funct == 0x32) {
+            const s32 imm = (fd & 0x10) ? (s32)fd - 32 : (s32)fd;
+            if (ft > 0 && ft < 16) c.vc[ft] = (u32)(c.vc[fs] + imm) & 0xFFFF;
+            return;
+        }
+        const u32 out = funct == 0x30 ? x + y : funct == 0x31 ? x - y
+                      : funct == 0x34 ? (x & y) : (x | y);
+        if (fd > 0 && fd < 16) c.vc[fd] = out & 0xFFFF;
+        return;
+    }
+    const u32 fsf = (word >> 21) & 3, ftf = (word >> 23) & 3;
+    switch (index) {
+        case 0x2E: {                                       /* vopmula */
+            const u32* bb = c.vf[ft];
+            const u32 out[3] = {Result(Value(a[1]) * Value(bb[2])),
+                                Result(Value(a[2]) * Value(bb[0])),
+                                Result(Value(a[0]) * Value(bb[1]))};
+            for (int lane = 0; lane < 3; ++lane)
+                if (lane_on[lane]) c.vacc[lane] = out[lane];
+            return;
+        }
+        case 0x30: { const u32 v[4] = {a[0], a[1], a[2], a[3]}; write(ft, v); return; }
+        case 0x31: { const u32 v[4] = {a[1], a[2], a[3], a[0]}; write(ft, v); return; }
+        case 0x1D: {
+            u32 v[4];
+            for (int lane = 0; lane < 4; ++lane) v[lane] = Clean(a[lane]) & ~kSign;
+            write(ft, v);
+            return;
+        }
+        case 0x10: case 0x11: case 0x12: case 0x13: {
+            static const double kScale[4] = {1.0, 16.0, 4096.0, 32768.0};
+            u32 v[4];
+            for (int lane = 0; lane < 4; ++lane)
+                v[lane] = Result((double)(s32)a[lane] / kScale[index & 3]);
+            write(ft, v);
+            return;
+        }
+        case 0x14: case 0x15: case 0x16: case 0x17: {
+            static const double kScale[4] = {1.0, 16.0, 4096.0, 32768.0};
+            u32 v[4];
+            for (int lane = 0; lane < 4; ++lane)
+                v[lane] = FloatToInt(Value(a[lane]) * kScale[index & 3]);
+            write(ft, v);
+            return;
+        }
+        case 0x2F: case 0x3B: case 0x1F:                   /* vnop, vwaitq, vclipw */
+            return;
+        case 0x38: {                                       /* vdiv */
+            const u32 num = c.vf[fs][fsf], den = c.vf[ft][ftf];
+            c.vc[kRegQ] = Value(den) == 0.0 ? ((num ^ den) & kSign) | kMax
+                                            : Result(Value(num) / Value(den));
+            return;
+        }
+        case 0x39:                                         /* vsqrt */
+            c.vc[kRegQ] = Result(std::sqrt(std::fabs(Value(c.vf[ft][ftf]))));
+            return;
+        case 0x3A: {                                       /* vrsqrt */
+            const u32 num = c.vf[fs][fsf];
+            const double root = std::sqrt(std::fabs(Value(c.vf[ft][ftf])));
+            c.vc[kRegQ] = root == 0.0 ? (num & kSign) | kMax : Result(Value(num) / root);
+            return;
+        }
+        case 0x3C:                                         /* vmtir */
+            if (ft != 0 && ft < 16) c.vc[ft] = c.vf[fs][fsf] & 0xFFFF;
+            return;
+        case 0x3D: {                                       /* vmfir */
+            u32 x = c.vc[fs] & 0xFFFF;
+            if (x & 0x8000) x |= 0xFFFF0000u;
+            const u32 v[4] = {x, x, x, x};
+            write(ft, v);
+            return;
+        }
+        case 0x42:                                         /* vrinit */
+            c.vc[kRegR] = kOne | (c.vf[fs][fsf] & 0x7FFFFF);
+            return;
+        case 0x43:                                         /* vrxor */
+            c.vc[kRegR] = kOne | ((c.vc[kRegR] ^ c.vf[fs][fsf]) & 0x7FFFFF);
+            return;
+        case 0x41: { const u32 v[4] = {c.vc[kRegR], c.vc[kRegR], c.vc[kRegR], c.vc[kRegR]};
+                     write(ft, v); return; }
+        case 0x40: {                                       /* vrnext */
+            if (ft == 0) return;
+            const u32 r = c.vc[kRegR];
+            const u32 bit = ((r >> 4) & 1) ^ ((r >> 22) & 1);
+            c.vc[kRegR] = kOne | (((r << 1) ^ bit) & 0x7FFFFF);
+            const u32 v[4] = {c.vc[kRegR], c.vc[kRegR], c.vc[kRegR], c.vc[kRegR]};
+            write(ft, v);
+            return;
+        }
+    }
+    throw Abort{word, 5};
+}
+
+void Cop2Move(Context& c, u32 word, u32 rt) {
+    const u32 kind = (word >> 21) & 0x1F, index = (word >> 11) & 0x1F;
+    switch (kind) {
+        case 0x05:                                         /* qmtc2 */
+            if (index) {
+                c.vf[index][0] = (u32)c.r[rt];
+                c.vf[index][1] = (u32)(c.r[rt] >> 32);
+                c.vf[index][2] = (u32)c.rh[rt];
+                c.vf[index][3] = (u32)(c.rh[rt] >> 32);
+            }
+            return;
+        case 0x06:                                         /* ctc2 */
+            if (index < 16) {
+                if (index) c.vc[index] = (u32)c.r[rt] & 0xFFFF;
+            } else if (index == (u32)kRegR) {
+                c.vc[kRegR] = kOne | ((u32)c.r[rt] & 0x7FFFFF);
+            } else {
+                c.vc[index] = (u32)c.r[rt];
+            }
+            return;
+        case 0x01:                                         /* qmfc2 */
+            if (rt) {
+                const u32* v = c.vf[index];
+                c.r[rt] = (u64)v[0] | ((u64)v[1] << 32);
+                c.rh[rt] = (u64)v[2] | ((u64)v[3] << 32);
+            }
+            return;
+        case 0x02:                                         /* cfc2 */
+            if (rt) c.r[rt] = Sx32(c.vc[index]);
+            return;
+    }
+    throw Abort{word, 5};
+}
+
+}  // namespace lifted

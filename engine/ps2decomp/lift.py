@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import struct
 
-from .emu import SUPPORTED_MNEMONICS
+from . import vu0
+from .emu import is_supported
 from .r5900 import DISASM
 
 MASK32 = 0xFFFFFFFF
@@ -103,6 +104,15 @@ def statement(ins) -> str:
 
     if m in _NOTHING:
         return ""
+    if ins.raw >> 26 == 0x12:
+        return _cop2(ins)
+    if m == "lqc2":
+        loads = " ".join("u32 l%d = (u32)generated::ReadU32(q + %d);" % (i, 4 * i) for i in range(4))
+        assign = " ".join("c.vf[%d][%d] = l%d;" % (rt, i, i) for i in range(4)) if rt else ""
+        return "{ u32 q = (%s) & ~0xFu; %s %s }" % (address, loads, assign)
+    if m == "sqc2":
+        stores = " ".join("generated::Write32(q + %d, c.vf[%d][%d]);" % (4 * i, rt, i) for i in range(4))
+        return "{ u32 q = (%s) & ~0xFu; %s }" % (address, stores)
     if m in ("addu", "add"):
         return _set(rd, "lifted::Sx32((u32)%s + (u32)%s)" % (a, b))
     if m in ("subu", "sub"):
@@ -274,6 +284,18 @@ def statement(ins) -> str:
     raise Refused("no translation for %s at 0x%08X" % (m, ins.addr))
 
 
+def _cop2(ins) -> str:
+    """VU0 macro mode: the operation runs in runtime/src/vu0.cpp, named in a comment."""
+    m = ins.mnemonic
+    if m in ("qmtc2", "ctc2", "qmfc2", "cfc2"):
+        if m == "cfc2" and ((ins.raw >> 11) & 0x1F) in vu0.UNREADABLE:
+            raise Refused("cfc2 of an unmodelled VU0 flag register")
+        return "lifted::Cop2Move(c, 0x%08Xu, %d);  /* %s */" % (ins.raw, ins.rt, m)
+    if m.split(".")[0] not in vu0.SUPPORTED:
+        raise Refused("unsupported instruction %s" % m.split(".")[0])
+    return "lifted::Cop2(c, 0x%08Xu);  /* %s %s */" % (ins.raw, m, ", ".join(ins.operands))
+
+
 def _word_shift(kind: str, value: str, amount: str) -> str:
     if kind == "sll":
         return "lifted::Sx32((u32)%s << %s)" % (value, amount)
@@ -316,7 +338,7 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
     for ins in code:
         if not ins.is_valid:
             raise Refused("invalid instruction at 0x%08X" % ins.addr)
-        if ins.mnemonic not in SUPPORTED_MNEMONICS:
+        if not is_supported(ins):
             raise Refused("unsupported instruction %s" % ins.mnemonic)
         if ins.has_delay_slot:
             slot = by_address.get(ins.addr + 4)

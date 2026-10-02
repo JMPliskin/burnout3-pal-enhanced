@@ -148,6 +148,32 @@ def programs():
         JR_RA, r_type(0x08, A0, T8, T7, 0x12, op=0x1C),             # pextlw $t7, $a0, $t8
     ])
     add("trap", [r_type(0x0D), JR_RA, NOP])                          # break
+    cop2 = 0x12 << 26
+
+    def s1(funct, fd, fs, ft, dest=0xF):
+        return cop2 | (1 << 25) | (dest << 21) | (ft << 16) | (fs << 11) | (fd << 6) | funct
+
+    def s2(index, fs, ft, dest=0xF):
+        return (cop2 | (1 << 25) | (dest << 21) | (ft << 16) | (fs << 11)
+                | ((index >> 2) << 6) | 0x3C | (index & 3))
+
+    add("vu0", [
+        r_type(0x09, A1, A0, T0, 0x0E, op=0x1C), cop2 | (5 << 21) | (T0 << 16) | (1 << 11),
+        r_type(0x09, A3, A2, T1, 0x0E, op=0x1C), cop2 | (5 << 21) | (T1 << 16) | (2 << 11),
+        s1(0x28, 3, 1, 2), s1(0x2A, 4, 3, 1, dest=0b1101),          # vadd, vmul.xyw
+        s2(0x2A, 1, 2), s1(0x29, 5, 1, 2),                           # vmula, vmadd
+        s2(0x2E, 1, 2), s1(0x2E, 6, 2, 1, dest=0b1110),              # vopmula, vopmsub
+        s2(0x38, 1, 2) | (1 << 23), s1(0x1C, 7, 2, 0),               # vdiv Q, vmulq
+        s2(0x39, 0, 3) | (2 << 23),                                  # vsqrt Q
+        s1(0x03, 8, 4, 5, dest=0b1010), s1(0x2F, 9, 1, 2),           # vaddw.xz, vmini
+        s2(0x14, 3, 10), s2(0x10, 10, 11), s2(0x31, 2, 12),          # vftoi0, vitof0, vmr32
+        s2(0x1D, 6, 13), s2(0x3C, 3, 1) | (2 << 21),                 # vabs, vmtir vi1
+        s1(0x30, 2, 1, 1), s2(0x3D, 2, 14),                          # viadd vi2, vmfir
+        cop2 | (6 << 21) | (A0 << 16) | (21 << 11), s1(0x1E, 15, 1, 0),  # ctc2 I, vmuli
+        cop2 | (1 << 21) | (V0 << 16) | (5 << 11),                   # qmfc2 $v0, vf5
+        cop2 | (2 << 21) | (V1 << 16) | (2 << 11),                   # cfc2 $v1, vi2
+        JR_RA, cop2 | (1 << 21) | (T2 << 16) | (9 << 11),            # qmfc2 $t2, vf9
+    ])
     return out
 
 
@@ -184,6 +210,10 @@ class TestLift(unittest.TestCase):
                 args[0] = scratch + 16 * rng.randrange(64)
             if name == "unaligned":
                 args[0] = scratch + rng.randrange(1024)
+            if name == "vu0":
+                args[:4] = [struct.unpack("<Q", struct.pack("<2f", rng.uniform(-50, 50),
+                                                            rng.uniform(-50, 50)))[0]
+                            for _ in range(4)]
             floats = [struct.unpack("<I", struct.pack("<f", rng.uniform(-100, 100)))[0]
                       for _ in range(8)]
             m = self.machine
@@ -235,6 +265,9 @@ class TestLift(unittest.TestCase):
     def test_unaligned_loads_and_stores(self):
         self.check("unaligned")
 
+    def test_vu0_macro_mode(self):
+        self.check("vu0")
+
     def test_break_abandons_the_run(self):
         start, _body = self.programs["trap"]
         self.assertEqual(self.lifted.run(start, liftcheck.entry_context(())), "trap")
@@ -242,7 +275,7 @@ class TestLift(unittest.TestCase):
 
 class TestLiftRefusals(unittest.TestCase):
     def test_unsupported_instruction_is_refused(self):
-        image = struct.pack("<3I", 0x4B000083, JR_RA, NOP)      # a VU0 macro instruction
+        image = struct.pack("<3I", 0x4A000038, JR_RA, NOP)      # vcallms: runs VU0 microcode
         with self.assertRaises(lift.Refused):
             lift.lift_function(image, BASE, BASE, BASE + 12)
 

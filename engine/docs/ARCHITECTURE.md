@@ -41,6 +41,7 @@ engine/ps2decomp/
   structs.py   struct type recovery (type unification over the whole binary)
   typed.py     renders derived code against recovered types
   cppcheck.py  compiles emitted C++ and runs it against the interpreter
+  vu0.py       VU0 macro mode (COP2): the arithmetic model, shared with lifted code
   lift.py      lifts machine code to C++, one statement per instruction
   liftcheck.py compiles lifted C++ and runs it against the interpreter
   difftest.py  differential-test harness
@@ -72,6 +73,7 @@ engine/runtime/
                   and lifted.h, the register context lifted code runs on
   src/eefpu.cpp   reference EE FPU arithmetic (no IEEE infinities or NaNs)
   src/lifted_support.cpp  multiply/divide, MMI lanes, unaligned access for lifted code
+  src/vu0.cpp     VU0 macro mode for lifted code, mirroring vu0.py
 ```
 
 Game-specific code lives with its game: for Burnout 3,

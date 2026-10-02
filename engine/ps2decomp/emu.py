@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import struct
 
-from . import layout
+from . import layout, vu0
 from .r5900 import DISASM, GPR
 
 MASK64 = (1 << 64) - 1
@@ -259,6 +259,11 @@ class Machine:
         self.fpr = [0] * 32
         self.fp_cond = False
         self.fp_acc = 0      # the FPU accumulator, as a bit pattern
+        # VU0 in macro mode (vu0.py): vector registers as bit patterns, the
+        # control registers (VI0-VI15, then Q, I, R and the rest), the accumulator.
+        self.vf = vu0.initial_vf()
+        self.vc = vu0.initial_vc()
+        self.vacc = [0, 0, 0, 0]
         self.pc = 0
         self.instructions_executed = 0
         self.call_log = []
@@ -343,6 +348,9 @@ class Machine:
         self.fpr = [0] * 32
         self.fp_cond = False
         self.fp_acc = 0
+        self.vf = vu0.initial_vf()
+        self.vc = vu0.initial_vc()
+        self.vacc = [0, 0, 0, 0]
         for i, value in enumerate(args):
             if i < 8:
                 self.set((4, 5, 6, 7, 8, 9, 10, 11)[i], value & MASK64)
@@ -411,6 +419,11 @@ class Machine:
         """Execute one instruction, honouring the delay slot."""
         if self.count_visits:
             self.visit_counts[self.pc] = self.visit_counts.get(self.pc, 0) + 1
+        if not self._is_code(self.pc):
+            # Not a MemoryFault: no page should ever be mapped to run code from.
+            # Execution got here through a bad return address or a jump into data,
+            # and what follows would be test data decoded as instructions.
+            raise EmulationError("execution left the program at 0x%08X" % self.pc)
         word = self.memory.read_int(self.pc, 4, False)
         ins = self._decode(word, self.pc)
         if not ins.is_valid:
@@ -531,6 +544,9 @@ class Machine:
     def _execute(self, ins) -> None:
         m = ins.mnemonic
         if m in _NO_EFFECT:
+            return
+        if ins.raw >> 26 == 0x12:
+            _cop2(self, ins)
             return
 
         handler = _HANDLERS.get(m)
@@ -1167,6 +1183,47 @@ SYSCALL_RESULTS = {
 }
 
 
+def _cop2(m: Machine, ins) -> None:
+    """A COP2 instruction: VU0 in macro mode (vu0.py)."""
+    name = ins.mnemonic
+    try:
+        if name in ("qmtc2", "ctc2"):
+            vu0.move_to(m, ins.raw, name, m.get(ins.rt), m.regs_hi[ins.rt])
+        elif name in ("qmfc2", "cfc2"):
+            low, high = vu0.move_from(m, ins.raw, name)
+            if name == "cfc2":
+                m.set32(ins.rt, low)
+            elif ins.rt:
+                m.regs[ins.rt] = low & MASK64
+                m.regs_hi[ins.rt] = high & MASK64
+        elif name.split(".")[0] in vu0.SUPPORTED:
+            vu0.execute(m, ins.raw, name)
+        else:
+            raise vu0.Refused(name)
+    except vu0.Refused:
+        raise UnsupportedInstruction(ins.addr, ins.raw, name)
+
+
+def _op_lqc2(m: Machine, ins) -> None:
+    addr = (m.get32(ins.rs) + ins.imm) & MASK32 & ~0xF
+    lanes = [m.memory.read_int(addr + 4 * i, 4, False) for i in range(4)]
+    if ins.rt:
+        m.vf[ins.rt] = lanes
+
+
+def _op_sqc2(m: Machine, ins) -> None:
+    addr = (m.get32(ins.rs) + ins.imm) & MASK32 & ~0xF
+    m.memory.write(addr, struct.pack("<4I", *m.vf[ins.rt]))
+
+
+def is_supported(ins) -> bool:
+    """Whether this interpreter runs the instruction (COP2 by its operation)."""
+    if ins.raw >> 26 == 0x12:
+        return (ins.mnemonic in ("qmtc2", "ctc2", "qmfc2", "cfc2")
+                or ins.mnemonic.split(".")[0] in vu0.SUPPORTED)
+    return ins.mnemonic in SUPPORTED_MNEMONICS
+
+
 # Instructions with no effect an interpreter can observe: ordering barriers, and
 # cache maintenance and prefetch, which matter only to real caches.
 _NO_EFFECT = frozenset({"nop", "sync", "cache", "pref"})
@@ -1212,6 +1269,8 @@ _HANDLERS.update({
     "mfc0": _op_mfc0,
     "ei": lambda m, ins: None,
     "di": lambda m, ins: None,
+    "lqc2": _op_lqc2,
+    "sqc2": _op_sqc2,
     "break": _trap(lambda a, b: True),
     # A system-control register write; reads (mfc0) see 0 regardless.
     "mtc0": lambda m, ins: None,

@@ -29,7 +29,7 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 from ps2decomp import game as game_config
 from ps2decomp.elf import ElfFile
-from ps2decomp.emu import SUPPORTED_MNEMONICS
+from ps2decomp.emu import is_supported
 from ps2decomp.r5900 import DISASM
 
 # Float argument registers under the o32 convention. Reading one before writing it
@@ -76,7 +76,7 @@ def classify(func, image, base) -> set:
             obstacles.add("syscall")
         elif m in ("multu", "div", "divu"):
             obstacles.add("unsigned-or-div")
-        elif m not in SUPPORTED_MNEMONICS:
+        elif not is_supported(ins):
             obstacles.add("other:" + m)
 
         # Float argument use: a read of $f12..$f14 before anything wrote it.

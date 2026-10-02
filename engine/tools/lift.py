@@ -33,7 +33,8 @@ from ps2decomp.emu import Machine
 
 CHUNK = 300
 STATE_PARTS = ("registers", "upper register halves", "HI", "LO", "HI1", "LO1",
-               "FPU registers", "FPU accumulator", "FPU condition")
+               "FPU registers", "FPU accumulator", "FPU condition",
+               "VU0 vector registers", "VU0 control registers", "VU0 accumulator")
 
 
 def lift_all(functions, image, base):

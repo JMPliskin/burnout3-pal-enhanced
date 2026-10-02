@@ -15,7 +15,7 @@ import os
 import re
 import subprocess
 
-from . import cppcheck, layout
+from . import cppcheck, layout, vu0
 from .emu import SYSCALL_RESULTS, EmulationError, ExecutionLimit, RETURN_SENTINEL
 
 MASK64 = (1 << 64) - 1
@@ -32,6 +32,9 @@ class Context(ctypes.Structure):
         ("acc", ctypes.c_uint32),
         ("fcc", ctypes.c_uint32),
         ("budget", ctypes.c_int64),
+        ("vf", (ctypes.c_uint32 * 4) * 32),
+        ("vc", ctypes.c_uint32 * 32),
+        ("vacc", ctypes.c_uint32 * 4),
     ]
 
 
@@ -133,7 +136,8 @@ def build(sources, work_dir: str) -> str:
         handle.write(harness_source(names))
     runtime = os.path.join(cppcheck.RUNTIME, "src")
     all_sources = [os.path.abspath(p) for p in sources] + [
-        harness, os.path.join(runtime, "eefpu.cpp"), os.path.join(runtime, "lifted_support.cpp")]
+        harness, os.path.join(runtime, "eefpu.cpp"), os.path.join(runtime, "lifted_support.cpp"),
+        os.path.join(runtime, "vu0.cpp")]
     cppcheck._BUILDS += 1
     dll = os.path.join(work_dir, "lifted_%d_%d.dll" % (os.getpid(), cppcheck._BUILDS))
     script = os.path.join(work_dir, "lift_build.bat")
@@ -162,14 +166,16 @@ def machine_state(machine) -> tuple:
     """Everything a function can change in the register file."""
     return (tuple(machine.regs), tuple(machine.regs_hi), machine.hi, machine.lo,
             machine.hi1, machine.lo1, tuple(f & 0xFFFFFFFF for f in machine.fpr),
-            machine.fp_acc & 0xFFFFFFFF, int(bool(machine.fp_cond)))
+            machine.fp_acc & 0xFFFFFFFF, int(bool(machine.fp_cond)),
+            tuple(tuple(v) for v in machine.vf), tuple(machine.vc), tuple(machine.vacc))
 
 
 def context_state(context: Context) -> tuple:
     regs = list(context.r)
     regs[0] = 0
     return (tuple(regs), tuple(context.rh), context.hi, context.lo, context.hi1,
-            context.lo1, tuple(context.f), context.acc, int(context.fcc != 0))
+            context.lo1, tuple(context.f), context.acc, int(context.fcc != 0),
+            tuple(tuple(v) for v in context.vf), tuple(context.vc), tuple(context.vacc))
 
 
 def load_machine(machine, context: Context) -> None:
@@ -181,6 +187,9 @@ def load_machine(machine, context: Context) -> None:
     machine.fpr = list(context.f)
     machine.fp_acc = context.acc
     machine.fp_cond = context.fcc != 0
+    machine.vf = [list(v) for v in context.vf]
+    machine.vc = list(context.vc)
+    machine.vacc = list(context.vacc)
 
 
 def store_context(context: Context, machine) -> None:
@@ -192,6 +201,12 @@ def store_context(context: Context, machine) -> None:
     context.hi1, context.lo1 = machine.hi1 & MASK64, machine.lo1 & MASK64
     context.acc = machine.fp_acc & 0xFFFFFFFF
     context.fcc = 1 if machine.fp_cond else 0
+    for i in range(32):
+        for lane in range(4):
+            context.vf[i][lane] = machine.vf[i][lane] & 0xFFFFFFFF
+        context.vc[i] = machine.vc[i] & 0xFFFFFFFF
+    for lane in range(4):
+        context.vacc[lane] = machine.vacc[lane] & 0xFFFFFFFF
 
 
 def entry_context(args, stack_top=None) -> Context:
@@ -206,13 +221,16 @@ def entry_context(args, stack_top=None) -> Context:
     context.r[29] = layout.CURRENT.stack_top if stack_top is None else stack_top
     context.r[31] = RETURN_SENTINEL
     context.budget = LOOP_BUDGET
+    context.vf[0][3] = vu0.ONE
+    context.vc[vu0.REG_R] = vu0.ONE
     return context
 
 
 class LiftedFunctions:
     """A built library of lifted functions, hosted on an interpreter's memory."""
 
-    REASONS = {1: "trap", 2: "loop budget", 3: "callee failed", 4: "memory fault"}
+    REASONS = {1: "trap", 2: "loop budget", 3: "callee failed", 4: "memory fault",
+               5: "COP2 operation"}
 
     def __init__(self, dll_path: str, machine, budget: int = 100_000) -> None:
         self.machine = machine

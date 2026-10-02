@@ -369,10 +369,50 @@ _COP1_S = {
     0x34: ("c.lt.s", "s,t"),   0x36: ("c.le.s", "s,t"),
 }
 
-# VU0 macro-mode (COP2) special1 funct values, the common subset.
+# VU0 macro-mode (COP2) operations. Special1 is selected by funct (bits 5..0)
+# below 0x3C; special2 by bits 1..0 and 10..6 together, as (bits 10..6) << 2 |
+# (bits 1..0). Unlisted slots are reserved and decode as plain "cop2".
 _COP2_SPECIAL1 = {
-    0x3C: "vsub", 0x3D: "vsub", 0x3E: "vsub", 0x3F: "vsub",
+    0x00: "vaddx", 0x01: "vaddy", 0x02: "vaddz", 0x03: "vaddw",
+    0x04: "vsubx", 0x05: "vsuby", 0x06: "vsubz", 0x07: "vsubw",
+    0x08: "vmaddx", 0x09: "vmaddy", 0x0A: "vmaddz", 0x0B: "vmaddw",
+    0x0C: "vmsubx", 0x0D: "vmsuby", 0x0E: "vmsubz", 0x0F: "vmsubw",
+    0x10: "vmaxx", 0x11: "vmaxy", 0x12: "vmaxz", 0x13: "vmaxw",
+    0x14: "vminix", 0x15: "vminiy", 0x16: "vminiz", 0x17: "vminiw",
+    0x18: "vmulx", 0x19: "vmuly", 0x1A: "vmulz", 0x1B: "vmulw",
+    0x1C: "vmulq", 0x1D: "vmaxi", 0x1E: "vmuli", 0x1F: "vminii",
+    0x20: "vaddq", 0x21: "vmaddq", 0x22: "vaddi", 0x23: "vmaddi",
+    0x24: "vsubq", 0x25: "vmsubq", 0x26: "vsubi", 0x27: "vmsubi",
+    0x28: "vadd", 0x29: "vmadd", 0x2A: "vmul", 0x2B: "vmax",
+    0x2C: "vsub", 0x2D: "vmsub", 0x2E: "vopmsub", 0x2F: "vmini",
+    0x30: "viadd", 0x31: "visub", 0x32: "viaddi",
+    0x34: "viand", 0x35: "vior",
+    0x38: "vcallms", 0x39: "vcallmsr",
 }
+
+_COP2_SPECIAL2 = {
+    0x00: "vaddax", 0x01: "vadday", 0x02: "vaddaz", 0x03: "vaddaw",
+    0x04: "vsubax", 0x05: "vsubay", 0x06: "vsubaz", 0x07: "vsubaw",
+    0x08: "vmaddax", 0x09: "vmadday", 0x0A: "vmaddaz", 0x0B: "vmaddaw",
+    0x0C: "vmsubax", 0x0D: "vmsubay", 0x0E: "vmsubaz", 0x0F: "vmsubaw",
+    0x10: "vitof0", 0x11: "vitof4", 0x12: "vitof12", 0x13: "vitof15",
+    0x14: "vftoi0", 0x15: "vftoi4", 0x16: "vftoi12", 0x17: "vftoi15",
+    0x18: "vmulax", 0x19: "vmulay", 0x1A: "vmulaz", 0x1B: "vmulaw",
+    0x1C: "vmulaq", 0x1D: "vabs", 0x1E: "vmulai", 0x1F: "vclipw",
+    0x20: "vaddaq", 0x21: "vmaddaq", 0x22: "vaddai", 0x23: "vmaddai",
+    0x24: "vsubaq", 0x25: "vmsubaq", 0x26: "vsubai", 0x27: "vmsubai",
+    0x28: "vadda", 0x29: "vmadda", 0x2A: "vmula",
+    0x2C: "vsuba", 0x2D: "vmsuba", 0x2E: "vopmula", 0x2F: "vnop",
+    0x30: "vmove", 0x31: "vmr32",
+    0x34: "vlqi", 0x35: "vsqi", 0x36: "vlqd", 0x37: "vsqd",
+    0x38: "vdiv", 0x39: "vsqrt", 0x3A: "vrsqrt", 0x3B: "vwaitq",
+    0x3C: "vmtir", 0x3D: "vmfir", 0x3E: "vilwr", 0x3F: "viswr",
+    0x40: "vrnext", 0x41: "vrget", 0x42: "vrinit", 0x43: "vrxor",
+}
+
+# Special2 operations without a destination mask.
+_COP2_UNMASKED = {"vclipw", "vnop", "vdiv", "vsqrt", "vrsqrt", "vwaitq", "vmtir",
+                  "vrinit", "vrxor"}
 
 
 class Disassembler:
@@ -638,36 +678,32 @@ class Disassembler:
         return self._invalid(word, addr)
 
     def _cop2_special(self, word: int, addr: int):
-        """Decode VU0 macro-mode ALU ops.
+        """Decode VU0 macro-mode operations.
 
-        Only the shape is recovered here: the exact field/broadcast suffixes are
-        rendered generically, which is enough for control-flow analysis and keeps
-        these instructions from derailing the decoder.  Functions that actually
-        use VU0 macro mode get flagged for hand review.
+        Special1 (funct below 0x3C) is the FMAC group, named with their
+        destination mask: `vaddx.xyz`. Special2 (funct 0x3C..0x3F) indexes a
+        second table by bits 10..6 and 1..0, where the accumulator forms,
+        conversions, moves and the divide unit live. Every field is read from the
+        raw word by whatever executes the instruction; the operands here are for
+        reading.
         """
         funct = _funct(word)
         dest = (word >> 21) & 0xF
         mask = "".join(c for c, bit in zip("xyzw", (8, 4, 2, 1)) if dest & bit) or "xyzw"
         fd, fs, ft = _sa(word), _rd(word), _rt(word)
-        base = {
-            0x00: "vaddx", 0x01: "vaddy", 0x02: "vaddz", 0x03: "vaddw",
-            0x04: "vsubx", 0x05: "vsuby", 0x06: "vsubz", 0x07: "vsubw",
-            0x08: "vmaddx", 0x09: "vmaddy", 0x0A: "vmaddz", 0x0B: "vmaddw",
-            0x0C: "vmsubx", 0x0D: "vmsuby", 0x0E: "vmsubz", 0x0F: "vmsubw",
-            0x10: "vmaxx", 0x11: "vmaxy", 0x12: "vmaxz", 0x13: "vmaxw",
-            0x14: "vminix", 0x15: "vminiy", 0x16: "vminiz", 0x17: "vminiw",
-            0x18: "vmulx", 0x19: "vmuly", 0x1A: "vmulz", 0x1B: "vmulw",
-            0x1C: "vmulq", 0x1D: "vmaxi", 0x1E: "vmuli", 0x1F: "vminii",
-            0x20: "vaddq", 0x21: "vmaddq", 0x22: "vaddi", 0x23: "vmaddi",
-            0x24: "vsubq", 0x25: "vmsubq", 0x26: "vsubi", 0x27: "vmsubi",
-            0x28: "vadd", 0x29: "vmadd", 0x2A: "vmul", 0x2B: "vmax",
-            0x2C: "vsub", 0x2D: "vmsub", 0x2E: "vopmsub", 0x2F: "vmini",
-            0x30: "viadd", 0x31: "visub", 0x32: "viaddi",
-            0x34: "viand", 0x35: "vior",
-            0x38: "vcallms", 0x39: "vcallmsr",
-        }.get(funct)
+        if funct >= 0x3C:
+            index = (word & 0x3) | ((word >> 4) & 0x7C)
+            base = _COP2_SPECIAL2.get(index)
+            if base is None:
+                return Instruction(addr, word, "cop2", ("0x%07x" % (word & 0x1FFFFFF),))
+            if base in _COP2_UNMASKED:
+                return Instruction(addr, word, base, (VF[fs], VF[ft]))
+            return Instruction(addr, word, "%s.%s" % (base, mask), (VF[fs], VF[ft]))
+        base = _COP2_SPECIAL1.get(funct)
         if base is None:
             return Instruction(addr, word, "cop2", ("0x%07x" % (word & 0x1FFFFFF),))
+        if base in ("viadd", "visub", "viaddi", "viand", "vior", "vcallms", "vcallmsr"):
+            return Instruction(addr, word, base, (VI[fd], VI[fs], VI[ft]))
         return Instruction(
             addr, word, "%s.%s" % (base, mask), (VF[fd], VF[fs], VF[ft])
         )

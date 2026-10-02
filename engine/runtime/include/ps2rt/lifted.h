@@ -32,13 +32,16 @@ struct Context {
     u32 acc;        /* the FPU accumulator, as a bit pattern */
     u32 fcc;        /* the FPU condition flag */
     s64 budget;     /* loop iterations left before the run is abandoned */
+    u32 vf[32][4];  /* VU0 vector registers, x y z w, as bit patterns */
+    u32 vc[32];     /* VU0 control registers: VI0-VI15, then R (20), I (21), Q (22) */
+    u32 vacc[4];    /* VU0 accumulator */
 };
 
 /* Thrown, and caught at the entry point, when a run cannot go on: a trap
    instruction, an exhausted loop budget, or a callee that failed. */
 struct Abort {
     u32 address;
-    u32 reason;     /* 1 trap, 2 budget, 3 callee failed */
+    u32 reason;     /* 1 trap, 2 budget, 3 callee failed, 4 memory fault, 5 COP2 */
 };
 
 /* Calls `target` with the whole context, as a jal or jalr does; returns when the
@@ -84,6 +87,11 @@ u64 LoadDoubleLeft(u32 address, u64 old);
 u64 LoadDoubleRight(u32 address, u64 old);
 void StoreLeft(u32 address, u64 value, u32 size);
 void StoreRight(u32 address, u64 value, u32 size);
+
+/* VU0 in macro mode (runtime/src/vu0.cpp, mirroring engine/ps2decomp/vu0.py):
+   an arithmetic COP2 instruction, and the moves between it and the core. */
+void Cop2(Context& c, u32 word);
+void Cop2Move(Context& c, u32 word, u32 rt);
 
 }  // namespace lifted
 

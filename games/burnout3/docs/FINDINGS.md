@@ -822,6 +822,37 @@ to 25 minutes. The largest remaining obstacle moved from memory faults to the
 instruction budget (2,023 lifted functions), as loops now reach data that keeps
 them going.
 
+## VU0 macro mode: over half the code machine-checked
+
+The game does its vector maths on VU0 through COP2: about 62,000 instructions in
+some 700 functions. 8,079 of them did not even decode. The special2 group is
+indexed by bits 10..6 and 1..0 together, which the decoder now does, so every
+COP2 instruction in the executable decodes.
+
+`engine/ps2decomp/vu0.py` defines one model of VU0 arithmetic, and
+`runtime/src/vu0.cpp` mirrors it line for line for lifted code:
+
+* Operands with a zero exponent are flushed to zero; ones with the maximum
+  exponent (an infinity or NaN elsewhere) are the largest finite magnitude.
+* Results are computed in double, rounded to single, saturated and flushed.
+* Multiply-add rounds the product first.
+
+That is PCSX2's interpreter, not the hardware, which truncates in places. The
+module says so, and a port wanting bit-exact physics has to revisit it. The flags
+are not modelled, so reading them (`cfc2` of MAC, status or clip) is refused
+rather than answered with a flag never set, and so is `vcallms`, which runs VU0
+microcode.
+
+Lifted and verified: 5,401 -> 5,888 functions, **38.3% -> 53.1% of the code**.
+VU0 functions are large, so bytes rose far more than the count. Machine-checked:
+37.7% -> **52.5%**. Derivation gains too (3,669 -> 3,710), because callees that
+use VU0 can now run. There were no disagreements: across thousands of real
+functions, the C++ mirror and the Python model agree on the whole VU0 state.
+
+Execution reaching an address outside the program now stops the test. Before,
+fault mapping happily mapped a page for an instruction fetch, and a bad return
+address ran test data as code until the budget ran out (546 functions).
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

@@ -29,7 +29,7 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 from ps2decomp import game as game_config
 from ps2decomp.elf import ElfFile
-from ps2decomp.emu import SUPPORTED_MNEMONICS
+from ps2decomp.emu import is_supported
 from ps2decomp.r5900 import DISASM, Flags
 
 
@@ -47,7 +47,7 @@ def analyse(database: dict, image: bytes, base: int) -> list:
             addr = func["addr"] + i * 4
             word = struct.unpack_from("<I", image, addr - base)[0]
             ins = DISASM.decode(word, addr)
-            if ins.mnemonic not in SUPPORTED_MNEMONICS:
+            if not is_supported(ins):
                 unsupported.add(ins.mnemonic)
             if ins.flags & Flags.LOAD:
                 loads += 1
