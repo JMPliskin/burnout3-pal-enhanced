@@ -129,8 +129,26 @@ def harness_source(names) -> str:
     return "\n".join(lines)
 
 
-def build(sources, work_dir: str) -> str:
-    """Compile lifted sources with the host into a DLL; returns its path."""
+# Compiler resource failures - out of heap, a DLL it could not load - say nothing
+# about the code; the build is retried with fewer compilers running at once.
+RESOURCE_ERRORS = ("C1060", "C1356", "C1076", "C3859")
+
+
+def build(sources, work_dir: str, parallel: int = 8) -> str:
+    """Compile lifted sources with the host into a DLL; returns its path.
+
+    `parallel` caps how many compilers run at once: each can need gigabytes at /O2
+    on these files, and one per core exhausted memory on a 16-core machine.
+    """
+    try:
+        return _build(sources, work_dir, parallel)
+    except cppcheck.CompileError as exc:
+        if parallel > 1 and any(code in str(exc) for code in RESOURCE_ERRORS):
+            return _build(sources, work_dir, 2)
+        raise
+
+
+def _build(sources, work_dir: str, parallel: int) -> str:
     vcvars = cppcheck.find_vcvars()
     os.makedirs(work_dir, exist_ok=True)
     names = []
@@ -153,9 +171,9 @@ def build(sources, work_dir: str) -> str:
         handle.write('cd /d "%s"\n' % work_dir)
         # /O2 for the same reason as the derived code's check; /EHsc for Abort;
         # /bigobj because a lifted file has far more sections than the default allows.
-        handle.write('cl /nologo /std:c++17 /O2 /EHsc /bigobj /MP /W3 /LD /I"%s" %s /Fe"%s" '
+        handle.write('cl /nologo /std:c++17 /O2 /EHsc /bigobj /MP%d /W3 /LD /I"%s" %s /Fe"%s" '
                      '>lift_build.log 2>&1\n'
-                     % (os.path.join(cppcheck.RUNTIME, "include"),
+                     % (parallel, os.path.join(cppcheck.RUNTIME, "include"),
                         " ".join('"%s"' % p for p in all_sources), dll))
         handle.write("exit /b %errorlevel%\n")
     result = subprocess.run(["cmd", "/c", script], capture_output=True, text=True)

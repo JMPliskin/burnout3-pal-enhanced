@@ -324,10 +324,14 @@ class _Emitter:
             return lines, target
         # A two-way branch.
         taken, fall = block.taken, block.next
+        plain = not block.likely and not block.slot
         if block.likely:
             lines.append(pad + "if (%s) {" % block.condition)
             if block.slot:
                 lines.append(pad + "    " + block.slot)
+        elif plain:
+            # Nothing runs between the test and the branch: no temporary needed.
+            lines.append(pad + "if (%s) {" % block.condition)
         else:
             lines.append(pad + "{ const bool t = %s;" % block.condition)
             if block.slot:
@@ -338,9 +342,9 @@ class _Emitter:
             join = None
         inner = depth + (1 if block.likely else 1)
         lines += self._arm(taken, join, loops, inner + (0 if block.likely else 0))
-        lines.append(pad + ("} else {" if block.likely else "  } else {"))
+        lines.append(pad + ("} else {" if block.likely or plain else "  } else {"))
         lines += self._arm(fall, join, loops, inner)
-        lines.append(pad + ("}" if block.likely else "  } }"))
+        lines.append(pad + ("}" if block.likely or plain else "  } }"))
         if join is None:
             return lines, None
         jump = self._transfer(join, loops, depth)
@@ -356,6 +360,26 @@ class _Emitter:
         if jump is not None:
             return [jump]
         return self.emit(target, join, loops, depth + 1)
+
+
+_ATOM = r"(?:[A-Za-z_]\w*|0x[0-9A-F]+u(?:ll)?|\d+u(?:ll)?)"
+
+
+def tidy(line: str) -> str:
+    """Rewrites that cannot change a value, for reading. The structured function is
+    verified after them, so a wrong one would show as a disagreement."""
+    line = line.replace("lifted::", "").replace("generated::", "")
+    # Sx32 keeps the low 32 bits, which a (u32) on an addend or a left shift
+    # cannot change.
+    line = re.sub(r"Sx32\(\(u32\)(%s) ([+-]|<<) \(u32\)(%s)\)" % (_ATOM, _ATOM),
+                  r"Sx32(\1 \2 \3)", line)
+    line = re.sub(r"Sx32\(\(u32\)(%s) ([+-]|<<) (%s)\)" % (_ATOM, _ATOM), r"Sx32(\1 \2 \3)", line)
+    # Adding or or-ing zero: how MIPS spells a move.
+    line = re.sub(r"= (%s) [+|] 0ull;" % _ATOM, r"= \1;", line)
+    line = re.sub(r"= 0ull [+|] (%s);" % _ATOM, r"= \1;", line)
+    line = re.sub(r"Sx32\((%s) \+ 0x0u\)" % _ATOM, r"Sx32(\1)", line)
+    line = re.sub(r"\(u32\)(%s) \+ 0x0u\b" % _ATOM, r"(u32)\1", line)
+    return line
 
 
 def _localize(text, gprs, fprs, scalars):
@@ -380,7 +404,7 @@ def _fpr(index, used):
 
 # Statements that hand the context to something else; registers are synchronised
 # around them.
-_TAKES_CONTEXT = re.compile(r"lifted::(Call|TailCall|Syscall|Cop2Move)\(c")
+_TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c")
 
 
 def structure_function(image: bytes, base: int, start: int, end: int) -> str:
@@ -405,7 +429,7 @@ def structure_function(image: bytes, base: int, start: int, end: int) -> str:
             if address in emitter.labels:
                 out_lines.append("L_%08X:;" % address)
             continue
-        localized = _localize(line, gprs, fprs, scalars)
+        localized = tidy(_localize(line, gprs, fprs, scalars))
         if _TAKES_CONTEXT.search(localized) and "out();" not in localized:
             indent = localized[:len(localized) - len(localized.lstrip())]
             localized = "%sout(); %s in();" % (indent, localized.strip())
@@ -416,12 +440,15 @@ def structure_function(image: bytes, base: int, start: int, end: int) -> str:
     names += [(n, "c.%s" % n) for n in SCALARS if n in scalars]
     types = {"fcc": "u32", "acc": "u32", "sa": "u32"}
     lines = ["void %s(lifted::Context& c) {" % lift.name_of(start),
+             "    using namespace generated;",
+             "    using namespace lifted;",
              "    const u32 entry_ra = (u32)c.r[31], entry_sp = (u32)c.r[29];",
              "    (void)entry_ra; (void)entry_sp;"]
     for name, source in names:
         kind = "u32" if name.startswith("f") and name[1:].isdigit() else types.get(name, "u64")
         lines.append("    %s %s = %s;" % (kind, name, source))
     lines.append("    auto out = [&] { %s };" % " ".join("%s = %s;" % (s, n) for n, s in names))
+    # The context is lifted::Context; everything else reads without the prefixes.
     lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in names))
     lines.append("    (void)out; (void)in;")
     lines += out_lines

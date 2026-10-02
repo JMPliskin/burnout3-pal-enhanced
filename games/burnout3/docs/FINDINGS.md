@@ -910,6 +910,8 @@ The structured form keeps lifted code's interface, so it is verified the same
 way, with the whole register file compared. `lift.py --structure` emits it for
 every function whose structured form verifies as well.
 
+Of the 7,743 lifted and verified functions, 7,526 are emitted structured; every structured form tried passed verification. The rest (jump tables, linking branches) stay in the goto form. 2,296 of the structured functions still contain a `goto`, mostly compound conditions: two tests leading to one shared block.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

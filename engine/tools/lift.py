@@ -63,6 +63,7 @@ def write_chunks(lifted: dict, directory: str, prefix: str) -> list:
                          " * one statement per instruction, verified against the original.\n"
                          " * Generated - do not edit. */\n\n")
             handle.write('#include "ps2rt/lifted.h"\n\n')
+            handle.write("using namespace generated;\nusing namespace lifted;\n\n")
             for address in addresses[index:index + CHUNK]:
                 handle.write(lifted[address])
                 handle.write("\n")
@@ -80,7 +81,10 @@ def build(lifted: dict, work: str):
             broken = set()
             for line in str(exc).splitlines():
                 match = re.match(r"(.+?)\((\d+)\)", line)
-                if match:
+                # Only errors in the lifted files name a function; others - the
+                # compiler's own headers, its internals - are not the code's fault.
+                if match and os.path.isfile(match.group(1)) and \
+                        os.path.basename(match.group(1)).startswith("lift"):
                     broken |= _functions_at(match.group(1), int(match.group(2)))
             if not broken:
                 raise
