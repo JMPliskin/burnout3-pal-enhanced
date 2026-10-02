@@ -186,8 +186,10 @@ def run(game, executable: str, extra) -> int:
         raise SystemExit("no executable at %s: extract it from your disc first (isotool.py)" % elf)
     report = game.path(os.path.join(game.build, "port", "report.txt"))
     with open(report, "w", encoding="utf-8") as out:
+        disc = game.path(game.iso) if game.iso else ""
+        options = ["--disc", disc] if disc and os.path.exists(disc) else []
         result = subprocess.run([executable, elf, "--discover", discoveries_path(game)]
-                                + list(extra), stdout=out, stderr=subprocess.STDOUT)
+                                + options + list(extra), stdout=out, stderr=subprocess.STDOUT)
     with open(report, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
     print(text[text.find("=== host report ==="):] if "=== host report ===" in text else text[-3000:])

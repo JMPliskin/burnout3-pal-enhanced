@@ -84,6 +84,7 @@ u32 Lane32(int op, u32 a, u32 b) {
         case kPmaxw: return (s32)a >= (s32)b ? a : b;
         case kPminw: return (s32)a <= (s32)b ? a : b;
         case kPsubw: return a - b;
+        case kPaddw: return a + b;
         case kPadduw: { const u64 sum = (u64)a + b; return sum > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)sum; }
         case kPabsw: { const s64 x = (s32)b; const s64 m = x < 0 ? -x : x;
                        return m > 0x7FFFFFFF ? 0x7FFFFFFFu : (u32)m; }
@@ -93,6 +94,11 @@ u32 Lane32(int op, u32 a, u32 b) {
 
 u64 LanesOf(int op, u64 a, u64 b) {
     u64 out = 0;
+    if (op == kPaddh) {
+        for (int shift = 0; shift < 64; shift += 16)
+            out |= ((((a >> shift) & 0xFFFF) + ((b >> shift) & 0xFFFF)) & 0xFFFF) << shift;
+        return out;
+    }
     if (op == kPaddub) {
         for (int shift = 0; shift < 64; shift += 8) {
             const u32 sum = (u32)((a >> shift) & 0xFF) + (u32)((b >> shift) & 0xFF);
@@ -166,6 +172,18 @@ void PackHalfwords(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
         low |= ((bhi >> (32 * i)) & 0xFFFF) << (16 * (i + 2));
         high |= ((alo >> (32 * i)) & 0xFFFF) << (16 * i);
         high |= ((ahi >> (32 * i)) & 0xFFFF) << (16 * (i + 2));
+    }
+    lo = low;
+    hi = high;
+}
+
+void PackBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+    u64 low = 0, high = 0;
+    for (int i = 0; i < 4; ++i) {
+        low |= ((blo >> (16 * i)) & 0xFF) << (8 * i);
+        low |= ((bhi >> (16 * i)) & 0xFF) << (8 * (i + 4));
+        high |= ((alo >> (16 * i)) & 0xFF) << (8 * i);
+        high |= ((ahi >> (16 * i)) & 0xFF) << (8 * (i + 4));
     }
     lo = low;
     hi = high;

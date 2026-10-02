@@ -13,6 +13,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "ps2host/disc.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -292,11 +293,14 @@ int Run(const Options& options) {
     g_trace = options.trace_calls;
     g_watch = options.watch;
     InstallDevices();
+    InstallIopServers();
     lifted::Context c{};
     Watchdog watchdog(options.timeout_seconds);
     std::string outcome;
     int code = 2;
     try {
+        if (!options.disc_path.empty() && !GuestDisc().Open(options.disc_path))
+            throw Unimplemented{"cannot open the disc image " + options.disc_path};
         const u32 entry = LoadElf(options.elf_path);
         // The kernel enters a program with a stack at the top of RAM; the program's
         // own start-up code then asks for its real one (SetupThread).
@@ -333,6 +337,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
         else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);
         else if (arg == "--discover" && i + 1 < argc) options.discover_path = argv[++i];
+        else if (arg == "--disc" && i + 1 < argc) options.disc_path = argv[++i];
         else if (arg == "--watch" && i + 1 < argc)
             options.watch.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg.rfind("--", 0) != 0) options.elf_path = arg;

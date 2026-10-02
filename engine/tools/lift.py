@@ -156,6 +156,46 @@ def verify_texts(texts: dict, work: str, game, seeds, jobs, cache, abi=False,
     return outcomes
 
 
+def equivalent_to_plain(addresses, structured, plain, abi, cache, work) -> list:
+    """The addresses whose structured form behaves as their plain lifted form on
+    equivalence.CASES native cases (ps2decomp/equivalence.py) - a check far wider
+    than the interpreter's, which two structuring bugs once slipped past.
+    Remembered like verdicts, keyed by both texts and the checker's own source."""
+    import hashlib
+
+    from ps2decomp import equivalence
+
+    with open(equivalence.__file__, "rb") as handle:
+        checker = hashlib.sha256(handle.read().replace(b"\r\n", b"\n")).hexdigest()[:16]
+    results, missing = {}, {}
+    for address in addresses:
+        key = "equivalence %s %d\n%s\n//--\n%s" % (checker, equivalence.CASES, plain[address],
+                                                    structured[address])
+        outcome = cache.get(key, abi)
+        if outcome is None:
+            missing[address] = key
+        else:
+            results[address] = outcome
+    if missing:
+        try:
+            checked = equivalence.check({a: (plain[a], structured[a], abi) for a in missing}, work)
+        except cppcheck.CompileError as exc:
+            # Unchecked is not equivalent: the plain form stays.
+            print("  the equivalence check did not build: %s" % str(exc).splitlines()[-1:])
+            checked = {a: (-1, -1) for a in missing}
+        for address, difference in checked.items():
+            outcome = ("equivalent" if difference is None
+                       else "differs from the plain form: case %d, %d" % difference)
+            cache.put(missing[address], abi, outcome)
+            results[address] = outcome
+        cache.save()
+    differing = sorted(a for a in addresses if results[a] != "equivalent")
+    if differing:
+        print("  %d differ from their plain form natively: %s"
+              % (len(differing), ", ".join("0x%08X" % a for a in differing[:12])))
+    return [a for a in addresses if results[a] == "equivalent"]
+
+
 def structure_verified(chosen, functions, image, base, game, seeds, jobs, strings=None,
                        cache=None, machine=None) -> dict:
     """Swap in the structured form of every function whose structured form verifies too.
@@ -191,6 +231,7 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs, string
         outcomes = verify_texts(structured, work, game, seeds, jobs, cache, abi,
                                 machine, functions)
         passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
+        passed = equivalent_to_plain(passed, structured, chosen, abi, cache, work + "_equivalence")
         for address in passed:
             result[address] = structured[address]
         remaining = [a for a in structured if a not in passed]

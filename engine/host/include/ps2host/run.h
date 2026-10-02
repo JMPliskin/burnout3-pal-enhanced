@@ -63,6 +63,8 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result);
    one queued answer to the EE (false when none waits). */
 void SifDma(u32 transfers, u32 count);
 bool DeliverIopReply();
+/* The IOP services the engine implements: CD/DVD (cdvd.cpp), ... */
+void InstallIopServers();
 /* Run the DMA-completion handlers registered for a channel, as its interrupt. */
 void RaiseDmac(u32 channel);
 

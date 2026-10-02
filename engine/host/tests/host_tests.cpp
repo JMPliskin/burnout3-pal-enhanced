@@ -5,7 +5,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
 
+#include "ps2host/disc.h"
 #include "ps2host/memory.h"
 #include "ps2rt/generated.h"
 
@@ -66,6 +70,45 @@ void Kseg1ReachesDeviceRegisters() {
     Check(m.Read(0x80100000u, 4) == m.Read(0x00100000u, 4), "kseg0 reaches RDRAM");
 }
 
+// A directory record: its length, extent, size, flags and name.
+void Record(std::vector<u8>& image, u32 at, u32 lsn, u32 size, u8 flags, const std::string& name) {
+    const u8 length = u8(33 + name.size() + (name.size() % 2 == 0 ? 1 : 0));
+    image[at] = length;
+    for (int i = 0; i < 4; ++i) {
+        image[at + 2 + i] = u8(lsn >> (8 * i));
+        image[at + 10 + i] = u8(size >> (8 * i));
+    }
+    image[at + 25] = flags;
+    image[at + 32] = u8(name.size());
+    std::memcpy(&image[at + 33], name.data(), name.size());
+}
+
+void DiscFindsFilesByPath() {
+    using ps2host::kSectorSize;
+    std::vector<u8> image(24 * kSectorSize, 0);
+    u8* pvd = &image[16 * kSectorSize];
+    pvd[0] = 1;
+    std::memcpy(pvd + 1, "CD001", 5);
+    Record(image, 16 * kSectorSize + 156, 20, kSectorSize, 2, std::string(1, '\0'));
+    u32 at = 20 * kSectorSize;
+    Record(image, at, 20, kSectorSize, 2, std::string(1, '\0')); at += 34;
+    Record(image, at, 20, kSectorSize, 2, std::string(1, '\1')); at += 34;
+    Record(image, at, 21, 5, 0, "FILE.BIN;1"); at += image[at];
+    Record(image, at, 22, kSectorSize, 2, "DIR");
+    Record(image, 22 * kSectorSize, 23, 3, 0, "INNER.DAT;1");
+    std::memcpy(&image[21 * kSectorSize], "hello", 5);
+    ps2host::Disc disc;
+    disc.Use(image);
+    ps2host::Disc::File file;
+    Check(disc.Find("\\FILE.BIN;1", &file) && file.lsn == 21 && file.size == 5, "a file in the root");
+    Check(disc.Find("/dir/inner.dat", &file) && file.lsn == 23 && file.size == 3,
+          "a file in a directory, any case, no version");
+    Check(!disc.Find("\\MISSING.BIN", &file), "a missing file");
+    u8 sector[ps2host::kSectorSize];
+    Check(disc.Read(21, 1, sector) && std::memcmp(sector, "hello", 5) == 0, "reading a sector");
+    Check(!disc.Read(30, 1, sector), "reading past the end");
+}
+
 void BiosIsReadOnly() {
     ps2host::Memory& m = ps2host::GuestMemory();
     m.Write(ps2host::kBiosBase, 0xFFu, 1);
@@ -81,6 +124,7 @@ int main() {
     ScratchpadAndHooks();
     BiosIsReadOnly();
     Kseg1ReachesDeviceRegisters();
+    DiscFindsFilesByPath();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

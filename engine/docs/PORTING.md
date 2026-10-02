@@ -83,7 +83,10 @@ address with a host implementation. It is the mechanism for:
 
 Prefer overriding a whole library routine (`sceGsSyncV`, `sceSifCallRpc`) to
 emulating the hardware it touches: the routine's contract is smaller than the
-hardware's, and `names.csv` already identifies many of them.
+hardware's, and `names.csv` already identifies many of them. Routines every
+game links - the SDK's - are overridden by name in the engine
+(`engine/host/src/sdk.cpp`), wherever the game's names table gives that name,
+so a new game gets them as soon as its routines are named.
 
 ## What the host provides, by stage
 
@@ -97,8 +100,14 @@ hardware's, and `names.csv` already identifies many of them.
 3. **Interrupts** (vertical blank done): when every thread waits, a frame's
    interrupts run the handlers the game registered. DMA completion and alarms
    are next.
-4. **IOP services**: the RPC servers the game binds (file I/O, pad, sound,
-   memory card) implemented on the host.
+4. **IOP services** (begun): the host answers the SDK's SIF commands as the
+   IOP would (`iop.cpp`): RPC bind and call answered with RPC-end packets in
+   the EE's receive buffer and the SIF0 DMA interrupt, run by the scheduler.
+   Servers are host functions registered by id (`RegisterRpcServer`); a server
+   with none still binds and its calls are noted with their callers, which
+   names the library function behind each. CD/DVD (`cdvd.cpp`) reads the
+   user's disc image (`disc.cpp`, ISO 9660, `--disc`); file I/O, pads, sound
+   and memory cards follow.
 5. **Graphics**: GIF packets to a GS renderer; VU1 microprograms translated or
    emulated.
 6. **Audio, input, saves**, then enhancements.

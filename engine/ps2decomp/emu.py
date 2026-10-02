@@ -1145,6 +1145,24 @@ def _q_interleave(width: int):
     return run
 
 
+def _op_ppacb(m: Machine, ins) -> None:
+    """The even bytes of rt, then of rs."""
+    a, b, out = _q_get(m, ins.rs), _q_get(m, ins.rt), 0
+    for i in range(8):
+        out |= ((b >> (16 * i)) & 0xFF) << (8 * i)
+        out |= ((a >> (16 * i)) & 0xFF) << (64 + 8 * i)
+    _q_set(m, ins.rd, out)
+
+
+def _op_pextub(m: Machine, ins) -> None:
+    """pextlb on the upper doublewords: their bytes of rt and rs, alternated."""
+    a, b, out = _q_get(m, ins.rs) >> 64, _q_get(m, ins.rt) >> 64, 0
+    for i in range(8):
+        out |= ((b >> (8 * i)) & 0xFF) << (16 * i)
+        out |= ((a >> (8 * i)) & 0xFF) << (16 * i + 8)
+    _q_set(m, ins.rd, out)
+
+
 def _op_ppach(m: Machine, ins) -> None:
     """The even halfwords of rt, then of rs."""
     a, b, out = _q_get(m, ins.rs), _q_get(m, ins.rt), 0
@@ -1192,6 +1210,9 @@ _HANDLERS = {
     "pmaxw": _q_lanes(32, lambda a, b: a if _s32(a) >= _s32(b) else b),
     "pminw": _q_lanes(32, lambda a, b: a if _s32(a) <= _s32(b) else b),
     "psubw": _q_lanes(32, lambda a, b: a - b),
+    "paddw": _q_lanes(32, lambda a, b: a + b),
+    "paddh": _q_lanes(16, lambda a, b: a + b),
+    "ppacb": _op_ppacb, "pextub": _op_pextub,
     "padduw": _q_lanes(32, lambda a, b: min(a + b, MASK32)),
     "paddub": _q_lanes(8, lambda a, b: min(a + b, 0xFF)),
     # |x|, except that 0x80000000 has none and saturates to 0x7FFFFFFF.

@@ -92,7 +92,7 @@ _TRAPS = {"teq": ("==", "u64"), "tne": ("!=", "u64"), "tge": (">=", "s64"),
           "tgeu": (">=", "u64"), "tlt": ("<", "s64"), "tltu": ("<", "u64")}
 _NOTHING = {"nop", "sync", "cache", "pref", "ei", "di"}
 _LANES = {"pmaxw": "kPmaxw", "pminw": "kPminw", "psubw": "kPsubw", "padduw": "kPadduw",
-          "paddub": "kPaddub", "pabsw": "kPabsw"}
+          "paddub": "kPaddub", "pabsw": "kPabsw", "paddw": "kPaddw", "paddh": "kPaddh"}
 _LANE_SHIFTS = {"psllh": (16, 0), "psrah": (16, 2), "psllw": (32, 0), "psrlw": (32, 1),
                 "psraw": (32, 2)}
 _UNALIGNED_LOADS = {"lwl": "LoadWordLeft", "lwr": "LoadWordRight",
@@ -282,6 +282,15 @@ def statement(ins) -> str:
             return ""
         return "lifted::Interleave(c.r[%d], c.rh[%d], %s, %s, %d);" % (
             rd, rd, a, b, 8 if m == "pextlb" else 16)
+    if m == "ppacb":
+        if rd == 0:
+            return ""
+        return "lifted::PackBytes(c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d]);" % (
+            rd, rd, a, rs, b, rt)
+    if m == "pextub":
+        if rd == 0:
+            return ""
+        return "lifted::Interleave(c.r[%d], c.rh[%d], c.rh[%d], c.rh[%d], 8);" % (rd, rd, rs, rt)
     if m == "ppach":
         if rd == 0:
             return ""

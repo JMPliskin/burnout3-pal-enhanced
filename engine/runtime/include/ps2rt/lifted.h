@@ -88,7 +88,7 @@ u32 FloatMulAdd(u32 acc, u32 a, u32 b, bool subtract);
 void AddBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, bool subtract);
 
 /* Lane-wise 128-bit MMI operations: each lane of rs (a) and rt (b). */
-enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw };
+enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw, kPaddw, kPaddh };
 void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
 void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount);   /* psrlh */
 
@@ -97,6 +97,7 @@ void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount);   /* p
 void ShiftLanes(u64& lo, u64& hi, u64 blo, u64 bhi, u32 width, u32 kind, u32 amount);
 void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width);
 void PackHalfwords(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
+void PackBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);     /* ppacb */
 void FunnelShift(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, u32 sa);
 
 /* rsqrt.s: fs / sqrt(|ft|), the largest magnitude with fs's sign for a zero root. */

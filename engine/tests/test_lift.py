@@ -148,6 +148,14 @@ def programs():
         (0x11 << 26) | (2 << 21) | (V1 << 16) | (31 << 11),         # cfc1 $v1, $31
         JR_RA, (0x11 << 26) | (2 << 21) | (T0 << 16) | (0 << 11),   # cfc1 $t0, $0
     ])
+    add("mmi_pack", [
+        r_type(0x09, A0, A1, T4, 0x0E, op=0x1C),                    # pcpyld $t4, $a0, $a1
+        r_type(0x09, A2, A3, T5, 0x0E, op=0x1C),                    # pcpyld $t5, $a2, $a3
+        r_type(0x08, T4, T5, T0, 0x00, op=0x1C),                    # paddw $t0, $t4, $t5
+        r_type(0x08, T4, T5, T1, 0x04, op=0x1C),                    # paddh $t1, $t4, $t5
+        r_type(0x08, T4, T5, T2, 0x1B, op=0x1C),                    # ppacb $t2, $t4, $t5
+        JR_RA, r_type(0x28, T4, T5, T3, 0x1A, op=0x1C),             # pextub $t3, $t4, $t5
+    ])
     mmi = at
     add("mmi", [
         r_type(0x09, A0, A1, T0, 0x0E, op=0x1C),                    # pcpyld $t0, $a0, $a1
@@ -302,6 +310,9 @@ class TestLift(unittest.TestCase):
 
     def test_fpu_control_registers(self):
         self.check("fpu_control")
+
+    def test_more_lane_operations(self):
+        self.check("mmi_pack")
 
     def test_128_bit_mmi(self):
         self.check("mmi")

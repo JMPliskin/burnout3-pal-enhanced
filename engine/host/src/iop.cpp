@@ -131,10 +131,15 @@ void Command(const std::vector<u8>& packet, const std::vector<u8>& data) {
             if (implemented != Servers().end()) {
                 reply = implemented->second(procedure, data);
             } else {
+                // Who called: the library function behind the RPC, for naming it.
+                std::string callers;
+                const std::vector<u32>& calls = CurrentCalls();
+                for (std::size_t i = calls.size() > 4 ? calls.size() - 4 : 0; i < calls.size(); ++i)
+                    callers += " " + Hex(calls[i]);
                 Note("call " + Hex(sid) + " " + std::to_string(procedure),
                      "SIF: call to IOP server " + Hex(sid) + ", procedure " +
                      std::to_string(procedure) + ", " + std::to_string(data.size()) +
-                     " bytes sent (no host implementation: answered with zeros)");
+                     " bytes sent (no host implementation: answered with zeros); from" + callers);
             }
             Memory& m = GuestMemory();
             for (u32 i = 0; i < receive_size && receive; ++i)

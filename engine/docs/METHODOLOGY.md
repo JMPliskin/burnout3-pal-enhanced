@@ -38,6 +38,17 @@ results and callee-saved float registers, and memory. That is the level derived
 functions are verified at. Every other form is compared on the whole register
 file.
 
+A structured form must pass a second check as well: it is compared with the
+function's plain lifted form - verified against the interpreter, and a statement
+per instruction - natively, on 2,000 random inputs (`engine/ps2decomp/
+equivalence.py`). Both run on the same registers and the same hashed memory; a
+call reaches a stub whose effect depends on its target, its place in the
+sequence and its arguments; what is compared is what a caller can see. Two
+structuring bugs passed the interpreter's random tests because the paths they
+broke were never taken, and were found only when a game ran natively; this
+check runs a hundred times more cases per function. A form that fails it falls
+back to the next, as for a failed verification.
+
 Verdicts are remembered between runs (`engine/ps2decomp/verdicts.py`). A
 function's verdict depends only on its own C++ text and the environment it is
 tested in - its callees run in the interpreter from the original code - so the
