@@ -685,6 +685,28 @@ class FloatOp(Expr):
 
 
 @dataclasses.dataclass(frozen=True)
+class IntDiv(Expr):
+    """A 32-bit quotient or remainder as the EE computes it (emu.divide), defined
+    for every input, a zero divisor included. op: quot, rem, quotu, remu."""
+
+    op: str
+    left: Expr
+    right: Expr
+
+    _NAMES = {"quot": "DivQuot", "rem": "DivRem", "quotu": "DivQuotU", "remu": "DivRemU"}
+
+    def render(self) -> str:
+        return "%s(%s, %s)" % (self._NAMES[self.op], self.left.render(), self.right.render())
+
+    def evaluate(self, args, read) -> int:
+        from .emu import divide
+
+        lo, hi = divide(self.left.evaluate(args, read), self.right.evaluate(args, read),
+                        not self.op.endswith("u"))
+        return lo if self.op.startswith("quot") else hi
+
+
+@dataclasses.dataclass(frozen=True)
 class VuOp(Expr):
     """A VU0 arithmetic operation on one lane, over bit patterns (see vu0.py).
 
@@ -930,6 +952,8 @@ def children(expr: Expr) -> tuple:
         return (expr.left,) if expr.right is None else (expr.left, expr.right)
     if isinstance(expr, VuOp):
         return expr.operands()
+    if isinstance(expr, IntDiv):
+        return (expr.left, expr.right)
     if isinstance(expr, (Binary, Compare, Predicate, FloatPredicate)):
         return (expr.left, expr.right)
     raise Unsupported("no traversal rule for %s" % type(expr).__name__)
@@ -960,6 +984,8 @@ def rebuild(expr: Expr, new_children) -> Expr:
     if isinstance(expr, VuOp):
         kids = list(new_children) + [None] * (3 - len(new_children))
         return VuOp(expr.op, kids[0], kids[1], kids[2], expr.shift)
+    if isinstance(expr, IntDiv):
+        return IntDiv(expr.op, *new_children)
     if isinstance(expr, Binary):
         return Binary(expr.op, *new_children)
     if isinstance(expr, Compare):
@@ -1077,8 +1103,8 @@ def _simplify(expr: Expr) -> Expr:
         if isinstance(inner, SignExtend32) or fits_s32(inner):
             return inner
         return SignExtend32(inner)
-    if isinstance(expr, (FloatOp, VuOp, IntToFloat, FloatToInt, FloatPredicate, Not1,
-                         Not, Select)):
+    if isinstance(expr, (FloatOp, VuOp, IntDiv, IntToFloat, FloatToInt, FloatPredicate,
+                         Not1, Not, Select)):
         kids = children(expr)
         return rebuild(expr, [simplify(child) for child in kids]) if kids else expr
     if isinstance(expr, Predicate):
@@ -1286,6 +1312,43 @@ VU_KEYS = tuple(range(VF_BASE + 4, VACC_BASE + 4))
 
 def vf_lane(index: int, lane: int) -> int:
     return VF_BASE + 4 * index + lane
+
+
+def vu_written(ins) -> set:
+    """The VU0 state an instruction writes, for the loop analysis."""
+    from . import vu0
+
+    op = ins.raw >> 26
+    if op == 0x36:                                    # lqc2
+        return {vf_lane(ins.rt, lane) for lane in range(4)} if ins.rt else set()
+    if op != 0x12:
+        return set()
+    word, m = ins.raw, ins.mnemonic
+    fd, ft = (word >> 6) & 0x1F, (word >> 16) & 0x1F
+    index = (word >> 11) & 0x1F
+    dest = (word >> 21) & 0xF
+    lanes = [lane for lane, bit in enumerate((8, 4, 2, 1)) if dest & bit]
+    base = m.split(".")[0]
+    if m == "qmtc2":
+        return {vf_lane(index, lane) for lane in range(4)} if index else set()
+    if m == "ctc2":
+        return {VC_BASE + index}
+    if m in ("qmfc2", "cfc2"):
+        return set()
+    if base == "vopmula":
+        return {VACC_BASE + lane for lane in lanes if lane < 3}
+    if base == "vopmsub":
+        return {vf_lane(fd, lane) for lane in lanes if lane < 3} if fd else set()
+    operation, to_acc, _operand = vu0._split(base)
+    if operation is not None:
+        if to_acc:
+            return {VACC_BASE + lane for lane in lanes}
+        return {vf_lane(fd, lane) for lane in lanes} if fd else set()
+    if base in ("vmove", "vmr32", "vabs") or base[:5] in ("vitof", "vftoi"):
+        return {vf_lane(ft, lane) for lane in lanes} if ft else set()
+    if base in ("vdiv", "vsqrt", "vrsqrt"):
+        return {VC_BASE + vu0.REG_Q}
+    return set()
 
 
 # Instructions that write an upper half, for the loop analysis: (mnemonic -> field).
@@ -1740,14 +1803,20 @@ def _apply(regs: dict, ins, get, epoch: int = 0) -> None:
             regs[ins.rd] = regs[REG_LO]
         return
     if m == "multu":
-        # The unsigned form needs a zero-extending narrow, which the expression set
-        # does not have; refuse rather than reuse the signed one.
-        raise Unsupported("unsigned multiply")
+        # Zero-extended 32-bit operands: their 64-bit product cannot overflow.
+        product = Binary("mul", Binary("and", get(ins.rs), Const(MASK32)),
+                         Binary("and", get(ins.rt), Const(MASK32)))
+        regs[REG_LO] = SignExtend32(product)
+        regs[REG_HI] = SignExtend32(Binary("dshr", product, Const(32)))
+        if ins.rd:
+            regs[ins.rd] = regs[REG_LO]
+        return
     if m in ("div", "divu"):
-        # Division by zero leaves HI/LO undefined on the hardware, so a derivation
-        # would not be faithful for every input. Refuse rather than describe only
-        # the well-defined half.
-        raise Unsupported("division: result undefined for a zero divisor")
+        # Defined for every input, a zero divisor included (emu.divide).
+        suffix = "u" if m == "divu" else ""
+        regs[REG_LO] = IntDiv("quot" + suffix, get(ins.rs), get(ins.rt))
+        regs[REG_HI] = IntDiv("rem" + suffix, get(ins.rs), get(ins.rt))
+        return
     # -- coprocessor 1 (single precision) ---------------------------------
     #
     # COP1 R-format packs its registers differently from the integer unit, and the

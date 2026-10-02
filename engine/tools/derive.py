@@ -1409,7 +1409,7 @@ def check_compiled(verified, machine, out_dir: str, database: dict, work: str,
     """
     from ps2decomp import cppcheck
 
-    runtime = [os.path.join(cppcheck.RUNTIME, "src", "eefpu.cpp")]
+    runtime = cppcheck.RUNTIME_SOURCES
     # A function whose source does not compile is dropped and the file re-emitted,
     # rather than aborting the whole check: one rendering gap must not cost every
     # other function its verdict.

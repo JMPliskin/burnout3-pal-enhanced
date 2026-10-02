@@ -21,18 +21,27 @@ void Multiply(u64& hi, u64& lo, u64 a, u64 b, bool is_signed, bool accumulate) {
     hi = Sx32(total >> 32);
 }
 
-/* HI/LO are left alone on division by zero, as the interpreter does. The signed
-   case is computed in 64 bits, where INT_MIN / -1 is defined. */
+/* As the EE divides (emu.divide): a zero divisor gives LO = 1 for a negative
+   signed dividend, else -1, and the dividend in HI. The signed case is computed in
+   64 bits, where INT_MIN / -1 is defined. */
 void Divide(u64& hi, u64& lo, u64 a, u64 b, bool is_signed) {
     if (is_signed) {
         const s64 x = (s32)(u32)a, y = (s32)(u32)b;
-        if (y == 0) return;
+        if (y == 0) {
+            lo = x < 0 ? 1 : ~0ull;
+            hi = (u64)x;
+            return;
+        }
         const s64 q = x / y;
         lo = Sx32((u64)q);
         hi = Sx32((u64)(x - y * q));
     } else {
         const u32 x = (u32)a, y = (u32)b;
-        if (y == 0) return;
+        if (y == 0) {
+            lo = ~0ull;
+            hi = Sx32(x);
+            return;
+        }
         lo = Sx32(x / y);
         hi = Sx32(x % y);
     }

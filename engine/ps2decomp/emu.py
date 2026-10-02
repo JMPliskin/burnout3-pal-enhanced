@@ -663,25 +663,35 @@ def _op_multu(m: Machine, ins) -> None:
         m.set32(ins.rd, product & MASK32)
 
 
-def _op_div(m: Machine, ins) -> None:
-    a, b = _sign32(m.get32(ins.rs)), _sign32(m.get32(ins.rt))
+def divide(a: int, b: int, signed: bool):
+    """(LO, HI) of a 32-bit division as the EE computes it, sign-extended.
+
+    Every input has a result. A zero divisor gives LO = 1 for a negative signed
+    dividend and -1 otherwise, with the dividend in HI; INT_MIN / -1 gives INT_MIN
+    and 0. These are the EE's answers as PCSX2 documents them. Treating division
+    by zero as "HI/LO unchanged", as this interpreter once did, made every
+    derivation of an unguarded divide depend on stale registers.
+    """
+    if signed:
+        a, b = _sign32(a), _sign32(b)
+        if b == 0:
+            return (1 if a < 0 else -1) & MASK64, a & MASK64
+        q = abs(a) // abs(b)
+        if (a < 0) != (b < 0):
+            q = -q
+        return _sign32(q) & MASK64, _sign32(a - b * q) & MASK64
+    a, b = a & MASK32, b & MASK32
     if b == 0:
-        # The hardware leaves HI/LO undefined; keep going rather than fail, since
-        # real code guards these and a fault here would be misleading.
-        return
-    q = abs(a) // abs(b)
-    if (a < 0) != (b < 0):
-        q = -q
-    m.lo = _sign32(q) & MASK64
-    m.hi = _sign32(a - b * q) & MASK64
+        return MASK64, _sign32(a) & MASK64
+    return _sign32(a // b) & MASK64, _sign32(a % b) & MASK64
+
+
+def _op_div(m: Machine, ins) -> None:
+    m.lo, m.hi = divide(m.get32(ins.rs), m.get32(ins.rt), True)
 
 
 def _op_divu(m: Machine, ins) -> None:
-    a, b = m.get32(ins.rs), m.get32(ins.rt)
-    if b == 0:
-        return
-    m.lo = _sign32(a // b) & MASK64
-    m.hi = _sign32(a % b) & MASK64
+    m.lo, m.hi = divide(m.get32(ins.rs), m.get32(ins.rt), False)
 
 
 def _op_mfhi(m: Machine, ins) -> None:

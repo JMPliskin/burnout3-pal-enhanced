@@ -27,6 +27,10 @@ MASK64 = (1 << 64) - 1
 
 # The C++ runtime the generated code is compiled against: engine/runtime.
 RUNTIME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime")
+# The runtime sources derived code is linked with - one list, so no tool that
+# compiles derived code can forget one (it once linked without the VU0 helpers).
+RUNTIME_SOURCES = [os.path.join(RUNTIME, "src", name)
+                   for name in ("eefpu.cpp", "eeint.cpp", "vu0.cpp")]
 
 VSWHERE = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 

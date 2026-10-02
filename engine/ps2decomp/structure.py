@@ -32,6 +32,23 @@ GPR_NAMES = ("zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
              "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra")
 SCALARS = ("hi", "lo", "hi1", "lo1", "acc", "fcc", "sa")
 
+# Callee-saved registers. A function saves them on entry and restores them before
+# it returns, so to its caller they never change; here they are plain locals that
+# are never written back, and the save and restore - stack traffic the caller
+# cannot observe - are left out. A function that breaks the convention fails its
+# verification and keeps the plain lifted form.
+CALLEE_SAVED = (16, 17, 18, 19, 20, 21, 22, 23, 30)
+_SAVED = r"(?:s[0-7]|fp|ra)"
+_SLOT = r"\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?\)"
+_SPILLS = [
+    re.compile(r"^\s*\{ u32 q = %s & ~0xFu; Write64\(q, %s\); Write64\(q \+ 8, c\.rh\[\d+\]\); \}$"
+               % (_SLOT, _SAVED)),
+    re.compile(r"^\s*Write64\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?, %s\);$" % _SAVED),
+    re.compile(r"^\s*\{ u32 q = %s & ~0xFu; u64 lo = Read64\(q\); u64 hi = Read64\(q \+ 8\); "
+               r"%s = lo; c\.rh\[\d+\] = hi; \}$" % (_SLOT, _SAVED)),
+    re.compile(r"^\s*%s = ReadU64\(\(u32\)sp(?: \+ 0x[0-9A-F]+u)?\);$" % _SAVED),
+]
+
 
 class Unstructurable(lift.Refused):
     """This function is left in the plain lifted form."""
@@ -449,8 +466,13 @@ def _fpr(index, used):
 _TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c")
 
 
-def structure_function(image: bytes, base: int, start: int, end: int) -> str:
-    """Structured C++ for one function; raises lift.Refused if it cannot be."""
+def structure_function(image: bytes, base: int, start: int, end: int,
+                       elide: bool = True) -> str:
+    """Structured C++ for one function; raises lift.Refused if it cannot be.
+
+    `elide` drops the saves and restores of callee-saved registers (see
+    CALLEE_SAVED); a function that does not keep the convention needs it off.
+    """
     lift.lift_function(image, base, start, end)       # the same refusals as lifting
     count = (end - start) // 4
     words = struct.unpack_from("<%dI" % count, image, start - base)
@@ -465,6 +487,9 @@ def structure_function(image: bytes, base: int, start: int, end: int) -> str:
             body += emitter.emit(node, None, [], 1)
     gprs, fprs, scalars = set(), set(), set()
     out_lines = []
+    # A tail transfer can reach a shared epilogue that restores the saved registers
+    # from the stack, so those functions keep their saves.
+    elide = elide and not any("TailCall(c" in line for line in body)
     for line in body:
         if line.startswith("@L_"):
             address = int(line[3:], 16)
@@ -472,12 +497,18 @@ def structure_function(image: bytes, base: int, start: int, end: int) -> str:
                 out_lines.append("L_%08X:;" % address)
             continue
         localized = tidy(_localize(line, gprs, fprs, scalars))
+        if elide:
+            if any(pattern.match(localized) for pattern in _SPILLS):
+                continue
+            localized = localized.replace("out(); return;", "leave(); return;")
         if _TAKES_CONTEXT.search(localized) and "out();" not in localized:
             indent = localized[:len(localized) - len(localized.lstrip())]
             localized = "%sout(); %s in();" % (indent, localized.strip())
         out_lines.append(localized)
     gprs.discard(0)
     names = [(GPR_NAMES[i], "c.r[%d]" % i) for i in sorted(gprs)]
+    locals_only = [(GPR_NAMES[i], "c.r[%d]" % i) for i in sorted(gprs)
+                   if i in CALLEE_SAVED and elide]
     names += [("f%d" % i, "c.f[%d]" % i) for i in sorted(fprs)]
     names += [(n, "c.%s" % n) for n in SCALARS if n in scalars]
     types = {"fcc": "u32", "acc": "u32", "sa": "u32"}
@@ -489,10 +520,15 @@ def structure_function(image: bytes, base: int, start: int, end: int) -> str:
     for name, source in names:
         kind = "u32" if name.startswith("f") and name[1:].isdigit() else types.get(name, "u64")
         lines.append("    %s %s = %s;" % (kind, name, source))
-    lines.append("    auto out = [&] { %s };" % " ".join("%s = %s;" % (s, n) for n, s in names))
+    synced = [(n, src) for n, src in names if (n, src) not in locals_only]
+    returned = [(n, src) for n, src in synced if n != "ra"]
+    lines.append("    auto out = [&] { %s };" % " ".join("%s = %s;" % (s, n) for n, s in synced))
+    # On return the caller sees its own $ra again, whatever links calls left in it.
+    lines.append("    auto leave = [&] { %s c.r[31] = entry_ra; };"
+                 % " ".join("%s = %s;" % (s, n) for n, s in returned))
     # The context is lifted::Context; everything else reads without the prefixes.
-    lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in names))
-    lines.append("    (void)out; (void)in;")
+    lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in synced))
+    lines.append("    (void)out; (void)in; (void)leave;")
     lines += out_lines
     lines.append("}")
     return "\n".join(lines) + "\n"

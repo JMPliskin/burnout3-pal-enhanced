@@ -61,7 +61,7 @@ def main(argv=None) -> int:
         text = handle.read()
     print(text[text.index("/* 0x%08X" % func["addr"]):].split("\n}  // namespace")[0])
 
-    dll, _functions = cppcheck.build(source, [os.path.join(cppcheck.RUNTIME, "src", "eefpu.cpp")],
+    dll, _functions = cppcheck.build(source, cppcheck.RUNTIME_SOURCES,
                                      os.path.join(cppcheck.RUNTIME, "include"), work)
     compiled = cppcheck.CompiledFunctions(dll, machine)
     arg_sets, profile = derive.test_plan(func, machine)

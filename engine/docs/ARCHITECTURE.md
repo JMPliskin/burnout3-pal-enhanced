@@ -43,6 +43,7 @@ engine/ps2decomp/
   cppcheck.py  compiles emitted C++ and runs it against the interpreter
   vu0.py       VU0 macro mode (COP2): the arithmetic model, shared with lifted code
   lift.py      lifts machine code to C++, one statement per instruction
+  structure.py the lifted statements with structured control flow and named locals
   liftcheck.py compiles lifted C++ and runs it against the interpreter
   difftest.py  differential-test harness
 

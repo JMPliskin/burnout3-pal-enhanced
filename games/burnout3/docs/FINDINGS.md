@@ -933,6 +933,27 @@ test memory: walks that need a sorted range, a terminated list, a matching key.
 They need realistic data, such as a memory snapshot of the running game, to be
 checked.
 
+## Division is defined; saved registers are not noise
+
+Division by zero had been modelled as "HI/LO unchanged", so a derivation of an
+unguarded `div` depended on stale registers and was refused (198 functions
+first). Metrowerks rarely guards a division. The EE defines the result: a zero
+divisor gives LO = 1 for a negative dividend, otherwise -1, with the dividend in
+HI (`divu`: LO = -1); INT_MIN / -1 gives INT_MIN and 0. All three models now
+follow that (`emu.divide`), the symbolic model emits `DivQuot`/`DivRem` from a
+small runtime file, and `multu` derives through zero-extended operands. Derived
+and verified: 3,979 -> 4,033 functions; readable verified code 13.01% -> 13.83%.
+VU0 inside loops is now derivable too (lanes carried as loop variables), though
+it moved nothing: the functions it would reach are refused for other reasons
+first.
+
+Structured lifted code drops the saves and restores of callee-saved registers.
+They become plain locals, never written back, and `$ra` is restored on return.
+That removes the stack traffic at both ends of nearly every function, which a
+caller cannot observe. A function that breaks the convention, or reaches a
+shared epilogue that restores from the stack, fails that form's verification
+and is structured with the saves kept: 7,412 and 114 respectively.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

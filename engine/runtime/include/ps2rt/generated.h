@@ -98,6 +98,14 @@ u32 FloatAbs(u32 a);
 u32 FloatSqrt(u32 a);
 u32 FloatMove(u32 a);
 
+/* 32-bit division as the EE does it (div/divu), results sign-extended into a
+   register: quotient and remainder. A zero divisor gives a defined result - see
+   engine/ps2decomp/emu.py, divide(). */
+u64 DivQuot(u64 a, u64 b);
+u64 DivRem(u64 a, u64 b);
+u64 DivQuotU(u64 a, u64 b);
+u64 DivRemU(u64 a, u64 b);
+
 /* acc + a * b and acc - a * b, rounded once: the FPU accumulator forms. */
 u32 FloatMulAdd(u32 acc, u32 a, u32 b);
 u32 FloatMulSub(u32 acc, u32 a, u32 b);

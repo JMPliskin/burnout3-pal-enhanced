@@ -23,6 +23,7 @@ JR_RA = 0x03E00008
 NOP = 0
 ZERO, AT, V0, V1, A0, A1, A2, A3 = 0, 1, 2, 3, 4, 5, 6, 7
 T0, T1, T2, T3, T4, T5, T6, T7, S0, T8, SP, RA = 8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 29, 31
+T9 = 25
 
 
 def r_type(funct, rs=0, rt=0, rd=0, sa=0, op=0):
@@ -60,6 +61,15 @@ def mmi_word(name, rd, rs, rt, sa=None):
     raise KeyError(name)
 
 
+def effects(memory):
+    """Bytes written, as production verification sees them: the stack frame below
+    the test stack top is the function's own and not compared."""
+    low = layout.CURRENT.stack_low - memory.base
+    high = layout.CURRENT.stack_top + 0x10 - memory.base
+    return {o: memory.bytes[o] for o, p in (memory._journal or ())
+            for o in range(o, o + len(p)) if not low <= o <= high}
+
+
 def programs():
     """{name: (offset, words)}; laid out one after another from BASE."""
     out = {}
@@ -74,7 +84,7 @@ def programs():
         addiu(V0, A0, 5), r_type(0x21, A0, A1, V1), r_type(0x00, 0, A0, T0, 3),
         r_type(0x03, 0, A1, T1, 2), r_type(0x2A, A0, A1, T2), i_type(0x0B, A0, T3, 100),
         r_type(0x3C, 0, A0, T4, 4), r_type(0x26, A0, A1, T5), lui(T6, 0x8000),
-        i_type(0x0D, A2, T7, 0xFFFF), r_type(0x2D, A0, A1, S0), r_type(0x2F, A0, A1, A3),
+        i_type(0x0D, A2, T7, 0xFFFF), r_type(0x2D, A0, A1, T9), r_type(0x2F, A0, A1, A3),
         r_type(0x04, A2, A0, AT), r_type(0x17, A2, A1, T8),        # sllv, dsrav
         r_type(0x0A, A1, A0, A2), r_type(0x0B, A2, A1, A3),        # movz, movn
         JR_RA, r_type(0x27, A0, A1, T8),                            # nor (delay slot)
@@ -166,7 +176,7 @@ def programs():
         mmi_word("psllh", T3, 0, T8, 5), mmi_word("psrah", T4, 0, T8, 3), mmi_word("psraw", T5, 0, T8, 31),
         mmi_word("psrlw", T6, 0, T8, 7), mmi_word("psllw", T7, 0, T8, 9),
         i_type(0x01, A1, 0x18, 0x5),                                # mtsab $a1, 5
-        mmi_word("qfsrv", S0, T8, T0),
+        mmi_word("qfsrv", T9, T8, T0),
         i_type(0x01, A2, 0x19, 0x3),                                # mtsah $a2, 3
         mmi_word("qfsrv", V1, T1, T8),
         mtc1(A0, 1), mtc1(A1, 2), cop1(0x16, 3, 1, 2),              # rsqrt.s $f3, $f1, $f2
@@ -246,13 +256,15 @@ class TestLift(unittest.TestCase):
             m.memory.begin_journal()
             m.call(start, args + floats)
             expected = liftcheck.machine_state(m)
-            written = dict(m.memory._journal and {o: m.memory.bytes[o] for o, p in m.memory._journal
+            written = effects(m.memory)
+            _unused = dict(m.memory._journal and {o: m.memory.bytes[o] for o, p in m.memory._journal
                                                   for o in range(o, o + len(p))} or {})
             m.memory.rollback()
             context = liftcheck.entry_context(args + floats)
             self.assertIsNone(self.lifted.run(start, context))
             actual = liftcheck.context_state(context)
-            replayed = dict(m.memory._journal and {o: m.memory.bytes[o] for o, p in m.memory._journal
+            replayed = effects(m.memory)
+            _unused = dict(m.memory._journal and {o: m.memory.bytes[o] for o, p in m.memory._journal
                                                    for o in range(o, o + len(p))} or {})
             m.memory.rollback()
             m.memory.end_journal()

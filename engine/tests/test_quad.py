@@ -10,7 +10,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tools")]
 
 from ps2decomp.emu import Machine
-from ps2decomp.paths import derive_paths
+from ps2decomp.paths import Execution, derive_paths
 from ps2decomp.symexec import Unsupported
 
 BASE = 0x00100000
@@ -29,7 +29,12 @@ def daddu(rd, rs, rt): return (rs << 21) | (rt << 16) | (rd << 11) | 0x2D
 def check(test, words, args_for, cases=30):
     """Derive `words`; compare its result and memory writes with the interpreter's."""
     image = struct.pack("<%dI" % len(words), *words)
-    derivation = derive_paths(image, BASE, BASE, BASE + 4 * len(words), known={})
+    try:
+        derivation = derive_paths(image, BASE, BASE, BASE + 4 * len(words), known={})
+    except Unsupported:
+        # As the pipeline does: loops are only attempted when straight paths fail.
+        derivation = derive_paths(image, BASE, BASE, BASE + 4 * len(words), known={},
+                                  loops=True)
     machine = Machine(BASE, image, 0x02000000 - BASE)
     rng = random.Random(len(words))
     for _case in range(cases):
@@ -42,9 +47,13 @@ def check(test, words, args_for, cases=30):
                    for offset in range(offset, offset + len(previous))}
         machine.memory.rollback()
         read = lambda a, s, g: machine.memory.read_int(a, s, g)
-        actual = derivation.evaluate(args, read)
-        for address, value, size in derivation.evaluate_stores(args, read):
-            machine.memory.write_int(address, value, size)
+        if derivation.sequential:
+            # A loop or a call: the derivation runs, writing memory as it goes.
+            actual = derivation.run(tuple(args) + (0,) * (16 - len(args)), Execution(machine))
+        else:
+            actual = derivation.evaluate(args, read)
+            for address, value, size in derivation.evaluate_stores(args, read):
+                machine.memory.write_int(address, value, size)
         replayed = {offset: machine.memory.bytes[offset]
                     for offset, previous in machine.memory._journal
                     for offset in range(offset, offset + len(previous))}
@@ -122,6 +131,18 @@ class TestVu0Derivation(unittest.TestCase):
         # pcpyld $t0, $a2, $a1 ; qmtc2 $t0, vf1 ; vaddw.xz vf1, vf1, vf0w ; jr $ra ; sqc2 vf1, 0($a0)
         check(self, [mmi2(0x0E, T0, A2, A1), qmtc2(T0, 1), s1(0x03, 1, 1, 0, dest=0b1010),
                      JR_RA, sqc2(1, A0, 0)], pointers)
+
+    def test_a_vector_sum_in_a_loop(self):
+        # lqc2 vf1, 0($a0) ; loop: lqc2 vf2, 0($a1) ; vadd vf1, vf1, vf2 ;
+        # addiu $a1, $a1, 16 ; addiu $a2, $a2, -1 ; bne $a2, $zero, loop ; nop ;
+        # jr $ra ; sqc2 vf1, 0($a0)
+        loop = BASE + 4
+        words = [lqc2(1, A0, 0), lqc2(2, A1, 0), s1(0x28, 1, 1, 2),
+                 (0x09 << 26) | (A1 << 21) | (A1 << 16) | 16,
+                 (0x09 << 26) | (A2 << 21) | (A2 << 16) | 0xFFFF,
+                 (0x05 << 26) | (A2 << 21) | (((loop - (BASE + 20) - 4) >> 2) & 0xFFFF), 0,
+                 JR_RA, sqc2(1, A0, 0)]
+        check(self, words, lambda rng: (SCRATCH, SCRATCH + 64, rng.randrange(1, 5)))
 
     def test_a_vector_register_never_written_is_refused(self):
         image = struct.pack("<3I", JR_RA, qmfc2(V0, 5), 0)

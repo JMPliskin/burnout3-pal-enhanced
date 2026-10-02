@@ -18,9 +18,16 @@ and on every byte of memory written.
 
 There is a second, mechanical tier. `engine/tools/lift.py` translates every
 function instruction by instruction into C++ over a register context and verifies
-it the same way, comparing the whole register file. Lifted code is complete and
-correct but not readable, so it is the `lifted` tier, reported apart. Derivation
-then turns lifted functions into readable ones over time. Read `engine/docs/METHODOLOGY.md` before
+it the same way, comparing the whole register file. With `--structure` it emits
+the verified form as structured C (`structure.py`: loops and ifs, named locals,
+callee-saved saves elided), itself verified the same way. Lifted code is complete
+and correct but not as readable as derived code, so it is the `lifted` tier,
+reported apart; functions that lift but cannot be tested are emitted marked
+NOT VERIFIED and recorded `reconstructed`. Derivation turns lifted functions into
+readable ones over time.
+
+The progress report gives two numbers. Report both, and never blur them:
+`VERIFIED` (readable, derived source) and `MACHINE-CHECKED` (verified or lifted). Read `engine/docs/METHODOLOGY.md` before
 changing what "verified" means, and `engine/docs/ARCHITECTURE.md` before changing
 the engine.
 
@@ -86,7 +93,7 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
    background, and never start two runs at once: they write the same outputs.
    Then lift, after derivation, because lifted rows yield to derived ones:
    ```sh
-   python -u engine/tools/lift.py --game games/<name> --emit --csv > games/<name>/build/lift.log
+   python -u engine/tools/lift.py --game games/<name> --structure --emit --csv > games/<name>/build/lift.log
    ```
 7. Name what the evidence supports, and share it:
    ```sh

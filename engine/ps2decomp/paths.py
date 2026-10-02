@@ -25,6 +25,7 @@ import struct
 from .r5900 import DISASM
 from .symexec import (
     ARG_COUNT,
+    vu_written,
     VU_KEYS,
     vf_lane,
     QUAD_WRITERS,
@@ -1877,6 +1878,7 @@ def _loop_info(image, base, start, end) -> dict:
     for head, back in last.items():
         body = frozenset(range(head, min(back + 8, end), 4))
         carried, moves_sp, calls = set(), False, False
+        uses_vu = False
         for address in body:
             ins = decode(address)
             written = _written_register(ins)
@@ -1886,7 +1888,8 @@ def _loop_info(image, base, start, end) -> dict:
             _read, wrote = _float_operands(ins)
             carried |= {fpr(r) for r in wrote}
             if ins.raw >> 26 in (0x12, 0x36, 0x3E):
-                raise Unsupported("a loop uses VU0")
+                uses_vu = True
+            carried |= vu_written(ins)
             field = QUAD_WRITERS.get(ins.mnemonic)
             if field is not None and getattr(ins, field):
                 carried.add(upper(getattr(ins, field)))
@@ -1895,6 +1898,10 @@ def _loop_info(image, base, start, end) -> dict:
             if ins.mnemonic.startswith("c."):
                 carried.add(FP_COND)
             calls |= ins.is_call
+        if calls and uses_vu:
+            # A call clobbers all VU0 state, and carrying every lane through the
+            # loop as a variable is not worth it for what is rare.
+            raise Unsupported("a loop calls and uses VU0")
         if calls:
             carried |= set(CALLER_SAVED) | {fpr(i) for i in range(20)}
             carried |= {upper(i) for i in CALLER_SAVED}

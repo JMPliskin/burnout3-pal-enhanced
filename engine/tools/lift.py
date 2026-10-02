@@ -129,7 +129,9 @@ def _difference(actual, expected) -> str:
         if a != b:
             if isinstance(a, tuple):
                 index = next(i for i, (x, y) in enumerate(zip(a, b)) if x != y)
-                return "%s (%d: lifted 0x%X, original 0x%X)" % (name, index, a[index], b[index])
+                show = lambda v: "0x%X" % v if isinstance(v, int) else repr(v)
+                return "%s (%d: lifted %s, original %s)" % (name, index, show(a[index]),
+                                                           show(b[index]))
             return name
     return "nothing"
 
@@ -184,24 +186,34 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs) -> dic
     from ps2decomp import structure
 
     stage = time.time()
-    structured = {}
-    for address in chosen:
-        func = functions[address]
-        try:
-            structured[address] = structure.structure_function(image, base, func["addr"],
-                                                               func["end"])
-        except lift.Refused:
-            pass
-    work = game.path(os.path.join(game.build, "structure"))
-    dll, structured = build(structured, work)
-    outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs)
-    passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
-    print("structured: %d of %d verified functions (%d tried; %.0fs)"
-          % (len(passed), len(chosen), len(structured), time.time() - stage))
-    failed = collections.Counter(o for o in outcomes.values() if o != "verified")
-    for reason, count in failed.most_common(5):
-        print("  %5d  %s" % (count, reason))
-    return {a: (structured[a] if a in passed else text) for a, text in chosen.items()}
+    result = dict(chosen)
+    remaining = list(chosen)
+    # First with the callee-saved saves elided, then - for what that breaks -
+    # without; what neither form passes keeps the lifted form.
+    for elide in (True, False):
+        structured = {}
+        for address in remaining:
+            func = functions[address]
+            try:
+                structured[address] = structure.structure_function(
+                    image, base, func["addr"], func["end"], elide=elide)
+            except lift.Refused:
+                pass
+        if not structured:
+            break
+        work = game.path(os.path.join(game.build, "structure_%s" % ("elided" if elide else "plain")))
+        dll, structured = build(structured, work)
+        outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs)
+        passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
+        for address in passed:
+            result[address] = structured[address]
+        remaining = [a for a in structured if a not in passed]
+        print("structured%s: %d passed of %d tried (%.0fs)"
+              % (" with saves elided" if elide else ", saves kept", len(passed),
+                 len(structured), time.time() - stage))
+    done = sum(1 for a in chosen if result[a] is not chosen[a])
+    print("structured: %d of %d verified functions" % (done, len(chosen)))
+    return result
 
 
 def update_status(path: str, verified, outcomes, names=None, unverified=None) -> None:
