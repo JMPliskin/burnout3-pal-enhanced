@@ -216,7 +216,8 @@ def test_plan(func, machine):
     return arg_sets, profile
 
 
-def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=None):
+def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=None,
+              float_result=False):
     """Run the original and a candidate on every case; return (outcome, tested).
 
     `evaluate(args)` returns the candidate's (result, writes) for one case, with
@@ -252,6 +253,9 @@ def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=
             machine.memory.begin_journal()
             try:
                 expected = machine.call(func["addr"], args, max_instructions=VERIFY_BUDGET)
+                if float_result:
+                    # A function returning a float returns it in $f0.
+                    expected = machine.fpr[0] & 0xFFFFFFFF
             except Exception as exc:
                 _failed("original", exc)
                 machine.memory.rollback()
@@ -289,7 +293,10 @@ def run_cases(func, machine, arg_sets, profile, evaluate, record=None, recorded=
         # A void function leaves whatever the caller had in $v0, so there is no
         # return value to compare - only its memory effects carry meaning.
         # Comparing $v0 anyway registered 175 correct derivations as failures.
-        if actual is not None and expected != actual:
+        if actual is not None and float_result:
+            if expected != actual & 0xFFFFFFFF:
+                return "mismatch", tested
+        elif actual is not None and expected != actual:
             return "mismatch", tested
         if replayed != effects:
             return "mismatch", tested

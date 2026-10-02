@@ -164,7 +164,8 @@ class Load(Expr):
 
 @dataclasses.dataclass(frozen=True)
 class CallResult(Expr):
-    """What `$v0` held when the `index`-th opaque call on a path returned.
+    """What `$v0` - or, for a float result, `$f0` - held when the `index`-th
+    opaque call on a path returned.
 
     An opaque call is one into a function that has not been derived: rather than
     inlining it, the derived code calls it. Evaluating this needs the call to have
@@ -174,12 +175,16 @@ class CallResult(Expr):
 
     index: int
     target: int
+    # 2 for $v0; FLOAT_RESULT for $f0, as its 32 bits.
+    register: int = 2
 
     def render(self) -> str:
-        return "r%d" % self.index
+        return ("r%d" if self.register == 2 else "rf%d") % self.index
 
     def evaluate(self, args, read) -> int:
-        return read.result(self.index) & MASK64
+        if self.register == 2:
+            return read.result(self.index) & MASK64
+        return read.float_result(self.index) & 0xFFFFFFFF
 
 
 _REGISTER_NAMES = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
@@ -1354,6 +1359,10 @@ def vu_written(ins) -> set:
 # Instructions that write an upper half, for the loop analysis: (mnemonic -> field).
 QUAD_WRITERS = {"lq": "rt", "pcpyld": "rd", "pcpyud": "rd", "por": "rd", "pand": "rd",
                 "pxor": "rd", "pnor": "rd"}
+
+
+# Where a call's float result is read from: $f0, as CallResult.register.
+FLOAT_RESULT = FPR_BASE
 
 
 def fpr(index: int) -> int:

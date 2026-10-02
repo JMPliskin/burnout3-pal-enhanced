@@ -35,9 +35,10 @@ RUNTIME_SOURCES = [os.path.join(RUNTIME, "src", name)
 VSWHERE = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 
 # Functions the emitted code calls but which were not derived: declared, not defined.
-EXTERN = re.compile(r"^u64 (func_([0-9A-F]{8}))\(([^)]*)\);  /\* not yet derived \*/$", re.M)
+EXTERN = re.compile(r"^(u64|u32) (func_([0-9A-F]{8}))\(([^)]*)\);  "
+                    r"/\* not yet derived(?:; returns a float, as its bits)? \*/$", re.M)
 
-SIGNATURE = re.compile(r"^(s32|void) (func_([0-9A-F]{8}))\(([^)]*)\) \{$", re.M)
+SIGNATURE = re.compile(r"^(s32|u32|void) (func_([0-9A-F]{8}))\(([^)]*)\) \{$", re.M)
 
 READERS = [
     ("ReadS8", 1, 1), ("ReadU8", 1, 0), ("ReadS16", 2, 1), ("ReadU16", 2, 0),
@@ -50,7 +51,8 @@ READ_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint
                                  ctypes.c_uint32)
 WRITE_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_uint32)
 CALL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32,
-                                 ctypes.POINTER(ctypes.c_uint64), ctypes.c_uint32)
+                                 ctypes.POINTER(ctypes.c_uint64), ctypes.c_uint32,
+                                 ctypes.c_uint32)
 
 
 _BUILDS = 0
@@ -58,7 +60,7 @@ _BUILDS = 0
 from . import layout
 # Room left between the derived function's guest stack and a callee's.
 CALLEE_GAP = 0x100
-from .paths import callee_stack_top
+from .layout import callee_stack_top
 
 
 class CompilerUnavailable(Exception):
@@ -96,13 +98,14 @@ def functions_in(source: str) -> list:
 
 
 def externs_in(source: str) -> list:
-    """(address, name, parameter indices) for every not-yet-derived callee."""
+    """(address, name, parameter indices, returns a float) for every
+    not-yet-derived callee."""
     found = []
     for match in EXTERN.finditer(source):
-        name, address, params = match.groups()
+        return_type, name, address, params = match.groups()
         indices = [int(n) + (8 if f else 0)
                    for f, n in re.findall(r"\b(f?)arg(\d+)\b", params)]
-        found.append((int(address, 16), name, indices))
+        found.append((int(address, 16), name, indices, return_type == "u32"))
     return found
 
 
@@ -124,7 +127,8 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "",
         "typedef u64 (*ReadFn)(u32 address, u32 size, u32 is_signed);",
         "typedef void (*WriteFn)(u32 address, u64 value, u32 size);",
-        "typedef u64 (*CallFn)(u32 address, const u64* arguments, u32 stack_top);",
+        "typedef u64 (*CallFn)(u32 address, const u64* arguments, u32 stack_top,",
+        "                      u32 float_result);",
         "static ReadFn g_read;",
         "static WriteFn g_write;",
         "static CallFn g_call;",
@@ -140,14 +144,14 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         "                      f0, f1, f2, f3, f4, f5, f6, f7};",
         "    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
         % (CALLEE_GAP, callee_stack_top(), CALLEE_GAP, callee_stack_top()),
-        "    return g_call(address, vector, top);",
+        "    return g_call(address, vector, top, 0);",
         "}",
         "void StackLeave(u32 size) { g_sp += size; }",
     ]
     # A callee that was not derived runs as the original machine code.
-    for address, name, indices in externs:
+    for address, name, indices, returns_float in externs:
         params = ", ".join("u64 p%d" % index for index in indices) or "void"
-        lines.append("u64 %s(%s) {" % (name, params))
+        lines.append("%s %s(%s) {" % ("u32" if returns_float else "u64", name, params))
         lines.append("    u64 vector[16] = {0};")
         for index in indices:
             lines.append("    vector[%d] = p%d;" % (index, index))
@@ -155,7 +159,10 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         # functions have already used more guest stack than that.
         lines.append("    u32 top = g_sp - 0x%X < 0x%08X ? g_sp - 0x%X : 0x%08X;"
                      % (CALLEE_GAP, callee_stack_top(), CALLEE_GAP, callee_stack_top()))
-        lines.append("    return g_call(0x%08X, vector, top);" % address)
+        if returns_float:
+            lines.append("    return (u32)g_call(0x%08X, vector, top, 1);" % address)
+        else:
+            lines.append("    return g_call(0x%08X, vector, top, 0);" % address)
         lines.append("}")
     for name, size, signed in READERS:
         lines.append("u64 %s(u32 a) { return g_read(a, %d, %d); }" % (name, size, signed))
@@ -263,10 +270,12 @@ class CompiledFunctions:
         except Exception as exc:
             self.error = exc
 
-    def _on_call(self, address, arguments, stack_top):
+    def _on_call(self, address, arguments, stack_top, float_result):
         try:
             self.machine.call(address, [arguments[i] for i in range(16)],
                               max_instructions=self.budget, stack_top=stack_top)
+            if float_result:
+                return self.machine.fpr[0] & 0xFFFFFFFF
             return self.machine.get(2) & MASK64
         except Exception as exc:
             self.error = exc

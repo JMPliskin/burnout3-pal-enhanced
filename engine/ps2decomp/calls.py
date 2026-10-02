@@ -82,9 +82,11 @@ def float_argument_use(database, image, base) -> set:
 
 class Parameters(dict):
     """{function: argument-vector indices it reads}, plus `preserves_v0`: the
-    functions after a call to which $v0 still holds the caller's value."""
+    functions after a call to which $v0 still holds the caller's value, and
+    `returns_float`: the functions whose callers read their result from $f0."""
 
     preserves_v0 = frozenset()
+    returns_float = frozenset()
 
 
 def parameters(database, image, base) -> dict:
@@ -95,7 +97,56 @@ def parameters(database, image, base) -> dict:
     """
     found = Parameters(live_parameters(database, image, base))
     found.preserves_v0 = v0_preserving(database, image, base)
+    found.returns_float = float_returning(database, image, base)
     return found
+
+
+# How far after a call a read of $f0 still counts as reading its result.
+_RESULT_WINDOW = 24
+
+
+def float_returning(database, image, base) -> frozenset:
+    """Functions that return a float: some caller reads $f0 after calling them,
+    before anything writes it.
+
+    What a function computes into $f0 says nothing on its own - $f0 is also
+    every float computation's scratch register - so the evidence is taken where
+    the result is used. The scan after a call is straight-line: it stops at a
+    branch, a jump, another call or the window's end, which can only miss
+    evidence, never invent it. A function that ends by jumping to another hands
+    that one's result to its own callers, so the evidence passes down tail calls.
+    """
+    functions = {f["addr"]: f for f in database["functions"] if f["size"]}
+
+    def decode(pc):
+        return DISASM.decode(struct.unpack_from("<I", image, pc - base)[0], pc)
+
+    found, tails = set(), collections.defaultdict(set)
+    for func in functions.values():
+        start, end = func["addr"], func["end"]
+        for pc in range(start, end, 4):
+            ins = decode(pc)
+            if ins.is_jump and ins.mnemonic == "j" and ins.target in functions                     and not (start <= ins.target < end):
+                tails[start].add(ins.target)
+            if not ins.is_call or ins.target not in functions:
+                continue
+            for after in range(pc + 8, min(end, pc + 8 + 4 * _RESULT_WINDOW), 4):
+                step = decode(after)
+                if step.is_branch or step.is_jump or step.is_call:
+                    break
+                read, written = _float_operands(step)
+                if 0 in read:
+                    found.add(ins.target)
+                    break
+                if 0 in written:
+                    break
+    work = list(found)
+    while work:
+        for target in tails.get(work.pop(), ()):
+            if target not in found:
+                found.add(target)
+                work.append(target)
+    return frozenset(found)
 
 
 def v0_preserving(database, image, base) -> frozenset:

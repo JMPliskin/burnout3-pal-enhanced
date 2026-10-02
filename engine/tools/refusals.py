@@ -52,6 +52,8 @@ def main(argv=None) -> int:
     game_config.add_argument(parser)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--detail", help="also list exact messages for this category")
+    parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2),
+                        help="processes deriving in parallel, as derive.py")
     args = parser.parse_args(argv)
 
     game = game_config.from_args(args)
@@ -62,8 +64,12 @@ def main(argv=None) -> int:
     machine = Machine.from_elf(elf)
 
     started = time.time()
-    verified, _rejected = derive.collect(database, image, section.addr, machine,
-                                         verbose=False)
+    if args.jobs > 1:
+        verified, _rejected, _machine = derive.collect_parallel(
+            database, image, section.addr, machine, game.directory, args.jobs, verbose=False)
+    else:
+        verified, _rejected = derive.collect(database, image, section.addr, machine,
+                                             verbose=False)
     known = {func["addr"]: derivation for func, derivation, _t, _s in verified
              if not derivation.sequential}
     done = {func["addr"] for func, _d, _t, _s in verified}

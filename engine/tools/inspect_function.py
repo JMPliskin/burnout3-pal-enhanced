@@ -76,6 +76,8 @@ def main(argv=None) -> int:
                 if name == "original":
                     value = machine.call(func["addr"], case_args,
                                          max_instructions=derive.VERIFY_BUDGET)
+                    if derivation.returns_float:
+                        value = machine.fpr[0] & 0xFFFFFFFF       # returned in $f0
                 elif name == "model":
                     value = (derivation.run(case_args, Execution(machine, derive.VERIFY_BUDGET))
                              if derivation.sequential
@@ -87,6 +89,8 @@ def main(argv=None) -> int:
                             machine.memory.write_int(address, data, size)
                 else:
                     value = compiled.evaluator(func["addr"])(case_args)[0]
+                if derivation.returns_float and isinstance(value, int):
+                    value &= 0xFFFFFFFF
                 effects = testplan._journal_effects(machine.memory)
             except Exception as exc:
                 value, effects = "error: %s" % exc, {}

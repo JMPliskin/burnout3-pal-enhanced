@@ -105,14 +105,7 @@ STEPS = -1
 # callee-saved registers, do the work, reload them, return. Modelling the frame makes
 # those spill/reload pairs cancel out, leaving the function's actual behaviour.
 from . import layout
-
-# How far below the stack top a reference is still considered part of the frame. A
-# function's own frame is far smaller than this; the bound exists so a wild address
-# is treated as real memory rather than silently absorbed into the frame model.
-MAX_FRAME_SIZE = 0x4000
-# Where callees of a derived function run, clear of the function's own frame.
-def callee_stack_top() -> int:
-    return layout.CURRENT.stack_top - MAX_FRAME_SIZE
+from .layout import MAX_FRAME_SIZE, callee_stack_top  # noqa: F401  (part of this API)
 
 
 def _is_frame_address(expr) -> bool:
@@ -228,6 +221,8 @@ class PathDerivation:
 
     address: int
     paths: tuple
+    # What every path returns is $f0's 32 bits - a float - rather than $v0.
+    returns_float: bool = False
 
     @property
     def is_straight_line(self) -> bool:
@@ -503,6 +498,7 @@ class Execution:
         self.memory = machine.memory
         self.markers = {0: len(self.memory._journal)}
         self.results = {}
+        self.float_results = {}
         self.pending = []
         self.vars = {}
         self.exits = {}
@@ -526,6 +522,9 @@ class Execution:
     def result(self, index):
         return self.results[index]
 
+    def float_result(self, index):
+        return self.float_results[index]
+
     def store(self, address, value, size):
         self.pending.append((address, value, size))
 
@@ -545,6 +544,7 @@ class Execution:
         self.machine.call(target, vector, max_instructions=self.budget,
                           stack_top=callee_stack_top())
         self.results[index] = self.machine.get(2) & MASK64
+        self.float_results[index] = self.machine.fpr[0] & 0xFFFFFFFF
         self.markers[index] = len(self.memory._journal)
 
 
@@ -564,10 +564,18 @@ def _retag(expr, epoch: int, memo: dict):
     return new
 
 
+# Where the last call's float result waits: not $f0 itself, which loops carry and
+# merges compare like any register, but a slot no instruction writes. Reading $f0
+# before this function writes it gives the call's result; nothing else sees it.
+CALL_FLOAT = 1000
+
+
 def _getter(regs: dict):
     def get(index: int) -> Expr:
         if index == 0:
             return Const(0)
+        if index == fpr(0) and index not in regs and CALL_FLOAT in regs:
+            return regs[CALL_FLOAT]
         if index not in regs:
             if UPPER_BASE <= index < UPPER_BASE + 32:
                 raise Unsupported("reads the upper half of $%d, which it did not write"
@@ -1178,6 +1186,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
     known = known or {}
     if gp_value is None:
         gp_value = layout.CURRENT.gp
+    # Whether this function returns a float: its callers read $f0 after calling it
+    # (calls.float_returning).
+    returns_float = start in getattr(parameters, "returns_float", ())
 
     def word_at(addr: int) -> int:
         if not (base <= addr < base + len(image) - 3):
@@ -1266,6 +1277,10 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 regs[2] = before_v0
         else:
             regs[2] = CallResult(call.index, target)
+        # A float result comes back in $f0. Whatever the callee left there is
+        # what the original reads, so it is a result like $v0 - one the emitted
+        # code can only name for a callee called by address (derive._call).
+        regs[CALL_FLOAT] = CallResult(call.index, target, fpr(0))
         return marks + ((len(stores), "call", call),), call.index
 
     def enter_loop(head, regs, stores, frame, memory, conditions, visited, marks,
@@ -1426,10 +1441,23 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # A function that never writes $v0 returns nothing. Insisting on a
                 # return value refused 514 functions outright - every setter and
                 # initialiser in the binary - because they are simply void.
+                if returns_float:
+                    # Its callers read $f0: that is the result, the call's own
+                    # float result if the function did not compute one.
+                    result = _getter(regs)(fpr(0))
+                    sink.append(Path(conditions, result, tuple(stores), marks))
+                    return
                 try:
                     result = _getter(regs)(2)
                 except Unsupported:
                     result = None
+                # $v0 only as a callee left it, while this function's own code
+                # computed $f0: a function returning a float. Derived as returning
+                # $v0 it would pass a test that compares $v0 - and say nothing
+                # about what it really returns.
+                if (isinstance(result, CallResult) and result.register == 2
+                        and regs.get(fpr(0)) is not None):
+                    raise Unsupported("returns a float in $f0")
                 sink.append(Path(conditions, result, tuple(stores), marks))
                 return
 
@@ -1506,9 +1534,12 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     # is this function's result.
                     marks, _epoch = opaque_call(ins.target, regs, stores, marks, epoch,
                                                 frame, memory)
-                    sink.append(Path(conditions, regs[2], tuple(stores), marks))
+                    result = regs[CALL_FLOAT] if returns_float else regs[2]
+                    sink.append(Path(conditions, result, tuple(stores), marks))
                     return
                 callee = known[ins.target]
+                if callee.returns_float != returns_float and not callee.is_void:
+                    raise Unsupported("tail-calls a function returning the other kind")
                 arguments = _call_arguments(regs)
                 epoch, marks = _settle_for_callee(callee, arguments, memory, stores, marks,
                                                   frame)
@@ -1592,8 +1623,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     for index in VU_KEYS:
                         branch_regs.pop(index, None)
                     if callee_path.expression is not None:
-                        branch_regs[2] = simplify(_in_caller(
-                            callee_path.expression, arguments, epoch, {}))
+                        # A float result comes back in $f0, anything else in $v0.
+                        branch_regs[fpr(0) if callee.returns_float else 2] = simplify(
+                            _in_caller(callee_path.expression, arguments, epoch, {}))
                     walk(addr + 8, branch_regs, branch_stores, branch_frame,
                          branch_memory, conditions + extra, visited,
                          marks + tuple((before, "cond", c) for c in extra),
@@ -1659,7 +1691,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         # whose result is only meaningful on some routes, or a misread; either way
         # the signature is ambiguous, so refuse rather than choose.
         raise Unsupported("inconsistent void and value-returning paths")
-    derivation = PathDerivation(start, tuple(paths))
+    derivation = PathDerivation(start, tuple(paths), returns_float)
     if not derivation.sequential and _touches_frame_memory(derivation):
         # The frame is symbolic unless it escaped, and escaping always makes the
         # derivation sequential. A frame address reaching memory any other way is

@@ -23,7 +23,7 @@ and is the check on both.
 
 from __future__ import annotations
 
-import glob
+import ast
 import hashlib
 import json
 import os
@@ -32,11 +32,42 @@ import os
 # a change to them invalidates exactly the verdicts whose text changes.
 TEXT_ONLY = {"structure.py", "liveness.py", "naming.py", "signatures.py"}
 
+# Where verification starts; everything they import from the engine is part of
+# the environment, and nothing else is - the symbolic deriver, for one.
+ROOTS = ("liftverify.py", "testplan.py", "liftcheck.py", "lift.py")
+
+
+def _imports(path: str) -> set:
+    """The engine modules a module imports, as file names."""
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1:
+            if node.module:
+                found.add(node.module.split(".")[0] + ".py")
+            else:
+                found.update(alias.name + ".py" for alias in node.names)
+    return found
+
+
+def modules(package: str) -> set:
+    """The import closure of ROOTS within the package, less TEXT_ONLY."""
+    seen, work = set(), list(ROOTS)
+    while work:
+        name = work.pop()
+        path = os.path.join(package, name)
+        if name in seen or not os.path.exists(path):
+            continue
+        seen.add(name)
+        work.extend(_imports(path))
+    return seen - TEXT_ONLY
+
 
 def _files(repository: str) -> list:
     engine = os.path.join(repository, "engine")
-    files = [path for path in glob.glob(os.path.join(engine, "ps2decomp", "*.py"))
-             if os.path.basename(path) not in TEXT_ONLY]
+    package = os.path.join(engine, "ps2decomp")
+    files = [os.path.join(package, name) for name in modules(package)]
     # engine/tools/ is left out: lift.py and derive.py only orchestrate. What
     # decides a verdict - liftverify.py, testplan.py - is among the modules above.
     for folder, _dirs, names in os.walk(os.path.join(engine, "runtime")):

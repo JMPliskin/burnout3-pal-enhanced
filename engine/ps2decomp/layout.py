@@ -49,3 +49,14 @@ def configure(**values) -> Layout:
             raise KeyError("no layout field %r" % name)
         setattr(CURRENT, name, value)
     return CURRENT
+
+
+# How far below the stack top a reference is still considered part of the frame. A
+# function's own frame is far smaller than this; the bound exists so a wild address
+# is treated as real memory rather than silently absorbed into the frame model.
+MAX_FRAME_SIZE = 0x4000
+
+
+def callee_stack_top() -> int:
+    """Where callees of a derived function run, clear of the function's own frame."""
+    return CURRENT.stack_top - MAX_FRAME_SIZE

@@ -58,6 +58,7 @@ from ps2decomp.symexec import (
     register_name,
     Unsupported,
     FLOAT_ARG_BASE,
+    FLOAT_RESULT,
     arg_name,
     arg_renderer,
     arguments_used,
@@ -584,6 +585,8 @@ class StatementEmitter:
     def _pointer_call(self, call, passed, later) -> str:
         """A call through a function pointer or virtual method table."""
         text = _pointer_call_text(self, call, passed)
+        if any(_mentions_call(expr, call.index, FLOAT_RESULT) for expr in later):
+            raise Unsupported("uses the float result of a call through a pointer")
         if call.index in self.hoisted:
             return "r%d = %s;" % (call.index, text)
         if not any(_mentions_call(expr, call.index) for expr in later):
@@ -619,7 +622,26 @@ class StatementEmitter:
             returns_value = return_type != "void"
         arguments = ", ".join(render_cpp(self._apply(passed[index])) for index in indices)
         text = "func_%08X(%s)" % (call.target, arguments)
-        used = any(_mentions_call(expr, call.index) for expr in later)
+        used = any(_mentions_call(expr, call.index, 2) for expr in later)
+        float_callee = signature is not None and signature[0] == "u32"
+        if used and float_callee:
+            raise Unsupported("uses $v0 after calling a function that returns a float")
+        if any(_mentions_call(expr, call.index, FLOAT_RESULT) for expr in later):
+            # A float result: the callee is declared to return its bits.
+            if used:
+                raise Unsupported("uses both the integer and the float result of a call")
+            if signature is not None and not float_callee:
+                raise Unsupported("uses the float result of a derived function")
+            if call.index in self.hoisted:
+                raise Unsupported("uses the float result of a call in a loop")
+            if call.target in _INTEGER_EXTERNS:
+                raise Unsupported("a callee's result is used as an integer and as a float")
+            _FLOAT_EXTERNS.add(call.target)
+            return "const u32 rf%d = %s;" % (call.index, text)
+        if signature is None and (used or call.index in self.hoisted):
+            if call.target in _FLOAT_EXTERNS:
+                raise Unsupported("a callee's result is used as an integer and as a float")
+            _INTEGER_EXTERNS.add(call.target)
         if used and not returns_value:
             raise Unsupported("uses the result of a call to a void function")
         if not used and not (call.index in self.hoisted and returns_value):
@@ -699,7 +721,9 @@ def _calls_in(statements) -> set:
     return found
 
 
-def _mentions_call(expr, index: int) -> bool:
+def _mentions_call(expr, index: int, register=None) -> bool:
+    """Whether `expr` uses the result of call `index` - its $v0 or its $f0, or
+    only the one `register` names."""
     seen = set()
     stack = [expr]
     while stack:
@@ -707,7 +731,8 @@ def _mentions_call(expr, index: int) -> bool:
         if id(node) in seen:
             continue
         seen.add(id(node))
-        if isinstance(node, CallResult) and node.index == index:
+        if isinstance(node, CallResult) and node.index == index and \
+                (register is None or node.register == register):
             return True
         stack.extend(children(node))
     return False
@@ -725,6 +750,12 @@ def _reads_memory(expr) -> bool:
 # `emit` around rendering, like _TYPING, because the statements need them.
 _SIGNATURES = {}
 _EXTERNS = {}
+# Derived functions left out of the emitted source, and why: address -> reason.
+NOT_EMITTED = {}
+# Underived callees whose result is used as a float ($f0), and those whose $v0 is
+# used: the extern declaration returns one or the other, so a callee cannot be both.
+_FLOAT_EXTERNS = set()
+_INTEGER_EXTERNS = set()
 
 
 def render_body(derivation) -> list:
@@ -965,9 +996,9 @@ def collect_parallel(database: dict, image: bytes, base: int, machine: Machine,
         for address, outcome, counts, expectation in sorted(results, key=lambda r: r[0]):
             if outcome is None:
                 for category, count in counts.items():
-                    if count and category not in ("mismatched", "reason"):
+                    if count and category not in ("mismatched", "reason", "why"):
                         last[address] = category
-                reasons[address] = counts.get("reason")
+                reasons[address] = counts.get("reason") or counts.get("why")
                 if counts.get("mismatched"):
                     mismatched.append(address)
                 continue
@@ -1026,6 +1057,8 @@ def collect_parallel(database: dict, image: bytes, base: int, machine: Machine,
     rejected["untestable_reasons"] = collections.Counter(
         reasons.get(address) or "unknown"
         for address, category in last.items() if category == "untestable")
+    rejected["by_function"] = {address: (category, reasons.get(address) or "")
+                               for address, category in last.items()}
     return verified, rejected, machine
 
 
@@ -1079,7 +1112,7 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
                                parameters)
             if outcome is None:
                 for category, count in outcome_counts.items():
-                    if count and category not in ("mismatched", "reason"):
+                    if count and category not in ("mismatched", "reason", "why"):
                         last[func["addr"]] = category
                 reasons[func["addr"]] = outcome_counts.get("reason")
                 if outcome_counts.get("mismatched"):
@@ -1116,11 +1149,13 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
     if True:
         try:
             derivation = derive_function(image, base, func, known, parameters)
-        except Unsupported:
+        except Unsupported as exc:
             rejected["unsupported"] += 1
+            rejected["why"] = str(exc)
             return None
-        except Exception:
+        except Exception as exc:
             rejected["unsupported"] += 1
+            rejected["why"] = "deriver error: %s" % type(exc).__name__
             return None
 
         testplan.reset_failure()
@@ -1137,7 +1172,8 @@ def _attempt(func, image, base, machine, read, known, rejected, parameters=None)
             return derivation.evaluate(args, read), derivation.evaluate_stores(args, read)
 
         record = []
-        outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate, record)
+        outcome, tested = run_cases(func, machine, arg_sets, profile, evaluate, record,
+                                    float_result=derivation.returns_float)
         # A disagreement and an untestable function are different findings and are
         # counted once each. An earlier version fell through from one to the other
         # and so reported every disagreement twice.
@@ -1212,9 +1248,27 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
     # A body that cannot be rendered drops its function, which can change how its
     # callers render, so this repeats until nothing more is dropped.
     emitted = list(verified)
+    why_dropped = collections.Counter()
+    excluded = set()
+    retries = 0
+
+    def renders(item) -> bool:
+        """Whether a left-out function renders against the signatures as they are."""
+        global _TYPING
+        _TYPING = typed.Typing(catalog, item[0]["addr"]) if catalog is not None else None
+        try:
+            render_body(item[1])
+            return True
+        except Unsupported:
+            return False
+        finally:
+            _TYPING = None
+
     while True:
         _SIGNATURES.clear()
         _EXTERNS.clear()
+        _FLOAT_EXTERNS.clear()
+        _INTEGER_EXTERNS.clear()
         headers = {}
         for func, derivation, _tested, _strong in emitted:
             headers[func["addr"]] = _signature(func, derivation, catalog)
@@ -1229,7 +1283,9 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
                 _TYPING.used |= roots
             try:
                 body_lines = render_body(derivation)
-            except Unsupported:
+            except Unsupported as exc:
+                NOT_EMITTED[func["addr"]] = "not emitted: %s" % exc
+                why_dropped[re.sub(r"0x[0-9A-Fa-f]+|\b\d+\b", "N", str(exc))] += 1
                 dropped.append(func["addr"])
                 _TYPING = None
                 continue
@@ -1240,21 +1296,39 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
                 used_global_arrays |= _TYPING.used_global_arrays
             _TYPING = None
             chunk = [
-                "/* 0x%08X  %d caller(s)  %s */"
+                "/* 0x%08X  %d caller(s)  %s%s */"
                 % (
                     func["addr"],
                     len(func["callers"]),
                     ("differential-tested over %d argument sets" % tested) if strong
                     else "argument-independent: derived, test near-vacuous",
+                    "; returns a float, as its bits" if return_type == "u32" else "",
                 ),
                 "%s func_%08X(%s) {" % (return_type, func["addr"], params),
             ]
             chunk += ["    " + line for line in body_lines]
             chunk += ["}", ""]
             chunks.append(chunk)
-        if not dropped:
+        if dropped:
+            excluded |= set(dropped)
+            emitted = [item for item in emitted if item[0]["addr"] not in excluded]
+            continue
+        # Settled. A function left out because of how a callee rendered - its
+        # result used where the callee was void, say - may render now that the
+        # callee itself is left out and called as the original: try those again
+        # against the final signatures. Readmitting one can change its callers'
+        # signatures in turn, so this is bounded.
+        back = [item for item in verified
+                if item[0]["addr"] in excluded and renders(item)] if retries < 4 else []
+        if not back:
             break
-        emitted = [item for item in emitted if item[0]["addr"] not in dropped]
+        retries += 1
+        excluded -= {item[0]["addr"] for item in back}
+        emitted = [item for item in verified if item[0]["addr"] not in excluded]
+    for func, _derivation, _tested, _strong in emitted:
+        NOT_EMITTED.pop(func["addr"], None)
+    for reason, count in why_dropped.most_common(8):
+        print("  not emitted: %5d  %s" % (count, reason))
 
     lines.append("/* Every emitted function, so they can call one another in any order. */")
     for func, _derivation, _tested, _strong in emitted:
@@ -1267,7 +1341,11 @@ def emit(verified, out_dir: str, source_name: str, catalog=None) -> None:
         lines.append("   compiled check links them to the original machine code. */")
         for address, indices in sorted(_EXTERNS.items()):
             params = ", ".join("u64 %s" % arg_name(index) for index in indices) or "void"
-            lines.append("u64 func_%08X(%s);  /* not yet derived */" % (address, params))
+            if address in _FLOAT_EXTERNS:
+                lines.append("u32 func_%08X(%s);  /* not yet derived; returns a float, "
+                             "as its bits */" % (address, params))
+            else:
+                lines.append("u64 func_%08X(%s);  /* not yet derived */" % (address, params))
         lines.append("")
     for chunk in chunks:
         lines.extend(chunk)
@@ -1309,7 +1387,10 @@ def _signature(func, derivation, catalog):
         else:
             roots.add(root)
             params.append("%s %s" % (catalog.names[root], arg_name(index)))
-    return_type = "void" if derivation.is_void else "s32"
+    # A float result is returned as its 32 bits, the way float values are held
+    # throughout the generated code (see generated.h).
+    return_type = ("void" if derivation.is_void
+                   else "u32" if getattr(derivation, "returns_float", False) else "s32")
     return return_type, ", ".join(params) or "void", tuple(indices), roots
 
 
@@ -1397,6 +1478,8 @@ def check_compiled(verified, machine, out_dir: str, database: dict, work: str,
                 raise
             print("  dropping %d function(s) that do not compile: %s"
                   % (len(broken), ", ".join("0x%08X" % a for a in sorted(broken)[:8])))
+            for address in broken:
+                NOT_EMITTED[address] = "emitted C++ does not compile"
             verified = [item for item in verified if item[0]["addr"] not in broken]
             verified = emit(verified, out_dir, database["meta"]["source"], catalog)
     else:
@@ -1409,14 +1492,16 @@ def check_compiled(verified, machine, out_dir: str, database: dict, work: str,
         if func["addr"] in EXPECTATIONS:
             arg_sets, profile, recorded = EXPECTATIONS[func["addr"]]
             outcome, tested = run_cases(func, machine, arg_sets, profile,
-                                        compiled.evaluator(func["addr"]), recorded=recorded)
+                                        compiled.evaluator(func["addr"]), recorded=recorded,
+                                        float_result=item[1].returns_float)
         else:
             plan = test_plan(func, machine)
             if plan is None:
                 untestable.append(func["addr"])
                 continue
             outcome, tested = run_cases(
-                func, machine, plan[0], plan[1], compiled.evaluator(func["addr"])
+                func, machine, plan[0], plan[1], compiled.evaluator(func["addr"]),
+                float_result=item[1].returns_float
             )
         if outcome == "ok":
             kept.append(item)
@@ -1426,6 +1511,10 @@ def check_compiled(verified, machine, out_dir: str, database: dict, work: str,
             untestable.append(func["addr"])
     print("compiled C++ run against the original: %d agree, %d disagree, %d could not run"
           % (len(kept), len(disagreed), len(untestable)))
+    for address in disagreed:
+        NOT_EMITTED[address] = "compiled C++ disagrees"
+    for address in untestable:
+        NOT_EMITTED[address] = "compiled C++ could not run"
     for address in disagreed[:20]:
         print("  disagrees: func_%08X" % address)
     for address in untestable[:20]:
@@ -1475,6 +1564,7 @@ def main(argv=None) -> int:
         "  (%s)" % ", ".join("0x%08X" % a for a in rejected.get("mismatched", [])[:8])
         if rejected.get("mismatched") else ""))
     print("  elapsed                         : %.1fs" % (time.time() - started))
+    refusals = {a: list(v) for a, v in rejected.get("by_function", {}).items()}
 
     strong = [item for item in verified if item[3]]
     weak = [item for item in verified if not item[3]]
@@ -1503,6 +1593,14 @@ def main(argv=None) -> int:
         print("  0x%08X (%3d callers)%s  %s"
               % (func["addr"], len(func["callers"]), shape, summary[:96]))
 
+    def save_refusals():
+        # Why each function is not among the derived ones, for triage.
+        merged = dict(refusals)
+        merged.update({a: ["dropped", why] for a, why in NOT_EMITTED.items()})
+        with open(game.path(os.path.join(game.build, "derive_refusals.json")), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"0x%08X" % a: v for a, v in sorted(merged.items())}, handle, indent=0)
+
     if args.emit == "":
         args.emit = game.path(game.generated)
     if args.csv == "":
@@ -1525,6 +1623,7 @@ def main(argv=None) -> int:
                                       game.path(os.path.join(game.build, "cppcheck")),
                                       catalog)
             print("  compiled check took %.0fs" % (time.time() - stage))
+    save_refusals()
     if args.csv:
         import csv
 

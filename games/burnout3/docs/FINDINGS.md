@@ -1066,6 +1066,45 @@ as merely reconstructed. A weak derivation now gives way to a verified lifted
 copy. MACHINE-CHECKED goes from 67.6% to 69.1%; nothing was newly verified, it
 was under-reported.
 
+## Float results, and 26 functions that were verified for the wrong reason
+
+The largest single obstacle left was a float returned by a call: 214 functions
+read `$f0` after calling a function not yet derived, and the model kept `$v0` but
+dropped `$f0`. A call now has a float result too - offered only where the code
+reads `$f0` before writing it, so loops, which carry every register a call
+clobbers, do not drag a phantom value through their variables. The emitted call
+declares the callee to return the float's bits; a callee whose result is used
+both ways, or a float result of a derived function, a pointer call or a call in
+a loop, is still refused.
+
+Letting those functions derive exposed something worse. A function whose own
+code computes `$f0`, while `$v0` holds only what a callee left there, returns a
+float - and was derived as returning that leftover `$v0`. Its test compares
+`$v0`, so it passed. 26 functions (7 KB) were counted as verified on that basis.
+
+Float returns are now modelled. What a function computes into `$f0` proves
+nothing - `$f0` is every float computation's scratch register - so the evidence
+is taken at the call sites (calls.float_returning): a function returns a float
+if a caller reads `$f0` after calling it before writing it, and the evidence
+passes down tail calls. 116 functions qualify. Their derivations return `$f0`,
+are tested on `$f0`'s 32 bits, return `u32` in the emitted source, and inline
+and tail-call as floats. A function that computes `$f0` and returns a leftover
+`$v0` with no such evidence is still refused ("returns a float in $f0") rather
+than tested on the wrong value.
+
+Emission drops a function it cannot render, and that can drop its callers - a
+caller that uses the result of a callee whose signature says void. It never
+readmitted them once the callee itself was left out and called as the original.
+It now retries every left-out function against the final signatures. Why each
+function is not among the derived ones - refused, not emitted, not compiling, or
+disagreeing once compiled - is written to `build/derive_refusals.json`.
+
+VERIFIED: 15.31%, from 15.25% - after removing the 26 functions that did not
+belong. The compiled check disagrees on 20 functions (17 before), which are left
+out as always. Remembered lift verdicts are now keyed by the import closure
+of the verification code alone, so changes to the symbolic deriver no longer
+cost a cold lift run.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

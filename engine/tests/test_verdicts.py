@@ -63,6 +63,14 @@ class TestVerdicts(unittest.TestCase):
         self.assertIn("lifted.h", names)
         self.assertFalse(names & verdicts.TEXT_ONLY)
 
+    def test_the_symbolic_deriver_is_not_part_of_the_environment(self):
+        # Lift verification never runs it; a change to it must not cost a cold run.
+        package = os.path.join(REPOSITORY, "engine", "ps2decomp")
+        names = verdicts.modules(package)
+        self.assertIn("liftverify.py", names)
+        self.assertIn("testplan.py", names)
+        self.assertFalse(names & {"paths.py", "symexec.py", "calls.py"})
+
 
 if __name__ == "__main__":
     unittest.main()
