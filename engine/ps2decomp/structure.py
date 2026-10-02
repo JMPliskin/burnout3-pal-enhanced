@@ -503,18 +503,79 @@ def _fpr(index, used):
 _TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c")
 
 
+# What a caller can see of a function's registers after it returns, under the
+# calling convention: the results, the stack and global pointers, and the
+# callee-saved registers (kept as locals that are never written back).
+ABI_RETURNED = ("v0", "v1", "sp", "gp", "f0", "f1")
+
+
+def _prepare_readable(blocks, elide):
+    """Localise every block's statements, then fold single-use temporaries.
+
+    Returns the names to synchronise around calls. Folding needs the statements
+    in their final form - locals, tidied, saves elided, calls wrapped - so that is
+    done here, per block, and the later per-line pass finds nothing left to do.
+    """
+    from . import liveness
+
+    gprs, fprs, scalars = set(), set(), set()
+
+    def finish(text):
+        text = tidy(_localize(text, gprs, fprs, scalars))
+        if _TAKES_CONTEXT.search(text) and "out();" not in text:
+            text = "out(); %s in();" % text.strip()
+        return text
+
+    for block in blocks.values():
+        code = [finish(s) for s in block.code if s]
+        if elide:
+            code = [s for s in code if not any(p.match(s) for p in _SPILLS)]
+        block.code = code
+        block.slot = finish(block.slot) if block.slot else block.slot
+        if block.slot and elide and any(p.match(block.slot) for p in _SPILLS):
+            block.slot = ""
+        if block.condition:
+            block.condition = finish(block.condition)
+    gprs.discard(0)
+    synced = {GPR_NAMES[i] for i in gprs if not (elide and i in CALLEE_SAVED)}
+    synced |= {"f%d" % i for i in fprs} | set(scalars)
+    returned = set(ABI_RETURNED) & synced
+    succs = {a: _successors(b, blocks) for a, b in blocks.items()}
+    live = liveness.live_out(blocks, succs, synced, returned,
+                             lambda b: b.condition, lambda b: b.slot)
+    for address, block in blocks.items():
+        later = [block.slot] if block.slot else []
+        block.code, condition = liveness.fold(block.code, block.condition, live[address],
+                                              synced, returned, later)
+        block.condition = condition
+    gprs.add(0)
+    return gprs, fprs, scalars
+
+
 def structure_function(image: bytes, base: int, start: int, end: int,
-                       elide: bool = True, strings=None) -> str:
+                       elide: bool = True, strings=None, readable: bool = False) -> str:
     """Structured C++ for one function; raises lift.Refused if it cannot be.
 
     `elide` drops the saves and restores of callee-saved registers (see
     CALLEE_SAVED); a function that does not keep the convention needs it off.
+
+    `readable` also folds single-use temporaries into their uses (liveness.py)
+    and gives back on return only what the calling convention returns. That
+    changes registers no caller may rely on, so it is verified at that level:
+    results, stack and global pointers, callee-saved registers and memory.
     """
     lift.lift_function(image, base, start, end)       # the same refusals as lifting
     count = (end - start) // 4
     words = struct.unpack_from("<%dI" % count, image, start - base)
     code = [DISASM.decode(word, start + 4 * i) for i, word in enumerate(words)]
     blocks = _blocks(code, start, end)
+    if readable:
+        has_tail = any(b.kind == "tail"
+                       or (b.taken is not None and b.taken not in blocks)
+                       or (b.next is not None and b.next not in blocks and b.kind != "return")
+                       for b in blocks.values())
+        elide = elide and not has_tail
+        seen = _prepare_readable(blocks, elide)
     emitter = _Emitter(blocks, start, end)
     body = emitter.emit(start, None, [], 1)
     # Blocks only reachable by a goto - from inside a loop, say - follow the main
@@ -522,7 +583,9 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     for node in emitter.order:
         if node not in emitter.emitted:
             body += emitter.emit(node, None, [], 1)
-    gprs, fprs, scalars = set(), set(), set()
+    # The registers the function names, gathered as statements become locals -
+    # already, in the readable form, which localises before structuring.
+    gprs, fprs, scalars = (set(x) for x in seen) if readable else (set(), set(), set())
     out_lines = []
     # A tail transfer can reach a shared epilogue that restores the saved registers
     # from the stack, so those functions keep their saves.
@@ -559,6 +622,8 @@ def structure_function(image: bytes, base: int, start: int, end: int,
         lines.append("    %s %s = %s;" % (kind, name, source))
     synced = [(n, src) for n, src in names if (n, src) not in locals_only]
     returned = [(n, src) for n, src in synced if n != "ra"]
+    if readable:
+        returned = [(n, src) for n, src in returned if n in ABI_RETURNED]
     lines.append("    auto out = [&] { %s };" % " ".join("%s = %s;" % (s, n) for n, s in synced))
     # On return the caller sees its own $ra again, whatever links calls left in it.
     lines.append("    auto leave = [&] { %s c.r[31] = entry_ra; };"

@@ -98,7 +98,8 @@ def live_out(blocks, succs, synced, returned, condition_of, slot_of):
     return out
 
 
-def fold(code: list, condition: str, live_after: set, synced: set, returned: set):
+def fold(code: list, condition: str, live_after: set, synced: set, returned: set,
+         later=()):
     """Fold single-use definitions within one block; returns (code, condition).
 
     A definition `x = e;` folds into its one use when:
@@ -141,6 +142,8 @@ def fold(code: list, condition: str, live_after: set, synced: set, returned: set
                 if target in s_def:
                     dead = True
                     break
+            if ok and any(re.search(r"\b%s\b" % re.escape(target), text) for text in later):
+                ok = False                 # the delay slot reads it after the condition
             if not ok or use_at is None:
                 continue
             if not dead and target in live_after:

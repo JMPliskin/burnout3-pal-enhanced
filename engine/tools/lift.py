@@ -136,7 +136,20 @@ def _difference(actual, expected) -> str:
     return "nothing"
 
 
-def verify(func, machine, library) -> str:
+CALLEE_SAVED_REGS = (16, 17, 18, 19, 20, 21, 22, 23, 30)
+
+
+def abi_view(state):
+    """What a caller can rely on after a call, under the calling convention: v0
+    and v1, $gp, $sp, $ra, the callee-saved registers whole (upper halves too),
+    the float results and the callee-saved float registers."""
+    regs, upper, fpr = state[0], state[1], state[6]
+    return (tuple(regs[i] for i in (2, 3, 28, 29, 31) + CALLEE_SAVED_REGS),
+            tuple(upper[i] for i in CALLEE_SAVED_REGS),
+            tuple(fpr[i] for i in (0, 1) + tuple(range(20, 32))))
+
+
+def verify(func, machine, library, abi=False) -> str:
     """'verified', or why not."""
     plan = derive.test_plan(func, machine)
     if plan is None:
@@ -167,7 +180,10 @@ def verify(func, machine, library) -> str:
         replayed = derive._effects_digest(memory)
         memory.rollback()
         memory.end_journal()
-        if actual != expected:
+        if abi:
+            if abi_view(actual) != abi_view(expected):
+                return "disagrees: " + _difference(abi_view(actual), abi_view(expected))
+        elif actual != expected:
             return "disagrees: " + _difference(actual, expected)
         if replayed != effects:
             return "disagrees: memory"
@@ -188,29 +204,32 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs, string
     stage = time.time()
     result = dict(chosen)
     remaining = list(chosen)
-    # First with the callee-saved saves elided, then - for what that breaks -
-    # without; what neither form passes keeps the lifted form.
-    for elide in (True, False):
+    # Most readable first - temporaries folded, checked at the calling-convention
+    # level - then structured with the callee-saved saves elided, then with them
+    # kept; what no form passes keeps the lifted form.
+    forms = (("folded", dict(elide=True, readable=True), True),
+             ("with saves elided", dict(elide=True), False),
+             ("with saves kept", dict(elide=False), False))
+    for label, options, abi in forms:
         structured = {}
         for address in remaining:
             func = functions[address]
             try:
                 structured[address] = structure.structure_function(
-                    image, base, func["addr"], func["end"], elide=elide, strings=strings)
+                    image, base, func["addr"], func["end"], strings=strings, **options)
             except lift.Refused:
                 pass
         if not structured:
             break
-        work = game.path(os.path.join(game.build, "structure_%s" % ("elided" if elide else "plain")))
+        work = game.path(os.path.join(game.build, "structure_" + label.split()[-1]))
         dll, structured = build(structured, work)
-        outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs)
+        outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs, abi)
         passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
         for address in passed:
             result[address] = structured[address]
         remaining = [a for a in structured if a not in passed]
-        print("structured%s: %d passed of %d tried (%.0fs)"
-              % (" with saves elided" if elide else ", saves kept", len(passed),
-                 len(structured), time.time() - stage))
+        print("structured %s: %d passed of %d tried (%.0fs)"
+              % (label, len(passed), len(structured), time.time() - stage))
     done = sum(1 for a in chosen if result[a] is not chosen[a])
     print("structured: %d of %d verified functions" % (done, len(chosen)))
     return result
@@ -289,17 +308,18 @@ def _start_worker(game_directory, seeds, dll):
 def _verify_share(task):
     """One process verifies one share and exits: its mapped pages never leak into
     another share, so the result does not depend on scheduling."""
-    game_directory, seeds, dll, addresses = task
+    game_directory, seeds, dll, addresses, abi = task
     _start_worker(game_directory, seeds, dll)
     machine, library, functions = _WORKER
-    return [(address, verify(functions[address], machine, library)) for address in addresses]
+    return [(address, verify(functions[address], machine, library, abi))
+            for address in addresses]
 
 
-def verify_parallel(addresses, game, seeds, dll, jobs) -> dict:
+def verify_parallel(addresses, game, seeds, dll, jobs, abi=False) -> dict:
     from concurrent.futures import ProcessPoolExecutor
 
     shares = [addresses[k::jobs] for k in range(jobs)]
-    tasks = [(game.directory, seeds, dll, share) for share in shares if share]
+    tasks = [(game.directory, seeds, dll, share, abi) for share in shares if share]
     outcomes = {}
     with ProcessPoolExecutor(max_workers=len(tasks), max_tasks_per_child=1) as pool:
         for results in pool.map(_verify_share, tasks):

@@ -954,6 +954,22 @@ caller cannot observe. A function that breaks the convention, or reaches a
 shared epilogue that restores from the stack, fails that form's verification
 and is structured with the saves kept: 7,412 and 114 respectively.
 
+## Folding temporaries in structured code
+
+Structured code still moved every value through a register: `v0 = ReadS32(a0 +
+0x20); v0 = (a1 < v0); if (v0 != 0)`. liveness.py adds a backward liveness pass
+over the CFG, and folds a definition into its one use when nothing in between can
+change its meaning: no operand redefined, and for a load no store, call or
+compound statement. A call's `out()` reads every register without naming it, so
+such a use blocks the fold, and nothing folds into a compound statement whose
+own `lo`/`hi` would capture names.
+
+Dropping writes to dead temporaries changes registers no caller may read, so this
+form is verified at the calling-convention level, as derived functions are. Of
+7,526 structured functions, 6,731 pass in folded form; 683 more pass with saves
+elided and 112 with saves kept. Constants built in two steps (`lui`, `addiu`)
+are joined, and a constant that addresses a recovered string carries the string.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

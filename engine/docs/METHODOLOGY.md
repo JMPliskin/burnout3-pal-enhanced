@@ -29,6 +29,15 @@ same test cases against the original. After every case the **whole register
 file** and every byte of memory written agreed. That is a stricter comparison than
 for derived functions, which compare `$v0` and memory.
 
+Lifted code is emitted in the most readable form that passes. That is structured
+(loops and ifs, named locals) where possible, and in the best case with
+single-use temporaries folded into their uses. The folded form drops writes to
+registers no caller may read, so it is compared at the calling-convention level:
+`v0`/`v1`, `$sp`, `$gp`, `$ra`, the callee-saved registers whole, the float
+results and callee-saved float registers, and memory. That is the level derived
+functions are verified at. Every other form is compared on the whole register
+file.
+
 Lifted source is correct and complete, and enough to run the game on a host, but
 it is not readable: it says `c.r[2] = c.r[4] + 5`, not what the function means.
 So it is reported as its own tier and never counted as `verified`. A function
