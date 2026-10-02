@@ -22,7 +22,10 @@ Control flow, precisely:
   through `Call`, with the whole context.
 * `jr $ra` returns. `jr` through any other register is a jump table if the target
   is inside the function and a tail call if not. A branch or jump that leaves the
-  function, and running off its end, are tail calls too.
+  function, and running off its end, are tail calls too. A tail call runs until
+  control reaches *this* function's return address (`$ra` at entry): the code it
+  jumps to - a shared epilogue, say - restores that from the stack, while `$ra`
+  itself may have been overwritten by an earlier call.
 * Every loop head counts down a budget, so a loop that never ends cannot hang the
   host.
 """
@@ -362,7 +365,11 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
         labels = {ins.addr for ins in code}
         loop_heads = set(labels)
 
-    lines = ["void %s(lifted::Context& c) {" % name_of(start)]
+    lines = ["void %s(lifted::Context& c) {" % name_of(start),
+             # Where this function returns to: a tail transfer to code it does not
+             # contain hands the rest of the run over, and that code returns here.
+             "    const u32 entry_ra = (u32)c.r[31], entry_sp = (u32)c.r[29];",
+             "    (void)entry_ra; (void)entry_sp;"]
     if dispatch:
         lines.append("    u32 jump;")
     skip = set()
@@ -418,9 +425,9 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
         if address + 4 in labels:
             # Execution that branched past the delay slot continues after it.
             lines.append("    goto L_%08X;" % after if after < end else
-                         "    lifted::Call(c, 0x%08Xu); return;" % after)
+                         "    lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp); return;" % after)
             labels.add(after) if after < end else None
-    lines.append("    lifted::Call(c, 0x%08Xu);  /* runs off the end */" % end)
+    lines.append("    lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp);  /* runs off the end */" % end)
     lines.append("}")
     text = "\n".join(lines)
     # A label is only emitted at an instruction; make sure every goto has one.
@@ -433,9 +440,10 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
 def _transfer(target: int, inside) -> str:
     if inside(target):
         return "goto L_%08X;" % target
-    return "{ lifted::Call(c, 0x%08Xu); return; }" % target
+    return "{ lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp); return; }" % target
 
 
 def _dispatch(code) -> str:
     cases = " ".join("case 0x%08Xu: goto L_%08X;" % (ins.addr, ins.addr) for ins in code)
-    return "switch (jump) { %s default: lifted::Call(c, jump); return; }" % cases
+    return ("switch (jump) { %s default: lifted::TailCall(c, jump, entry_ra, entry_sp); "
+            "return; }" % cases)

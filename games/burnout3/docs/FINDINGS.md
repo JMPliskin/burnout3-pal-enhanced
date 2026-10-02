@@ -853,6 +853,32 @@ Execution reaching an address outside the program now stops the test. Before,
 fault mapping happily mapped a page for an instruction fetch, and a bad return
 address ran test data as code until the budget ran out (546 functions).
 
+## Fragments, tail transfers, and a parallel check: 64% machine-checked
+
+Two causes accounted for most lifted functions whose tests failed.
+
+**Fragments.** Function discovery also finds shared epilogue tails: code entered
+with a frame it never built, which restores `$ra` from its caller's frame and
+returns through it. Test memory there was zero, so every one of them "returned"
+to address 0. The stack above the test stack top is now filled with the return
+sentinel, so a fragment's return ends its test as a function's does.
+
+**Tail transfers.** A lifted branch out of a function hands the run to the code it
+reaches - often such an epilogue - and must wait for *this function's* return,
+but it waited for whatever `$ra` held. After an earlier `jal` that points inside
+the function, while the epilogue restores the real return address from the
+stack. A lifted function now records `$ra` and `$sp` at entry and passes them to
+the host for tail transfers. The host also accepts a return at a higher stack
+pointer than at entry, as an epilogue leaves it.
+
+Lift verification now runs in parallel: each process gets one fixed share of the
+functions, replays the parent's seeded pointers, and exits, so results do not
+depend on scheduling. 8.5 minutes on 14 processes, down from 21.
+
+Lifted and verified: 5,888 -> 7,720 functions, 53.1% -> 64.8% of the code.
+Machine-checked: 52.5% -> **63.7%**. Derived and verified: 3,710 -> 3,797
+(11.74%). The instruction budget is now the main obstacle (1,718 functions).
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

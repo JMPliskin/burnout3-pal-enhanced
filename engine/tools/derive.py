@@ -912,19 +912,29 @@ def collect(database: dict, image: bytes, base: int, machine: Machine,
     return verified, rejected
 
 
-def prepare_test_memory(machine, database, image, base, functions, verbose=False) -> None:
+def prepare_test_memory(machine, database, image, base, functions, verbose=False,
+                        seeds=None) -> list:
     """Fill scratch and seed null global pointers, identically for every tool.
 
     Global pointers that are null until the game runs would make every function
     using them untestable, so they are pointed at scratch: first the ones the
     recovered types mark as pointers, then the ones found by running the
     functions (see testmem.discover_null_pointers).
+
+    Returns the addresses seeded. Passing them back as `seeds` reproduces the same
+    memory without the discovery - how a worker process matches its parent.
     """
     rng = random.Random(0xB3)
     machine.memory.write(layout.CURRENT.scratch,
                          bytes(rng.randrange(256) for _ in range(layout.CURRENT.scratch_size)))
-    seeded = testmem.seed_global_pointers(machine.memory,
-                                          global_pointers(database, image, base))
+    testmem.fill_caller_frame(machine.memory)
+    if seeds is not None:
+        testmem.seed_global_pointers(machine.memory, seeds)
+        machine.memory.page_source = testmem.page_contents
+        machine.map_faults = True
+        return seeds
+    static = global_pointers(database, image, base)
+    seeded = testmem.seed_global_pointers(machine.memory, static)
     spans = sorted((f["addr"], f["end"]) for f in database["functions"])
     starts = [start for start, _end in spans]
     scratch_low = layout.CURRENT.scratch
@@ -942,12 +952,13 @@ def prepare_test_memory(machine, database, image, base, functions, verbose=False
     found = testmem.discover_null_pointers(machine, functions, is_global)
     if verbose:
         print("  seeded %d null global pointers for testing, and %d more found by "
-              "running (%.0fs)" % (seeded, found, time.time() - started))
+              "running (%.0fs)" % (seeded, len(found), time.time() - started))
     # From here on a test that faults on unmapped memory maps the page and runs
     # again. Only after the discovery above, which finds null pointers by their
     # faults.
     machine.memory.page_source = testmem.page_contents
     machine.map_faults = True
+    return sorted(set(static) | set(found))
 
 
 def global_pointers(database, image, base) -> set:

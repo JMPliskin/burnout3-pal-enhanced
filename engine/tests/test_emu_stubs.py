@@ -252,7 +252,7 @@ class TestGlobalPointerSeeding(unittest.TestCase):
         with self.assertRaises(EmulationError):
             m.call(BASE, ())
         seeded = testmem.discover_null_pointers(m, [func], lambda a: a >= BASE + 0x40)
-        self.assertEqual(seeded, 1)
+        self.assertEqual(seeded, [BASE + 0x100])
         pointer = m.memory.read_int(BASE + 0x100, 4, False)
         self.assertTrue(layout.CURRENT.scratch <= pointer < layout.CURRENT.scratch + layout.CURRENT.scratch_size)
         m.call(BASE, ())
@@ -260,7 +260,7 @@ class TestGlobalPointerSeeding(unittest.TestCase):
     def test_nothing_outside_the_program_data_is_seeded(self):
         m = machine(self.FOLLOWS_GLOBAL + [0] * 64)
         func = {"addr": BASE, "end": BASE + 20}
-        self.assertEqual(testmem.discover_null_pointers(m, [func], lambda a: False), 0)
+        self.assertEqual(testmem.discover_null_pointers(m, [func], lambda a: False), [])
         self.assertEqual(m.memory.read_int(BASE + 0x100, 4, False), 0)
 
 

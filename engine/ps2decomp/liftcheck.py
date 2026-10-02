@@ -42,7 +42,8 @@ READ = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctype
                         ctypes.POINTER(ctypes.c_uint32))
 WRITE = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_uint32,
                          ctypes.POINTER(ctypes.c_uint32))
-CALL = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(Context))
+CALL = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(Context),
+                        ctypes.c_uint32, ctypes.c_uint32)
 
 LOOP_BUDGET = 10_000_000
 
@@ -59,7 +60,8 @@ def harness_source(names) -> str:
         "",
         "typedef u64 (*ReadFn)(u32 address, u32 size, u32 is_signed, u32* fault);",
         "typedef void (*WriteFn)(u32 address, u64 value, u32 size, u32* fault);",
-        "typedef u32 (*CallFn)(u32 address, lifted::Context* context);",
+        "typedef u32 (*CallFn)(u32 address, lifted::Context* context, u32 return_address,",
+        "                      u32 entry_sp);",
         "static ReadFn g_read;",
         "static WriteFn g_write;",
         "static CallFn g_call;",
@@ -86,7 +88,10 @@ def harness_source(names) -> str:
         "",
         "namespace lifted {",
         "void Call(Context& c, u32 target) {",
-        "    if (g_call(target, &c)) throw Abort{target, 3};",
+        "    if (g_call(target, &c, (u32)c.r[31], (u32)c.r[29])) throw Abort{target, 3};",
+        "}",
+        "void TailCall(Context& c, u32 target, u32 return_address, u32 entry_sp) {",
+        "    if (g_call(target, &c, return_address, entry_sp)) throw Abort{target, 3};",
         "}",
         "void Syscall(Context& c) {",
         "    u32 value = 0;",
@@ -257,21 +262,26 @@ class LiftedFunctions:
         except EmulationError:
             fault[0] = 1
 
-    def _on_call(self, target, context):
+    def _on_call(self, target, context, return_address, entry_sp):
         try:
             load_machine(self.machine, context.contents)
-            self.machine.run_to_return(target, self.budget)
+            self.machine.run_to_return(target, self.budget, return_address, entry_sp)
             store_context(context.contents, self.machine)
             return 0
-        except (EmulationError, ExecutionLimit):
+        except (EmulationError, ExecutionLimit) as exc:
+            self.callee_error = "0x%08X: %s" % (target, exc)
             return 1
 
     def run(self, address: int, context: Context):
         """Run one lifted function; returns None if it ran, else why it did not."""
         reason = ctypes.c_uint32(0)
+        self.callee_error = None
         status = self.library.lift_run(address, ctypes.byref(context), ctypes.byref(reason))
         if status == 1:
             return None
         if status == 0:
             return "not in the library"
-        return self.REASONS.get(reason.value, "abandoned")
+        why = self.REASONS.get(reason.value, "abandoned")
+        if reason.value == 3 and self.callee_error:
+            why += " (%s)" % self.callee_error
+        return why

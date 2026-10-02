@@ -113,7 +113,7 @@ def verify(func, machine, library) -> str:
     """'verified', or why not."""
     plan = derive.test_plan(func, machine)
     if plan is None:
-        return "untestable: " + derive.failure_reason().split(":")[1].strip()
+        return "untestable: " + derive.failure_reason()
     arg_sets, profile = plan
     memory = machine.memory
     tested = 0
@@ -187,6 +187,44 @@ def update_status(path: str, verified, outcomes, names=None) -> None:
     print("updated %s (%d lifted rows)" % (path, added))
 
 
+# Each verifying process: its own interpreter, test memory and copy of the library.
+_WORKER = None
+
+
+def _start_worker(game_directory, seeds, dll):
+    global _WORKER
+    game = game_config.load(game_directory)
+    database = game.load_database()
+    elf = game.load_elf()
+    section = elf.exec_sections[0]
+    machine = Machine.from_elf(elf)
+    derive.prepare_test_memory(machine, database, elf.section_data(section), section.addr,
+                               [], seeds=seeds)
+    library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
+    _WORKER = (machine, library, {f["addr"]: f for f in database["functions"]})
+
+
+def _verify_share(task):
+    """One process verifies one share and exits: its mapped pages never leak into
+    another share, so the result does not depend on scheduling."""
+    game_directory, seeds, dll, addresses = task
+    _start_worker(game_directory, seeds, dll)
+    machine, library, functions = _WORKER
+    return [(address, verify(functions[address], machine, library)) for address in addresses]
+
+
+def verify_parallel(addresses, game, seeds, dll, jobs) -> dict:
+    from concurrent.futures import ProcessPoolExecutor
+
+    shares = [addresses[k::jobs] for k in range(jobs)]
+    tasks = [(game.directory, seeds, dll, share) for share in shares if share]
+    outcomes = {}
+    with ProcessPoolExecutor(max_workers=len(tasks), max_tasks_per_child=1) as pool:
+        for results in pool.map(_verify_share, tasks):
+            outcomes.update(results)
+    return outcomes
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     game_config.add_argument(parser)
@@ -195,6 +233,8 @@ def main(argv=None) -> int:
                         help="lift just this function (hex address); repeatable")
     parser.add_argument("--emit", action="store_true",
                         help="write the verified functions to the game's src/lifted/")
+    parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2),
+                        help="processes verifying in parallel (default: all but two cores)")
     parser.add_argument("--csv", action="store_true",
                         help="mark the verified functions `lifted` in the status table")
     args = parser.parse_args(argv)
@@ -211,7 +251,8 @@ def main(argv=None) -> int:
     if args.limit:
         functions = functions[:args.limit]
     started = time.time()
-    derive.prepare_test_memory(machine, database, image, section.addr, functions, verbose=True)
+    seeds = derive.prepare_test_memory(machine, database, image, section.addr, functions,
+                                       verbose=True)
 
     lifted, refused = lift_all(functions, image, section.addr)
     print("lifted %d of %d functions; refused %d" % (len(lifted), len(functions),
@@ -225,15 +266,23 @@ def main(argv=None) -> int:
     print("  compiling took %.0fs" % (time.time() - stage))
 
     stage = time.time()
-    library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
-    outcomes = {}
     by_address = {f["addr"]: f for f in functions}
-    for address in sorted(lifted):
-        outcomes[address] = verify(by_address[address], machine, library)
-    print("  verifying took %.0fs" % (time.time() - stage))
+    if args.jobs > 1 and len(lifted) > 50:
+        outcomes = verify_parallel(sorted(lifted), game, seeds, dll, args.jobs)
+    else:
+        library = liftcheck.LiftedFunctions(dll, machine, derive.VERIFY_BUDGET)
+        outcomes = {address: verify(by_address[address], machine, library)
+                    for address in sorted(lifted)}
+    print("  verifying took %.0fs (%d processes)" % (time.time() - stage, max(1, args.jobs)))
+    import json
+    with open(game.path(os.path.join(game.build, "lift_outcomes.json")), "w",
+              encoding="utf-8") as handle:
+        json.dump({"0x%08X" % a: outcome for a, outcome in sorted(outcomes.items())}, handle,
+                  indent=0)
 
     verified = sorted(a for a, outcome in outcomes.items() if outcome == "verified")
-    tally = collections.Counter(outcome for outcome in outcomes.values() if outcome != "verified")
+    tally = collections.Counter(re.sub(r"0x[0-9A-Fa-f]+|\b\d+\b", "N", outcome)
+                                for outcome in outcomes.values() if outcome != "verified")
     code_bytes = sum(f["size"] for f in database["functions"])
     verified_bytes = sum(by_address[a]["size"] for a in verified)
     print("lifted and verified: %d functions, %s bytes (%.2f%% of code)"

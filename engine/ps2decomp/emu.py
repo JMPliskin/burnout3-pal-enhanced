@@ -377,23 +377,29 @@ class Machine:
                 )
         return _sign32(self.get32(2))
 
-    def run_to_return(self, addr: int, max_instructions: int = 2_000_000) -> None:
+    def run_to_return(self, addr: int, max_instructions: int = 2_000_000,
+                      return_address: int = None, entry_sp: int = None) -> None:
         """Run the function at `addr` from the registers as they are, until it returns.
 
         For a caller that is not this interpreter - lifted code calling a function
         it does not have - which hands over its whole register state, $ra
         included, and takes the whole state back. Nothing is reset. The function
         has returned when control is back at the return address with the stack
-        pointer where it was, which stays right under recursion.
+        pointer no lower than it was: a recursive call reaches the same address
+        only from deeper in the stack, while an epilogue fragment returns from
+        higher up, having popped a frame it never pushed.
         """
         if not self._is_code(addr):
             self._stubbed_call()
             return
-        return_address = self.get32(31)
-        entry_sp = self.get32(29)
+        # A call returns to $ra; a tail transfer to wherever its caller returns.
+        if return_address is None:
+            return_address = self.get32(31)
+        if entry_sp is None:
+            entry_sp = self.get32(29)
         self.pc = addr
         executed = 0
-        while not (self.pc == return_address and self.get32(29) == entry_sp):
+        while not (self.pc == return_address and self.get32(29) >= entry_sp):
             self.step()
             executed += 1
             if executed > max_instructions:

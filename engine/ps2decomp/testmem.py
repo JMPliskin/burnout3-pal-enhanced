@@ -167,13 +167,13 @@ def discover_null_pointers(machine, functions, is_global, budget: int = 20_000,
     `is_global(address)` limits seeding to the program's own data - never code,
     the stack or the scratch region. The functions are visited in the order given
     and every seed is written outside any journal, so the result is deterministic
-    and the same for every test that follows. Returns the number of words seeded.
+    and the same for every test that follows. Returns the addresses seeded.
     """
     from .emu import MemoryFault
 
     memory = machine.memory
     scratch = layout.CURRENT.scratch
-    seeded = 0
+    seeded = []
     memory.watch_zero = True
     try:
         for func in functions:
@@ -197,7 +197,8 @@ def discover_null_pointers(machine, functions, is_global, budget: int = 20_000,
                 if (fault is None or fault.addr >= NULL_PAGE or source is None
                         or source >= stack_pointer or not is_global(source)):
                     break
-                seeded += seed_global_pointers(memory, {source})
+                if seed_global_pointers(memory, {source}):
+                    seeded.append(source)
     finally:
         memory.watch_zero = False
         memory.last_zero_read = None
@@ -217,3 +218,24 @@ def page_contents(page: int) -> bytes:
     words = [scratch + rng.randrange(0, size - 0x100, 16) if i % 2 == 0
              else rng.randrange(SMALL_LIMIT) for i in range(0x1000 // 4)]
     return struct.pack("<%dI" % len(words), *words)
+
+
+# How much of the stack above the test stack top - the caller's frame - is filled.
+CALLER_FRAME = 0x400
+
+
+def fill_caller_frame(memory) -> None:
+    """Fill the stack above the test stack top with the return sentinel.
+
+    Function discovery also finds fragments: shared epilogue tails entered with a
+    frame they never built. They restore $ra (and saved registers) from their
+    caller's frame and return through it - to address 0, when that memory is zero,
+    so every test of them failed. With the sentinel there, a fragment's return
+    ends the test as a function's does, and its own work - the restores, the
+    result - is compared like any other. Written once, outside any journal.
+    """
+    from .emu import RETURN_SENTINEL
+
+    words = CALLER_FRAME // 4
+    memory.write(layout.CURRENT.stack_top,
+                 struct.pack("<%dI" % words, *([RETURN_SENTINEL] * words)))

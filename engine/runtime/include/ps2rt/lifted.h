@@ -48,6 +48,11 @@ struct Abort {
    callee returns. Defined by whatever hosts the lifted code. */
 void Call(Context& c, u32 target);
 
+/* Transfers control to `target` for good, as a jump out of the function does:
+   it runs until control comes back to `return_address` with the stack pointer at
+   or above `entry_sp`, which is when the lifted function itself has returned. */
+void TailCall(Context& c, u32 target, u32 return_address, u32 entry_sp);
+
 /* A syscall: the host decides what the service does. */
 void Syscall(Context& c);
 
