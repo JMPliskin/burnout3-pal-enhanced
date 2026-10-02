@@ -970,6 +970,41 @@ form is verified at the calling-convention level, as derived functions are. Of
 elided and 112 with saves kept. Constants built in two steps (`lui`, `addiu`)
 are joined, and a constant that addresses a recovered string carries the string.
 
+## Finding inputs, and memory that ends: 68% machine-checked
+
+Of the lifted functions that failed verification, most were untestable: the
+original never finished under the standard inputs. Three ways to change that were
+measured.
+
+* A larger instruction budget does not help. Of 120 functions that ran out of
+  budget, 5 finished within 1M instructions; 85 faulted once allowed to run on,
+  and 30 never finished even at 5M.
+* Searching for inputs does, a little. When the standard plan finds no memory
+  profile the original completes under, lift.py now tries up to twelve fresh
+  argument sets under every profile, with a small budget, and tests with those
+  it completes on. Any input the original completes on is as valid a test as any
+  other; this only decides which are tried.
+* Memory whose pointers only point forward helps most. Random pointers make
+  cycles, and a list walk follows one forever. Two new profiles, `forward` and
+  `forward-mixed`, hold pointers that are null or point further on, so every
+  chain ends. In a sample of 150 untestable functions, 18 ran under them. They
+  come last, so no function that ran before is tested differently.
+
+The search first made things worse: 7,743 verified functions became 7,581. Pages
+mapped on demand (emu.Memory.map_page) are capped per process, and random
+arguments reach random addresses: the search used up the budget, and the
+functions verified after it in the same process faulted. Pages mapped by a failed
+attempt, or by a verification that ends untestable, are now unmapped
+(Memory.unmap_to). With that, 7,897 functions verify (69.1% of code bytes), and
+MACHINE-CHECKED goes from 64.2% to 67.7%. Verification takes twice as long, 40
+minutes on 14 processes.
+
+Structured code reads a little more like source: a loop whose last statement is
+its test is a `do { } while (c);` (1,006 of them), a comparison's widened 0 or 1
+tested against zero is the comparison, small sign-extended literals are plain,
+and a sign extension nested inside a sum the outer one already truncates is
+dropped. 7,678 of the 7,897 verified functions pass in structured form.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

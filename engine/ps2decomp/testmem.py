@@ -38,7 +38,11 @@ from . import layout
 
 # Order matters: the first profile under which a function executes is the one it is
 # tested with, so the most generally useful shapes come first.
-PROFILES = ("mixed", "noise", "small", "pointers")
+# "forward" and "forward-mixed" come last: they only matter to functions no other
+# shape lets finish - typically list walks, which loop forever on the cycles that
+# random pointers make. Their pointers only point further on, or are null, so every
+# chain followed through them ends.
+PROFILES = ("mixed", "noise", "small", "pointers", "forward", "forward-mixed")
 
 # Small integers stay below this so a count read from memory gives a short loop.
 SMALL_LIMIT = 16
@@ -85,6 +89,14 @@ def _build(kind: str, seed: int) -> bytes:
     elif kind == "mixed":
         words = [pointer() if i % 2 == 0 else rng.randrange(SMALL_LIMIT)
                  for i in range(count)]
+    elif kind in ("forward", "forward-mixed"):
+        def forward(i: int) -> int:
+            address = SCRATCH + 4 * i
+            if rng.random() < 0.25 or address + 0x200 >= SCRATCH + SCRATCH_SIZE - 0x100:
+                return 0
+            return (address + rng.randrange(16, 0x200)) & ~15
+        words = [rng.randrange(SMALL_LIMIT) if kind == "forward-mixed" and i % 2
+                 else forward(i) for i in range(count)]
     else:
         raise ValueError("unknown memory profile %r" % kind)
     return struct.pack("<%dI" % count, *words)

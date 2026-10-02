@@ -150,6 +150,19 @@ class Memory:
         self.bytes.extend(self.page_source(page))
         return True
 
+    def page_mark(self) -> tuple:
+        """Where on-demand mapping stands, for unmap_to."""
+        return len(self.pages), len(self.bytes)
+
+    def unmap_to(self, mark: tuple) -> None:
+        """Unmap the pages mapped since `mark`. Only outside a journal: journal
+        entries may point into the pages dropped."""
+        assert self._journal is None, "unmapping inside a journal"
+        count, size = mark
+        for page in list(self.pages)[count:]:
+            del self.pages[page]
+        del self.bytes[size:]
+
     def undo_to(self, mark: int) -> None:
         """Undo the journalled writes after the first `mark` entries."""
         journal = self._journal

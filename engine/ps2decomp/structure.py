@@ -438,11 +438,155 @@ def tidy(line: str) -> str:
     line = re.sub(r"Sx32\((%s) \+ 0x0u\)" % _ATOM, r"Sx32(\1)", line)
     line = re.sub(r"Sx32\(0ull \+ (%s)\)" % _ATOM, r"Sx32(\1)", line)
     line = re.sub(r"\(u32\)(%s) \+ 0x0u\b" % _ATOM, r"(u32)\1", line)
-    return line
+    # A sign-extended literal below 2^31 is that literal; small ones read better
+    # in decimal where they are compared.
+    line = re.sub(r"Sx32\(0x([0-7]?[0-9A-F]{1,7})u\)", r"0x\1ull", line)
+    line = re.sub(r"\(s64\)0x([0-9A-F]{1,4})ull\b", lambda m: str(int(m.group(1), 16)), line)
+    line = re.sub(r"\(u(32|64)\)\((0x[0-9A-F]+ull)\)", r"(u\1)\2", line)
+    # A comparison's 0 or 1, widened and tested against zero, is the comparison.
+    operand = r"(?:\(s64\))?(?:%s|\d+)" % _ATOM
+    line = re.sub(r"\(\(u64\)\((%s (?:<|==|!=) %s)\)\) != 0ull" % (operand, operand),
+                  r"\1", line)
+    line = re.sub(r"\(\(u64\)\((%s (?:<|==|!=) %s)\)\) == 0ull" % (operand, operand),
+                  r"!(\1)", line)
+    return _inner_sign_extensions(line)
+
+
+def _closing(text, open_at):
+    """The index of the parenthesis closing the one at `open_at`, or None."""
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _inner_sign_extensions(line):
+    """`Sx32(a + (Sx32(b)))` is `Sx32(a + (b))`: the outer Sx32 keeps only the low
+    32 bits of the sum, which depend only on the low 32 bits of each addend - and
+    those Sx32 does not change. Likewise for subtraction."""
+    changed = True
+    while changed:
+        changed = False
+        for outer in re.finditer(r"Sx32\(", line):
+            open_at = outer.end() - 1
+            close = _closing(line, open_at)
+            if close is None:
+                continue
+            argument = line[open_at + 1:close]
+            for inner in re.finditer(r"(?<= [+-] )\(Sx32\(|^\(Sx32\(", argument):
+                start = inner.start()
+                end = _closing(argument, start)
+                if end is None:
+                    continue
+                # Only a direct addend: `(Sx32(...))` with nothing else inside.
+                if _closing(argument, start + 5) != end - 1:
+                    continue
+                # And the outer argument is a plain sum or difference at top level.
+                depth, top = 0, []
+                for i, ch in enumerate(argument):
+                    depth += ch == "("
+                    depth -= ch == ")"
+                    if depth == 0 and ch in "*/&|^<>?%":
+                        top.append(ch)
+                if top:
+                    continue
+                argument = argument[:start] + "(" + argument[start + 6:end - 1] + ")" + argument[end + 1:]
+                line = line[:open_at + 1] + argument + line[close:]
+                changed = True
+                break
+            if changed:
+                break
+    # (u32)(Sx32(x)) is (u32)(x): the low 32 bits are what Sx32 keeps.
+    while True:
+        match = re.search(r"\(u32\)\(Sx32\(", line)
+        if not match:
+            return line
+        open_at = match.start() + 5
+        end = _closing(line, open_at)
+        if end is None or _closing(line, open_at + 5) != end - 1:
+            return line
+        line = line[:open_at] + "(" + line[open_at + 6:end - 1] + ")" + line[end + 1:]
+
+
+def _loop_test(lines, k):
+    """At lines[k], `if (C) { continue; } else { break; }` (or the reverse):
+    (the condition to repeat on, the number of lines it takes), or None."""
+    shapes = ((("continue;", "} else {", "break;", "}"), False),
+              (("break;", "} else {", "continue;", "}"), True),
+              (("continue;", "}", "break;"), False),
+              (("break;", "}", "continue;"), True))
+    head = lines[k].strip()
+    if not (head.startswith("if (") and head.endswith(") {")):
+        return None
+    condition = head[4:-3]
+    for shape, negate in shapes:
+        rest = [line.strip() for line in lines[k + 1:k + 1 + len(shape)]]
+        if tuple(rest) == shape:
+            return ("!(%s)" % condition if negate else condition), 1 + len(shape)
+    return None
+
+
+def loops_to_do_while(lines):
+    """`for (;;) { ...; if (C) continue; else break; }` is `do { ... } while (C);`
+    when nothing else in the body continues - a `continue` in a do-while goes to
+    the test, not the top."""
+    lines = list(lines)
+    k = 0
+    while k < len(lines):
+        if lines[k].strip() != "for (;;) {":
+            k += 1
+            continue
+        pad = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+        close = next((j for j in range(k + 1, len(lines)) if lines[j] == pad + "}"), None)
+        if close is None:
+            k += 1
+            continue
+        found = None
+        for start in (close - 5, close - 4):
+            test = _loop_test(lines, start) if start > k else None
+            if test is not None and start + test[1] == close:
+                found = (start, test[0])
+        if found is None:
+            k += 1
+            continue
+        start, condition = found
+        body = lines[k + 1:start]
+        if any("continue;" in line for line in body) or any(
+                line.lstrip().startswith("L_") for line in lines[start:close]):
+            k += 1
+            continue
+        lines[k:close + 1] = [pad + "do {"] + body + [pad + "} while (%s);" % condition]
+        k += 1
+    return lines
 
 
 _SET_CONSTANT = re.compile(r"^(\s*)([a-z][a-z0-9]*) = (0x[0-9A-F]+)ull;$")
 _ADD_CONSTANT = re.compile(r"^(\s*)([a-z][a-z0-9]*) = Sx32\(([a-z][a-z0-9]*) \+ (0x[0-9A-F]+)u\);$")
+
+
+def drop_empty_else(lines):
+    """`} else {` straight before the arm's closing brace: an empty else arm."""
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        following = lines[i + 1].strip() if i + 1 < len(lines) else None
+        if line.strip() == "} else {" and following == "}":
+            out.append(line.replace("} else {", "}"))
+            i += 2
+            continue
+        if line.strip() == "} else {" and following == "} }":
+            out.append(line.replace("} else {", "} }"))
+            i += 2
+            continue
+        out.append(line)
+        i += 1
+    return out
 
 
 def fold_constants(lines, strings=None):
@@ -631,6 +775,6 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     # The context is lifted::Context; everything else reads without the prefixes.
     lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in synced))
     lines.append("    (void)out; (void)in; (void)leave;")
-    lines += fold_constants(out_lines, strings)
+    lines += loops_to_do_while(drop_empty_else(fold_constants(out_lines, strings)))
     lines.append("}")
     return "\n".join(lines) + "\n"

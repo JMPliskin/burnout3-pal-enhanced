@@ -3,9 +3,15 @@
 A toolchain for decompiling PlayStation 2 games into readable C++ when the
 original compiler is unavailable. Byte-matching is not possible without that
 compiler, so this checks **behaviour** instead. An R5900 interpreter runs the
-original machine code. Each function is derived symbolically, emitted as C++,
-compiled, and run on the same inputs. A function counts only when every form
-agrees.
+original machine code, and every C++ function is compiled and run against it on
+the same inputs. A function counts only when they agree.
+
+There are two tiers. **Derived** functions are symbolic expressions turned into
+readable C++. **Lifted** functions are translated instruction by instruction,
+then structured (loops, ifs, named locals, temporaries folded). Lifting covers
+nearly every function, so together they give a complete translation. Each
+function says whether it was verified, and the progress report gives the
+readable and the machine-checked share separately.
 
 The engine was built on *Burnout 3: Takedown*, the first game here. Its code is
 game-independent: a game is a directory with a `game.json`.
@@ -60,7 +66,9 @@ working in this repository.
    ```sh
    python engine/tools/isotool.py extract "Some Game.iso" SLUS_123.45 -o games/<name>/extracted/
    python engine/tools/analyze.py --game games/<name>
+   python engine/tools/signatures.py --game games/<name> name
    python engine/tools/derive.py --game games/<name> --emit --csv
+   python engine/tools/lift.py --game games/<name> --structure --emit --csv
    python engine/tools/progress.py --game games/<name>
    ```
 
