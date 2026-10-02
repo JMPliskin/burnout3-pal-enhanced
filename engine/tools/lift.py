@@ -34,7 +34,8 @@ from ps2decomp.emu import Machine
 CHUNK = 300
 STATE_PARTS = ("registers", "upper register halves", "HI", "LO", "HI1", "LO1",
                "FPU registers", "FPU accumulator", "FPU condition",
-               "VU0 vector registers", "VU0 control registers", "VU0 accumulator")
+               "VU0 vector registers", "VU0 control registers", "VU0 accumulator",
+               "shift amount")
 
 
 def lift_all(functions, image, base):
@@ -148,6 +149,37 @@ def verify(func, machine, library) -> str:
     return "verified" if tested >= 5 else "untestable: only %d cases ran" % tested
 
 
+def structure_verified(chosen, functions, image, base, game, seeds, jobs) -> dict:
+    """Swap in the structured form of every function whose structured form verifies too.
+
+    Structuring (structure.py) is a second translation of the same code, so it is
+    checked like the first: built into its own library and run on the same cases
+    against the original. Where it fails or cannot be structured, the plain lifted
+    form stays.
+    """
+    from ps2decomp import structure
+
+    stage = time.time()
+    structured = {}
+    for address in chosen:
+        func = functions[address]
+        try:
+            structured[address] = structure.structure_function(image, base, func["addr"],
+                                                               func["end"])
+        except lift.Refused:
+            pass
+    work = game.path(os.path.join(game.build, "structure"))
+    dll, structured = build(structured, work)
+    outcomes = verify_parallel(sorted(structured), game, seeds, dll, jobs)
+    passed = [a for a, outcome in outcomes.items() if outcome == "verified"]
+    print("structured: %d of %d verified functions (%d tried; %.0fs)"
+          % (len(passed), len(chosen), len(structured), time.time() - stage))
+    failed = collections.Counter(o for o in outcomes.values() if o != "verified")
+    for reason, count in failed.most_common(5):
+        print("  %5d  %s" % (count, reason))
+    return {a: (structured[a] if a in passed else text) for a, text in chosen.items()}
+
+
 def update_status(path: str, verified, outcomes, names=None) -> None:
     """Rebuild the `lifted` rows; any other row - derived, hand-written - stays.
 
@@ -235,6 +267,9 @@ def main(argv=None) -> int:
                         help="write the verified functions to the game's src/lifted/")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2),
                         help="processes verifying in parallel (default: all but two cores)")
+    parser.add_argument("--structure", action="store_true",
+                        help="also emit verified functions in structured form "
+                             "(loops, ifs, named locals) where that verifies too")
     parser.add_argument("--csv", action="store_true",
                         help="mark the verified functions `lifted` in the status table")
     args = parser.parse_args(argv)
@@ -292,9 +327,13 @@ def main(argv=None) -> int:
     disagreeing = [a for a, outcome in outcomes.items() if outcome.startswith("disagrees")]
     if disagreeing:
         print("  disagreeing: %s" % ", ".join("0x%08X" % a for a in disagreeing[:20]))
+    chosen = {a: lifted[a] for a in verified}
+    if args.structure:
+        chosen = structure_verified(chosen, by_address, image, section.addr, game, seeds,
+                                    args.jobs)
     if args.emit:
         out = game.path(os.path.join(os.path.dirname(game.generated), "lifted"))
-        paths = write_chunks({a: lifted[a] for a in verified}, out, "lifted")
+        paths = write_chunks(chosen, out, "lifted")
         print("wrote %d files to %s" % (len(paths), out))
     if args.csv:
         from ps2decomp import naming

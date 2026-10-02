@@ -198,6 +198,16 @@ def register_name(index: int) -> str:
         return "lo"
     if index == FP_COND:
         return "fcc"
+    if index == FP_ACC:
+        return "facc"
+    if UPPER_BASE <= index < UPPER_BASE + 32:
+        return "%s_hi" % _REGISTER_NAMES[index - UPPER_BASE]
+    if VF_BASE <= index < VC_BASE:
+        return "vf%d%s" % ((index - VF_BASE) // 4, "xyzw"[(index - VF_BASE) % 4])
+    if VC_BASE <= index < VACC_BASE:
+        return "vc%d" % (index - VC_BASE)
+    if VACC_BASE <= index < VACC_BASE + 4:
+        return "vacc%s" % "xyzw"[index - VACC_BASE]
     if index >= FPR_BASE:
         return "f%d" % (index - FPR_BASE)
     return "r%d" % index
@@ -305,7 +315,7 @@ def fits_u32(expr: "Expr") -> bool:
         return (expr.value & MASK64) <= MASK32
     if isinstance(expr, Load):
         return not expr.signed and expr.size <= 4
-    if isinstance(expr, (Compare, Predicate, FloatPredicate, Not1, FloatOp,
+    if isinstance(expr, (Compare, Predicate, FloatPredicate, Not1, FloatOp, VuOp,
                          IntToFloat, FloatToInt)):
         return True
     if isinstance(expr, Binary):
@@ -616,26 +626,39 @@ def _float_operand(expr: "Expr") -> str:
 
 @dataclasses.dataclass(frozen=True)
 class FloatOp(Expr):
-    """A single-precision arithmetic operation over bit-pattern operands."""
+    """A single-precision arithmetic operation over bit-pattern operands.
+
+    `madd` and `msub` take three: the accumulator (`left`) plus or minus the
+    product of `right` and `third`, rounded once, as the FPU does.
+    """
 
     op: str
     left: Expr
     right: Expr = None   # None for the unary forms
+    third: Expr = None   # only for madd and msub
 
     _NAMES = {
         "add": "FloatAdd", "sub": "FloatSub", "mul": "FloatMul", "div": "FloatDiv",
         "min": "FloatMin", "max": "FloatMax",
         "neg": "FloatNeg", "abs": "FloatAbs", "sqrt": "FloatSqrt", "mov": "FloatMove",
+        "madd": "FloatMulAdd", "msub": "FloatMulSub",
     }
 
     def render(self) -> str:
         name = self._NAMES[self.op]
+        if self.third is not None:
+            return "%s(%s, %s, %s)" % (name, _float_operand(self.left),
+                                       _float_operand(self.right), _float_operand(self.third))
         if self.right is None:
             return "%s(%s)" % (name, _float_operand(self.left))
         return "%s(%s, %s)" % (name, _float_operand(self.left), _float_operand(self.right))
 
     def evaluate(self, args, read) -> int:
         a = _bits_to_float(self.left.evaluate(args, read))
+        if self.third is not None:
+            product = (_bits_to_float(self.right.evaluate(args, read))
+                       * _bits_to_float(self.third.evaluate(args, read)))
+            return _float_to_bits(a + product if self.op == "madd" else a - product)
         if self.right is None:
             result = {
                 "neg": lambda x: -x,
@@ -659,6 +682,56 @@ class FloatOp(Expr):
                 "max": max,
             }[self.op](a, b)
         return _float_to_bits(result)
+
+
+@dataclasses.dataclass(frozen=True)
+class VuOp(Expr):
+    """A VU0 arithmetic operation on one lane, over bit patterns (see vu0.py).
+
+    `madd`/`msub`: `left` is the accumulator lane, `right` times `third` the
+    product. `itof`/`ftoi` carry their fixed-point shift in `shift`. `div` and
+    `rsqrt` take numerator and denominator, `abs` and `sqrt` one operand.
+    """
+
+    op: str
+    left: Expr
+    right: Expr = None
+    third: Expr = None
+    shift: int = 0
+
+    _NAMES = {"add": "VuAdd", "sub": "VuSub", "mul": "VuMul", "max": "VuMax",
+              "mini": "VuMin", "madd": "VuMadd", "msub": "VuMsub", "abs": "VuAbs",
+              "itof": "VuItof", "ftoi": "VuFtoi", "div": "VuDiv", "sqrt": "VuSqrt",
+              "rsqrt": "VuRsqrt"}
+
+    def operands(self):
+        return tuple(x for x in (self.left, self.right, self.third) if x is not None)
+
+    def render(self) -> str:
+        parts = [_float_operand(x) for x in self.operands()]
+        if self.op in ("itof", "ftoi"):
+            parts.append(str(self.shift))
+        return "%s(%s)" % (self._NAMES[self.op], ", ".join(parts))
+
+    def evaluate(self, args, read) -> int:
+        from . import vu0
+
+        values = [x.evaluate(args, read) & MASK32 for x in self.operands()]
+        if self.op in ("madd", "msub"):
+            return vu0.vu_binary(self.op, values[1], values[2], values[0])
+        if self.op in ("add", "sub", "mul", "max", "mini"):
+            return vu0.vu_binary(self.op, values[0], values[1])
+        if self.op == "abs":
+            return vu0.vu_abs(values[0])
+        if self.op == "itof":
+            return vu0.vu_itof(values[0], self.shift)
+        if self.op == "ftoi":
+            return vu0.vu_ftoi(values[0], self.shift)
+        if self.op == "div":
+            return vu0.vu_div(values[0], values[1])
+        if self.op == "sqrt":
+            return vu0.vu_sqrt(values[0])
+        return vu0.vu_rsqrt(values[0], values[1])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -852,7 +925,11 @@ def children(expr: Expr) -> tuple:
     if isinstance(expr, Select):
         return (expr.condition, expr.when_true, expr.when_false)
     if isinstance(expr, FloatOp):
+        if expr.third is not None:
+            return (expr.left, expr.right, expr.third)
         return (expr.left,) if expr.right is None else (expr.left, expr.right)
+    if isinstance(expr, VuOp):
+        return expr.operands()
     if isinstance(expr, (Binary, Compare, Predicate, FloatPredicate)):
         return (expr.left, expr.right)
     raise Unsupported("no traversal rule for %s" % type(expr).__name__)
@@ -880,6 +957,9 @@ def rebuild(expr: Expr, new_children) -> Expr:
         if expr.right is None:
             return FloatOp(expr.op, new_children[0])
         return FloatOp(expr.op, *new_children)
+    if isinstance(expr, VuOp):
+        kids = list(new_children) + [None] * (3 - len(new_children))
+        return VuOp(expr.op, kids[0], kids[1], kids[2], expr.shift)
     if isinstance(expr, Binary):
         return Binary(expr.op, *new_children)
     if isinstance(expr, Compare):
@@ -997,7 +1077,7 @@ def _simplify(expr: Expr) -> Expr:
         if isinstance(inner, SignExtend32) or fits_s32(inner):
             return inner
         return SignExtend32(inner)
-    if isinstance(expr, (FloatOp, IntToFloat, FloatToInt, FloatPredicate, Not1,
+    if isinstance(expr, (FloatOp, VuOp, IntToFloat, FloatToInt, FloatPredicate, Not1,
                          Not, Select)):
         kids = children(expr)
         return rebuild(expr, [simplify(child) for child in kids]) if kids else expr
@@ -1075,7 +1155,7 @@ def value_range(expr: Expr):
         return S32_MIN, S32_MAX
     if isinstance(expr, (Compare, Predicate, FloatPredicate, Not1)):
         return 0, 1
-    if isinstance(expr, (FloatOp, IntToFloat, FloatToInt)):
+    if isinstance(expr, (FloatOp, VuOp, IntToFloat, FloatToInt)):
         return 0, MASK32
     if isinstance(expr, Arg) and expr.index >= FLOAT_ARG_BASE:
         return 0, MASK32
@@ -1157,6 +1237,12 @@ _FLOAT_BINARY = {
     "max.s": "max", "min.s": "min",
 }
 _FLOAT_UNARY = {"mov.s": "mov", "neg.s": "neg", "abs.s": "abs", "sqrt.s": "sqrt"}
+# Accumulator forms: (operation, where the result goes).
+_FLOAT_ACCUMULATE = {
+    "adda.s": ("add", "acc"), "suba.s": ("sub", "acc"), "mula.s": ("mul", "acc"),
+    "madda.s": ("madd", "acc"), "msuba.s": ("msub", "acc"),
+    "madd.s": ("madd", "fd"), "msub.s": ("msub", "fd"),
+}
 _FLOAT_COMPARE = {"c.eq.s": "eq", "c.lt.s": "lt", "c.le.s": "le", "c.f.s": "false"}
 
 # The multiplier result registers. They are kept in the same dict as the general
@@ -1171,6 +1257,40 @@ REG_LO = 65
 # `bc1f` then branch on.
 FPR_BASE = 128
 FP_COND = 127
+# The FPU accumulator, which adda/suba/mula/madda/msuba write and madd/msub read.
+FP_ACC = 126
+
+# The upper 64 bits of each general register, which only 128-bit operations - lq,
+# sq, the MMI moves and logic - read or write. Everything else leaves them alone,
+# as the hardware does. An upper half the function has not written is unknown (at
+# entry it is the caller's), and reading it is refused rather than taken as zero.
+UPPER_BASE = 192
+
+
+def upper(index: int) -> int:
+    return UPPER_BASE + index
+
+
+def _upper_or_zero(get, index: int):
+    return Const(0) if index == 0 else get(upper(index))
+
+
+# VU0 state in the register dict: VF lanes, the control registers (VI0-VI15, then
+# R, I, Q), and the accumulator lanes. None is known at entry except VF0, the
+# constant (0, 0, 0, 1); a call clobbers all of it, since the callee may use VU0.
+VF_BASE = 256
+VC_BASE = 384
+VACC_BASE = 416
+VU_KEYS = tuple(range(VF_BASE + 4, VACC_BASE + 4))
+
+
+def vf_lane(index: int, lane: int) -> int:
+    return VF_BASE + 4 * index + lane
+
+
+# Instructions that write an upper half, for the loop analysis: (mnemonic -> field).
+QUAD_WRITERS = {"lq": "rt", "pcpyld": "rd", "pcpyud": "rd", "por": "rd", "pand": "rd",
+                "pxor": "rd", "pnor": "rd"}
 
 
 def fpr(index: int) -> int:
@@ -1304,10 +1424,174 @@ def derive(image: bytes, base: int, start: int, end: int,
     raise Unsupported("no return reached")
 
 
+def _apply_vu0(regs: dict, ins, get) -> None:
+    """VU0 macro mode over lane expressions, following vu0.execute."""
+    from . import vu0
+
+    word, m = ins.raw, ins.mnemonic
+    base = m.split(".")[0]
+    fd, fs, ft = (word >> 6) & 0x1F, (word >> 11) & 0x1F, (word >> 16) & 0x1F
+    dest = (word >> 21) & 0xF
+    lanes = [lane for lane, bit in enumerate((8, 4, 2, 1)) if dest & bit]
+
+    def lane(index, which):
+        if index == 0:
+            return Const((0, 0, 0, vu0.ONE)[which])
+        return get(vf_lane(index, which))
+
+    def write(index, values):
+        if index:
+            for which in lanes:
+                regs[vf_lane(index, which)] = values[which]
+
+    if m == "qmtc2":
+        index = (word >> 11) & 0x1F
+        if index:
+            low = get(ins.rt) if ins.rt else Const(0)
+            high = _upper_or_zero(get, ins.rt)
+            for which, (half, shift) in enumerate(((low, 0), (low, 32), (high, 0), (high, 32))):
+                part = Binary("dshr", half, Const(shift)) if shift else half
+                regs[vf_lane(index, which)] = Binary("and", part, Const(MASK32))
+        return
+    if m == "qmfc2":
+        index = (word >> 11) & 0x1F
+        if ins.rt:
+            x, y, z, w = (lane(index, which) for which in range(4))
+            regs[ins.rt] = Binary("or", x, Binary("dshl", y, Const(32)))
+            regs[upper(ins.rt)] = Binary("or", z, Binary("dshl", w, Const(32)))
+        return
+    if m in ("ctc2", "cfc2"):
+        index = (word >> 11) & 0x1F
+        if m == "cfc2":
+            if index in vu0.UNREADABLE:
+                raise Unsupported("cfc2 of an unmodelled VU0 flag register")
+            if ins.rt:
+                regs[ins.rt] = SignExtend32(get(VC_BASE + index)) if index else Const(0)
+            return
+        value = get(ins.rt) if ins.rt else Const(0)
+        if index < 16:
+            if index:
+                regs[VC_BASE + index] = Binary("and", value, Const(0xFFFF))
+        elif index == vu0.REG_R:
+            regs[VC_BASE + index] = Binary("or", Binary("and", value, Const(0x7FFFFF)),
+                                           Const(vu0.ONE))
+        else:
+            regs[VC_BASE + index] = Binary("and", value, Const(MASK32))
+        return
+
+    op, to_acc, operand = vu0._split(base)
+    if op is not None and base not in ("vopmula", "vopmsub"):
+        if operand in ("x", "y", "z", "w"):
+            b = [lane(ft, "xyzw".index(operand))] * 4
+        elif operand in ("q", "i"):
+            b = [get(VC_BASE + (vu0.REG_Q if operand == "q" else vu0.REG_I))] * 4
+        elif operand == "":
+            b = [lane(ft, which) for which in range(4)]
+        else:
+            raise Unsupported("VU0 %s" % base)
+        out = [None] * 4
+        for which in lanes:
+            a = lane(fs, which)
+            if op in ("madd", "msub"):
+                out[which] = VuOp(op, get(VACC_BASE + which), a, b[which])
+            else:
+                out[which] = VuOp(op, a, b[which])
+        if to_acc:
+            for which in lanes:
+                regs[VACC_BASE + which] = out[which]
+        else:
+            write(fd, out)
+        return
+    if base == "vopmula":
+        pairs = ((1, 2), (2, 0), (0, 1))
+        for which in lanes:
+            if which < 3:
+                i, j = pairs[which]
+                regs[VACC_BASE + which] = VuOp("mul", lane(fs, i), lane(ft, j))
+        return
+    if base == "vopmsub":
+        pairs = ((1, 2), (2, 0), (0, 1))
+        out = [None] * 4
+        for which in lanes:
+            if which < 3:
+                i, j = pairs[which]
+                out[which] = VuOp("msub", get(VACC_BASE + which), lane(fs, i), lane(ft, j))
+        if fd:
+            for which in lanes:
+                if which < 3:
+                    regs[vf_lane(fd, which)] = out[which]
+        return
+    if base in ("vmove", "vmr32"):
+        rotate = 1 if base == "vmr32" else 0
+        write(ft, [lane(fs, (which + rotate) % 4) for which in range(4)])
+        return
+    if base == "vabs":
+        write(ft, [VuOp("abs", lane(fs, which)) for which in range(4)])
+        return
+    if base[:5] in ("vitof", "vftoi"):
+        kind = "itof" if base.startswith("vitof") else "ftoi"
+        write(ft, [VuOp(kind, lane(fs, which), shift=int(base[5:])) for which in range(4)])
+        return
+    if base in ("vnop", "vwaitq"):
+        return
+    fsf, ftf = (word >> 21) & 3, (word >> 23) & 3
+    if base == "vdiv":
+        regs[VC_BASE + vu0.REG_Q] = VuOp("div", lane(fs, fsf), lane(ft, ftf))
+        return
+    if base == "vsqrt":
+        regs[VC_BASE + vu0.REG_Q] = VuOp("sqrt", lane(ft, ftf))
+        return
+    if base == "vrsqrt":
+        regs[VC_BASE + vu0.REG_Q] = VuOp("rsqrt", lane(fs, fsf), lane(ft, ftf))
+        return
+    raise Unsupported("no symbolic rule for %s" % base)
+
+
+def _apply_quad(regs: dict, ins, get) -> None:
+    """The 128-bit moves and logic, over (low, upper) pairs."""
+    m, rd, rs, rt = ins.mnemonic, ins.rd, ins.rs, ins.rt
+    if rd == 0:
+        return
+    if m == "pcpyld":
+        low, high = get(rt), get(rs)
+    elif m == "pcpyud":
+        low, high = _upper_or_zero(get, rs), _upper_or_zero(get, rt)
+    else:
+        op = {"por": "or", "pand": "and", "pxor": "xor", "pnor": "or"}[m]
+        low = Binary(op, get(rs), get(rt))
+        try:
+            high = Binary(op, _upper_or_zero(get, rs), _upper_or_zero(get, rt))
+        except Unsupported:
+            high = None          # an upper half nobody wrote: unknown, refused if read
+        if m == "pnor":
+            low = Not(low)
+            high = Not(high) if high is not None else None
+    regs[rd] = low
+    if high is None:
+        regs.pop(upper(rd), None)
+    else:
+        regs[upper(rd)] = high
+
+
 def _apply(regs: dict, ins, get, epoch: int = 0) -> None:
     """Apply one instruction to the symbolic register state."""
     m = ins.mnemonic
 
+    if m == "lq":
+        # Both halves, from the quadword the hardware aligns the address down to.
+        address = address_of(Binary("and", Binary("add", get(ins.rs), Const(ins.imm & MASK64)),
+                                    Const(~0xF & MASK64)))
+        if ins.rt:
+            regs[ins.rt] = Load(address, 8, False, epoch)
+            regs[upper(ins.rt)] = Load(address_of(Binary("add", address, Const(8))), 8, False,
+                                       epoch)
+        return
+    if m in ("pcpyld", "pcpyud", "por", "pand", "pxor", "pnor"):
+        _apply_quad(regs, ins, get)
+        return
+    if ins.raw >> 26 == 0x12:
+        _apply_vu0(regs, ins, get)
+        return
     if m in _LOAD_SIZES:
         size, signed = _LOAD_SIZES[m]
         address = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
@@ -1472,6 +1756,15 @@ def _apply(regs: dict, ins, get, epoch: int = 0) -> None:
     if m in _FLOAT_BINARY:
         fd, fs, ft = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F, (ins.raw >> 16) & 0x1F
         regs[fpr(fd)] = FloatOp(_FLOAT_BINARY[m], get(fpr(fs)), get(fpr(ft)))
+        return
+    if m in _FLOAT_ACCUMULATE:
+        fd, fs, ft = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F, (ins.raw >> 16) & 0x1F
+        op, target = _FLOAT_ACCUMULATE[m]
+        if op in ("madd", "msub"):
+            value = FloatOp(op, get(FP_ACC), get(fpr(fs)), get(fpr(ft)))
+        else:
+            value = FloatOp(op, get(fpr(fs)), get(fpr(ft)))
+        regs[FP_ACC if target == "acc" else fpr(fd)] = value
         return
     if m in _FLOAT_UNARY:
         fd, fs = (ins.raw >> 6) & 0x1F, (ins.raw >> 11) & 0x1F

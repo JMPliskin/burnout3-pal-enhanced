@@ -48,6 +48,18 @@ def mtc1(rt, fs): return (0x11 << 26) | (4 << 21) | (rt << 16) | (fs << 11)
 def mfc1(rt, fs): return (0x11 << 26) | (0 << 21) | (rt << 16) | (fs << 11)
 
 
+def mmi_word(name, rd, rs, rt, sa=None):
+    """The MMI encoding of `name`, found by asking the decoder, so the test does not
+    depend on a hand-copied table."""
+    from ps2decomp.r5900 import DISASM
+    for funct in (0x08, 0x28, 0x09, 0x29) + tuple(range(0x30, 0x40)):
+        for sub in range(32):
+            word = r_type(funct, rs, rt, rd, sub if sa is None or funct < 0x30 else sa, op=0x1C)
+            if DISASM.decode(word, 0).mnemonic == name:
+                return word
+    raise KeyError(name)
+
+
 def programs():
     """{name: (offset, words)}; laid out one after another from BASE."""
     out = {}
@@ -148,6 +160,18 @@ def programs():
         JR_RA, r_type(0x08, A0, T8, T7, 0x12, op=0x1C),             # pextlw $t7, $a0, $t8
     ])
     add("trap", [r_type(0x0D), JR_RA, NOP])                          # break
+    add("mmi_more", [
+        r_type(0x09, A0, A1, T8, 0x0E, op=0x1C),                    # pcpyld $t8, $a0, $a1
+        mmi_word("pextlh", T0, A2, T8), mmi_word("pextlb", T1, A3, T8), mmi_word("ppach", T2, T8, A2),
+        mmi_word("psllh", T3, 0, T8, 5), mmi_word("psrah", T4, 0, T8, 3), mmi_word("psraw", T5, 0, T8, 31),
+        mmi_word("psrlw", T6, 0, T8, 7), mmi_word("psllw", T7, 0, T8, 9),
+        i_type(0x01, A1, 0x18, 0x5),                                # mtsab $a1, 5
+        mmi_word("qfsrv", S0, T8, T0),
+        i_type(0x01, A2, 0x19, 0x3),                                # mtsah $a2, 3
+        mmi_word("qfsrv", V1, T1, T8),
+        mtc1(A0, 1), mtc1(A1, 2), cop1(0x16, 3, 1, 2),              # rsqrt.s $f3, $f1, $f2
+        JR_RA, NOP,
+    ])
     cop2 = 0x12 << 26
 
     def s1(funct, fd, fs, ft, dest=0xF):
@@ -265,12 +289,50 @@ class TestLift(unittest.TestCase):
     def test_unaligned_loads_and_stores(self):
         self.check("unaligned")
 
+    def test_more_mmi_and_rsqrt(self):
+        self.check("mmi_more")
+
     def test_vu0_macro_mode(self):
         self.check("vu0")
 
     def test_break_abandons_the_run(self):
         start, _body = self.programs["trap"]
         self.assertEqual(self.lifted.run(start, liftcheck.entry_context(())), "trap")
+
+
+class TestStructured(TestLift):
+    """Every program again, in structured form (structure.py), against the interpreter."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cppcheck.find_vcvars()
+        except cppcheck.CompilerUnavailable as exc:
+            raise unittest.SkipTest(str(exc))
+        from ps2decomp import structure
+
+        cls.programs = programs()
+        words = []
+        for _name, (start, body) in sorted(cls.programs.items(), key=lambda kv: kv[1][0]):
+            words += body
+        cls.image = struct.pack("<%dI" % len(words), *words)
+        cls.structured = set()
+        work = tempfile.mkdtemp()
+        source = os.path.join(work, "structured.cpp")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write('#include "ps2rt/lifted.h"\n\n')
+            for name, (start, body) in cls.programs.items():
+                end = start + 4 * len(body)
+                try:
+                    handle.write(structure.structure_function(cls.image, BASE, start, end))
+                    cls.structured.add(name)
+                except lift.Refused:
+                    handle.write(lift.lift_function(cls.image, BASE, start, end))
+        cls.machine = Machine(BASE, cls.image, 0x02000000 - BASE)
+        cls.lifted = liftcheck.LiftedFunctions(liftcheck.build([source], work), cls.machine)
+
+    def test_the_programs_are_structured(self):
+        self.assertTrue({"count_bits", "likely", "caller", "arithmetic", "float"} <= self.structured)
 
 
 class TestLiftRefusals(unittest.TestCase):

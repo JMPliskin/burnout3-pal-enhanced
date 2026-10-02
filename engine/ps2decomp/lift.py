@@ -93,6 +93,8 @@ _TRAPS = {"teq": ("==", "u64"), "tne": ("!=", "u64"), "tge": (">=", "s64"),
 _NOTHING = {"nop", "sync", "cache", "pref", "ei", "di"}
 _LANES = {"pmaxw": "kPmaxw", "pminw": "kPminw", "psubw": "kPsubw", "padduw": "kPadduw",
           "paddub": "kPaddub", "pabsw": "kPabsw"}
+_LANE_SHIFTS = {"psllh": (16, 0), "psrah": (16, 2), "psllw": (32, 0), "psrlw": (32, 1),
+                "psraw": (32, 2)}
 _UNALIGNED_LOADS = {"lwl": "LoadWordLeft", "lwr": "LoadWordRight",
                     "ldl": "LoadDoubleLeft", "ldr": "LoadDoubleRight"}
 _UNALIGNED_STORES = {"swl": ("StoreLeft", 4), "swr": ("StoreRight", 4),
@@ -263,6 +265,32 @@ def statement(ins) -> str:
             return ""
         return "lifted::ShiftHalfwordsRight(c.r[%d], c.rh[%d], %s, c.rh[%d], %du);" % (
             rd, rd, b, rt, imm & 0xF)
+    if m in _LANE_SHIFTS:
+        if rd == 0:
+            return ""
+        width, kind = _LANE_SHIFTS[m]
+        return "lifted::ShiftLanes(c.r[%d], c.rh[%d], %s, c.rh[%d], %d, %d, %du);" % (
+            rd, rd, b, rt, width, kind, imm & (width - 1))
+    if m in ("pextlb", "pextlh"):
+        if rd == 0:
+            return ""
+        return "lifted::Interleave(c.r[%d], c.rh[%d], %s, %s, %d);" % (
+            rd, rd, a, b, 8 if m == "pextlb" else 16)
+    if m == "ppach":
+        if rd == 0:
+            return ""
+        return "lifted::PackHalfwords(c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d]);" % (
+            rd, rd, a, rs, b, rt)
+    if m == "qfsrv":
+        if rd == 0:
+            return ""
+        return "lifted::FunnelShift(c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d], c.sa);" % (
+            rd, rd, a, rs, b, rt)
+    if m in ("mtsab", "mtsah"):
+        mask, scale = (0xF, 8) if m == "mtsab" else (0x7, 16)
+        return "c.sa = (u32)((%s ^ %s) & 0x%X) * %d;" % (a, _u64(imm), mask, scale)
+    if m == "rsqrt.s":
+        return "c.f[%d] = lifted::FloatRsqrt(c.f[%d], c.f[%d]);" % (_fd(ins), _fs(ins), _ft(ins))
     if m == "pextlw":
         if rd == 0:
             return ""

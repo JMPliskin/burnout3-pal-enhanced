@@ -4,6 +4,7 @@
 
 #include "ps2rt/lifted.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace lifted {
@@ -111,6 +112,83 @@ void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount) {
             out[half] |= (((in[half] >> shift) & 0xFFFF) >> (amount & 0xF)) << shift;
     lo = out[0];
     hi = out[1];
+}
+
+void ShiftLanes(u64& lo, u64& hi, u64 blo, u64 bhi, u32 width, u32 kind, u32 amount) {
+    const u64 mask = (1ull << width) - 1;
+    amount &= width - 1;
+    const u64 in[2] = {blo, bhi};
+    u64 out[2] = {0, 0};
+    for (int half = 0; half < 2; ++half) {
+        for (u32 shift = 0; shift < 64; shift += width) {
+            u64 lane = (in[half] >> shift) & mask;
+            if (kind == 0) {
+                lane = (lane << amount) & mask;
+            } else if (kind == 1) {
+                lane >>= amount;
+            } else {
+                const u64 sign = 1ull << (width - 1);
+                const s64 value = (s64)(lane ^ sign) - (s64)sign;   /* sign-extend the lane */
+                lane = (u64)(value >> amount) & mask;
+            }
+            out[half] |= lane << shift;
+        }
+    }
+    lo = out[0];
+    hi = out[1];
+}
+
+void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width) {
+    const u64 mask = (1ull << width) - 1;
+    u64 out[2] = {0, 0};
+    for (u32 i = 0; i < 64 / width; ++i) {
+        const u32 even = 2 * i * width, odd = (2 * i + 1) * width;
+        out[even / 64] |= ((b >> (i * width)) & mask) << (even % 64);
+        out[odd / 64] |= ((a >> (i * width)) & mask) << (odd % 64);
+    }
+    lo = out[0];
+    hi = out[1];
+}
+
+void PackHalfwords(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+    u64 low = 0, high = 0;
+    for (int i = 0; i < 2; ++i) {
+        low |= ((blo >> (32 * i)) & 0xFFFF) << (16 * i);
+        low |= ((bhi >> (32 * i)) & 0xFFFF) << (16 * (i + 2));
+        high |= ((alo >> (32 * i)) & 0xFFFF) << (16 * i);
+        high |= ((ahi >> (32 * i)) & 0xFFFF) << (16 * (i + 2));
+    }
+    lo = low;
+    hi = high;
+}
+
+void FunnelShift(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, u32 sa) {
+    /* The 256-bit value ahi:alo:bhi:blo, shifted right by sa bits; the low 128. */
+    const u64 words[4] = {blo, bhi, alo, ahi};
+    sa &= 0xFF;
+    const u32 skip = sa / 64, bits = sa % 64;
+    u64 out[2];
+    for (u32 i = 0; i < 2; ++i) {
+        const u64 low = skip + i < 4 ? words[skip + i] : 0;
+        const u64 high = skip + i + 1 < 4 ? words[skip + i + 1] : 0;
+        out[i] = bits ? (low >> bits) | (high << (64 - bits)) : low;
+    }
+    lo = out[0];
+    hi = out[1];
+}
+
+u32 FloatRsqrt(u32 fs, u32 ft) {
+    const double root = std::sqrt(std::fabs((double)generated::FloatValue(ft)));
+    if (root == 0.0) return (fs & 0x80000000u) | 0x7F7FFFFFu;
+    double value = (double)generated::FloatValue(fs) / root;
+    const double kFloatMax = 3.4028234663852886e38;
+    if (value != value) value = 0.0;
+    else if (value > kFloatMax) value = kFloatMax;
+    else if (value < -kFloatMax) value = -kFloatMax;
+    const float narrowed = static_cast<float>(value);
+    u32 bits;
+    std::memcpy(&bits, &narrowed, sizeof bits);
+    return bits;
 }
 
 u64 LoadWordLeft(u32 address, u64 old) {

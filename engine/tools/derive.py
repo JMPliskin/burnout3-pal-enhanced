@@ -400,6 +400,10 @@ class StatementEmitter:
         self.loops = {}
         self.active = []          # loops whose body is being emitted, innermost last
         self.hoisted = set()      # call results declared before a loop, assigned in it
+        # Loop variables, declared once at function scope: a nested loop's variable
+        # can be read after its loop - in the enclosing loop's exit code - where a
+        # declaration inside the loop's block would no longer be in scope.
+        self.declared = []
 
     def render(self) -> list:
         """The statements, with a guest stack frame around them if one is needed.
@@ -409,6 +413,7 @@ class StatementEmitter:
         address is rendered relative to it.
         """
         lines = self._block(self.tree)
+        lines = ["u64 %s = 0;" % name for name in self.declared] + lines
         if not self.frame_size:
             return lines
         return ["const u64 sp = StackEnter(0x%X);" % self.frame_size] + lines
@@ -565,9 +570,15 @@ class StatementEmitter:
         initial = dict(loop.init)
         for register in loop.carried:
             value = render_cpp(self._apply(initial[register])) if register in initial else "0"
-            lines.append("u64 %s = %s;" % (Var(loop.id, register).render(), value))
+            name = Var(loop.id, register).render()
+            if name not in self.declared:
+                self.declared.append(name)
+            lines.append("%s = %s;" % (name, value))
         if loop.exits > 1:
-            lines.append("u64 l%d_exit = 0;" % loop.id)
+            name = "l%d_exit" % loop.id
+            if name not in self.declared:
+                self.declared.append(name)
+            lines.append("%s = 0;" % name)
         lines.append("for (;;) {")
         outer = dict(self.replaced)
         self.active.append(loop.id)

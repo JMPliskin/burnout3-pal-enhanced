@@ -25,6 +25,11 @@ import struct
 from .r5900 import DISASM
 from .symexec import (
     ARG_COUNT,
+    VU_KEYS,
+    vf_lane,
+    QUAD_WRITERS,
+    UPPER_BASE,
+    upper,
     address_of,
     low32,
     FLOAT_ARG_BASE,
@@ -563,6 +568,9 @@ def _getter(regs: dict):
         if index == 0:
             return Const(0)
         if index not in regs:
+            if UPPER_BASE <= index < UPPER_BASE + 32:
+                raise Unsupported("reads the upper half of $%d, which it did not write"
+                                  % (index - UPPER_BASE))
             raise Unsupported("reads uninitialised register $%d" % index)
         return regs[index]
     return get
@@ -926,6 +934,26 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
         _record_store(memory, target, 4, value)
         return
 
+    if m in ("lqc2", "sqc2"):
+        # A VF register to or from a quadword, lane by lane.
+        base_address = address_of(Binary("and", Binary("add", get(ins.rs),
+                                                       Const(ins.imm & MASK64)),
+                                         Const(~0xF & MASK64)))
+        for which in range(4):
+            target = address_of(Binary("add", base_address, Const(4 * which)))
+            if _is_frame_address(target):
+                raise Unsupported("VU0 register spilled to the stack frame")
+            if m == "lqc2":
+                if ins.rt:
+                    regs[vf_lane(ins.rt, which)] = _read_through(memory, target, 4, False,
+                                                                 epoch, len(stores))
+            else:
+                value = (Const((0, 0, 0, 0x3F800000)[which]) if ins.rt == 0
+                         else get(vf_lane(ins.rt, which)))
+                stores.append(Store(target, value, 4))
+                _record_store(memory, target, 4, value)
+        return
+
     if m == "lwc1":
         target = address_of(Binary("add", get(ins.rs), Const(ins.imm & MASK64)))
         if _is_frame_address(target) and _symbolic_frame(frame, target, 4):
@@ -946,6 +974,18 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
             _frame_write(frame, simplify(target).value & MASK64, size, get(ins.rt))
             return
         value = get(ins.rt)
+        if size == 16 and (ins.rt == 0 or upper(ins.rt) in regs) and not (
+                _is_frame_address(target) and isinstance(frame, Frame)
+                and id(value) in frame.seeds):
+            # A quadword the function built: its two halves, at the address the
+            # hardware aligns down to.
+            aligned = address_of(Binary("and", target, Const(~0xF & MASK64)))
+            high = Const(0) if ins.rt == 0 else regs[upper(ins.rt)]
+            for address, half in ((aligned, value),
+                                  (address_of(Binary("add", aligned, Const(8))), high)):
+                stores.append(Store(address, half, 8))
+                _record_store(memory, address, 8, half)
+            return
         if size == 16:
             if (_is_frame_address(target) and isinstance(frame, Frame)
                     and id(value) in frame.seeds):
@@ -966,6 +1006,17 @@ def _step(regs: dict, stores: list, frame: dict, memory: dict, ins, get,
         if _is_frame_address(target) and _symbolic_frame(frame, target, size):
             regs[ins.rt] = _frame_read(frame, simplify(target).value & MASK64, size,
                                        signed_load)
+            if m == "lq":
+                # A spill slot holds the low half only: the upper is unknown again.
+                regs.pop(upper(ins.rt), None)
+            return
+        if m == "lq" and memory:
+            aligned = address_of(Binary("and", target, Const(~0xF & MASK64)))
+            if ins.rt:
+                regs[ins.rt] = _read_through(memory, aligned, 8, False, epoch, len(stores))
+                regs[upper(ins.rt)] = _read_through(
+                    memory, address_of(Binary("add", aligned, Const(8))), 8, False, epoch,
+                    len(stores))
             return
         if memory:
             regs[ins.rt] = _read_through(memory, target, size, signed_load, epoch,
@@ -1190,6 +1241,10 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         call = Call(index, target, tuple(arguments), pointer)
         before_v0 = regs.get(2)
         for index in CALLER_SAVED + (REG_HI, REG_LO, FP_COND):
+            regs.pop(index, None)
+        for index in CALLER_SAVED:
+            regs.pop(upper(index), None)
+        for index in VU_KEYS:
             regs.pop(index, None)
         for index in range(20):                 # $f0..$f19 are caller-saved
             regs.pop(fpr(index), None)
@@ -1521,6 +1576,9 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                     )
                     for index in CALLER_SAVED:
                         branch_regs.pop(index, None)
+                        branch_regs.pop(upper(index), None)
+                    for index in VU_KEYS:
+                        branch_regs.pop(index, None)
                     if callee_path.expression is not None:
                         branch_regs[2] = simplify(_in_caller(
                             callee_path.expression, arguments, epoch, {}))
@@ -1827,6 +1885,11 @@ def _loop_info(image, base, start, end) -> dict:
                 moves_sp |= written == 29
             _read, wrote = _float_operands(ins)
             carried |= {fpr(r) for r in wrote}
+            if ins.raw >> 26 in (0x12, 0x36, 0x3E):
+                raise Unsupported("a loop uses VU0")
+            field = QUAD_WRITERS.get(ins.mnemonic)
+            if field is not None and getattr(ins, field):
+                carried.add(upper(getattr(ins, field)))
             if ins.mnemonic.startswith(("mult", "div", "madd", "mthi", "mtlo")):
                 carried |= {REG_HI, REG_LO}
             if ins.mnemonic.startswith("c."):
@@ -1834,6 +1897,7 @@ def _loop_info(image, base, start, end) -> dict:
             calls |= ins.is_call
         if calls:
             carried |= set(CALLER_SAVED) | {fpr(i) for i in range(20)}
+            carried |= {upper(i) for i in CALLER_SAVED}
             carried |= {REG_HI, REG_LO, FP_COND, 31}
         carried.discard(0)
         info[head] = (body, tuple(sorted(carried)), moves_sp)

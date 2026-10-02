@@ -879,6 +879,37 @@ Lifted and verified: 5,888 -> 7,720 functions, 53.1% -> 64.8% of the code.
 Machine-checked: 52.5% -> **63.7%**. Derived and verified: 3,710 -> 3,797
 (11.74%). The instruction budget is now the main obstacle (1,718 functions).
 
+## Teaching the symbolic model 128-bit registers, the accumulator and VU0
+
+Readable derivation stopped at instructions only the interpreter knew. The
+symbolic model (symexec.py, paths.py) now has:
+
+* **The FPU accumulator**, for `adda`/`suba`/`mula`/`madda`/`msuba`/`madd`/`msub`,
+  rendered as `FloatMulAdd(acc, a, b)`.
+* **Upper register halves**, as pseudo-registers. `lq` loads both halves; `sq`
+  stores both, if the function built both; `pcpyld`, `pcpyud`, `por`, `pand`,
+  `pxor` and `pnor` work on the pairs. An upper half the function never wrote is
+  the caller's, so reading it is refused, not taken as zero.
+* **VU0**: vector lanes as pseudo-registers, operations as `VuAdd`/`VuMul`/...
+  nodes evaluated by the same functions the interpreter uses (vu0.py), and
+  emitted as calls to the shared C++ implementation the lifted code uses.
+
+Derived and verified: 3,829 -> 3,979 functions; readable verified code 12.01% ->
+13.01%. Emitting a nested loop's variables at function scope cut functions
+dropped for not compiling from 28 to 2.
+
+## Structured lifted code
+
+Lifted code is correct but reads like assembly with gotos. structure.py renders
+the same statements structured: natural loops become `for (;;)` with
+`continue`/`break`, two-way branches that rejoin at their immediate
+post-dominator become `if`/`else`, registers become named locals (`a0`, `v0`,
+`f12`), and two lambdas copy them to and from the context around calls and
+returns. Whatever does not fit stays a `goto`, so the output is always faithful.
+The structured form keeps lifted code's interface, so it is verified the same
+way, with the whole register file compared. `lift.py --structure` emits it for
+every function whose structured form verifies as well.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

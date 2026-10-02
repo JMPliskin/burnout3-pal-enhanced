@@ -35,6 +35,7 @@ class Context(ctypes.Structure):
         ("vf", (ctypes.c_uint32 * 4) * 32),
         ("vc", ctypes.c_uint32 * 32),
         ("vacc", ctypes.c_uint32 * 4),
+        ("sa", ctypes.c_uint32),
     ]
 
 
@@ -172,7 +173,8 @@ def machine_state(machine) -> tuple:
     return (tuple(machine.regs), tuple(machine.regs_hi), machine.hi, machine.lo,
             machine.hi1, machine.lo1, tuple(f & 0xFFFFFFFF for f in machine.fpr),
             machine.fp_acc & 0xFFFFFFFF, int(bool(machine.fp_cond)),
-            tuple(tuple(v) for v in machine.vf), tuple(machine.vc), tuple(machine.vacc))
+            tuple(tuple(v) for v in machine.vf), tuple(machine.vc), tuple(machine.vacc),
+            machine.sa)
 
 
 def context_state(context: Context) -> tuple:
@@ -180,7 +182,8 @@ def context_state(context: Context) -> tuple:
     regs[0] = 0
     return (tuple(regs), tuple(context.rh), context.hi, context.lo, context.hi1,
             context.lo1, tuple(context.f), context.acc, int(context.fcc != 0),
-            tuple(tuple(v) for v in context.vf), tuple(context.vc), tuple(context.vacc))
+            tuple(tuple(v) for v in context.vf), tuple(context.vc), tuple(context.vacc),
+            context.sa)
 
 
 def load_machine(machine, context: Context) -> None:
@@ -195,6 +198,7 @@ def load_machine(machine, context: Context) -> None:
     machine.vf = [list(v) for v in context.vf]
     machine.vc = list(context.vc)
     machine.vacc = list(context.vacc)
+    machine.sa = context.sa
 
 
 def store_context(context: Context, machine) -> None:
@@ -212,6 +216,7 @@ def store_context(context: Context, machine) -> None:
         context.vc[i] = machine.vc[i] & 0xFFFFFFFF
     for lane in range(4):
         context.vacc[lane] = machine.vacc[lane] & 0xFFFFFFFF
+    context.sa = machine.sa
 
 
 def entry_context(args, stack_top=None) -> Context:

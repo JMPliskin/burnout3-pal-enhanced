@@ -98,6 +98,26 @@ u32 FloatAbs(u32 a);
 u32 FloatSqrt(u32 a);
 u32 FloatMove(u32 a);
 
+/* acc + a * b and acc - a * b, rounded once: the FPU accumulator forms. */
+u32 FloatMulAdd(u32 acc, u32 a, u32 b);
+u32 FloatMulSub(u32 acc, u32 a, u32 b);
+
+/* VU0 arithmetic on one lane, as engine/ps2decomp/vu0.py models it (operands
+   flushed and clamped, results rounded and saturated). Shared with lifted code. */
+u32 VuAdd(u32 a, u32 b);
+u32 VuSub(u32 a, u32 b);
+u32 VuMul(u32 a, u32 b);
+u32 VuMax(u32 a, u32 b);
+u32 VuMin(u32 a, u32 b);
+u32 VuMadd(u32 acc, u32 a, u32 b);
+u32 VuMsub(u32 acc, u32 a, u32 b);
+u32 VuAbs(u32 a);
+u32 VuItof(u32 a, u32 shift);
+u32 VuFtoi(u32 a, u32 shift);
+u32 VuDiv(u32 num, u32 den);
+u32 VuSqrt(u32 a);
+u32 VuRsqrt(u32 num, u32 den);
+
 /* Conversions between float bit patterns and integers. */
 u32 FloatFromInt(u32 bits_as_int);
 u32 IntFromFloat(u32 float_bits);

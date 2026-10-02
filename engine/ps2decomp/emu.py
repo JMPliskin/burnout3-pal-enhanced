@@ -264,6 +264,7 @@ class Machine:
         self.vf = vu0.initial_vf()
         self.vc = vu0.initial_vc()
         self.vacc = [0, 0, 0, 0]
+        self.sa = 0          # the shift amount qfsrv uses, in bits (mtsab/mtsah)
         self.pc = 0
         self.instructions_executed = 0
         self.call_log = []
@@ -351,6 +352,7 @@ class Machine:
         self.vf = vu0.initial_vf()
         self.vc = vu0.initial_vc()
         self.vacc = [0, 0, 0, 0]
+        self.sa = 0
         for i, value in enumerate(args):
             if i < 8:
                 self.set((4, 5, 6, 7, 8, 9, 10, 11)[i], value & MASK64)
@@ -1033,6 +1035,72 @@ def _store_right(size: int):
     return run
 
 
+def _q_shift(width: int, kind: str):
+    """Shift each `width`-bit lane of rt by the sa field: sll, srl or sra."""
+    mask = (1 << width) - 1
+
+    def run(m: Machine, ins) -> None:
+        value, amount, out = _q_get(m, ins.rt), ins.imm & (width - 1), 0
+        for shift in range(0, 128, width):
+            lane = (value >> shift) & mask
+            if kind == "sll":
+                lane = (lane << amount) & mask
+            elif kind == "srl":
+                lane >>= amount
+            else:
+                signed = lane - (1 << width) if lane >> (width - 1) else lane
+                lane = (signed >> amount) & mask
+            out |= lane << shift
+        _q_set(m, ins.rd, out)
+    return run
+
+
+def _q_interleave(width: int):
+    """pextlb/pextlh: the low doubleword's lanes of rt and rs, alternated."""
+    mask = (1 << width) - 1
+
+    def run(m: Machine, ins) -> None:
+        a, b, out = m.get(ins.rs), m.get(ins.rt), 0
+        for i in range(64 // width):
+            out |= ((b >> (i * width)) & mask) << (2 * i * width)
+            out |= ((a >> (i * width)) & mask) << ((2 * i + 1) * width)
+        _q_set(m, ins.rd, out)
+    return run
+
+
+def _op_ppach(m: Machine, ins) -> None:
+    """The even halfwords of rt, then of rs."""
+    a, b, out = _q_get(m, ins.rs), _q_get(m, ins.rt), 0
+    for i in range(4):
+        out |= ((b >> (32 * i)) & 0xFFFF) << (16 * i)
+        out |= ((a >> (32 * i)) & 0xFFFF) << (64 + 16 * i)
+    _q_set(m, ins.rd, out)
+
+
+def _op_qfsrv(m: Machine, ins) -> None:
+    """The low 128 bits of rs:rt (256 bits, rs high) shifted right by SA."""
+    value = (_q_get(m, ins.rs) << 128) | _q_get(m, ins.rt)
+    _q_set(m, ins.rd, (value >> (m.sa & 0xFF)) & ((1 << 128) - 1))
+
+
+def _op_mtsab(m: Machine, ins) -> None:
+    m.sa = ((m.get(ins.rs) ^ ins.imm) & 0xF) * 8
+
+
+def _op_mtsah(m: Machine, ins) -> None:
+    m.sa = ((m.get(ins.rs) ^ ins.imm) & 0x7) * 16
+
+
+def _op_rsqrt_s(m: Machine, ins) -> None:
+    """fd = fs / sqrt(|ft|); a zero root gives the largest magnitude, fs's sign."""
+    numerator = m.fpr[_fs(ins)]
+    root = abs(_fp_from_bits(m.fpr[_ft(ins)])) ** 0.5
+    if root == 0.0:
+        m.fpr[_fd(ins)] = (numerator & 0x80000000) | 0x7F7FFFFF
+    else:
+        m.fpr[_fd(ins)] = _fp_bits(_f32(_fp_from_bits(numerator) / root))
+
+
 _HANDLERS = {
     # MMI (128-bit integer SIMD) subset
     "pand": _q_bitwise(lambda a, b: a & b),
@@ -1052,6 +1120,11 @@ _HANDLERS = {
     # |x|, except that 0x80000000 has none and saturates to 0x7FFFFFFF.
     "pabsw": _q_lanes(32, lambda a, b: min(abs(_s32(b)), 0x7FFFFFFF)),
     "psrlh": _op_psrlh,
+    "psllh": _q_shift(16, "sll"), "psrah": _q_shift(16, "sra"),
+    "psllw": _q_shift(32, "sll"), "psrlw": _q_shift(32, "srl"), "psraw": _q_shift(32, "sra"),
+    "pextlb": _q_interleave(8), "pextlh": _q_interleave(16),
+    "ppach": _op_ppach, "qfsrv": _op_qfsrv, "mtsab": _op_mtsab, "mtsah": _op_mtsah,
+    "rsqrt.s": _op_rsqrt_s,
     "pextlw": _op_pextlw,
     # Unaligned loads and stores
     "lwl": _op_lwl, "lwr": _op_lwr, "ldl": _op_ldl, "ldr": _op_ldr,

@@ -35,6 +35,7 @@ struct Context {
     u32 vf[32][4];  /* VU0 vector registers, x y z w, as bit patterns */
     u32 vc[32];     /* VU0 control registers: VI0-VI15, then R (20), I (21), Q (22) */
     u32 vacc[4];    /* VU0 accumulator */
+    u32 sa;         /* the shift amount qfsrv uses, in bits */
 };
 
 /* Thrown, and caught at the entry point, when a run cannot go on: a trap
@@ -84,6 +85,16 @@ void AddBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, bool subtrac
 enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw };
 void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
 void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount);   /* psrlh */
+
+/* More 128-bit MMI: lane shifts (kind 0 sll, 1 srl, 2 sra), the low-doubleword
+   interleave (pextlb/pextlh), ppach, and qfsrv's funnel shift by `sa` bits. */
+void ShiftLanes(u64& lo, u64& hi, u64 blo, u64 bhi, u32 width, u32 kind, u32 amount);
+void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width);
+void PackHalfwords(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
+void FunnelShift(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, u32 sa);
+
+/* rsqrt.s: fs / sqrt(|ft|), the largest magnitude with fs's sign for a zero root. */
+u32 FloatRsqrt(u32 fs, u32 ft);
 
 /* Unaligned loads (they merge into the register's old value) and stores. */
 u64 LoadWordLeft(u32 address, u64 old);

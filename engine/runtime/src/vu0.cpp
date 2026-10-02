@@ -11,8 +11,7 @@
 
 namespace lifted {
 
-namespace {
-
+/* Not in an anonymous namespace: generated::Vu* below are built on these. */
 const u32 kSign = 0x80000000u;
 const u32 kMax = 0x7F7FFFFFu;
 const u32 kOne = 0x3F800000u;
@@ -63,6 +62,8 @@ u32 FloatToInt(double number) {
     if (number <= -2147483648.0) return 0x80000000u;
     return (u32)(s32)number;
 }
+
+namespace {
 
 /* The special1 FMAC table: (operation, operand: 0-3 a lane of ft, 4 Q, 5 I, 6 ft). */
 struct Fmac { int op; int operand; bool to_acc; };
@@ -120,6 +121,37 @@ bool AccumulatorForm(u32 index, Fmac* out) {
 }
 
 }  // namespace
+
+}  // namespace lifted
+
+namespace generated {
+
+u32 VuAdd(u32 a, u32 b) { return lifted::Binary(lifted::kAdd, a, b, 0); }
+u32 VuSub(u32 a, u32 b) { return lifted::Binary(lifted::kSub, a, b, 0); }
+u32 VuMul(u32 a, u32 b) { return lifted::Binary(lifted::kMul, a, b, 0); }
+u32 VuMax(u32 a, u32 b) { return lifted::Binary(lifted::kMax_, a, b, 0); }
+u32 VuMin(u32 a, u32 b) { return lifted::Binary(lifted::kMini, a, b, 0); }
+u32 VuMadd(u32 acc, u32 a, u32 b) { return lifted::Binary(lifted::kMadd, a, b, acc); }
+u32 VuMsub(u32 acc, u32 a, u32 b) { return lifted::Binary(lifted::kMsub, a, b, acc); }
+u32 VuAbs(u32 a) { return lifted::Clean(a) & ~lifted::kSign; }
+u32 VuItof(u32 a, u32 shift) { return lifted::Result((double)(s32)a / (double)(1u << shift)); }
+u32 VuFtoi(u32 a, u32 shift) {
+    return lifted::FloatToInt(lifted::Value(a) * (double)(1u << shift));
+}
+u32 VuDiv(u32 num, u32 den) {
+    return lifted::Value(den) == 0.0 ? ((num ^ den) & lifted::kSign) | lifted::kMax
+                                     : lifted::Result(lifted::Value(num) / lifted::Value(den));
+}
+u32 VuSqrt(u32 a) { return lifted::Result(std::sqrt(std::fabs(lifted::Value(a)))); }
+u32 VuRsqrt(u32 num, u32 den) {
+    const double root = std::sqrt(std::fabs(lifted::Value(den)));
+    return root == 0.0 ? (num & lifted::kSign) | lifted::kMax
+                       : lifted::Result(lifted::Value(num) / root);
+}
+
+}  // namespace generated
+
+namespace lifted {
 
 void Cop2(Context& c, u32 word) {
     const u32 fd = (word >> 6) & 0x1F, fs = (word >> 11) & 0x1F, ft = (word >> 16) & 0x1F;

@@ -59,6 +59,14 @@ u32 FloatAdd(u32 a, u32 b) { return ToBits(double(FromBits(a)) + double(FromBits
 u32 FloatSub(u32 a, u32 b) { return ToBits(double(FromBits(a)) - double(FromBits(b))); }
 u32 FloatMul(u32 a, u32 b) { return ToBits(double(FromBits(a)) * double(FromBits(b))); }
 
+u32 FloatMulAdd(u32 acc, u32 a, u32 b) {
+    return ToBits(double(FromBits(acc)) + double(FromBits(a)) * double(FromBits(b)));
+}
+
+u32 FloatMulSub(u32 acc, u32 a, u32 b) {
+    return ToBits(double(FromBits(acc)) - double(FromBits(a)) * double(FromBits(b)));
+}
+
 u32 FloatDiv(u32 a, u32 b) {
     const double divisor = FromBits(b);
     if (divisor == 0.0) {

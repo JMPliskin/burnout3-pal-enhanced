@@ -97,6 +97,40 @@ def result(number: float) -> int:
     return bits
 
 
+def vu_binary(op: str, a: int, b: int, acc: int = 0) -> int:
+    """add, sub, mul, max, mini; madd and msub add to or subtract from `acc`."""
+    return _binary(op, a, b, acc)
+
+
+def vu_abs(x: int) -> int:
+    return clean(x) & ~SIGN & MASK32
+
+
+def vu_itof(x: int, shift: int) -> int:
+    return result(_s32(x) / (1 << shift))
+
+
+def vu_ftoi(x: int, shift: int) -> int:
+    return _float_to_int(value(x) * (1 << shift))
+
+
+def vu_div(num: int, den: int) -> int:
+    if value(den) == 0.0:
+        return ((num ^ den) & SIGN) | MAX
+    return result(value(num) / value(den))
+
+
+def vu_sqrt(x: int) -> int:
+    return result(math.sqrt(abs(value(x))))
+
+
+def vu_rsqrt(num: int, den: int) -> int:
+    root = math.sqrt(abs(value(den)))
+    if root == 0.0:
+        return (num & SIGN) | MAX
+    return result(value(num) / root)
+
+
 def _fields(word: int):
     dest = (word >> 21) & 0xF
     return [lane for lane, bit in enumerate((8, 4, 2, 1)) if dest & bit]
@@ -195,36 +229,25 @@ def execute(m, word: int, mnemonic: str) -> None:
         write(ft, [a[1], a[2], a[3], a[0]])
         return
     if base == "vabs":
-        write(ft, [clean(x) & ~SIGN & MASK32 for x in vf[fs]])
+        write(ft, [vu_abs(x) for x in vf[fs]])
         return
     if base.startswith("vitof"):
-        scale = 1 << int(base[5:])
-        write(ft, [result(_s32(x) / scale) for x in vf[fs]])
+        write(ft, [vu_itof(x, int(base[5:])) for x in vf[fs]])
         return
     if base.startswith("vftoi"):
-        scale = 1 << int(base[5:])
-        write(ft, [_float_to_int(value(x) * scale) for x in vf[fs]])
+        write(ft, [vu_ftoi(x, int(base[5:])) for x in vf[fs]])
         return
     if base in ("vnop", "vwaitq", "vclipw"):
         return          # vclipw sets only the clip flag, which is not modelled
     fsf, ftf = (word >> 21) & 3, (word >> 23) & 3
     if base == "vdiv":
-        num, den = vf[fs][fsf], vf[ft][ftf]
-        if value(den) == 0.0:
-            vc[REG_Q] = ((num ^ den) & SIGN) | MAX
-        else:
-            vc[REG_Q] = result(value(num) / value(den))
+        vc[REG_Q] = vu_div(vf[fs][fsf], vf[ft][ftf])
         return
     if base == "vsqrt":
-        vc[REG_Q] = result(math.sqrt(abs(value(vf[ft][ftf]))))
+        vc[REG_Q] = vu_sqrt(vf[ft][ftf])
         return
     if base == "vrsqrt":
-        num, den = vf[fs][fsf], vf[ft][ftf]
-        root = math.sqrt(abs(value(den)))
-        if root == 0.0:
-            vc[REG_Q] = (num & SIGN) | MAX
-        else:
-            vc[REG_Q] = result(value(num) / root)
+        vc[REG_Q] = vu_rsqrt(vf[fs][fsf], vf[ft][ftf])
         return
     if base == "vmtir":
         if ft != 0 and ft < 16:
