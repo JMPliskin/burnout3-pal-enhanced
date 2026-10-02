@@ -37,7 +37,9 @@ def _files(repository: str) -> list:
     engine = os.path.join(repository, "engine")
     files = [path for path in glob.glob(os.path.join(engine, "ps2decomp", "*.py"))
              if os.path.basename(path) not in TEXT_ONLY]
-    files += [os.path.join(engine, "tools", "lift.py"), os.path.join(engine, "tools", "derive.py")]
+    # derive.py plans the test cases; tools/lift.py only orchestrates - what it
+    # verifies with is liftverify.py, among the modules above.
+    files.append(os.path.join(engine, "tools", "derive.py"))
     for folder, _dirs, names in os.walk(os.path.join(engine, "runtime")):
         files += [os.path.join(folder, name) for name in names]
     return sorted(files)
