@@ -23,6 +23,8 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 from ps2decomp import game as game_config
 from ps2decomp.elf import ElfFile
 from ps2decomp.analysis import ImageAnalyzer
+from ps2decomp import gaps, lift
+from ps2decomp.r5900 import DISASM
 from ps2decomp.symbols import SymbolRecovery
 
 
@@ -55,7 +57,23 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
     rw_tags = symbols.find_renderware_tags()
     code_ranges = [(f.start, f.end) for f in analyzer.functions.values()]
     xref_count = symbols.find_xrefs(code_ranges)
-    tables = symbols.find_pointer_tables(analyzer.functions.keys())
+
+    # Functions the call graph cannot reach - virtual methods, stored callbacks,
+    # tail-call targets - recovered from the gaps between those it found, where
+    # there is evidence one starts and the code lifts (ps2decomp/gaps.py).
+    def liftable(start, end):
+        try:
+            lift.lift_function(data, section.addr, start, end)
+            return True
+        except lift.Refused:
+            return False
+
+    recovered = gaps.recover(data, section.addr, code_ranges,
+                             [x.target for x in symbols.xrefs], liftable)
+    log("  %d more functions recovered from the gaps (%s bytes)"
+        % (len(recovered), format(sum(e - s for s, e, _ev in recovered), ",")))
+    tables = symbols.find_pointer_tables(
+        list(analyzer.functions.keys()) + [s for s, _e, _ev in recovered])
     log("  %s strings, %s xrefs, %d pointer tables, %d RenderWare tags"
         % (format(string_count, ","), format(xref_count, ","), len(tables), len(rw_tags)))
 
@@ -99,6 +117,32 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
                 "status": "undecompiled",
             }
         )
+
+    # The recovered functions, described as the analysis describes its own.
+    by_address = {f["addr"]: f for f in functions}
+    for start, end, evidence in recovered:
+        words = [DISASM.decode(int.from_bytes(data[a - section.addr:a - section.addr + 4],
+                                              "little"), a) for a in range(start, end, 4)]
+        calls = sorted({w.target for w in words if w.is_call and w.target is not None})
+        by_address[start] = {
+            "addr": start,
+            "end": end,
+            "size": end - start,
+            "label": "func_%08X" % start,
+            "confidence": "recovered: %s" % evidence,
+            "instructions": len(words),
+            "has_return": any(w.is_return for w in words),
+            "uses_vu": any(w.raw >> 26 in (0x12, 0x36, 0x3E) for w in words),
+            "callers": [],
+            "calls": calls,
+            "string_hint": hints.get(start, ""),
+            "status": "undecompiled",
+        }
+    for start, _end, _evidence in recovered:
+        for target in by_address[start]["calls"]:
+            if target in by_address:
+                by_address[target]["callers"] = sorted(set(by_address[target]["callers"]) | {start})
+    functions = [by_address[a] for a in sorted(by_address)]
 
     regions = [
         {"start": r.start, "end": r.end, "size": r.size, "kind": r.kind}

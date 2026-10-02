@@ -140,6 +140,14 @@ def programs():
         NOP, mfc1(V0, 2),
         mfc1(V1, 7), JR_RA, mfc1(T0, 6),
     ])
+    add("fpu_control", [
+        mtc1(A0, 0), mtc1(A1, 1),
+        cop1(0x34, 0, 0, 1),                                        # c.lt.s $f0, $f1
+        (0x11 << 26) | (2 << 21) | (V0 << 16) | (31 << 11),         # cfc1 $v0, $31
+        (0x11 << 26) | (6 << 21) | (0 << 16) | (31 << 11),          # ctc1 $zero, $31
+        (0x11 << 26) | (2 << 21) | (V1 << 16) | (31 << 11),         # cfc1 $v1, $31
+        JR_RA, (0x11 << 26) | (2 << 21) | (T0 << 16) | (0 << 11),   # cfc1 $t0, $0
+    ])
     mmi = at
     add("mmi", [
         r_type(0x09, A0, A1, T0, 0x0E, op=0x1C),                    # pcpyld $t0, $a0, $a1
@@ -291,6 +299,9 @@ class TestLift(unittest.TestCase):
 
     def test_float(self):
         self.check("float")
+
+    def test_fpu_control_registers(self):
+        self.check("fpu_control")
 
     def test_128_bit_mmi(self):
         self.check("mmi")

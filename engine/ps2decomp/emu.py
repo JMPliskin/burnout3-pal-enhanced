@@ -879,6 +879,29 @@ def _op_mfc1(m: Machine, ins) -> None:
     m.set32(ins.rt, m.fpr[ins.rd] & MASK32)
 
 
+# The FPU control registers. FCR0 reads as the EE FPU's implementation number.
+# Of FCR31 only the condition bit (23) has an effect - the EE rounds toward zero
+# and raises no exceptions whatever the other bits say - so only it is kept: a
+# start-up `ctc1 $zero, $31` clears the condition, and `cfc1` reads it back.
+FPU_IMPLEMENTATION = 0x2E00
+FCR31_CONDITION = 1 << 23
+
+
+def _op_cfc1(m: Machine, ins) -> None:
+    if ins.rd == 0:
+        value = FPU_IMPLEMENTATION
+    elif ins.rd == 31:
+        value = FCR31_CONDITION if m.fp_cond else 0
+    else:
+        value = 0
+    m.set32(ins.rt, value)
+
+
+def _op_ctc1(m: Machine, ins) -> None:
+    if ins.rd == 31:
+        m.fp_cond = bool(m.get32(ins.rt) & FCR31_CONDITION)
+
+
 # Float registers hold raw bit patterns, so arithmetic converts in and out
 # explicitly. Confining the conversion to these helpers is what keeps the bit moves
 # above exact.
@@ -1192,6 +1215,8 @@ _HANDLERS = {
     "swc1": _op_swc1,
     "mtc1": _op_mtc1,
     "mfc1": _op_mfc1,
+    "cfc1": _op_cfc1,
+    "ctc1": _op_ctc1,
     "add.s": _fp_arith(lambda a, b: a + b),
     "sub.s": _fp_arith(lambda a, b: a - b),
     "mul.s": _fp_arith(lambda a, b: a * b),

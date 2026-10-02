@@ -1123,6 +1123,50 @@ cast to `u64` first. The compiled check is back to 18 disagreements.
 
 VERIFIED: 16.18%, from 15.31%.
 
+## Running natively: the boot so far
+
+`engine/host` runs the translated code on a PC (engine/docs/PORTING.md);
+`python engine/tools/port.py` builds the port and runs it on the user's own
+executable. What Burnout 3's start-up taught the host:
+
+* `crt0` writes the FPU control register (`ctc1 $zero, $31`), which neither the
+  interpreter nor the lifter knew. Of FCR31 only the condition bit matters on
+  the EE; both now implement `cfc1`/`ctc1` that way.
+* The SDK's start-up installs syscall handlers with SetSyscall and then searches
+  kernel memory, 0x80000000-0x80080000, for the handler addresses it installed,
+  to learn where the kernel's syscall table is. The host keeps the table in
+  guest kernel RAM, so the search finds it, as on the console.
+* It copies three kernel extensions out of the executable's data into kernel
+  RAM and runs them there - 0x740 bytes from 0x485060 to 0x80076000 (the alarm
+  services), and two more. The host finds where such code came from by its
+  bytes; port.py translates it at its run address and builds again.
+* Timer registers are written through a kernel-mode helper that ends in `eret`
+  (0x1156C0); the port overrides it with the store it performs.
+* The SDK reads IOP RAM directly at 0x1C000000, and addresses the timers
+  through kseg1 (0xB0001000): the host maps both.
+* Five functions it called - 0x116E18, 0x130BF0 and three at 0x4D5xxx - were in
+  no function the analysis knew. That led to recovering functions from the gaps
+  (below).
+
+It now boots through `main` (0x12EB30) into two threads, 257 functions, and
+stops where both wait for the IOP: the next stage is the IOP's side of SIF RPC.
+
+## Functions recovered from the gaps
+
+The analysis follows calls from the entry point and recognised pointer tables;
+a function reached any other way - a virtual method, a callback stored in a
+variable, a tail-call target - was never found. `ps2decomp/gaps.py` recovers
+them from the gaps between known functions where there is evidence one starts
+(a call, an address built in code, a pointer in the data, or the first
+instruction after a known function) and the code there reaches a return or a
+tail jump before the next known function, and lifts. It recovers 1,215
+functions, 221 KB; every function found before is unchanged.
+
+Known code grows from 3,287,248 to 3,508,108 bytes, so percentages fall for the
+same work. In bytes: 9,025 functions lift and verify (7,915 before), 5,241
+derive (4,450), VERIFIED is 551,268 bytes (531,816), 15.71%; MACHINE-CHECKED
+69.14%. Undecompiled code falls to 1.50%.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

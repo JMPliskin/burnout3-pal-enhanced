@@ -55,10 +55,14 @@ the engine.
 engine/ps2decomp/   the library (interpreter, derivation, struct recovery, ...)
 engine/tools/       CLI drivers; every one takes --game (default: $PS2_GAME, or
                     the only directory under games/)
-engine/runtime/     ps2rt headers and eefpu.cpp the generated C++ compiles against
+engine/runtime/     ps2rt: PS2 instruction semantics the generated C++ compiles
+                    against, shared by verification and the port
+engine/host/        the native host a port runs on (memory, dispatch, kernel,
+                    devices); see engine/docs/PORTING.md
 engine/tests/       unit tests: python -m unittest discover -s engine/tests
 games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
-                    tests/, and (gitignored) extracted/ build/ asm/
+                    tests/, port/ (CMakeLists.txt, overrides.cpp), and
+                    (gitignored) extracted/ build/ asm/
 ```
 
 ## Adding a new game
@@ -120,6 +124,15 @@ games/<name>/       game.json, src/, include/, config/functions.csv, docs/,
 8. Start `games/<name>/docs/FINDINGS.md` with what the binary revealed: the
    compiler (`.comment` section), middleware (RCS `$Id:` strings), the SDK
    version, and the VU regions.
+9. Build and run the native port (engine/docs/PORTING.md):
+   ```sh
+   python engine/tools/port.py --game games/<name>
+   ```
+   Copy `games/burnout3/port/` (CMakeLists.txt naming the target, an empty
+   overrides.cpp) for a new game. The run's report - why it stopped, the guest
+   call stack, kernel services, device registers - names the next thing the
+   host must provide; implement it in engine/host if every game needs it, as
+   an override in the game's port if only this one does.
 
 ## The improvement loop
 

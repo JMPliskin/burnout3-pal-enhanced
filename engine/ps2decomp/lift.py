@@ -206,6 +206,12 @@ def statement(ins) -> str:
         return "c.f[%d] = (u32)%s;" % (_fs(ins), b)
     if m == "mfc1":
         return _set(rt, "lifted::Sx32(c.f[%d])" % _fs(ins))
+    if m == "cfc1":
+        # As emu._op_cfc1: FCR0 is the implementation number, FCR31 the condition.
+        value = {0: "0x2E00ull", 31: "(c.fcc ? 0x800000ull : 0ull)"}.get(ins.rd, "0ull")
+        return _set(rt, value)
+    if m == "ctc1":
+        return ("c.fcc = (u32)((%s >> 23) & 1);" % b) if ins.rd == 31 else ";"
     if m in _FLOAT_BINARY:
         return "c.f[%d] = generated::%s(c.f[%d], c.f[%d]);" % (
             _fd(ins), _FLOAT_BINARY[m], _fs(ins), _ft(ins))

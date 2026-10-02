@@ -1,0 +1,371 @@
+#include "ps2host/host.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <mutex>
+#include <set>
+#include <thread>
+#include <unordered_map>
+
+#include "ps2host/memory.h"
+#include "ps2host/run.h"
+
+namespace ps2host {
+
+namespace {
+
+const FunctionEntry* g_table = nullptr;
+std::size_t g_count = 0;
+u32 g_image_start = 0, g_image_end = 0;       // the executable's bytes, as loaded
+std::unordered_map<u32, FunctionEntry> g_overrides;
+bool g_trace = false;
+std::set<std::string> g_noted;
+
+const FunctionEntry* Find(u32 address) {
+    auto found = g_overrides.find(address);
+    if (found != g_overrides.end()) return &found->second;
+    const FunctionEntry* end = g_table + g_count;
+    const FunctionEntry* at = std::lower_bound(
+        g_table, end, address, [](const FunctionEntry& e, u32 a) { return e.address < a; });
+    return (at != end && at->address == address) ? at : nullptr;
+}
+
+std::string Hex(u32 value) {
+    char text[16];
+    std::snprintf(text, sizeof text, "0x%08X", value);
+    return text;
+}
+
+std::string Describe(u32 address) {
+    const char* name = FunctionName(address);
+    return name ? Hex(address) + " " + name : Hex(address);
+}
+
+// The running thread's guest call stack, kept as the host unwinds through
+// translated code.
+struct Frame {
+    explicit Frame(u32 address) : calls(CurrentCalls()) { calls.push_back(address); }
+    ~Frame() { calls.pop_back(); }
+    std::vector<u32>& calls;
+};
+
+}  // namespace
+
+namespace {
+
+// Code the program copied elsewhere and runs there - start-up code installs
+// routines in kernel RAM as syscall handlers. A call to an address with no
+// translation is matched against the program's functions by content: a copy of
+// one, byte for byte, runs that function's translation. The copies are
+// position-independent (their branches are relative and their calls absolute, so
+// they reach the same targets), so the translation behaves the same there.
+const FunctionEntry* FindCopy(u32 address) {
+    static std::unordered_map<u32, const FunctionEntry*> copies;
+    auto known = copies.find(address);
+    if (known != copies.end()) return known->second;
+    Memory& memory = GuestMemory();
+    const FunctionEntry* found = nullptr;
+    const u8* here = memory.Translate(address, 8);
+    for (std::size_t i = 0; here && i < g_count && !found; ++i) {
+        const FunctionEntry& e = g_table[i];
+        if (!e.function || e.size < 8) continue;
+        const u8* there = memory.Translate(address, e.size);
+        const u8* original = memory.Translate(e.address, e.size);
+        if (there && original && std::memcmp(there, original, e.size) == 0) found = &e;
+    }
+    copies[address] = found;
+    if (found) {
+        Note("copy " + Hex(address), "code at " + Hex(address) + " is a copy of " +
+             Describe(found->address) + "; running its translation");
+    }
+    return found;
+}
+
+// Where in the loaded executable the code at `address` came from, or 0: the
+// executable is searched for the bytes there. Code kept as data and copied out at
+// run time (a kernel extension, an overlay) has no translation yet; finding its
+// source lets engine/tools/port.py translate it for the next build.
+u32 FindSource(u32 address) {
+    // Code in the executable itself that no function starts at - a tail call's
+    // target the analysis missed - is its own source.
+    if (address >= g_image_start && address < g_image_end) return address;
+    constexpr u32 kPattern = 32;
+    Memory& memory = GuestMemory();
+    const u8* here = memory.Translate(address, kPattern);
+    const u8* image = memory.Translate(g_image_start, g_image_end - g_image_start);
+    if (!here || !image || g_image_end - g_image_start < kPattern) return 0;
+    const u8* end = image + (g_image_end - g_image_start) - kPattern;
+    for (const u8* at = image; at <= end; at += 4) {
+        const u32 source = g_image_start + u32(at - image);
+        if (source != address && std::memcmp(at, here, kPattern) == 0) return source;
+    }
+    return 0;
+}
+
+}  // namespace
+
+void RegisterFunctions(const FunctionEntry* table, std::size_t count) {
+    g_table = table;
+    g_count = count;
+}
+
+void Override(u32 address, GuestFunction function, const char* name) {
+    g_overrides[address] = FunctionEntry{address, function, name, 0};
+}
+
+const char* FunctionName(u32 address) {
+    const FunctionEntry* entry = Find(address);
+    return entry ? entry->name : nullptr;
+}
+
+bool Tracing() { return g_trace; }
+
+Stats& RunStats() {
+    static Stats stats;
+    return stats;
+}
+
+void Note(const std::string& key, const std::string& text) {
+    if (g_noted.insert(key).second) {
+        RunStats().notes.push_back(text);
+        std::fprintf(stderr, "[host] %s\n", text.c_str());
+    }
+}
+
+void Dispatch(lifted::Context& c, u32 address) {
+    const FunctionEntry* entry = Find(address);
+    if (!entry || !entry->function) {
+        if (const FunctionEntry* copy = FindCopy(address)) entry = copy;
+    }
+    if (!entry || !entry->function) {
+        if (const u32 source = FindSource(address)) {
+            RunStats().discovered.emplace_back(address, source);
+            throw Unimplemented{"a call to " + Hex(address) + ", code " +
+                                (source == address ? std::string("no function covers")
+                                                   : "copied from " + Hex(source) + " at run time") +
+                                ", not translated yet (port.py translates it for the next build)"};
+        }
+        throw Unimplemented{"a call to " + Hex(address) + ", which has no translated function"};
+    }
+    u64& count = RunStats().calls[address];
+    if (++count == 1 || g_trace)
+        std::fprintf(stderr, "[call] %s\n", Describe(address).c_str());
+    Frame frame(address);
+    try {
+        entry->function(c);
+    } catch (...) {
+        // The innermost frame keeps the stack as it was where the run stopped;
+        // unwinding empties it on the way out.
+        if (RunStats().stopped_in.empty()) RunStats().stopped_in = CurrentCalls();
+        throw;
+    }
+}
+
+namespace {
+
+// ELF32 little-endian, the PS2's executable format: load every PT_LOAD segment.
+u32 LoadElf(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw Unimplemented{"cannot open the executable " + path};
+    std::vector<u8> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    auto u16at = [&](std::size_t at) { u16 v; std::memcpy(&v, &data.at(at + 1) - 1, 2); return v; };
+    auto u32at = [&](std::size_t at) { u32 v; std::memcpy(&v, &data.at(at + 3) - 3, 4); return v; };
+    if (data.size() < 52 || std::memcmp(data.data(), "\x7F" "ELF", 4) != 0)
+        throw Unimplemented{path + " is not an ELF file"};
+    const u32 entry = u32at(24), phoff = u32at(28);
+    const u16 phentsize = u16at(42), phnum = u16at(44);
+    Memory& memory = GuestMemory();
+    for (u16 i = 0; i < phnum; ++i) {
+        const std::size_t ph = phoff + std::size_t(i) * phentsize;
+        if (u32at(ph) != 1) continue;                       // PT_LOAD
+        const u32 offset = u32at(ph + 4), vaddr = u32at(ph + 8);
+        const u32 filesz = u32at(ph + 16), memsz = u32at(ph + 20);
+        if (!memsz) continue;
+        u8* target = memory.Translate(vaddr, memsz);
+        if (!target || std::size_t(offset) + filesz > data.size())
+            throw Unimplemented{"a segment of " + path + " lies outside guest memory"};
+        std::memcpy(target, data.data() + offset, filesz);
+        std::memset(target + filesz, 0, memsz - filesz);
+        if (filesz && !g_image_start) {
+            g_image_start = vaddr;
+            g_image_end = vaddr + filesz;
+        }
+    }
+    return entry;
+}
+
+void Report(const Options& options, const std::string& outcome) {
+    const Stats& stats = RunStats();
+    std::printf("\n=== host report ===\n%s\n", outcome.c_str());
+    std::printf("functions executed: %zu distinct\n", stats.calls.size());
+    const std::vector<u32>& stack = stats.stopped_in;
+    if (!stack.empty()) {
+        std::printf("guest call stack where it stopped (innermost last):\n");
+        const std::size_t from = stack.size() > std::size_t(options.report_limit)
+                                     ? stack.size() - options.report_limit : 0;
+        for (std::size_t i = from; i < stack.size(); ++i)
+            std::printf("  %s\n", Describe(stack[i]).c_str());
+    }
+    std::printf("threads:\n%s", ThreadReport().c_str());
+    std::printf("kernel services used:\n");
+    for (const auto& [service, count] : stats.syscalls)
+        std::printf("  %4d  %-24s x%llu\n", service, SyscallName(service),
+                    (unsigned long long)count);
+    auto registers = [&](const char* title, const std::map<u32, u64>& seen) {
+        std::printf("%s: %zu\n", title, seen.size());
+        int shown = 0;
+        for (const auto& [address, count] : seen) {
+            if (shown++ == options.report_limit) break;
+            std::printf("  0x%08X x%llu\n", address, (unsigned long long)count);
+        }
+    };
+    registers("device registers read", stats.register_reads);
+    registers("device registers written", stats.register_writes);
+    for (const auto& [run, source] : stats.discovered)
+        std::printf("discovered: code at %s is a copy of %s\n", Hex(run).c_str(), Hex(source).c_str());
+    if (!options.discover_path.empty()) {
+        // Merged with what earlier runs found: each run stops at the first one.
+        std::FILE* out = std::fopen(options.discover_path.c_str(), "a");
+        if (out) {
+            for (const auto& [run, source] : stats.discovered)
+                std::fprintf(out, "0x%08X 0x%08X\n", run, source);
+            std::fclose(out);
+        }
+    }
+}
+
+}  // namespace
+
+namespace {
+
+// Stops a run that goes on too long, so it ends with a report rather than being
+// killed without one: the running context's loop budget is exhausted, and the
+// translated code stops at its next loop head (lifted::Tick) with the guest call
+// stack intact.
+class Watchdog {
+public:
+    explicit Watchdog(int seconds) : thread_([this, seconds] {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!done_.wait_for(lock, std::chrono::seconds(seconds), [this] { return finished_; })) {
+            fired = true;
+            ForEachContext([](lifted::Context& each) {
+                reinterpret_cast<std::atomic<s64>*>(&each.budget)->store(-1);
+            });
+        }
+    }) {}
+    ~Watchdog() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            finished_ = true;
+        }
+        done_.notify_all();
+        thread_.join();
+    }
+    std::atomic<bool> fired{false};
+
+private:
+    std::mutex mutex_;
+    std::condition_variable done_;
+    bool finished_ = false;
+    std::thread thread_;
+};
+
+}  // namespace
+
+int Run(const Options& options) {
+    g_trace = options.trace_calls;
+    InstallDevices();
+    lifted::Context c{};
+    Watchdog watchdog(options.timeout_seconds);
+    std::string outcome;
+    int code = 2;
+    try {
+        const u32 entry = LoadElf(options.elf_path);
+        // The kernel enters a program with a stack at the top of RAM; the program's
+        // own start-up code then asks for its real one (SetupThread).
+        c.r[29] = kRdramSize - 0x10;
+        c.r[31] = 0;
+        std::fprintf(stderr, "[host] entry %s\n", Describe(entry).c_str());
+        RunThreads(c, entry, options.loop_budget);
+    } catch (const GuestExit& exit) {
+        outcome = "the guest exited with code " + std::to_string(exit.code);
+        code = 0;
+    } catch (const Unimplemented& missing) {
+        outcome = "stopped: " + missing.what;
+    } catch (const MemoryFault& fault) {
+        outcome = std::string("stopped: a ") + (fault.write ? "write" : "read") +
+                  " at " + Hex(fault.address) + ", outside guest memory";
+    } catch (const lifted::Abort& abort) {
+        static const char* reasons[] = {"", "a trap", "a loop that did not finish within the budget",
+                                        "a callee that failed", "a memory fault", "a COP2 operation"};
+        const char* reason = abort.reason < 6 ? reasons[abort.reason] : "an abort";
+        if (abort.reason == 2 && watchdog.fired)
+            reason = "the time limit, in the loop";
+        outcome = std::string("stopped: ") + reason + " at " + Hex(abort.address);
+    }
+    Report(options, outcome);
+    return code;
+}
+
+int Main(int argc, char** argv) {
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--trace") options.trace_calls = true;
+        else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
+        else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
+        else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);
+        else if (arg == "--discover" && i + 1 < argc) options.discover_path = argv[++i];
+        else if (arg.rfind("--", 0) != 0) options.elf_path = arg;
+        else {
+            std::fprintf(stderr, "unknown option %s\n", arg.c_str());
+            return 64;
+        }
+    }
+    if (options.elf_path.empty()) {
+        std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] "
+                             "[--budget N] [--limit N] [--timeout seconds]\n", argv[0]);
+        return 64;
+    }
+    return Run(options);
+}
+
+}  // namespace ps2host
+
+// The hooks lifted code calls through.
+namespace lifted {
+
+void Call(Context& c, u32 target) { ps2host::Dispatch(c, target); }
+
+void TailCall(Context& c, u32 target, u32 /*return_address*/, u32 /*entry_sp*/) {
+    // The guest jumps and never comes back here; natively, the callee runs and
+    // the translated function returns straight after (it emits `return;`).
+    ps2host::Dispatch(c, target);
+}
+
+void Syscall(Context& c) { ps2host::KernelSyscall(c); }
+
+}  // namespace lifted
+
+// Derived code's hooks: a guest stack for out-parameters, and pointer calls.
+namespace generated {
+
+namespace {
+u32 g_stack = 0x01F00000u;      // below the guest stack the kernel hands out
+}
+
+u64 StackEnter(u32 size) { g_stack -= size; return g_stack; }
+void StackLeave(u32 size) { g_stack += size; }
+
+u64 CallPointer(u32 address, u64, u64, u64, u64, u64, u64, u64, u64,
+                u64, u64, u64, u64, u64, u64, u64, u64) {
+    throw ps2host::Unimplemented{"a derived pointer call to " + std::to_string(address)};
+}
+
+}  // namespace generated

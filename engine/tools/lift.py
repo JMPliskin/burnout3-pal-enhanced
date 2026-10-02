@@ -321,7 +321,10 @@ def main(argv=None) -> int:
     section = elf.exec_sections[0]
     image = elf.section_data(section)
     machine = Machine.from_elf(elf)
-    functions = [f for f in database["functions"] if f["has_return"] and f["end"] > f["addr"]]
+    # Every function, including those with no return of their own - thunks that
+    # end in a jump: a port reaches them like any other, and the original runs to
+    # its caller's return through them, so they verify like any other.
+    functions = [f for f in database["functions"] if f["end"] > f["addr"]]
     if args.only:
         functions = [f for f in functions if f["addr"] in set(args.only)]
     if args.limit:

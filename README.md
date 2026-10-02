@@ -70,7 +70,12 @@ working in this repository.
    python engine/tools/derive.py --game games/<name> --emit --csv
    python engine/tools/lift.py --game games/<name> --structure --emit --csv
    python engine/tools/progress.py --game games/<name>
+   python engine/tools/port.py --game games/<name>      # build and run natively
    ```
+
+The last step builds the translated code into a native executable on the host in
+`engine/host/` and runs it on the game's own executable, reporting how far it
+gets. See [engine/docs/PORTING.md](engine/docs/PORTING.md).
 
 Every tool takes `--game`. Without it, a tool uses `$PS2_GAME`, or the only game
 under `games/`.
