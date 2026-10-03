@@ -1302,6 +1302,34 @@ RWA's replies reach the game. Sound is not played yet: libsd keeps the SPU2's
 state and SPU RAM, and fires transfer interrupts at the hardware's rate, but
 nothing is mixed. Boot runs 1,385 distinct functions.
 
+## From the frame loop to the loading screen
+
+* **Scratchpad DMA.** Each frame the game builds its GIF/VIF packets in
+  scratchpad and copies them to main memory with SPR_FROM (to 0x7FD110). VIF1's
+  chain reads them from there. Until SPR_FROM copied data, every DIRECT packet
+  was zeros (8.6 million empty GIF tags).
+* **A software GS** (engine/host/src/gs*.cpp) draws what the GIF delivers.
+  During the frame loop, VIF1 carries only MSKPATH3 and DIRECT: no VU1
+  microprograms are involved yet. With `--frames DIR` the port writes the
+  displayed picture as BMPs. **The first one shows Burnout 3's LOADING
+  screen.**
+* **GTFS file loads** are EA's own file system: RPC 0x00475453, procedure 3 =
+  open by name, 5/4 = read into an EE address. The data comes back through
+  `sceSifSetDmaIntr`, a DMA plus a completion callback, which needed
+  implementing. The first files are `Data\Global.txd`, `Data\GlobalUs.bin`,
+  `Data\HeadUs.bin`, `pveh\vlist.bin`, `Tracks\tlist.bin` and
+  `Data\PrgData.bin`; the copy in memory matches the disc, with the game's
+  pointer fix-ups applied.
+* **RenderWare Audio streams by the SPU2's clock.** After the files, loading
+  waits on RWA's sound-bank stream. Its transfer queue (0x4EB8, consumer
+  0x4A94) runs off the SPU2 interrupt: RWA sets core 0's IRQA to 0x800 and
+  enables the interrupt. 0x800 lies in the SPU2's memory streams, rings of 256
+  samples in SPU RAM 0x0000-0x27FF that the hardware writes and reads one sample
+  per 48 kHz tick, so the interrupt is a 5.3 ms clock. (B3ROUTE's
+  "Meminterrupt" addresses are the same idea.) The host now models the SPU2's
+  voices, loop flags, ENDX and that interrupt (spu2.cpp). Sound is not mixed
+  yet.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

@@ -29,6 +29,7 @@
 #include <sstream>
 
 #include "iop_vm_internal.h"
+#include "spu2.h"
 #include "ps2host/disc.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
@@ -667,8 +668,7 @@ Outcome GetSreg(Vm&, Context& c) { return Ret(c, 0); }
 // ---------------------------------------------------------------- libsd
 
 struct Sound {
-    std::map<u32, u32> params, switches, addresses, core_attrs;
-    std::vector<u8> spu_ram = std::vector<u8>(2u << 20);
+    Spu2 spu;
     struct Handler { u32 function = 0, arg = 0; };
     Handler transfer[2], spu2;
     struct Block {
@@ -686,14 +686,14 @@ Sound& S() {
 
 Outcome SdInit(Vm&, Context& c) { return Ret(c, KE_OK); }
 
-Outcome SdSetParam(Vm&, Context& c) { S().params[c.r[4] & 0xFFFF] = c.r[5] & 0xFFFF; return Ret(c, 0); }
-Outcome SdGetParam(Vm&, Context& c) { return Ret(c, S().params[c.r[4] & 0xFFFF]); }
-Outcome SdSetSwitch(Vm&, Context& c) { S().switches[c.r[4] & 0xFFFF] = c.r[5]; return Ret(c, 0); }
-Outcome SdGetSwitch(Vm&, Context& c) { return Ret(c, S().switches[c.r[4] & 0xFFFF]); }
-Outcome SdSetAddr(Vm&, Context& c) { S().addresses[c.r[4] & 0xFFFF] = c.r[5]; return Ret(c, 0); }
-Outcome SdGetAddr(Vm&, Context& c) { return Ret(c, S().addresses[c.r[4] & 0xFFFF]); }
-Outcome SdSetCoreAttr(Vm&, Context& c) { S().core_attrs[c.r[4] & 0xFFFF] = c.r[5] & 0xFFFF; return Ret(c, 0); }
-Outcome SdGetCoreAttr(Vm&, Context& c) { return Ret(c, S().core_attrs[c.r[4] & 0xFFFF]); }
+Outcome SdSetParam(Vm&, Context& c) { S().spu.SetParam(c.r[4] & 0xFFFF, c.r[5] & 0xFFFF); return Ret(c, 0); }
+Outcome SdGetParam(Vm&, Context& c) { return Ret(c, S().spu.GetParam(c.r[4] & 0xFFFF)); }
+Outcome SdSetSwitch(Vm&, Context& c) { S().spu.SetSwitch(c.r[4] & 0xFFFF, c.r[5]); return Ret(c, 0); }
+Outcome SdGetSwitch(Vm&, Context& c) { return Ret(c, S().spu.GetSwitch(c.r[4] & 0xFFFF)); }
+Outcome SdSetAddr(Vm&, Context& c) { S().spu.SetAddr(c.r[4] & 0xFFFF, c.r[5]); return Ret(c, 0); }
+Outcome SdGetAddr(Vm&, Context& c) { return Ret(c, S().spu.GetAddr(c.r[4] & 0xFFFF)); }
+Outcome SdSetCoreAttr(Vm&, Context& c) { S().spu.SetCoreAttr(c.r[4] & 0xFFFF, c.r[5] & 0xFFFF); return Ret(c, 0); }
+Outcome SdGetCoreAttr(Vm&, Context& c) { return Ret(c, S().spu.GetCoreAttr(c.r[4] & 0xFFFF)); }
 
 // Pitch: 0x1000 plays a sample at its recorded rate; a semitone is 2^(1/12).
 Outcome SdNote2Pitch(Vm&, Context& c) {
@@ -713,16 +713,16 @@ Outcome SdPitch2Note(Vm&, Context& c) {
 }
 
 u32 Batch(u32 func, u32 entry, u32 value) {
-    Sound& s = S();
+    Spu2& s = S().spu;
     switch (func) {
-        case 0x01: s.params[entry] = value & 0xFFFF; return 0;
-        case 0x02: s.switches[entry] = value; return 0;
-        case 0x03: s.addresses[entry] = value; return 0;
-        case 0x04: s.core_attrs[entry] = value & 0xFFFF; return 0;
-        case 0x11: return s.params[entry];
-        case 0x12: return s.switches[entry];
-        case 0x13: return s.addresses[entry];
-        case 0x14: return s.core_attrs[entry];
+        case 0x01: s.SetParam(entry, value & 0xFFFF); return 0;
+        case 0x02: s.SetSwitch(entry, value); return 0;
+        case 0x03: s.SetAddr(entry, value); return 0;
+        case 0x04: s.SetCoreAttr(entry, value & 0xFFFF); return 0;
+        case 0x11: return s.GetParam(entry);
+        case 0x12: return s.GetSwitch(entry);
+        case 0x13: return s.GetAddr(entry);
+        case 0x14: return s.GetCoreAttr(entry);
         default: throw Unimplemented{"IOP: sceSdProcBatch function " + std::to_string(func)};
     }
 }
@@ -760,9 +760,9 @@ Outcome SdVoiceTrans(Vm& vm, Context& c) {
     const u32 size = A(vm, c, 4);
     Sound& s = S();
     if ((mode & 3) == 0) {
-        for (u32 i = 0; i < size && spu + i < s.spu_ram.size(); ++i) s.spu_ram[spu + i] = u8(vm.Read(iop + i, 1));
+        if (size) s.spu.Write(spu, vm.At(iop, size), size);
     } else if ((mode & 3) == 1) {
-        for (u32 i = 0; i < size && spu + i < s.spu_ram.size(); ++i) vm.Write(iop + i, s.spu_ram[spu + i], 1);
+        if (size) s.spu.Read(spu, vm.At(iop, size), size);
     }
     // Only a DMA transfer interrupts when done; SD_TRANS_MODE_IO (8) is the CPU
     // writing through the SPU2's registers, finished when the call returns.
@@ -949,6 +949,10 @@ void SoundInterrupts(Vm& vm) {
     }
     for (u32 ch : due)
         if (s.transfer[ch].function) vm.Call(s.transfer[ch].function, {ch, s.transfer[ch].arg});
+    // The SPU2's own interrupt: playback (or a transfer) reached IRQA.
+    s.spu.Advance(now, [&](u32 core) {
+        if (s.spu2.function) vm.Call(s.spu2.function, {1u << core, s.spu2.arg});
+    });
 }
 
 std::string Format(Vm& vm, u32 format, const std::function<u32()>& next) {
