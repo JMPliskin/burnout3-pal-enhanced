@@ -37,9 +37,41 @@ set(VOLK_HEADERS_ONLY OFF CACHE BOOL "" FORCE)
 set(VULKAN_HEADERS_INSTALL_DIR "${vulkan_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
 FetchContent_MakeAvailable(volk sdl3)
 
+# Shaders: GLSL compiled to SPIR-V at build time by glslang, from its release
+# like the others, and embedded as arrays (glslang --vn).
+FetchContent_Declare(glslang
+    GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+    GIT_TAG vulkan-sdk-1.4.363.0
+    GIT_SHALLOW TRUE)
+set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
+set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glslang)
+
+set(PS2GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${PS2GPU_SHADER_DIR})
+set(PS2GPU_SHADER_HEADERS)
+foreach(shader gs.vert gs.frag)
+    string(REPLACE "." "_" name ${shader})
+    set(out ${PS2GPU_SHADER_DIR}/${name}.h)
+    add_custom_command(OUTPUT ${out}
+        COMMAND glslang-standalone -V --target-env vulkan1.3 --vn spirv_${name}
+                -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/${shader}
+        DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/${shader} glslang-standalone
+        COMMENT "glslang ${shader}")
+    list(APPEND PS2GPU_SHADER_HEADERS ${out})
+endforeach()
+add_custom_target(ps2gpu_shaders DEPENDS ${PS2GPU_SHADER_HEADERS})
+
 add_library(ps2gpu STATIC
-    ${CMAKE_CURRENT_LIST_DIR}/src/vulkan_display.cpp)
-target_include_directories(ps2gpu PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
+    ${CMAKE_CURRENT_LIST_DIR}/src/vulkan_display.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gpu.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gs_renderer.cpp)
+add_dependencies(ps2gpu ps2gpu_shaders)
+target_include_directories(ps2gpu PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include PRIVATE ${PS2GPU_SHADER_DIR})
 target_compile_features(ps2gpu PUBLIC cxx_std_17)
 target_link_libraries(ps2gpu PUBLIC SDL3::SDL3-static PRIVATE volk::volk Vulkan::Headers)
 if(MSVC)
@@ -48,3 +80,5 @@ endif()
 
 add_executable(ps2gpu_smoke ${CMAKE_CURRENT_LIST_DIR}/tests/display_smoke.cpp)
 target_link_libraries(ps2gpu_smoke PRIVATE ps2gpu)
+add_executable(ps2gpu_tests ${CMAKE_CURRENT_LIST_DIR}/tests/renderer_tests.cpp)
+target_link_libraries(ps2gpu_tests PRIVATE ps2gpu)
