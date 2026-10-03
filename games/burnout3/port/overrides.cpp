@@ -8,6 +8,7 @@
  */
 
 #include <cstdio>
+#include <map>
 #include <string>
 
 #include "ps2host/host.h"
@@ -36,12 +37,18 @@ void TtyWrite(lifted::Context& c) {
 
 /* 0x00109F00, libmpeg's sceMpegGetPicture(mp, buffer, macroblocks): decodes the
    next picture on the IPU. The host has no IPU yet (FINDINGS: movies), so a
-   movie ends at once: no picture, and the stream marked ended - sceMpegIsEnd
-   (0x0010A028) returns the first word of mp->sys, at mp+0x40. The frontend's
-   background movie and the intro then finish as soon as they start. */
+   movie plays as kMoviePictures blank pictures and then ends - sceMpegIsEnd
+   (0x0010A028) returns the first word of mp->sys, at mp+0x40. Ending at the
+   first picture left the frontend waiting on its background movie. */
+constexpr int kMoviePictures = 120;
+
 void MpegGetPicture(lifted::Context& c) {
-    const u32 sys = u32(generated::ReadU32(u32(c.r[4]) + 0x40));
-    generated::Write32(sys, 1);
+    static std::map<u32, int> pictures;          // by stream
+    const u32 mp = u32(c.r[4]);
+    if (++pictures[mp] >= kMoviePictures) {
+        pictures[mp] = 0;
+        generated::Write32(u32(generated::ReadU32(mp + 0x40)), 1);
+    }
     c.r[2] = 0;
 }
 
@@ -53,5 +60,5 @@ void RegisterGameOverrides() {
     RegisterGameIopServers();
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
-    ps2host::Override(0x00109F00u, MpegGetPicture, "sceMpegGetPicture: movies end at once (no IPU yet)");
+    ps2host::Override(0x00109F00u, MpegGetPicture, "sceMpegGetPicture: blank movies (no IPU yet)");
 }

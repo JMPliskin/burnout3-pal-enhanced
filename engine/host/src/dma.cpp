@@ -8,6 +8,9 @@
 
 namespace ps2host {
 
+std::uint32_t g_dma_source = 0;
+
+
 namespace {
 
 constexpr std::uint32_t kScratchpad = 0x70000000u;
@@ -20,7 +23,10 @@ std::uint32_t Address(std::uint64_t tag) {
 void Send(std::uint32_t from, std::uint32_t quadwords, DmaOutcome& outcome,
           const std::function<void(std::uint32_t)>& word) {
     Memory& m = GuestMemory();
-    for (std::uint32_t i = 0; i < 4 * quadwords; ++i) word(std::uint32_t(m.Read(from + 4 * i, 4)));
+    for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
+        g_dma_source = from + 4 * i;
+        word(std::uint32_t(m.Read(from + 4 * i, 4)));
+    }
     outcome.quadwords += quadwords;
 }
 

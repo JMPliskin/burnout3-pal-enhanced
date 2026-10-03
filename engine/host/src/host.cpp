@@ -169,10 +169,12 @@ void Dispatch(lifted::Context& c, u32 address) {
         std::fprintf(stderr, "[call] %s\n", Describe(address).c_str());
     if (std::find(g_watch.begin(), g_watch.end(), address) != g_watch.end()) {
         std::fprintf(stderr, "[watch] %s a0=%016llX a1=%016llX a2=%016llX a3=%016llX "
-                     "f12=%08X f13=%08X ra=%08X s0=%08X s1=%08X sp=%08X\n", Describe(address).c_str(),
+                     "f12=%08X f13=%08X ra=%08X s0=%08X s1=%08X sp=%08X gp=%08X t0=%08X\n",
+                     Describe(address).c_str(),
                      (unsigned long long)c.r[4], (unsigned long long)c.r[5],
                      (unsigned long long)c.r[6], (unsigned long long)c.r[7], c.f[12], c.f[13],
-                     unsigned(c.r[31]), unsigned(c.r[16]), unsigned(c.r[17]), unsigned(c.r[29]));
+                     unsigned(c.r[31]), unsigned(c.r[16]), unsigned(c.r[17]), unsigned(c.r[29]),
+                     unsigned(c.r[28]), unsigned(c.r[8]));
     }
     Frame frame(address);
     try {

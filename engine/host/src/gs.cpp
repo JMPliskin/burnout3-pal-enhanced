@@ -11,6 +11,7 @@
  */
 
 #include "ps2host/gs.h"
+#include "ps2host/dma.h"
 
 #include <cstdio>
 #include <cstring>
@@ -106,6 +107,7 @@ void Gs::Packed(u32 descriptor, u64 low, u64 high) {
     switch (descriptor) {
         case 0x0: WriteRegister(0x00, low & 0x7FF); break;
         case 0x1: {                                     // RGBA, Q from ST
+            rgba_source_ = g_dma_source;
             u32 qbits;
             std::memcpy(&qbits, &q_, 4);
             rgbaq_ = Bits(low, 0, 8) | Bits(low, 32, 8) << 8 | u64(Bits(high, 0, 8)) << 16 |
@@ -140,7 +142,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
     ++register_writes_[address & 0xFF];
     switch (address) {
         case 0x00: prim_ = value; queued_ = 0; strip_ = 0; break;
-        case 0x01: rgbaq_ = value; break;
+        case 0x01: rgbaq_ = value; rgba_source_ = g_dma_source; break;
         case 0x02: st_ = value; break;
         case 0x03: uv_ = value; break;
         case 0x04: case 0x05: case 0x0C: case 0x0D: {

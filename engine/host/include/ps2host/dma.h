@@ -38,6 +38,10 @@ struct DmaOutcome {
    memory, and leaves the registers as the hardware would at the end (MADR, QWC,
    TADR, ASR, CHCR's TAG field). Stops after `max_tags` tags, so a chain that
    loops is reported rather than followed forever. */
+/* The guest address of the word SendDma is delivering now - for tracing
+   where a packet came from. */
+extern std::uint32_t g_dma_source;
+
 DmaOutcome SendDma(DmaChannelState& channel, const std::function<void(std::uint32_t)>& word,
                    std::uint32_t max_tags = 1u << 16);
 
