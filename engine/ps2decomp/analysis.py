@@ -89,6 +89,7 @@ class ImageAnalyzer:
         self.functions: dict = {}
         self.code_bytes = bytearray(len(data))  # 1 where traversal proved code
         self.call_sites: dict = collections.defaultdict(set)
+        self.case_targets: set = set()    # labels reached through switch jump tables
         self.stats = collections.Counter()
 
     # -- address helpers ----------------------------------------------
@@ -221,6 +222,14 @@ class ImageAnalyzer:
                     # Intra-function branch or tail jump: queue the target.
                     queue.append(ins.target)
 
+                if ins.mnemonic == "jr" and ins.rs != 31:
+                    # A switch: its cases are this function's own code.
+                    targets = self.jump_table(addr, ins.rs)
+                    if targets:
+                        queue.extend(targets)
+                        self.case_targets.update(targets)
+                        self.stats["jump_tables"] += 1
+
                 if ins.is_return:
                     func.has_return = True
                     break
@@ -229,6 +238,59 @@ class ImageAnalyzer:
 
                 addr += 8 if ins.has_delay_slot else 4
         return seen
+
+    # How far back from a `jr` its table and bound are looked for.
+    JUMP_TABLE_WINDOW = 16
+    MAX_CASES = 1024
+
+    def jump_table(self, jr_addr: int, register: int):
+        """The targets of the switch that ends in `jr register`, or None.
+
+        GCC's switch on the R5900 bounds the index, then loads the case's
+        address from a table and jumps to it:
+
+            sltiu $at, $i, N;  beq $at, $zero, default; ...
+            lui $t, %hi(T);  sll $i, $i, 2;  addiu $t, $t, %lo(T)
+            addu $i, $i, $t;  lw $r, 0($i);  jr $r
+
+        Walking back from the `jr` finds the load, the sum, the table's two
+        halves and the bound; the table's N words are the cases. Without the
+        bound the table's length is unknown, and nothing is claimed.
+        """
+        load = index = low = table = bound = None
+        register_of_sum = register
+        addr = jr_addr - 4
+        for _ in range(self.JUMP_TABLE_WINDOW):
+            if not self.contains(addr):
+                break
+            ins = DISASM.decode(self.word_at(addr), addr)
+            if not ins.is_valid or ins.is_call:
+                break
+            m = ins.mnemonic
+            if load is None:
+                if m == "lw" and ins.rt == register_of_sum:
+                    load = ins
+                    register_of_sum = ins.rs
+            elif table is None:
+                if index is None and m in ("addu", "daddu") and ins.rd == register_of_sum:
+                    index = (ins.rs, ins.rt)
+                elif index and low is None and m == "addiu" and ins.rt in index:
+                    low = (ins.rt, ins.imm)
+                elif low and m == "lui" and ins.rt == low[0]:
+                    table = ((ins.imm << 16) + low[1] + load.imm) & 0xFFFFFFFF
+            elif m == "sltiu":
+                bound = ins.imm
+                break
+            addr -= 4
+        if table is None or not bound or bound > self.MAX_CASES:
+            return None
+        targets = []
+        for i in range(bound):
+            target = self.word_at(table + 4 * i)
+            if not self.contains(target) or target % 4:
+                return None             # not a table of code addresses after all
+            targets.append(target)
+        return targets
 
     # -- stage 2b: pointer-table targets -------------------------------
 
@@ -406,6 +468,16 @@ class ImageAnalyzer:
                 1 for a in visited if func.start <= a < func.end
             )
             self.stats["prologue_found"] += 1
+
+        # A switch's cases are labels of the function that jumps to them. Their
+        # table's words point at code just past a `jr` or `b`, which is what the
+        # pointer harvest looks for; 2,258 of Burnout 3's 2,986 pointer-found
+        # "functions" were cases. Called ones stay: a `jal` is evidence enough.
+        for addr in sorted(self.case_targets):
+            func = self.functions.get(addr)
+            if func is not None and func.confidence in (CONF_POINTER, CONF_PROLOGUE) and not func.callers:
+                del self.functions[addr]
+                self.stats["switch_cases_not_functions"] += 1
 
         self._tighten_bounds()
         self._compute_stats()

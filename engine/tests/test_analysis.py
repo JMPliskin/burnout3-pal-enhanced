@@ -51,5 +51,41 @@ class TestLooksLikeCode(unittest.TestCase):
         self.assertTrue(analyzer([JAL, NOP, B_FORWARD, NOP])._looks_like_code(BASE))
 
 
+class TestSwitches(unittest.TestCase):
+    """A switch's cases belong to its function, not to functions of their own."""
+
+    # switch (a0) { case 0: ...; case 1: ...; }, its table at BASE + 0x100.
+    CODE = [
+        0x2C810002,     # 00 sltiu $at, $a0, 2
+        0x1020000A,     # 04 beq $at, $zero, 0x30
+        NOP,            # 08
+        0x3C030010,     # 0C lui $v1, 0x0010
+        0x00042080,     # 10 sll $a0, $a0, 2
+        0x24630100,     # 14 addiu $v1, $v1, 0x0100
+        0x00832021,     # 18 addu $a0, $a0, $v1
+        0x8C820000,     # 1C lw $v0, 0($a0)
+        0x00400008,     # 20 jr $v0
+        NOP,            # 24
+        0x24420001,     # 28 case 0: addiu $v0, $v0, 1
+        JR_RA, NOP,     # 2C
+        0x24420002,     # 34 case 1: addiu $v0, $v0, 2
+        JR_RA, NOP,     # 38
+    ]
+
+    def image(self):
+        words = self.CODE + [NOP] * (0x40 - len(self.CODE))
+        words += [BASE + 0x28, BASE + 0x34] + [NOP] * 32
+        return ImageAnalyzer(struct.pack("<%dI" % len(words), *words), BASE, BASE)
+
+    def test_the_table_is_read_from_the_code_before_the_jump(self):
+        self.assertEqual(self.image().jump_table(BASE + 0x20, 2), [BASE + 0x28, BASE + 0x34])
+
+    def test_cases_are_labels_of_the_switch(self):
+        a = self.image()
+        a.run()
+        self.assertEqual(sorted(a.functions), [BASE])
+        self.assertEqual(a.functions[BASE].end, BASE + 0x40)
+
+
 if __name__ == "__main__":
     unittest.main()
