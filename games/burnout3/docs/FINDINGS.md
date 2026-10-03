@@ -1330,6 +1330,35 @@ nothing is mixed. Boot runs 1,385 distinct functions.
   voices, loop flags, ENDX and that interrupt (spu2.cpp). Sound is not mixed
   yet.
 
+## The loading screen's wait, and a third structuring bug
+
+Loading stopped at stage 10 of the frontend sequence (0x131480): it waits for
+the EA Trax music player (0x3FB0F0), which polls the stream's state (0x3865A0
+reads `obj+0x24C` through 0x2A2C80) for 5. The state stayed 4. Following it
+back with `--watch` and `--watch-write`:
+
+* 0x2A6470 caches the state at +0x148 of the sound object (0x1EEC8C4) from
+  0x2A5BA0, which combines the object's own state (+0x8), a property-3 getter
+  on its stream (`[[0x1EEF840+0x20]+0x28]`, 2 -> 3 -> 4 -> 5) and 0x2A5D40.
+* 0x2A5D40, in mode 3 (+0x38), walks the object's child list and asks each
+  child's property 0 (0x2AB1D0 -> 0x2AD600) for 5. Every one of them reached 5,
+  and RWA's IOP side did its part, yet 0x2A5D40 returned 0.
+
+The analysis cut 0x2A5D40 short at 0x2A5DA0: a `daddu $s3, $zero, $zero` that
+nothing reaches (dead code after a `b`) ends the function's contiguous run, so
+its branches to 0x2A5DB8 and on become tail transfers to code found at run
+time. The plain lifted form handles that. The structured form did not: the
+function sets `$s3 = 5` and then `beq $v1, $s3` out of the function, to code
+that returns `$s3`. Folding saw the comparison as the 5's only use, since its
+liveness modelled a fall-through out of the function but not a *taken branch*
+out of it, and folded the constant into the condition, losing the store.
+liveness.py now counts every synchronised register as live after a branch that
+leaves the function; engine/tests/test_liveness.py has the case.
+
+Verification missed it for a reason worth fixing too. The equivalence harness
+fills memory with hashes of addresses, so `ReadS32(a0 + 8) == 5` is never true
+and the branch that needed the store never ran.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

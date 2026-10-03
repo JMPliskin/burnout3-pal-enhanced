@@ -57,5 +57,27 @@ class TestConditionalAssignment(unittest.TestCase):
         self.assertIn("s1 = (s1 << 1);", folded)
 
 
+class _Block:
+    def __init__(self, code, kind="cond", taken=None, next=None, condition=None):
+        self.code, self.kind, self.taken, self.next = code, kind, taken, next
+        self.condition, self.slot = condition, ""
+
+
+class TestLeavingBranch(unittest.TestCase):
+    def test_a_branch_out_of_the_function_keeps_everything_live(self):
+        # 0x002A5D40: `s3 = 5` then `beq v1, s3` to code past the function's end,
+        # which returns s3. The branch is the only use the block sees, so without
+        # the exit the 5 folded into the condition and the target returned 0.
+        synced = {"v1", "a0", "s3"}
+        blocks = {0x100: _Block(["s3 = 0x5ull;", "v1 = ReadS32((u32)a0 + 0x8u);"],
+                                taken=0x900, next=0x110, condition="v1 == s3"),
+                  0x110: _Block(["s3 = 0x2ull;"], kind="return")}
+        live = liveness.live_out(blocks, {0x100: [0x110], 0x110: []}, synced, set(),
+                                 lambda b: b.condition, lambda b: b.slot)
+        self.assertIn("s3", live[0x100])
+        code, _ = liveness.fold(blocks[0x100].code, "v1 == s3", live[0x100], synced, set())
+        self.assertIn("s3 = 0x5ull;", code)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,8 +67,15 @@ def uses_defs(statement: str, synced: set, returned: set):
 
 def live_out(blocks, succs, synced, returned, condition_of, slot_of):
     """{block: registers live after it}, by backward dataflow to a fixed point."""
-    use, define = {}, {}
+    use, define, leaving = {}, {}, {}
     for address, block in blocks.items():
+        # A conditional branch out of the function is a tail transfer on its
+        # taken path - often into the middle of this same function, cut short by
+        # dead code - so whatever is synchronised is live after it. Missing this
+        # folded `s3 = 5` into `if (v1 == s3)` at 0x002A5D40 and lost the 5 the
+        # branch target returns, which held Burnout 3's music loading at state 4.
+        taken = getattr(block, "taken", None)
+        leaving[address] = set(synced) if taken is not None and taken not in blocks else set()
         u, d = set(), set()
         sequence = list(block.code)
         if condition_of(block):
@@ -91,7 +98,7 @@ def live_out(blocks, succs, synced, returned, condition_of, slot_of):
     while changed:
         changed = False
         for address in blocks:
-            new_out = set()
+            new_out = set(leaving[address])
             for s in succs.get(address, ()):
                 new_out |= live_in.get(s, set())
             if new_out != out[address]:
