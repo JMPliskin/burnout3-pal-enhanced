@@ -11,8 +11,10 @@
 #ifndef PS2HOST_VIF_H
 #define PS2HOST_VIF_H
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <string>
 
 namespace ps2host {
 
@@ -20,17 +22,23 @@ class VifStream {
 public:
     /* Called when MSKPATH3 masks (true) or unmasks (false) PATH3. */
     std::function<void(bool masked)> on_mask_path3;
+    /* Each word of DIRECT/DIRECTHL data: GIF data on PATH2. */
+    std::function<void(std::uint32_t word)> on_direct;
 
     /* The next 32-bit word of the stream, from the FIFO or a DMA transfer. */
     void Word(std::uint32_t word);
 
     std::uint64_t commands() const { return commands_; }
     std::uint64_t data_words() const { return data_words_; }
+    /* For the report: how often each command came, by name. */
+    std::string Summary() const;
 
 private:
     std::uint32_t pending_ = 0;     /* data words still owed to the last command */
+    bool direct_ = false;           /* ...and they are DIRECT's */
     std::uint32_t cycle_length_ = 0, write_length_ = 0;     /* STCYCL's CL and WL */
     std::uint64_t commands_ = 0, data_words_ = 0;
+    std::array<std::uint64_t, 128> by_command_{};
 
     /* Words of data an UNPACK of `num` elements in format `format` reads. */
     std::uint32_t UnpackWords(std::uint32_t format, std::uint32_t num) const;

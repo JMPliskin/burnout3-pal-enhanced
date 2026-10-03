@@ -11,6 +11,7 @@
 
 #include "ps2host/disc.h"
 #include "ps2host/dma.h"
+#include "ps2host/gs.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
 #include "ps2rt/generated.h"
@@ -193,6 +194,46 @@ void DmaChainsAreWalked() {
     Check(!ps2host::SendDma(loop, [](u32) {}, 100).ended, "a looping chain is cut off");
 }
 
+// Every format's layout maps a page's pixels onto distinct bytes (nibbles).
+void GsLayoutsArePermutations() {
+    using namespace ps2host::gs;
+    struct Case { u32 psm, w, h, bw; };
+    const Case cases[] = {{PSMCT32, 64, 32, 1}, {PSMZ32, 64, 32, 1}, {PSMCT16, 64, 64, 1},
+                          {PSMCT16S, 64, 64, 1}, {PSMZ16, 64, 64, 1}, {PSMZ16S, 64, 64, 1},
+                          {PSMT8, 128, 64, 2}, {PSMT4, 128, 128, 2}};
+    for (const Case& c : cases) {
+        std::vector<int> seen(8192 * 2, 0);
+        bool ok = true;
+        const u32 bytes = c.psm == PSMT4 ? 0 : c.psm == PSMT8 ? 1 : (c.psm & 2) ? 2 : 4;
+        for (u32 y = 0; y < c.h; ++y)
+            for (u32 x = 0; x < c.w; ++x) {
+                u32 nibble = 0;
+                const u32 a = Memory::Address(0, c.bw, x, y, c.psm, &nibble);
+                if (a >= 8192) { ok = false; continue; }
+                const u32 slot = bytes ? a / bytes : a * 2 + nibble;
+                if (seen[slot]++) ok = false;
+            }
+        char what[64];
+        std::snprintf(what, sizeof what, "GS layout 0x%02X covers one page exactly", unsigned(c.psm));
+        Check(ok, what);
+    }
+}
+
+void GsDrawsASprite() {
+    using namespace ps2host::gs;
+    Gs gs;
+    gs.WriteRegister(0x4C, (u64(0) << 0) | (u64(1) << 16) | (u64(PSMCT32) << 24));   // FRAME: fbp 0, 64 wide
+    gs.WriteRegister(0x40, u64(63) << 16 | u64(63) << 48);                          // SCISSOR 0..63
+    gs.WriteRegister(0x00, 6);                                                      // PRIM: sprite
+    gs.WriteRegister(0x01, 0x80402010ull);                                          // RGBAQ
+    gs.WriteRegister(0x05, (u64(4) << 4) | (u64(4) << 4) << 16);                    // XYZ2 (4,4)
+    gs.WriteRegister(0x05, (u64(8) << 4) | (u64(6) << 4) << 16);                    // XYZ2 (8,6)
+    Check(gs.memory.Read(0, 1, 5, 5, PSMCT32) == 0x80402010u, "a sprite's pixels take its colour");
+    Check(gs.memory.Read(0, 1, 8, 5, PSMCT32) == 0 && gs.memory.Read(0, 1, 5, 6, PSMCT32) == 0,
+          "a sprite stops short of its far edges");
+    Check(gs.primitives() == 1 && gs.pixels_drawn() == 8, "one sprite of 4x2 pixels");
+}
+
 }  // namespace
 
 int main() {
@@ -206,6 +247,8 @@ int main() {
     WideWritesReachEveryWordsHook();
     VifSkipsDataAndAppliesMaskPath3();
     DmaChainsAreWalked();
+    GsLayoutsArePermutations();
+    GsDrawsASprite();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

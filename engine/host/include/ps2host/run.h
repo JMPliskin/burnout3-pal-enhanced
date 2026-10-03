@@ -103,6 +103,10 @@ const char* SyscallName(s32 service);
 
 /* Device registers with hardware meaning (devices.cpp). */
 void InstallDevices();
+/* Each vertical blank: write the displayed picture to `dir` every `every`
+   frames, at most `limit` of them (--frames). */
+void SetFrameDumps(const std::string& dir, int every, int limit);
+void FrameDone(u64 frame);
 
 }  // namespace ps2host
 

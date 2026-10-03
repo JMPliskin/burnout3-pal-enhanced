@@ -14,7 +14,9 @@
 #include <unordered_map>
 
 #include "ps2host/disc.h"
+#include "ps2host/gs.h"
 #include "ps2host/iop_vm.h"
+#include "ps2host/vif.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -250,6 +252,11 @@ void Report(const Options& options, const std::string& outcome) {
         }
         std::printf("\n");
     }
+    std::printf("VIF1 commands:%s\n", Vif1().Summary().c_str());
+    std::printf("GS: %llu primitives, %llu pixels written\n",
+                static_cast<unsigned long long>(gs::TheGs().primitives()),
+                static_cast<unsigned long long>(gs::TheGs().pixels_drawn()));
+    std::printf("%s\n", gs::TheGs().Summary().c_str());
     std::printf("kernel services used:\n");
     for (const auto& [service, count] : stats.syscalls)
         std::printf("  %4d  %-24s x%llu\n", service, SyscallName(service),
@@ -320,6 +327,7 @@ int Run(const Options& options) {
     g_trace = options.trace_calls;
     g_all_notes = options.all_notes;
     iop::SetTrace(options.iop_trace);
+    if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
     g_watch = options.watch;
     InstallDevices();
     InstallIopServers();
@@ -366,6 +374,8 @@ int Main(int argc, char** argv) {
         if (arg == "--trace") options.trace_calls = true;
         else if (arg == "--notes") options.all_notes = true;
         else if (arg == "--iop-trace") options.iop_trace = true;
+        else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
+        else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
         else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
         else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);

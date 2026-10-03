@@ -31,7 +31,10 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/dbc.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/iop_vm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/iop_libs.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/iopheap.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/src/iopheap.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gs.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gs_draw.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gs_memory.cpp)
 # The IOP interpreter names library functions from engine/data/iop_exports.csv.
 target_compile_definitions(ps2host PRIVATE PS2_ENGINE_DATA="${PS2_ENGINE_DIR}/data")
 target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)

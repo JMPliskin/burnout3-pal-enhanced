@@ -30,10 +30,13 @@ void VifStream::Word(std::uint32_t word) {
     if (pending_) {
         --pending_;
         ++data_words_;
+        if (direct_ && on_direct) on_direct(word);
         return;
     }
+    direct_ = false;
     ++commands_;
     const std::uint32_t command = (word >> 24) & 0x7F;
+    ++by_command_[command];
     const std::uint32_t num = (word >> 16) & 0xFF;
     const std::uint32_t immediate = word & 0xFFFF;
     if (command >= 0x60) {
@@ -53,9 +56,25 @@ void VifStream::Word(std::uint32_t word) {
         case 0x4A: pending_ = (num ? num : 256) * 2; break; // MPG
         case 0x50: case 0x51:                               // DIRECT, DIRECTHL
             pending_ = (immediate ? immediate : 0x10000) * 4;
+            direct_ = true;
             break;
         default: break;
     }
+}
+
+std::string VifStream::Summary() const {
+    static const std::pair<std::uint32_t, const char*> kNames[] = {
+        {0x00, "NOP"}, {0x01, "STCYCL"}, {0x02, "OFFSET"}, {0x03, "BASE"}, {0x04, "ITOP"},
+        {0x05, "STMOD"}, {0x06, "MSKPATH3"}, {0x07, "MARK"}, {0x10, "FLUSHE"}, {0x11, "FLUSH"},
+        {0x13, "FLUSHA"}, {0x14, "MSCAL"}, {0x15, "MSCALF"}, {0x17, "MSCNT"}, {0x20, "STMASK"},
+        {0x30, "STROW"}, {0x31, "STCOL"}, {0x4A, "MPG"}, {0x50, "DIRECT"}, {0x51, "DIRECTHL"}};
+    std::string out;
+    std::uint64_t unpacks = 0;
+    for (std::uint32_t c = 0x60; c < 0x80; ++c) unpacks += by_command_[c];
+    for (const auto& [code, name] : kNames)
+        if (by_command_[code]) out += std::string(" ") + name + " " + std::to_string(by_command_[code]);
+    if (unpacks) out += " UNPACK " + std::to_string(unpacks);
+    return out;
 }
 
 VifStream& Vif1() {

@@ -26,6 +26,7 @@
 #include <string>
 
 #include "ps2host/dma.h"
+#include "ps2host/gs.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 #include "ps2host/vif.h"
@@ -46,7 +47,7 @@ const Channel kChannels[] = {
     {0x1000A000u, "GIF", 2, true}, {0x1000B000u, "IPU_FROM", 3, false},
     {0x1000B400u, "IPU_TO", 4, false}, {0x1000C000u, "SIF0", 5, false},
     {0x1000C400u, "SIF1", 6, false}, {0x1000C800u, "SIF2", 7, false},
-    {0x1000D000u, "SPR_FROM", 8, false}, {0x1000D400u, "SPR_TO", 9, false},
+    {0x1000D000u, "SPR_FROM", 8, true}, {0x1000D400u, "SPR_TO", 9, true},
 };
 
 // Register offsets within a channel.
@@ -68,16 +69,64 @@ constexpr u32 kGifStat = 0x10003020u;
 constexpr u32 kGifStatM3P = 1u << 1;
 constexpr u32 kGifStatFqcShift = 24, kGifStatFqc = 0x1Fu << kGifStatFqcShift;
 
+// PATH3: GIF DMA data to the GS, held while VIF1 has PATH3 masked - it goes
+// after the PATH2 data VIF1 sends meanwhile, as the GIF arbitrates.
+std::vector<u32> g_path3_held;
+bool g_path3_masked = false;
+
+void Path3(u32 word) {
+    if (g_path3_masked) g_path3_held.push_back(word);
+    else gs::TheGs().Word(3, word);
+}
+
 u32* Register(u32 address) { return reinterpret_cast<u32*>(GuestMemory().Translate(address, 4)); }
+
+// The scratchpad channels: SADR (base + 0x80) is the scratchpad address.
+// SPR_FROM copies QWC quadwords from it to MADR; SPR_TO copies from memory
+// (normal or a source chain) into it.
+constexpr u32 kSadr = 0x80;
+
+std::string Scratchpad(const Channel& ch, u32 chcr) {
+    Memory& m = GuestMemory();
+    u32 sadr = u32(m.Read(ch.base + kSadr, 4)) & 0x3FF0u;
+    const u32 madr = u32(m.Read(ch.base + kMadr, 4)), qwc = u32(m.Read(ch.base + kQwc, 4));
+    char text[160];
+    if (ch.base == 0x1000D000u) {                       // SPR_FROM
+        if ((chcr >> 2) & 3) return "chain mode is not modelled (nothing copied)";
+        for (u32 i = 0; i < 16 * qwc; i += 4) {
+            m.Write(madr + i, m.Read(kScratchpadBase + ((sadr + i) & 0x3FFCu), 4), 4);
+        }
+        *Register(ch.base + kMadr) = madr + 16 * qwc;
+        *Register(ch.base + kQwc) = 0;
+        *Register(ch.base + kSadr) = (sadr + 16 * qwc) & 0x3FF0u;
+        std::snprintf(text, sizeof text, "%u quadwords from scratchpad 0x%04X", unsigned(qwc), unsigned(sadr));
+        return text;
+    }
+    DmaChannelState state{chcr, madr, qwc, u32(m.Read(ch.base + kTadr, 4)),
+                          u32(m.Read(ch.base + kAsr0, 4)), u32(m.Read(ch.base + kAsr1, 4))};
+    const DmaOutcome outcome = SendDma(state, [&sadr](u32 word) {
+        GuestMemory().Write(kScratchpadBase + (sadr & 0x3FFCu), word, 4);
+        sadr = (sadr + 4) & 0x3FFFu;
+    });
+    *Register(ch.base + kMadr) = state.madr;
+    *Register(ch.base + kQwc) = state.qwc;
+    *Register(ch.base + kTadr) = state.tadr;
+    *Register(ch.base + kSadr) = sadr & 0x3FF0u;
+    *Register(ch.base) = state.chcr;
+    std::snprintf(text, sizeof text, "%llu quadwords to scratchpad", static_cast<unsigned long long>(outcome.quadwords));
+    return text;
+}
 
 // Walks a started transfer and leaves the registers as it would; returns a note.
 std::string Walk(const Channel& ch, u32 chcr) {
     Memory& m = GuestMemory();
+    if (ch.base == 0x1000D000u || ch.base == 0x1000D400u) return Scratchpad(ch, chcr);
     DmaChannelState state{chcr, u32(m.Read(ch.base + kMadr, 4)), u32(m.Read(ch.base + kQwc, 4)),
                           u32(m.Read(ch.base + kTadr, 4)), u32(m.Read(ch.base + kAsr0, 4)),
                           u32(m.Read(ch.base + kAsr1, 4))};
     std::function<void(u32)> sink = [](u32) {};
     if (ch.base == 0x10009000u) sink = [](u32 word) { Vif1().Word(word); };
+    if (ch.base == 0x1000A000u) sink = [](u32 word) { Path3(word); };
     char text[160];
     try {
         const DmaOutcome outcome = SendDma(state, sink);
@@ -103,6 +152,24 @@ constexpr u32 kVif1Fifo = 0x10005000u;
 constexpr u32 kTimerCounts[] = {0x10000000u, 0x10000800u, 0x10001000u, 0x10001800u};
 
 }  // namespace
+
+namespace {
+std::string g_frames_dir;
+int g_frames_every = 30, g_frames_limit = 100, g_frames_written = 0;
+}  // namespace
+
+void SetFrameDumps(const std::string& dir, int every, int limit) {
+    g_frames_dir = dir;
+    g_frames_every = every > 0 ? every : 1;
+    g_frames_limit = limit;
+}
+
+void FrameDone(u64 frame) {
+    if (g_frames_dir.empty() || g_frames_written >= g_frames_limit || frame % u64(g_frames_every)) return;
+    char name[64];
+    std::snprintf(name, sizeof name, "/frame_%06llu.bmp", static_cast<unsigned long long>(frame));
+    if (gs::TheGs().WriteBmp(g_frames_dir + name)) ++g_frames_written;
+}
 
 void InstallDevices() {
     Memory& m = GuestMemory();
@@ -132,7 +199,23 @@ void InstallDevices() {
         u32* stat = reinterpret_cast<u32*>(GuestMemory().Translate(kGifStat, 4));
         // Unmasking lets PATH3 take its turn, which drains what the FIFO held.
         *stat = masked ? (*stat | kGifStatM3P) : (*stat & ~(kGifStatM3P | kGifStatFqc));
+        g_path3_masked = masked;
+        if (!masked) {
+            std::vector<u32> held;
+            held.swap(g_path3_held);
+            for (u32 word : held) gs::TheGs().Word(3, word);
+        }
     };
+    Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
+    // The GS's privileged registers: what is displayed. A 64-bit store reaches
+    // both words; each passes the whole register on.
+    for (u32 reg : {0x12000000u, 0x12000070u, 0x12000080u, 0x12000090u, 0x120000A0u, 0x120000E0u}) {
+        for (u32 half : {0u, 4u}) {
+            GuestMemory().OnWrite(reg + half, [reg](u32, u64) {
+                gs::TheGs().SetPrivileged(reg, GuestMemory().Read(reg, 8));
+            });
+        }
+    }
     // The FIFO takes whole quadwords; the store's last word hands all four over.
     m.OnWrite(kVif1Fifo + 12, [](u32, u64) {
         Memory& memory = GuestMemory();

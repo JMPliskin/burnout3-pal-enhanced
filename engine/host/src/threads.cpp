@@ -196,6 +196,7 @@ bool DeliverFrame() {
     Scheduler& s = S();
     ++s.frames;
     iop::Run();                             // the IOP's timers and sound interrupts
+    FrameDone(s.frames);
     bool ran = false;
     for (u32 cause : {kVblankStart, kVblankEnd})
         if (s.intc_mask & (1u << cause)) ran |= RunHandlers(s.handlers, cause);

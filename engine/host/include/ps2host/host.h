@@ -71,6 +71,8 @@ struct Options {
     std::string discover_path;     /* where to record code found copied at run time */
     std::vector<u32> watch;        /* functions whose every call logs its argument registers */
     std::vector<u32> peek;         /* guest addresses whose 64 bytes the report shows */
+    std::string frames_dir;        /* write the displayed picture here as BMP files */
+    int frames_every = 30;         /* ...every this many frames */
 };
 
 /* Load the executable, run it from its entry point, and report how far it got.

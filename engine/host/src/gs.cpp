@@ -1,0 +1,376 @@
+/*
+ * The GS (gs.h): GIF packets, registers, image transfers, the display.
+ * Drawing is in gs_draw.cpp, local memory's layout in gs_memory.cpp.
+ *
+ * A GIF tag (GS User's Manual, chapter 7) is a quadword:
+ *   bits 0-14 NLOOP, 15 EOP, 46 PRE, 47-57 PRIM, 58-59 FLG, 60-63 NREG,
+ *   64-127 REGS (NREG 4-bit register descriptors)
+ * FLG 0 PACKED: a quadword per register, in the descriptor's packed format;
+ * 1 REGLIST: a 64-bit register value per descriptor, two per quadword;
+ * 2 IMAGE (and 3): NLOOP quadwords of image data for HWREG.
+ */
+
+#include "ps2host/gs.h"
+
+#include <cstdio>
+#include <cstring>
+
+namespace ps2host {
+namespace gs {
+
+namespace {
+
+float AsFloat(u32 bits) {
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+
+u32 Bits(u64 value, int low, int count) { return u32((value >> low) & ((1ull << count) - 1)); }
+
+}  // namespace
+
+std::string Gs::Summary() const {
+    char text[160];
+    std::snprintf(text, sizeof text, "GIF tags: PATH1 %llu, PATH2 %llu, PATH3 %llu; image %llu quadwords;",
+                  static_cast<unsigned long long>(tags_[1]), static_cast<unsigned long long>(tags_[2]),
+                  static_cast<unsigned long long>(tags_[3]), static_cast<unsigned long long>(image_qwords_));
+    std::string out = text;
+    out += " register writes:";
+    for (u32 r = 0; r < 256; ++r)
+        if (register_writes_[r]) {
+            std::snprintf(text, sizeof text, " %02X:%llu", unsigned(r),
+                          static_cast<unsigned long long>(register_writes_[r]));
+            out += text;
+        }
+    return out;
+}
+
+Gs& TheGs() {
+    static Gs gs;
+    return gs;
+}
+
+// ---------------------------------------------------------------- GIF
+
+void Gs::Word(int path, u32 word) {
+    Path& p = paths_[path];
+    p.pending[p.pending_count++] = word;
+    if (p.pending_count < 4) return;
+    p.pending_count = 0;
+    Qword(path, u64(p.pending[0]) | u64(p.pending[1]) << 32, u64(p.pending[2]) | u64(p.pending[3]) << 32);
+}
+
+void Gs::Qword(int path, u64 low, u64 high) {
+    Path& p = paths_[path];
+    if (!p.loops) {
+        // A tag.
+        p.tag_low = low;
+        p.tag_high = high;
+        p.loops = Bits(low, 0, 15);
+        p.format = Bits(low, 58, 2);
+        p.nregs = Bits(low, 60, 4);
+        if (!p.nregs) p.nregs = 16;
+        p.reg = 0;
+        q_ = 1.0f;
+        ++tags_[path];
+        if (Bits(low, 46, 1) && p.format == 0) WriteRegister(0x00, Bits(low, 47, 11));
+        return;
+    }
+    switch (p.format) {
+        case 0:                                         // PACKED
+            Packed(u32(p.tag_high >> (4 * p.reg)) & 15, low, high);
+            if (++p.reg == p.nregs) { p.reg = 0; --p.loops; }
+            break;
+        case 1:                                         // REGLIST
+            for (u64 value : {low, high}) {
+                if (!p.loops) break;
+                const u32 descriptor = u32(p.tag_high >> (4 * p.reg)) & 15;
+                if (descriptor != 0xE && descriptor != 0xF) WriteRegister(descriptor, value);
+                if (++p.reg == p.nregs) { p.reg = 0; --p.loops; }
+            }
+            break;
+        default:                                        // IMAGE
+            ++image_qwords_;
+            Transfer(low, high);
+            --p.loops;
+            break;
+    }
+}
+
+void Gs::Packed(u32 descriptor, u64 low, u64 high) {
+    switch (descriptor) {
+        case 0x0: WriteRegister(0x00, low & 0x7FF); break;
+        case 0x1: {                                     // RGBA, Q from ST
+            u32 qbits;
+            std::memcpy(&qbits, &q_, 4);
+            rgbaq_ = Bits(low, 0, 8) | Bits(low, 32, 8) << 8 | u64(Bits(high, 0, 8)) << 16 |
+                     u64(Bits(high, 32, 8)) << 24 | u64(qbits) << 32;
+            break;
+        }
+        case 0x2: st_ = low; q_ = AsFloat(u32(high)); break;
+        case 0x3: uv_ = Bits(low, 0, 14) | u64(Bits(low, 32, 14)) << 16; break;
+        case 0x4: case 0xC: {                           // XYZF2 / XYZF3
+            const u64 value = Bits(low, 0, 16) | u64(Bits(low, 32, 16)) << 16 |
+                              u64(Bits(high, 4, 24)) << 32 | u64(Bits(high, 36, 8)) << 56;
+            const bool adc = descriptor == 0xC || Bits(high, 47, 1);
+            WriteRegister(adc ? 0x0C : 0x04, value);
+            break;
+        }
+        case 0x5: case 0xD: {                           // XYZ2 / XYZ3
+            const u64 value = Bits(low, 0, 16) | u64(Bits(low, 32, 16)) << 16 | u64(u32(high)) << 32;
+            const bool adc = descriptor == 0xD || Bits(high, 47, 1);
+            WriteRegister(adc ? 0x0D : 0x05, value);
+            break;
+        }
+        case 0xA: WriteRegister(0x0A, u64(Bits(high, 36, 8)) << 56); break;  // FOG
+        case 0xE: WriteRegister(u32(high & 0xFF), low); break;               // A+D
+        case 0xF: break;                                                    // NOP
+        default: WriteRegister(descriptor, low); break; // TEX0, CLAMP
+    }
+}
+
+// ---------------------------------------------------------------- registers
+
+void Gs::WriteRegister(u32 address, u64 value) {
+    ++register_writes_[address & 0xFF];
+    switch (address) {
+        case 0x00: prim_ = value; queued_ = 0; strip_ = 0; break;
+        case 0x01: rgbaq_ = value; break;
+        case 0x02: st_ = value; break;
+        case 0x03: uv_ = value; break;
+        case 0x04: case 0x05: case 0x0C: case 0x0D: {
+            // A vertex: position from the register, the rest latched.
+            const Context& c = Ctx();
+            Vertex v;
+            const bool f = address == 0x04 || address == 0x0C;
+            v.x = (float(Bits(value, 0, 16)) - float(Bits(c.xyoffset, 0, 16))) / 16.0f;
+            v.y = (float(Bits(value, 16, 16)) - float(Bits(c.xyoffset, 32, 16))) / 16.0f;
+            v.z = f ? Bits(value, 32, 24) : u32(value >> 32);
+            if (f) v.fog = u8(value >> 56);
+            v.r = u8(rgbaq_); v.g = u8(rgbaq_ >> 8); v.b = u8(rgbaq_ >> 16); v.a = u8(rgbaq_ >> 24);
+            v.q = AsFloat(u32(rgbaq_ >> 32));
+            v.s = AsFloat(u32(st_));
+            v.t = AsFloat(u32(st_ >> 32));
+            v.u = Bits(uv_, 0, 14);
+            v.v = Bits(uv_, 16, 14);
+            if (queued_ == 3) {                         // keep the newest two
+                queue_[0] = queue_[1];
+                queue_[1] = queue_[2];
+                queued_ = 2;
+            }
+            queue_[queued_++] = v;
+            Kick(address == 0x04 || address == 0x05);
+            break;
+        }
+        case 0x06: case 0x07:
+            ctx_[address - 0x06].tex0 = value;
+            LoadClut(value);
+            break;
+        case 0x08: case 0x09: ctx_[address - 0x08].clamp = value; break;
+        case 0x14: case 0x15: ctx_[address - 0x14].tex1 = value; break;
+        case 0x16: case 0x17: {
+            // TEX2: TEX0's format and CLUT fields only.
+            u64& tex0 = ctx_[address - 0x16].tex0;
+            const u64 mask = (0x3Full << 20) | (0x7FFFFFFull << 37);
+            tex0 = (tex0 & ~mask) | (value & mask);
+            LoadClut(tex0);
+            break;
+        }
+        case 0x18: case 0x19: ctx_[address - 0x18].xyoffset = value; break;
+        case 0x1A: prmodecont_ = value; break;
+        case 0x1B: prmode_ = value; break;
+        case 0x1C: texclut_ = value; break;
+        case 0x3B: texa_ = value; break;
+        case 0x3D: fogcol_ = value; break;
+        case 0x40: case 0x41: ctx_[address - 0x40].scissor = value; break;
+        case 0x42: case 0x43: ctx_[address - 0x42].alpha = value; break;
+        case 0x45: dthe_ = value; break;
+        case 0x46: colclamp_ = value; break;
+        case 0x47: case 0x48: ctx_[address - 0x47].test = value; break;
+        case 0x49: pabe_ = value; break;
+        case 0x4A: case 0x4B: ctx_[address - 0x4A].fba = value; break;
+        case 0x4C: case 0x4D: ctx_[address - 0x4C].frame = value; break;
+        case 0x4E: case 0x4F: ctx_[address - 0x4E].zbuf = value; break;
+        case 0x50: bitbltbuf_ = value; break;
+        case 0x51: trxpos_ = value; break;
+        case 0x52: trxreg_ = value; break;
+        case 0x53:
+            trxdir_ = value & 3;
+            trx_x_ = 0;
+            trx_y_ = 0;
+            trx_active_ = trxdir_ == 0;
+            if (trxdir_ == 2) LocalToLocal();
+            break;
+        case 0x54: Transfer(value, 0); break;          // HWREG: 64 bits
+        default: break;
+    }
+}
+
+// ---------------------------------------------------------------- transfers
+
+void Gs::Transfer(u64 low, u64 high) {
+    if (!trx_active_) return;
+    const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
+    const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
+    const u32 w = Bits(trxreg_, 0, 12), h = Bits(trxreg_, 32, 12);
+    if (!w || !h) { trx_active_ = false; return; }
+    u8 bytes[16];
+    std::memcpy(bytes, &low, 8);
+    std::memcpy(bytes + 8, &high, 8);
+    auto next = [&]() {
+        if (++trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
+    };
+    auto put = [&](u32 value) {
+        if (!trx_active_) return;
+        memory.Write(dbp, dbw, (dx + trx_x_) % 2048, (dy + trx_y_) % 2048, psm, value);
+        next();
+    };
+    switch (psm) {
+        case PSMCT32: case PSMZ32:
+            for (int i = 0; i < 16; i += 4) put(u32(bytes[i]) | u32(bytes[i + 1]) << 8 | u32(bytes[i + 2]) << 16 | u32(bytes[i + 3]) << 24);
+            break;
+        case PSMCT24: case PSMZ24:
+            // 24-bit pixels run across quadwords: gather bytes.
+            for (int i = 0; i < 16; ++i) {
+                trx_partial_ |= u32(bytes[i]) << (8 * trx_partial_bytes_);
+                if (++trx_partial_bytes_ == 3) { put(trx_partial_); trx_partial_ = 0; trx_partial_bytes_ = 0; }
+            }
+            break;
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S:
+            for (int i = 0; i < 16; i += 2) put(u32(bytes[i]) | u32(bytes[i + 1]) << 8);
+            break;
+        case PSMT8: case PSMT8H:
+            for (int i = 0; i < 16; ++i) put(bytes[i]);
+            break;
+        case PSMT4: case PSMT4HL: case PSMT4HH:
+            for (int i = 0; i < 16; ++i) { put(bytes[i] & 15); put(bytes[i] >> 4); }
+            break;
+        default:
+            trx_active_ = false;
+            break;
+    }
+}
+
+void Gs::LocalToLocal() {
+    const u32 sbp = Bits(bitbltbuf_, 0, 14), sbw = Bits(bitbltbuf_, 16, 6), spsm = Bits(bitbltbuf_, 24, 6);
+    const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), dpsm = Bits(bitbltbuf_, 56, 6);
+    const u32 sx = Bits(trxpos_, 0, 11), sy = Bits(trxpos_, 16, 11);
+    const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
+    const u32 w = Bits(trxreg_, 0, 12), h = Bits(trxreg_, 32, 12);
+    std::vector<u32> copy(std::size_t(w) * h);
+    for (u32 y = 0; y < h; ++y)
+        for (u32 x = 0; x < w; ++x) copy[y * w + x] = memory.Read(sbp, sbw, (sx + x) % 2048, (sy + y) % 2048, spsm);
+    for (u32 y = 0; y < h; ++y)
+        for (u32 x = 0; x < w; ++x) memory.Write(dbp, dbw, (dx + x) % 2048, (dy + y) % 2048, dpsm, copy[y * w + x]);
+}
+
+// ---------------------------------------------------------------- CLUT
+
+namespace {
+
+u32 From16(u32 c, u64 texa) {
+    const u32 r = (c & 31) << 3, g = ((c >> 5) & 31) << 3, b = ((c >> 10) & 31) << 3;
+    const u32 a = (c & 0x8000) ? Bits(texa, 32, 8) : ((Bits(texa, 15, 1) && !(c & 0x7FFF)) ? 0 : Bits(texa, 0, 8));
+    return r | g << 8 | b << 16 | a << 24;
+}
+
+}  // namespace
+
+void Gs::LoadClut(u64 tex0) {
+    const u32 psm = Bits(tex0, 20, 6), cld = Bits(tex0, 61, 3);
+    if (psm != PSMT8 && psm != PSMT4 && psm != PSMT8H && psm != PSMT4HL && psm != PSMT4HH) return;
+    const u32 cbp = Bits(tex0, 37, 14), cpsm = Bits(tex0, 51, 4), csa = Bits(tex0, 56, 5);
+    bool load = cld == 1 || cld == 2 || cld == 3;
+    if (cld == 4) load = cbp != cbp0_;
+    if (cld == 5) load = cbp != cbp1_;
+    if (cld == 2 || cld == 4) cbp0_ = cbp;
+    if (cld == 3 || cld == 5) cbp1_ = cbp;
+    if (!load) return;
+    const bool eight = psm == PSMT8 || psm == PSMT8H;
+    const u32 count = eight ? 256 : 16;
+    for (u32 i = 0; i < count; ++i) {
+        // CSM1: an 8-bit CLUT is a 16x16 image with index bits 3 and 4 swapped;
+        // a 4-bit one an 8x2 image.
+        u32 x, y;
+        if (eight) {
+            const u32 p = (i & 0xE7) | ((i & 0x08) << 1) | ((i & 0x10) >> 1);
+            x = p % 16;
+            y = p / 16;
+        } else {
+            x = i % 8;
+            y = i / 8;
+        }
+        const u32 raw = memory.Read(cbp, 1, x, y, cpsm == 0 ? PSMCT32 : cpsm);
+        const u32 color = cpsm == 0 ? raw : From16(raw, texa_);
+        clut_[eight ? i : (csa * 16 + i) % 256] = color;
+    }
+}
+
+// ---------------------------------------------------------------- display
+
+void Gs::SetPrivileged(u32 address, u64 value) {
+    switch (address & 0xFFFF) {
+        case 0x0000: pmode_ = value; break;
+        case 0x0070: dispfb_[0] = value; break;
+        case 0x0080: display_[0] = value; break;
+        case 0x0090: dispfb_[1] = value; break;
+        case 0x00A0: display_[1] = value; break;
+        case 0x00E0: bgcolor_ = value; break;
+        default: break;
+    }
+}
+
+bool Gs::Picture(std::vector<u32>* pixels, u32* width, u32* height) const {
+    // The read circuit shown: 2 if enabled, else 1.
+    int circuit = Bits(pmode_, 1, 1) ? 1 : Bits(pmode_, 0, 1) ? 0 : -1;
+    if (circuit < 0) {
+        if (!dispfb_[1] && !dispfb_[0]) return false;
+        circuit = dispfb_[1] ? 1 : 0;
+    }
+    const u64 fb = dispfb_[circuit], disp = display_[circuit];
+    const u32 fbp = Bits(fb, 0, 9) * 32, fbw = Bits(fb, 9, 6), psm = Bits(fb, 15, 5);
+    const u32 dbx = Bits(fb, 32, 11), dby = Bits(fb, 43, 11);
+    const u32 magh = Bits(disp, 23, 4) + 1, magv = Bits(disp, 27, 2) + 1;
+    u32 w = (Bits(disp, 32, 12) + 1) / magh, h = (Bits(disp, 44, 11) + 1) / magv;
+    if (!w || w > 1024) w = 640;
+    if (!h || h > 1024) h = 448;
+    if (!fbw) return false;
+    pixels->assign(std::size_t(w) * h, 0);
+    for (u32 y = 0; y < h; ++y)
+        for (u32 x = 0; x < w; ++x) {
+            u32 c = memory.Read(fbp, fbw, dbx + x, dby + y, psm);
+            if (psm == PSMCT16 || psm == PSMCT16S) c = From16(c, 0);
+            // RGBA in memory, BGRA in the picture.
+            (*pixels)[std::size_t(y) * w + x] = (c & 0xFF00FF00u) | ((c & 0xFF) << 16) | ((c >> 16) & 0xFF);
+        }
+    *width = w;
+    *height = h;
+    return true;
+}
+
+bool Gs::WriteBmp(const std::string& path) const {
+    std::vector<u32> pixels;
+    u32 w = 0, h = 0;
+    if (!Picture(&pixels, &w, &h)) return false;
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const u32 data = w * h * 4, file = 54 + data;
+    u8 header[54] = {'B', 'M'};
+    auto put32 = [&](int at, u32 v) { std::memcpy(header + at, &v, 4); };
+    put32(2, file);
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, w);
+    put32(22, u32(-s32(h)));                   // negative: top-down rows
+    header[26] = 1;
+    header[28] = 32;
+    put32(34, data);
+    std::fwrite(header, 1, 54, f);
+    std::fwrite(pixels.data(), 4, pixels.size(), f);
+    std::fclose(f);
+    return true;
+}
+
+}  // namespace gs
+}  // namespace ps2host
