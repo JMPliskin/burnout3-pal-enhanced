@@ -98,11 +98,12 @@ void Gs::Draw() {
         const Vertex& v = queue_[0];
         const Vertex& w = queue_[queued_ - 1];
         std::fprintf(stderr, "[gs] prim %llX tex0 tbp %X tbw %u psm %02X %ux%u cbp %X cpsm %u csm %u csa %u cld %u"
-                     " | (%.1f,%.1f)-(%.1f,%.1f) uv (%u,%u)-(%u,%u) st (%.3f,%.3f)-(%.3f,%.3f)\n",
+                     " | (%.1f,%.1f)-(%.1f,%.1f) uv (%u,%u)-(%u,%u) st (%.3f,%.3f)-(%.3f,%.3f) q %.3f-%.3f"
+                     " rgba %02X%02X%02X%02X\n",
                      (unsigned long long)Prim(), Bits(c.tex0, 0, 14), Bits(c.tex0, 14, 6), Bits(c.tex0, 20, 6),
                      1u << Bits(c.tex0, 26, 4), 1u << Bits(c.tex0, 30, 4), Bits(c.tex0, 37, 14),
                      Bits(c.tex0, 51, 4), Bits(c.tex0, 55, 1), Bits(c.tex0, 56, 5), Bits(c.tex0, 61, 3),
-                     v.x, v.y, w.x, w.y, v.u, v.v, w.u, w.v, v.s, v.t, w.s, w.t);
+                     v.x, v.y, w.x, w.y, v.u, v.v, w.u, w.v, v.s, v.t, w.s, w.t, v.q, w.q, w.r, w.g, w.b, w.a);
         if (queued_ == 3)
             std::fprintf(stderr, "[gs]   middle vertex (%.1f,%.1f)\n", queue_[1].x, queue_[1].y);
         std::fprintf(stderr, "[gs]   frame fbp %X fbw %u psm %02X fbmsk %08X; zbuf zbp %X psm %02X zmsk %u; test %llX alpha %llX\n",

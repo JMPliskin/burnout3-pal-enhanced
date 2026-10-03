@@ -112,7 +112,7 @@ void Gs::Packed(u32 descriptor, u64 low, u64 high) {
                      u64(Bits(high, 32, 8)) << 24 | u64(qbits) << 32;
             break;
         }
-        case 0x2: st_ = low; q_ = AsFloat(u32(high)); break;
+        case 0x2: st_ = low; q_ = AsFloat(u32(high)); break;   // Q waits for the next RGBA
         case 0x3: uv_ = Bits(low, 0, 14) | u64(Bits(low, 32, 14)) << 16; break;
         case 0x4: case 0xC: {                           // XYZF2 / XYZF3
             const u64 value = Bits(low, 0, 16) | u64(Bits(low, 32, 16)) << 16 |
