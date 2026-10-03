@@ -2,7 +2,7 @@ address,name,source
 0x00102628,RFU080,kernel service 0x80
 0x00102D20,sceGsPutDrawEnv,diagnostic string
 0x00102EA0,sceGsSyncPath,status table
-0x00103488,sceGsExecStoreImage,status table
+0x001032F8,sceGsExecStoreImage,status table
 0x0010BA70,ExecPS2,kernel service 0x07
 0x0010BAD0,SetVTLBRefillHandler,kernel service 0x0D
 0x0010BAE0,SetVCommonHandler,kernel service 0x0E
@@ -90,7 +90,6 @@ address,name,source
 0x0021BB60,LookupByPath,status table
 0x0021BD80,LookupVariantB,status table
 0x0021BFA0,HashName,status table
-0x0024FDF0,HashNameAlias,status table
 0x00299550,FindFirstSet,status table
 0x002E0838,lgAudInit,status table
 0x002E0CF0,lgAudOpen,status table
