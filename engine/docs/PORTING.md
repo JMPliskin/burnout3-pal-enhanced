@@ -49,6 +49,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--window` | the picture, live, in a window (close it to end the run) |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
+| `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
 | `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
 | `--watch-write ADDR` | every store to a guest address, with the function making it |
 | `--iop-trace` | every IOP library call the game's own modules make |
@@ -114,7 +115,8 @@ so a new game gets them as soon as its routines are named.
    RAM; ELF loading; dispatch; kernel services for start-up (SetupThread,
    SetupHeap, FlushCache); the syscall table in guest kernel RAM, so SetSyscall
    and programs that read or patch the table behave as on the console; DMA
-   completing at once; GS vertical blank; timers that advance.
+   completing at once; GS vertical blank; the EE timers in host time, with
+   their interrupts (`timers.cpp`).
 2. **Threads** (done): EE threads as host fibers under the kernel's
    strict-priority scheduler; semaphores, sleep and wake-up block and resume.
 3. **Interrupts** (vertical blank and DMA done): handlers run at a safe point,

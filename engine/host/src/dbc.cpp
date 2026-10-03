@@ -22,7 +22,8 @@
  * The profile is a bitmask of 40 inputs; libpad2 lays the data out by it
  * (0x00215E30): inputs 16-31 and 35-38 are a byte each (analog), the others
  * a bit each, in input order. A DualShock 2 has inputs 0-31: 16 buttons
- * (active low: a pressed button's bit is 0) then 16 analog bytes - 18 bytes,
+ * (active low: a pressed button's bit is 0), the four stick bytes, then 12
+ * pressures - 18 bytes,
  * profile FF FF FF FF 00.
  */
 
@@ -83,15 +84,30 @@ const std::pair<int, int> kKeys[] = {
 
 bool Pressed(int key) { return WindowFocused() && (GetAsyncKeyState(key) & 0x8000) != 0; }
 
+// Scripted presses (--press): (input, first frame, last frame).
+struct Press { int input; u64 from, to; };
+std::vector<Press>& Script() {
+    static std::vector<Press> presses;
+    return presses;
+}
+u64 g_frame = 0;
+
 void PadData(u8* data) {
     u16 buttons = 0xFFFF;                                   // active low: nothing pressed
     for (const auto& [input, key] : kKeys)
         if (Pressed(key)) buttons &= u16(~(1u << input));
+    for (const Press& p : Script())
+        if (g_frame >= p.from && g_frame <= p.to) buttons &= u16(~(1u << p.input));
     data[0] = u8(buttons);
     data[1] = u8(buttons >> 8);
-    for (u32 i = 2; i < kDataBytes; ++i) data[i] = 0;      // pressures released
-    // The analog sticks: centred.
-    for (u32 i = 10; i < 14; ++i) data[i] = 0x80;
+    // Then, as libpad's DualShock 2 report has them: the sticks (right X, Y,
+    // left X, Y), centred, and the pressure of the pressure-sensitive buttons -
+    // right, left, up, down, triangle, circle, cross, square, L1, R1, L2, R2 -
+    // full when pressed. (Sticks read as 0 are pushed fully up and left: with
+    // them there, the frontend saw input held and never a press.)
+    for (u32 i = 2; i < 6; ++i) data[i] = 0x80;
+    static const int kPressure[12] = {5, 7, 4, 6, 12, 13, 14, 15, 10, 11, 8, 9};
+    for (u32 i = 0; i < 12; ++i) data[6 + i] = (buttons >> kPressure[i]) & 1 ? 0 : 0xFF;
 }
 
 std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
@@ -150,8 +166,20 @@ std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
 
 }  // namespace
 
+bool ScriptPress(const std::string& button, u64 frame) {
+    static const char* const kNames[16] = {"select", "l3", "r3", "start", "up", "right", "down", "left",
+                                           "l2", "r2", "l1", "r1", "triangle", "circle", "cross", "square"};
+    for (int i = 0; i < 16; ++i)
+        if (button == kNames[i]) {
+            Script().push_back({i, frame, frame + 5});
+            return true;
+        }
+    return false;
+}
+
 // Each frame: every socket's device writes its state into the next block.
 void DbcFrame() {
+    ++g_frame;
     Dbc& d = D();
     Memory& m = GuestMemory();
     for (auto& [id, s] : d.sockets) {

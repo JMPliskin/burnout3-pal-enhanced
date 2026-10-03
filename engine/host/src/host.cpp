@@ -355,6 +355,8 @@ int Run(const Options& options) {
         else std::fprintf(stderr, "cannot write %s\n", options.audio_wav.c_str());
     }
     if (sound) iop::EnableSound();
+    for (const auto& [button, frame] : options.presses)
+        if (!ScriptPress(button, frame)) std::fprintf(stderr, "--press: no button %s\n", button.c_str());
     if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
     g_watch = options.watch;
     InstallDevices();
@@ -406,6 +408,12 @@ int Main(int argc, char** argv) {
         else if (arg == "--gs-trace") options.gs_trace = true;
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
+        else if (arg == "--press" && i + 1 < argc) {
+            const std::string spec = argv[++i];
+            const std::size_t at = spec.find('@');
+            if (at != std::string::npos)
+                options.presses.push_back({spec.substr(0, at), std::stoull(spec.substr(at + 1))});
+        }
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
