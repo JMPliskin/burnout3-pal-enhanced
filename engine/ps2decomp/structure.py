@@ -65,9 +65,19 @@ def _save_slots(code, start: int):
             saved.add(ins.rt)
         if ins.is_branch or ins.is_jump or ins.is_call:
             in_prologue = False
+        # Eliding keeps a saved register in a local, and only its low 64 bits:
+        # a COP2 move reaches it through the context, and a 128-bit write sets
+        # its upper half there - both of which the caller would then see. In
+        # 0x002284B0 `qmfc2 $s0` left a VU0 value in its caller's $s0.
+        if ins.mnemonic in ("qmfc2", "qmtc2", "cfc2", "ctc2") and ins.rt in CALLEE_SAVED:
+            return None
         rd = _written_gpr(ins)
         if rd in CALLEE_SAVED:
             written.add(rd)
+            wide = ins.mnemonic == "lq" or (ins.mnemonic.startswith("p") and ins.mnemonic != "pref")
+            if wide and not (ins.mnemonic == "lq" and ins.rs == 29
+                             and (GPR_NAMES[rd], ins.imm & 0xFFFF) in slots):
+                return None
     return slots if written <= saved else None
 
 
@@ -821,7 +831,7 @@ def _fpr(index, used):
 
 # Statements that hand the context to something else; registers are synchronised
 # around them.
-_TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move)\(c")
+_TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move|Vcallms)\(c")
 
 
 # What a caller can see of a function's registers after it returns, under the
@@ -917,7 +927,14 @@ def structure_function(image: bytes, base: int, start: int, end: int,
         if line.startswith("@L_"):
             address = int(line[3:], 16)
             if address in emitter.labels:
-                out_lines.append("L_%08X:;" % address)
+                # A loop header's label goes before its Tick: a goto back to the
+                # header is another iteration, and has to spend budget like one.
+                # After it, 0x0029CCC0 looped forever on the equivalence check.
+                tick = "Tick(c, 0x%08Xu);" % address
+                if out_lines and out_lines[-1].strip().endswith(tick):
+                    out_lines.insert(len(out_lines) - 1, "L_%08X:;" % address)
+                else:
+                    out_lines.append("L_%08X:;" % address)
             continue
         localized = tidy(_localize(line, gprs, fprs, scalars))
         if elide:

@@ -94,6 +94,7 @@ def harness_source(names) -> str:
         "void TailCall(Context& c, u32 target, u32 return_address, u32 entry_sp) {",
         "    if (g_call(target, &c, return_address, entry_sp)) throw Abort{target, 3};",
         "}",
+        "void Vcallms(Context&, u32 address) { throw Abort{address, 5}; }",
         "void Syscall(Context& c) {",
         "    u32 value = 0;",
         "    switch ((s32)(u32)c.r[3]) { %s default: break; }" % syscalls,
@@ -150,6 +151,9 @@ def build(sources, work_dir: str, parallel: int = 8) -> str:
 
 def _build(sources, work_dir: str, parallel: int) -> str:
     vcvars = cppcheck.find_vcvars()
+    # Absolute: the build script changes into it, and a relative path (from a
+    # relative --game) would then name a directory inside itself.
+    work_dir = os.path.abspath(work_dir)
     os.makedirs(work_dir, exist_ok=True)
     names = []
     for path in sources:

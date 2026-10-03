@@ -10,7 +10,11 @@ thousands of random inputs each - a hundred times more cases than the
 interpreter can afford.
 
 Both forms run on the same random register state and the same memory: every
-byte reads as a hash of its address until written. A call reaches a stub whose
+byte reads as a hash of its address until written. Hashes almost never equal the
+small constants code compares with - a state of 5, a mode of 3 - so in half the
+cases memory, registers or both hold small values instead: aligned words read
+as 0-8. A fold that dropped `s3 = 5` before `beq v1, s3` out of the function
+(0x002A5D40) passed two thousand hashed cases because `v1` was never 5. A call reaches a stub whose
 effect - the result registers and caller-saved registers it leaves - depends on
 the call's target and its position in the sequence only: a folded form may
 leave a dead temporary unset in an argument register the callee never reads,
@@ -44,21 +48,30 @@ namespace {
 std::unordered_map<u32, u8> g_written;
 std::vector<u64> g_calls;           // each call: its target, then its argument registers
 u64 g_seed = 0;
+bool g_small = false;               // memory reads as small words (see above)
 
 u8 Byte(u32 a) {
     auto f = g_written.find(a);
     if (f != g_written.end()) return f->second;
-    u64 x = (u64(a) * 0x9E3779B97F4A7C15ull) ^ g_seed;
+    u64 x = (u64(a & (g_small ? ~3u : ~0u)) * 0x9E3779B97F4A7C15ull) ^ g_seed;
     x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 32;
+    if (g_small) return (a & 3) == 0 ? u8(x %% 9) : 0;
     return u8(x);
 }
 // A case that runs away - random registers can make a loop sweep megabytes, or
 // call without end - stops, as both forms then do at the same point.
 struct Runaway {};
+// A form whose loop does not spend budget (a Tick) runs until this many memory
+// accesses; it then stops with an outcome of its own, so it differs from a form
+// that stopped on budget instead of passing as "both stopped".
+struct Unbounded {};
+constexpr u64 kMaxSteps = 4000000;
+u64 g_steps = 0;
 constexpr std::size_t kMaxWritten = 1 << 16, kMaxCalls = 4096 * 17;
 
-u64 Load(u32 a, u32 n) { u64 v = 0; for (u32 i = 0; i < n; ++i) v |= u64(Byte(a + i)) << (8 * i); return v; }
+u64 Load(u32 a, u32 n) { if (++g_steps > kMaxSteps) throw Unbounded{}; u64 v = 0; for (u32 i = 0; i < n; ++i) v |= u64(Byte(a + i)) << (8 * i); return v; }
 void Store(u32 a, u64 v, u32 n) {
+    if (++g_steps > kMaxSteps) throw Unbounded{};
     for (u32 i = 0; i < n; ++i) g_written[a + i] = u8(v >> (8 * i));
     if (g_written.size() > kMaxWritten) throw Runaway{};
 }
@@ -100,6 +113,13 @@ void Call(Context& c, u32 target) {
 }
 void TailCall(Context& c, u32 target, u32, u32) { Call(c, target); }
 void Syscall(Context& c) { c.r[2] = Mix(g_seed ^ c.r[3]); }
+// VU0 micro mode: its effect on the vector registers depends on the call only.
+void Vcallms(Context& c, u32 address) {
+    g_calls.push_back(0xC0000000ull | address);
+    const u64 h = Mix(g_seed ^ address ^ g_calls.size());
+    for (int r = 1; r < 32; ++r)
+        for (int lane = 0; lane < 4; ++lane) c.vf[r][lane] = u32(Mix(h + 4 * r + lane));
+}
 }
 
 using Fn = void (*)(lifted::Context&);
@@ -111,7 +131,7 @@ static const Pair kPairs[] = {
 
 namespace {
 struct Outcome {
-    int status;                      // 0 ran, 1 aborted (trap, budget, fault)
+    int status;                      // 0 ran, 1 aborted (trap, budget, fault), 2 unbounded
     lifted::Context c;
     std::unordered_map<u32, u8> written;
     std::vector<u64> calls;
@@ -119,9 +139,9 @@ struct Outcome {
 
 Outcome Run(Fn f, const lifted::Context& start, u64 seed) {
     Outcome o{0, start, {}, {}};
-    g_written.clear(); g_calls.clear(); g_seed = seed;
+    g_written.clear(); g_calls.clear(); g_seed = seed; g_steps = 0;
     o.c.budget = 4000;
-    try { f(o.c); } catch (...) { o.status = 1; }
+    try { f(o.c); } catch (const Unbounded&) { o.status = 2; } catch (...) { o.status = 1; }
     o.written = g_written; o.calls = g_calls;
     return o;
 }
@@ -173,7 +193,10 @@ extern "C" __declspec(dllexport) int equiv_run(int cases, double seconds, long l
             ran[i] = k + 1;
             const u64 seed = Mix(u64(kPairs[i].address) * 7919 + u64(k));
             lifted::Context start{};
-            for (int r = 1; r < 32; ++r) start.r[r] = Mix(seed + r);
+            // Cases alternate: hashed everything, small memory, small
+            // registers, both small.
+            g_small = (k & 1) != 0;
+            for (int r = 1; r < 32; ++r) start.r[r] = (k & 2) ? Mix(seed + r) %% 9 : Mix(seed + r);
             start.r[29] = 0x01F00000u - (u32(seed) & 0xFF0);   // a plausible stack
             // A return address and global pointer as the hardware has them:
             // 32-bit addresses, sign-extended (a structured form restores $ra
@@ -249,6 +272,7 @@ def _build(paths, work: str) -> str:
 def check(pairs: dict, work: str, cases: int = CASES) -> dict:
     """{address: None if the forms agreed on every case, else (the first case that
     differed, what differed: see Differ)} for {address: (plain, structured, abi)}."""
+    work = os.path.abspath(work)         # the build script changes into it
     os.makedirs(work, exist_ok=True)
     driver, bodies = sources(pairs)
     paths = []

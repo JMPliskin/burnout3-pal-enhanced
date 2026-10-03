@@ -244,6 +244,44 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs, string
     return result
 
 
+def structure_unverified(plain, functions, image, base, game, strings, cache) -> dict:
+    """Structured forms of the functions the interpreter could not check.
+
+    Their plain lifted form is a statement per instruction, the translation
+    itself; a structured form rewrites it, so it is emitted only where it
+    behaves as the plain form natively (equivalent_to_plain). An unchecked
+    rewrite once elided the saves of a function whose `qmfc2 $s0` then leaked
+    into its caller's $s0 (0x002284B0).
+    """
+    from ps2decomp import structure
+
+    stage = time.time()
+    result = dict(plain)
+    remaining = list(plain)
+    forms = (("folded", dict(elide=True, readable=True), True),
+             ("with saves elided", dict(elide=True), False),
+             ("with saves kept", dict(elide=False), False))
+    for label, options, abi in forms:
+        structured = {}
+        for address in remaining:
+            func = functions[address]
+            try:
+                structured[address] = structure.structure_function(
+                    image, base, func["addr"], func["end"], strings=strings, **options)
+            except lift.Refused:
+                pass
+        if not structured:
+            break
+        work = game.path(os.path.join(game.build, "unverified_" + label.split()[-1]))
+        passed = equivalent_to_plain(list(structured), structured, plain, abi, cache, work)
+        for address in passed:
+            result[address] = structured[address]
+        remaining = [a for a in structured if a not in passed]
+        print("structured %s (not verified, equivalent to plain): %d of %d (%.0fs)"
+              % (label, len(passed), len(structured), time.time() - stage))
+    return result
+
+
 def update_status(path: str, verified, outcomes, names=None, unverified=None) -> None:
     """Rebuild the `lifted` rows; any other row - derived, hand-written - stays.
 
@@ -435,13 +473,9 @@ def main(argv=None) -> int:
     unverified = {a: outcomes[a] for a in lifted if a not in chosen}
     for address in unverified:
         chosen[address] = lifted[address]
-        if args.structure:
-            from ps2decomp import structure
-            try:
-                chosen[address] = structure.structure_function(
-                    image, section.addr, address, by_address[address]["end"], strings=strings)
-            except lift.Refused:
-                pass
+    if args.structure and unverified:
+        chosen.update(structure_unverified({a: lifted[a] for a in unverified}, by_address, image,
+                                           section.addr, game, strings, cache))
     from ps2decomp import naming
     names = naming.load(game.path(os.path.join(os.path.dirname(game.status), "names.csv")))
     if args.emit:

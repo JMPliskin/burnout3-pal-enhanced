@@ -150,5 +150,25 @@ class TestLinks(unittest.TestCase):
         self.assertEqual(structure.fold_links(lines), lines)
 
 
+class TestSaveSlots(unittest.TestCase):
+    PROLOGUE = [0x27BDFFE0, 0x7FB00000]          # addiu $sp, -0x20; sq $s0, 0($sp)
+    EPILOGUE = [0x7BB00000, 0x03E00008, 0x27BD0020]  # lq $s0, 0($sp); jr $ra; addiu $sp, 0x20
+
+    def slots(self, body):
+        words = self.PROLOGUE + body + self.EPILOGUE
+        code = [structure.DISASM.decode(w, 0x100000 + 4 * i) for i, w in enumerate(words)]
+        return structure._save_slots(code, 0x100000)
+
+    def test_a_saved_register_written_as_usual_elides(self):
+        self.assertEqual(self.slots([0x24100005]), {("s0", 0)})     # addiu $s0, $zero, 5
+
+    def test_a_cop2_move_of_a_saved_register_keeps_the_saves(self):
+        # qmfc2 $s0, $vf1 writes $s0 through the context, past the local.
+        self.assertIsNone(self.slots([0x48300800]))
+
+    def test_a_128_bit_load_into_a_saved_register_keeps_the_saves(self):
+        self.assertIsNone(self.slots([0x78900010]))                 # lq $s0, 0x10($a0)
+
+
 if __name__ == "__main__":
     unittest.main()
