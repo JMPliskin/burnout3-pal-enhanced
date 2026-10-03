@@ -12,6 +12,7 @@
 #include "ps2host/disc.h"
 #include "ps2host/dma.h"
 #include "ps2host/gs.h"
+#include "iop_vm_internal.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
 #include "ps2rt/generated.h"
@@ -234,6 +235,48 @@ void GsDrawsASprite() {
     Check(gs.primitives() == 1 && gs.pixels_drawn() == 8, "one sprite of 4x2 pixels");
 }
 
+// The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
+// instruction per vector (engine/tools/iop_vectors.py).
+struct CpuVector {
+    const char* name;
+    u32 word;
+    u32 regs[32];
+    u8 data[64];
+    u32 out[32];
+    u32 hi, lo;
+    u8 data_out[64];
+};
+
+const CpuVector kCpuVectors[] = {
+#include "iop_cpu_vectors.inc"
+};
+
+void IopInstructionsMatchTheR5900() {
+    using namespace ps2host::iop;
+    Vm& vm = TheVm();
+    int failures = 0;
+    for (const CpuVector& v : kCpuVectors) {
+        vm.Write(0x00100000u, v.word, 4);
+        for (u32 i = 0; i < 64; ++i) vm.Write(0x00100100u + i, v.data[i], 1);
+        Context c;
+        for (u32 i = 1; i < 32; ++i) c.r[i] = v.regs[i];
+        c.hi = v.regs[0];
+        c.lo = v.regs[0] ^ 0x5A5A5A5Au;
+        c.pc = 0x00100000u;
+        c.npc = 0x00100004u;
+        vm.Step(c, 1);
+        bool ok = c.hi == v.hi && c.lo == v.lo;
+        for (u32 i = 1; i < 32; ++i) ok = ok && c.r[i] == v.out[i];
+        for (u32 i = 0; i < 64; ++i) ok = ok && vm.Read(0x00100100u + i, 1) == v.data_out[i];
+        if (!ok && failures++ < 5) {
+            char what[96];
+            std::snprintf(what, sizeof what, "IOP %s (0x%08X) matches the R5900", v.name, unsigned(v.word));
+            Check(false, what);
+        }
+    }
+    Check(failures == 0, "every IOP instruction vector matches");
+}
+
 }  // namespace
 
 int main() {
@@ -249,6 +292,7 @@ int main() {
     DmaChainsAreWalked();
     GsLayoutsArePermutations();
     GsDrawsASprite();
+    IopInstructionsMatchTheR5900();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

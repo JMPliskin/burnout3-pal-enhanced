@@ -61,10 +61,16 @@ public:
 
     u8* rdram() { return rdram_.data(); }
 
+    /* Log every store that touches one of these guest addresses (--watch-write),
+       with the value and the function storing it. */
+    void WatchWrites(const std::vector<u32>& addresses) { watched_ = addresses; }
+
 private:
     std::vector<u8> rdram_, scratchpad_, ee_registers_, vu_memory_, gs_registers_, iop_ram_, bios_;
     std::vector<ReadHook> read_hooks_;      /* per register word, both windows */
     std::vector<WriteHook> write_hooks_;
+    std::vector<u32> watched_;               /* physical addresses */
+    void Watched(u32 address, u64 value, u32 size);
 };
 
 /* The one guest address space; the generated Read/Write hooks use it. */

@@ -339,6 +339,7 @@ private:
 int Run(const Options& options) {
     g_trace = options.trace_calls;
     g_all_notes = options.all_notes;
+    GuestMemory().WatchWrites(options.watch_writes);
     iop::SetTrace(options.iop_trace);
     if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
     g_watch = options.watch;
@@ -396,6 +397,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--disc" && i + 1 < argc) options.disc_path = argv[++i];
         else if (arg == "--watch" && i + 1 < argc)
             options.watch.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
+        else if (arg == "--watch-write" && i + 1 < argc)
+            options.watch_writes.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg == "--peek" && i + 1 < argc)
             options.peek.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg.rfind("--", 0) != 0) options.elf_path = arg;

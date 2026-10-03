@@ -61,7 +61,7 @@ void Spu2::SetSwitch(u32 entry, u32 value) {
                     c.endx &= ~(1u << i);
                 }
             break;
-        case 0x16:                              // KOFF: release - stopped here
+        case 0x16:                              // KOFF: release - the envelope is cut (no ADSR yet)
             for (u32 i = 0; i < 24; ++i)
                 if (value & (1u << i)) c.voices[i].playing = false;
             break;
@@ -176,8 +176,11 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
     for (u32 core = 0; core < 2; ++core) {
         Core& c = cores_[core];
         for (u32 i = 0; i < 24; ++i) {
+            // A voice never stops fetching: key-off and an unrepeated end only
+            // silence it (its envelope), and its address runs on through the
+            // loop - drivers time things by silent looping voices.
             Voice& v = c.voices[i];
-            if (!v.playing || !v.pitch) continue;
+            if (!v.pitch) continue;
             v.position += samples * double(v.pitch) / 4096.0;
             // Cross block boundaries, at most a second's worth at a time.
             for (int guard = 0; v.position >= kSamplesPerBlock && guard < 4096; ++guard) {
@@ -188,13 +191,8 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
                 CheckIrq(core, block, block + kBlockBytes, irq);
                 if (flags & 1) {
                     c.endx |= 1u << i;
-                    if (flags & 2) {
-                        v.nax = v.lsax;
-                    } else {
-                        v.playing = false;
-                        v.position = 0;
-                        break;
-                    }
+                    if (!(flags & 2)) v.playing = false;    // muted, still running
+                    v.nax = v.lsax;
                 } else {
                     v.nax = (block + kBlockBytes) & kRamMask;
                 }

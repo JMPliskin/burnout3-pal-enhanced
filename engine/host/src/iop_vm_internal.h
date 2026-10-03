@@ -122,6 +122,8 @@ struct Vm {
     // Calls an IOP function to completion in interrupt context (handlers,
     // module entry points); `args` go in $a0-$a3.
     u32 Call(u32 function, std::vector<u32> args);
+    /* Runs `count` instructions of `c` (for tests). */
+    void Step(Context& c, u64 count);
 
     Thread* Current() { return current ? &threads[current] : nullptr; }
     void MakeReady(Thread& t);

@@ -1,5 +1,6 @@
 #include "ps2host/memory.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "ps2host/run.h"
@@ -80,8 +81,18 @@ u64 Memory::Read(u32 address, u32 size) {
     return value;
 }
 
+void Memory::Watched(u32 address, u64 value, u32 size) {
+    const std::vector<u32>& calls = CurrentCalls();
+    const u32 in = calls.empty() ? 0 : calls.back();
+    std::fprintf(stderr, "[write] 0x%08X <- 0x%llX (%u bytes) in 0x%08X\n", unsigned(address),
+                 static_cast<unsigned long long>(value), unsigned(size), unsigned(in));
+}
+
 void Memory::Write(u32 address, u64 value, u32 size) {
     address = Physical(address);
+    if (!watched_.empty())
+        for (u32 w : watched_)
+            if (w >= address && w < address + size) Watched(address, value, size);
     u8* bytes = Translate(address, size);
     if (!bytes) throw MemoryFault{address, true};
     if (address >= kBiosBase && address - kBiosBase < kBiosSize) return;   // ROM

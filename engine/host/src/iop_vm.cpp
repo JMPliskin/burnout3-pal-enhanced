@@ -38,6 +38,10 @@ namespace {
 
 constexpr u32 kHleCode = 0x80000u;          // syscall codes at or above this are host calls
 constexpr u64 kSlice = 20'000'000;          // instructions per Run, so a busy IOP can't hang the EE
+// A thread runs at most this many instructions before the scheduler looks again:
+// interrupts (alarms, sound, DMA completions) arrive between quanta, as the
+// real IOP takes them whenever they come.
+constexpr u64 kQuantum = 4096;
 constexpr u32 kInterruptStack = 0x0000FF00u;    // below the heap, in the kernel's area
 
 std::set<std::string>& RunList() {
@@ -337,10 +341,15 @@ Outcome Execute(Vm& vm, Context& c, u32 stop, u64 limit, bool* stopped) {
             default: Stop("instruction " + Hex(w) + " at " + Hex(pc));
         }
     }
-    return Outcome::Yield;
+    return Outcome::Return;          // the quantum ran out: still ready, not rotated
 }
 
 }  // namespace
+
+void Vm::Step(Context& c, u64 count) {
+    bool stopped = false;
+    Execute(*this, c, kReturnFromCall, count, &stopped);
+}
 
 u32 Vm::Call(u32 function, std::vector<u32> args) {
     Context c;
@@ -398,7 +407,7 @@ void Run() {
         vm.current = best->id;
         vm.reschedule = false;
         bool stopped = false;
-        const Outcome outcome = Execute(vm, best->c, kReturnFromCall, kSlice, &stopped);
+        const Outcome outcome = Execute(vm, best->c, kReturnFromCall, kQuantum, &stopped);
         if (best->c.pc == kRpcReturn) {                      // a server function returned
             const RpcRequest& done = best->serving;
             Memory& ee = GuestMemory();

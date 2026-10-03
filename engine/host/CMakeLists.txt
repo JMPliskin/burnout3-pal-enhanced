@@ -50,6 +50,8 @@ endif()
 # The host's own tests, which need no game.
 add_executable(ps2host_tests ${CMAKE_CURRENT_LIST_DIR}/tests/host_tests.cpp)
 target_link_libraries(ps2host_tests PRIVATE ps2host)
+# The IOP interpreter's internals, for its instruction tests.
+target_include_directories(ps2host_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 
 # ps2_add_port(<target>
 #     GENERATED <dir with dispatch.cpp from engine/tools/port.py>
