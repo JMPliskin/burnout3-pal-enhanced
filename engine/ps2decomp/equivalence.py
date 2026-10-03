@@ -175,6 +175,11 @@ extern "C" __declspec(dllexport) int equiv_run(int cases, double seconds, long l
             lifted::Context start{};
             for (int r = 1; r < 32; ++r) start.r[r] = Mix(seed + r);
             start.r[29] = 0x01F00000u - (u32(seed) & 0xFF0);   // a plausible stack
+            // A return address and global pointer as the hardware has them:
+            // 32-bit addresses, sign-extended (a structured form restores $ra
+            // as the 32-bit address it entered with).
+            start.r[31] = 0x00100000u + (u32(seed >> 8) & 0x3FFFFCu);
+            start.r[28] = 0x00480000u + (u32(seed >> 16) & 0xFFF0u);
             for (int f = 0; f < 32; ++f) start.f[f] = u32(Mix(seed + 100 + f));
             start.hi = Mix(seed + 200); start.lo = Mix(seed + 201);
             const Outcome a = Run(kPairs[i].plain, start, seed);
