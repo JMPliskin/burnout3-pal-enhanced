@@ -93,7 +93,7 @@ void Gs::Kick(bool draw) {
 
 void Gs::Draw() {
     ++primitives_;
-    if (trace && Bits(Prim(), 4, 1)) {
+    if (trace) {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];
         const Vertex& w = queue_[queued_ - 1];
@@ -103,6 +103,12 @@ void Gs::Draw() {
                      1u << Bits(c.tex0, 26, 4), 1u << Bits(c.tex0, 30, 4), Bits(c.tex0, 37, 14),
                      Bits(c.tex0, 51, 4), Bits(c.tex0, 55, 1), Bits(c.tex0, 56, 5), Bits(c.tex0, 61, 3),
                      v.x, v.y, w.x, w.y, v.u, v.v, w.u, w.v, v.s, v.t, w.s, w.t);
+        if (queued_ == 3)
+            std::fprintf(stderr, "[gs]   middle vertex (%.1f,%.1f)\n", queue_[1].x, queue_[1].y);
+        std::fprintf(stderr, "[gs]   frame fbp %X fbw %u psm %02X fbmsk %08X; zbuf zbp %X psm %02X zmsk %u; test %llX alpha %llX\n",
+                     Bits(c.frame, 0, 9), Bits(c.frame, 16, 6), Bits(c.frame, 24, 6), Bits(c.frame, 32, 32),
+                     Bits(c.zbuf, 0, 9), Bits(c.zbuf, 24, 4), Bits(c.zbuf, 32, 1),
+                     (unsigned long long)c.test, (unsigned long long)c.alpha);
     }
     switch (Prim() & 7) {
         case 0: DrawLine(queue_[queued_ - 1], queue_[queued_ - 1]); break;
@@ -180,7 +186,10 @@ void Gs::DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c) {
                 bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
                 al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
             }
-            const u32 z = u32(w0 * float(a.z) + w1 * float(b.z) + w2 * float(c.z));
+            // Depth in double, from the first vertex: 24 and 32-bit depths do not
+            // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
+            const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
+                                         double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
             if (fst) {
                 Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme);
             } else {
@@ -206,7 +215,7 @@ void Gs::DrawLine(const Vertex& a, const Vertex& b) {
         const auto mix = [&](float p, float q) { return p + (q - p) * f; };
         const u8 r = iip ? u8(mix(a.r, b.r)) : b.r, g = iip ? u8(mix(a.g, b.g)) : b.g;
         const u8 bl = iip ? u8(mix(a.b, b.b)) : b.b, al = iip ? u8(mix(a.a, b.a)) : b.a;
-        Plot(int(std::lround(mix(a.x, b.x))), int(std::lround(mix(a.y, b.y))), u32(mix(float(a.z), float(b.z))),
+        Plot(int(std::lround(mix(a.x, b.x))), int(std::lround(mix(a.y, b.y))), u32(double(a.z) + (double(b.z) - double(a.z)) * double(f)),
              r, g, bl, al, 0, 0, 1, mix(ua, ub), mix(va, vb), tme);
     }
 }
@@ -290,6 +299,17 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
                 case 2: write_rgb = write_alpha = false; break;         // ZB_ONLY
                 default: write_alpha = false; write_z = false; break;   // RGB_ONLY
             }
+        }
+    }
+    // Destination alpha test: the frame's alpha bit (31 for 32-bit, 15 for 16-bit
+    // formats; 24-bit frames have none) must equal DATM - a stencil games draw
+    // into alpha first.
+    if (Bits(test, 14, 1)) {
+        const u32 fpsm = Bits(c.frame, 24, 6);
+        if (fpsm != PSMCT24) {
+            const u32 here = memory.Read(Bits(c.frame, 0, 9) * 32, Bits(c.frame, 16, 6), u32(x), u32(y), fpsm);
+            const u32 bit = (fpsm == PSMCT16 || fpsm == PSMCT16S) ? (here >> 15) & 1 : here >> 31;
+            if (bit != Bits(test, 15, 1)) return;
         }
     }
     // Depth test.

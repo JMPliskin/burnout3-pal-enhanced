@@ -47,7 +47,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--watch ADDR` | each call of the function at ADDR, with its argument registers and `$ra` |
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
 | `--window` | the picture, live, in a window (close it to end the run) |
-| `--gs-trace` | every GS image transfer and textured primitive, with its TEX0 fields |
+| `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--watch-write ADDR` | every store to a guest address, with the function making it |
 | `--iop-trace` | every IOP library call the game's own modules make |

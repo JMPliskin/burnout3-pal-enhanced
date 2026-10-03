@@ -236,6 +236,31 @@ void GsDrawsASprite() {
     Check(gs.primitives() == 1 && gs.pixels_drawn() == 8, "one sprite of 4x2 pixels");
 }
 
+// A flat depth stays exact across a triangle: Burnout 3's loading bar is drawn at
+// z 0xFFFFFF with GEQUAL over a buffer cleared to 0xFFFFFF, and float
+// interpolation once lost the last bit and carved it into stripes.
+void GsKeepsAFlatDepthExact() {
+    using namespace ps2host::gs;
+    Gs gs;
+    gs.WriteRegister(0x4C, (u64(0) << 0) | (u64(1) << 16) | (u64(PSMCT32) << 24));   // FRAME: fbp 0, 64 wide
+    gs.WriteRegister(0x4E, u64(8) | (u64(PSMZ24 & 0xF) << 24));                      // ZBUF: zbp 8 (blocks 256)
+    gs.WriteRegister(0x40, u64(63) << 16 | u64(63) << 48);                          // SCISSOR 0..63
+    for (u32 y = 0; y < 64; ++y)
+        for (u32 x = 0; x < 64; ++x) gs.memory.Write(256, 1, x, y, PSMZ24, 0xFFFFFF);
+    gs.WriteRegister(0x47, 1ull << 16 | 2ull << 17);                                // TEST: Z GEQUAL
+    gs.WriteRegister(0x00, 3);                                                      // PRIM: triangle
+    gs.WriteRegister(0x01, 0x80FFFFFFull);
+    const u64 z = u64(0xFFFFFF) << 32;
+    gs.WriteRegister(0x05, (u64(3) << 4) | (u64(1) << 4) << 16 | z);
+    gs.WriteRegister(0x05, (u64(61) << 4) | (u64(1) << 4) << 16 | z);
+    gs.WriteRegister(0x05, (u64(3) << 4) | (u64(37) << 4) << 16 | z);
+    u32 missing = 0;
+    for (u32 y = 2; y < 18; ++y)
+        for (u32 x = 4; x < 20; ++x)
+            if (gs.memory.Read(0, 1, x, y, PSMCT32) != 0x80FFFFFFu) ++missing;
+    Check(missing == 0, "a flat depth passes GEQUAL against itself everywhere");
+}
+
 // The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
 // instruction per vector (engine/tools/iop_vectors.py).
 struct CpuVector {
@@ -333,6 +358,7 @@ int main() {
     DmaChainsAreWalked();
     GsLayoutsArePermutations();
     GsDrawsASprite();
+    GsKeepsAFlatDepthExact();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);

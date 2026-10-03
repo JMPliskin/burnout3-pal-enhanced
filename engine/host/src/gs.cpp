@@ -74,6 +74,10 @@ void Gs::Qword(int path, u64 low, u64 high) {
         p.reg = 0;
         q_ = 1.0f;
         ++tags_[path];
+        if (trace)
+            std::fprintf(stderr, "[gs] tag path %d nloop %u eop %u pre %u prim %X flg %u nreg %u regs %016llX\n",
+                         path, p.loops, Bits(low, 15, 1), Bits(low, 46, 1), Bits(low, 47, 11), p.format,
+                         p.nregs, (unsigned long long)high);
         if (Bits(low, 46, 1) && p.format == 0) WriteRegister(0x00, Bits(low, 47, 11));
         return;
     }
