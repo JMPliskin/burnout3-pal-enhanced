@@ -13,10 +13,16 @@
  *
  * Within a pair the lower instruction reads its registers before the upper
  * writes them, and where both write the same field the upper's result stands.
- * Results are otherwise available at once: the hardware's pipeline interlocks
- * make that the same for code that waits (WAITQ, WAITP, and the stalls), which
- * is what compiled microcode does. An E bit ends the program after the pair that
- * follows it.
+ * An E bit ends the program after the pair that follows it.
+ *
+ * Timing is modelled where code can see it, in cycles: a pair reading a vector
+ * field still being computed stalls until it lands (4 cycles after the FMAC or
+ * load issued); Q arrives 7 cycles after DIV and SQRT, 13 after RSQRT, and P
+ * after the EFU operation's latency, the old value readable meanwhile; and the
+ * MAC, status and clip flags reach the lower instructions (FMAND, FCAND...) 4
+ * cycles after the upper operation that set them. Hand-pipelined microcode -
+ * Burnout 3's clip tests, which read the flags of the vertex before - depends
+ * on all of these (engine/tools/vuhazards.py lists where).
  */
 
 #ifndef PS2HOST_VU_H
@@ -24,6 +30,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <vector>
 
 #include "ps2rt/lifted.h"
@@ -51,6 +58,7 @@ public:
     Span micro, data;
     void Attach(std::uint8_t* micro_memory, std::uint8_t* data_memory);
     lifted::Context regs{};         /* vf, vc (VI0-15, R 20, I 21, Q 22), vacc */
+    /* The flags as the lower instructions read them, and P. */
     u32 mac = 0, status = 0, clip = 0, p = 0;
     u32 top = 0, itop = 0;          /* what XTOP and XITOP read (VU1) */
     u32 resume = 0;                 /* where the last run ended: MSCNT continues there */
@@ -64,6 +72,8 @@ public:
 
     u64 pairs() const { return pairs_; }
     u64 kicks() const { return kicks_; }
+    /* How often each program address was started, for reports. */
+    const std::map<u32, u64>& starts() const { return starts_; }
 
     /* For tests: one 128-bit quadword of data memory. */
     u32* Quad(u32 address);
@@ -72,9 +82,26 @@ private:
     std::vector<std::uint8_t> own_micro_, own_data_;
     u32 data_mask_;                 /* in quadwords */
     u64 pairs_ = 0, kicks_ = 0;
+    std::map<u32, u64> starts_;
+
+    /* Timing, in cycles (one per pair issued, plus stalls). */
+    u64 cycle_ = 0;
+    u64 vf_ready_[32][4] = {};      /* when each vector field's pending write lands */
+    u32 q_next_ = 0, p_next_ = 0;   /* DIV's and the EFU's results in flight */
+    u64 q_ready_ = 0, p_ready_ = 0;
+    bool q_busy_ = false, p_busy_ = false;
+    /* The FMAC sets the flags as it finishes: what upper instructions have
+       produced so far, and what is still on its way to the lower's view. */
+    u32 mac_latest_ = 0, status_latest_ = 0, clip_latest_ = 0;
+    struct FlagWrite { u64 ready; u32 mac, status, clip; bool sets_mac, sets_clip; };
+    FlagWrite flag_queue_[8] = {};
+    int flag_count_ = 0;
+    void Land();                    /* results whose time has come */
+    void LandAll();
+
     struct Pending;
     void Lower(u32 word, u32 pc, Pending& out, u32* branch);
-    void Upper(u32 word, int* written_reg, u32* written_lanes);
+    void Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags);
     void Kick(u32 address);
 };
 

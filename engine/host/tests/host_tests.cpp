@@ -319,6 +319,32 @@ void VifRunsMicroprogramsOnAVu() {
     Check(kicked.size() == 2 && (kicked[0] & 0x7FFF) == 1, "XGKICK sends the tag and its data");
 }
 
+// The VU's visible timing: the flags reach FMAND four cycles after the FMAC
+// operation, Q seven after DIV (WAITQ waits for it), and an upper beside a LOI
+// reads the I from before - as Burnout 3's microcode depends on.
+void VuTimingIsVisible() {
+    ps2host::Vu vu(0);
+    auto f = [](float x) { std::uint32_t u; std::memcpy(&u, &x, 4); return u; };
+    const std::uint32_t kNopU = 0x000002FF, kNopL = 0x8000033C, kI = 0x80000000, kEnd = 0x40000000;
+    const std::uint32_t program[] = {
+        0x100200FF, 0x0100006C,         // iaddiu vi2, vi0, 0xFF    sub.x vf1, vf0, vf0 (zero: MAC Zx)
+        0x34011000, kNopU,              // fmand vi1, vi2: the flags from before
+        0x81E003BC, kNopU,              // div Q, vf0w, vf0w
+        kNopL, 0x002000DC,              // mulq.w vf3, vf0, Q: the Q from before
+        0x34031000, kNopU,              // fmand vi3, vi2: four cycles on, the sub's
+        0x800003BF, kNopU,              // waitq
+        kNopL, 0x0020011C,              // mulq.w vf4, vf0, Q
+        f(3), kI | kNopU,               // loi 3
+        f(5), kI | 0x0020015E,          // loi 5                    muli.w vf5, vf0, I
+        kNopL, kEnd | 0x0020019E,       //                          muli.w vf6, vf0, I [E]
+        kNopL, kNopU};
+    std::memcpy(vu.micro.data(), program, sizeof program);
+    vu.Run(0);
+    Check(vu.regs.vc[1] == 0 && vu.regs.vc[3] == 8, "VU: FMAND sees the MAC flags four cycles late");
+    Check(vu.regs.vf[3][3] == 0 && vu.regs.vf[4][3] == f(1), "VU: Q arrives after DIV's latency; WAITQ waits");
+    Check(vu.regs.vf[5][3] == f(3) && vu.regs.vf[6][3] == f(5), "VU: an upper beside LOI reads the old I");
+}
+
 // The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
 // instruction per vector (engine/tools/iop_vectors.py).
 struct CpuVector {
@@ -418,6 +444,7 @@ int main() {
     GsDrawsASprite();
     GsKeepsAFlatDepthExact();
     VifRunsMicroprogramsOnAVu();
+    VuTimingIsVisible();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);

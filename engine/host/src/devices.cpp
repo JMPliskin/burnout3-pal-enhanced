@@ -173,6 +173,12 @@ void FrameDone(u64 frame) {
     char name[64];
     std::snprintf(name, sizeof name, "/frame_%06llu.bmp", static_cast<unsigned long long>(frame));
     if (gs::TheGs().WriteBmp(g_frames_dir + name)) ++g_frames_written;
+    // VU1's memories beside the picture, for engine/tools/vudis.py.
+    for (const auto& [file, span] : {std::make_pair("/vu1_micro.bin", Vu1().micro), std::make_pair("/vu1_data.bin", Vu1().data)})
+        if (FILE* out = std::fopen((g_frames_dir + file).c_str(), "wb")) {
+            std::fwrite(span.data(), 1, span.size(), out);
+            std::fclose(out);
+        }
 }
 
 void InstallDevices() {

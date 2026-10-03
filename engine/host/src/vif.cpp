@@ -18,6 +18,7 @@
 #include "ps2host/vif.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "ps2host/vu.h"
@@ -218,6 +219,14 @@ std::string VifStream::Summary() const {
     if (unpacks) out += " UNPACK " + std::to_string(unpacks);
     if (vu) out += "; VU: " + std::to_string(vu->pairs()) + " instruction pairs, " +
                    std::to_string(vu->kicks()) + " XGKICKs";
+    if (vu) {
+        out += "; started at";
+        for (const auto& [pc, n] : vu->starts()) {
+            char text[32];
+            std::snprintf(text, sizeof text, " 0x%X x%llu", unsigned(pc), static_cast<unsigned long long>(n));
+            out += text;
+        }
+    }
     return out;
 }
 

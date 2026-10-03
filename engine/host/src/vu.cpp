@@ -9,6 +9,7 @@
 
 #include "ps2host/vu.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -33,6 +34,86 @@ constexpr Vu::u32 kCop2 = 0x4A000000u;       // a macro-mode COP2 operation
 Vu::u32 Field(Vu::u32 word, int low, int count) { return (word >> low) & ((1u << count) - 1); }
 std::int32_t Imm11(Vu::u32 word) { return std::int32_t(word << 21) >> 21; }
 
+// The vector fields a pair reads, for its stalls: (register, lanes as dest bits).
+struct Reads {
+    int n = 0;
+    Vu::u32 reg[6], lanes[6];
+    void Add(Vu::u32 r, Vu::u32 l) {
+        if (r && l) { reg[n] = r; lanes[n] = l; ++n; }
+    }
+};
+
+Vu::u32 LaneBit(Vu::u32 lane) { return 8u >> lane; }    // x 0 .. w 3, as dest bits
+
+void UpperReads(Vu::u32 word, Reads& r) {
+    const Vu::u32 funct = word & 0x3F, dest = Field(word, 21, 4);
+    const Vu::u32 fs = Field(word, 11, 5), ft = Field(word, 16, 5);
+    if (funct < 0x1C) { r.Add(fs, dest); r.Add(ft, LaneBit(funct & 3)); return; }   // the broadcasts
+    if (funct < 0x28) { r.Add(fs, dest); return; }                                   // Q and I forms
+    if (funct < 0x30) {
+        const Vu::u32 lanes = funct == 0x2E ? 0xE : dest;                             // OPMSUB: xyz
+        r.Add(fs, lanes);
+        r.Add(ft, lanes);
+        return;
+    }
+    if (funct < 0x3C) return;
+    const Vu::u32 index = (word & 3) | ((word >> 4) & 0x7C);
+    if (index == 0x2F) return;                                                       // NOP
+    if (index == 0x1F) { r.Add(fs, 0xE); r.Add(ft, 0x1); return; }                   // CLIP
+    if (index < 0x10 || (index >= 0x18 && index < 0x1C)) {                           // the broadcasts
+        r.Add(fs, dest);
+        r.Add(ft, LaneBit(index & 3));
+        return;
+    }
+    if (index < 0x28) { r.Add(fs, dest); return; }      // ITOF FTOI ABS, Q and I forms
+    const Vu::u32 lanes = index == 0x2E ? 0xE : dest;   // OPMULA: xyz
+    r.Add(fs, lanes);
+    r.Add(ft, lanes);
+}
+
+void LowerReads(Vu::u32 word, Reads& r) {
+    const Vu::u32 op = word >> 25, dest = Field(word, 21, 4);
+    const Vu::u32 is = Field(word, 11, 5), it = Field(word, 16, 5);
+    const Vu::u32 fsf = LaneBit(Field(word, 21, 2)), ftf = LaneBit(Field(word, 23, 2));
+    if (op == 0x01) { r.Add(is, dest); return; }        // SQ
+    if (op != 0x40 || (word & 0x3F) < 0x3C) return;
+    const Vu::u32 index = (word & 3) | ((word >> 4) & 0x7C);
+    switch (index) {
+        case 0x30: r.Add(is, dest); return;                                          // MOVE
+        case 0x31: r.Add(is, ((dest << 3) | (dest >> 1)) & 0xF); return;             // MR32: x from y ..
+        case 0x35: case 0x37: r.Add(is, dest); return;                               // SQI SQD
+        case 0x38: case 0x3A: r.Add(is, fsf); r.Add(it, ftf); return;                // DIV RSQRT
+        case 0x39: r.Add(it, ftf); return;                                           // SQRT
+        case 0x3C: case 0x42: case 0x43: r.Add(is, fsf); return;                     // MTIR RINIT RXOR
+        case 0x70: case 0x71: case 0x72: case 0x73: r.Add(is, 0xE); return;         // ESADD .. ERLENG
+        case 0x74: r.Add(is, 0xC); return;                                           // EATANxy
+        case 0x75: r.Add(is, 0xA); return;                                           // EATANxz
+        case 0x76: r.Add(is, 0xF); return;                                           // ESUM
+        case 0x78: case 0x79: case 0x7A: case 0x7C: case 0x7D: case 0x7E:
+            r.Add(is, fsf);
+            return;
+        default: return;
+    }
+}
+
+bool IsEfu(Vu::u32 word) {
+    if ((word >> 25) != 0x40 || (word & 0x3F) < 0x3C) return false;
+    const Vu::u32 index = (word & 3) | ((word >> 4) & 0x7C);
+    return index >= 0x70 && index <= 0x7E && index != 0x77 && index != 0x7B;
+}
+
+bool IsDivide(Vu::u32 word) {
+    if ((word >> 25) != 0x40 || (word & 0x3F) < 0x3C) return false;
+    const Vu::u32 index = (word & 3) | ((word >> 4) & 0x7C);
+    return index >= 0x38 && index <= 0x3A;
+}
+
+bool IsWait(Vu::u32 word, Vu::u32 which) {             // 0x3B WAITQ, 0x7B WAITP
+    return (word >> 25) == 0x40 && (word & 0x3F) >= 0x3C && ((word & 3) | ((word >> 4) & 0x7C)) == which;
+}
+
+constexpr int kFmacLatency = 4;
+
 }  // namespace
 
 struct Vu::Pending {
@@ -42,6 +123,8 @@ struct Vu::Pending {
     u32 vc_after[32] = {};
     bool p = false;
     u32 p_value = 0;
+    int p_latency = 0;              // the EFU op's, in cycles
+    int q_latency = 0;              // DIV, SQRT, RSQRT's
 };
 
 Vu::Vu(int index)
@@ -81,9 +164,10 @@ void Vu::Kick(u32 address) {
 
 // The upper instruction, run on the registers; says which vector register and
 // fields it wrote (if any), for the lower's writes to give way to.
-void Vu::Upper(u32 word, int* written_reg, u32* written_lanes) {
+void Vu::Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags) {
     *written_reg = -1;
     *written_lanes = 0;
+    *set_flags = false;
     const u32 funct = word & 0x3F, dest = Field(word, 21, 4);
     const u32 ft = Field(word, 16, 5), fd = Field(word, 6, 5);
     bool flags = false;
@@ -105,7 +189,8 @@ void Vu::Upper(u32 word, int* written_reg, u32* written_lanes) {
                 if (x > w) judgement |= 1u << (2 * lane);
                 if (x < -w) judgement |= 2u << (2 * lane);
             }
-            clip = ((clip << 6) | judgement) & 0xFFFFFF;
+            clip_latest_ = ((clip_latest_ << 6) | judgement) & 0xFFFFFF;
+            *set_flags = true;
             return;
         }
         if (index == 0x2F) return;                          // NOP
@@ -127,9 +212,10 @@ void Vu::Upper(u32 word, int* written_reg, u32* written_lanes) {
             if ((bits & 0x7FFFFFFFu) == 0) m |= 8u >> lane;
             if (bits & 0x80000000u) m |= 0x80u >> lane;
         }
-        mac = m;
-        status = (status & ~0x3u) | ((m & 0xF) ? 1u : 0u) | ((m & 0xF0) ? 2u : 0u);
-        status |= (status & 3u) << 6;                       // the sticky copies
+        mac_latest_ = m;
+        status_latest_ = (status_latest_ & ~0x3u) | ((m & 0xF) ? 1u : 0u) | ((m & 0xF0) ? 2u : 0u);
+        status_latest_ |= (status_latest_ & 3u) << 6;       // the sticky copies
+        *set_flags = true;
     }
 }
 
@@ -171,6 +257,8 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
     auto efu = [&](double value) {
         out.p = true;
         out.p_value = lifted::Result(value);
+        static const int kLatency[16] = {11, 18, 18, 24, 54, 54, 12, 0, 12, 18, 12, 0, 29, 54, 44, 0};
+        out.p_latency = kLatency[(((word & 3) | ((word >> 4) & 0x7C)) - 0x70) & 15];
     };
     const u32 target = (pc + 8 + u32(Imm11(word) * 8)) & u32(micro.size() - 1);
     const std::int16_t a = std::int16_t(vi[is]), b = std::int16_t(vi[it]);
@@ -221,11 +309,16 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
                 case 0x78: efu(std::sqrt(std::fabs(lifted::Value(v[fsf])))); return;          // ESQRT
                 case 0x79: efu(1.0 / std::sqrt(std::fabs(lifted::Value(v[fsf])))); return;    // ERSQRT
                 case 0x7A: efu(1.0 / lifted::Value(v[fsf])); return;                          // ERCPR
-                case 0x7B: return;                                                            // WAITP
+                case 0x7B: return;                                                            // WAITP: a stall (Run)
                 case 0x7C: efu(std::sin(lifted::Value(v[fsf]))); return;                      // ESIN
                 case 0x7D: efu(std::atan(lifted::Value(v[fsf]))); return;                     // EATAN
                 case 0x7E: efu(std::exp(-lifted::Value(v[fsf]))); return;                     // EEXP
-                default: through_cop2(); return;    // MOVE MR32 DIV SQRT RSQRT WAITQ MTIR MFIR R*
+                case 0x38: case 0x39: case 0x3A:                                            // DIV SQRT RSQRT
+                    through_cop2();
+                    out.q_latency = index == 0x3A ? 13 : 7;
+                    return;
+                case 0x3B: return;                                                            // WAITQ: a stall (Run)
+                default: through_cop2(); return;    // MOVE MR32 MTIR MFIR R*
             }
         }
         case 0x00: load(vi[is] + u32(Imm11(word))); return;                     // LQ
@@ -245,13 +338,16 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
         case 0x08: setvi(it, vi[is] + ((Field(word, 21, 4) << 11) | Field(word, 0, 11))); return;  // IADDIU
         case 0x09: setvi(it, vi[is] - ((Field(word, 21, 4) << 11) | Field(word, 0, 11))); return;  // ISUBIU
         case 0x10: setvi(1, (clip & 0xFFFFFF) == (word & 0xFFFFFF)); return;                        // FCEQ
-        case 0x11: clip = word & 0xFFFFFF; return;                                                  // FCSET
+        case 0x11: clip = clip_latest_ = word & 0xFFFFFF; return;                                   // FCSET
         case 0x12: setvi(1, (clip & word & 0xFFFFFF) != 0); return;                                 // FCAND
         case 0x13: setvi(1, ((clip | word) & 0xFFFFFF) == 0xFFFFFF); return;                        // FCOR
         case 0x14: case 0x15: case 0x16: case 0x17: {                           // FSEQ FSSET FSAND FSOR
             const u32 imm = (Field(word, 21, 1) << 11) | Field(word, 0, 11);
             if (op == 0x14) setvi(it, (status & 0xFFF) == imm);
-            else if (op == 0x15) status = (status & 0x3F) | (imm & 0xFC0);
+            else if (op == 0x15) {
+                status = (status & 0x3F) | (imm & 0xFC0);
+                status_latest_ = (status_latest_ & 0x3F) | (imm & 0xFC0);
+            }
             else if (op == 0x16) setvi(it, status & imm);
             else setvi(it, ((status | imm) & 0xFFF) == 0xFFF);
             return;
@@ -279,32 +375,90 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
     }
 }
 
+void Vu::Land() {
+    if (q_busy_ && q_ready_ <= cycle_) { regs.vc[kRegQ] = q_next_; q_busy_ = false; }
+    if (p_busy_ && p_ready_ <= cycle_) { p = p_next_; p_busy_ = false; }
+    int kept = 0;
+    for (int i = 0; i < flag_count_; ++i) {
+        const FlagWrite& f = flag_queue_[i];
+        if (f.ready <= cycle_) {
+            if (f.sets_mac) { mac = f.mac; status = (status & ~0x3u) | (f.status & 0x3u); status |= f.status & 0xC0u; }
+            if (f.sets_clip) clip = f.clip;
+        } else {
+            flag_queue_[kept++] = f;
+        }
+    }
+    flag_count_ = kept;
+}
+
+void Vu::LandAll() {
+    cycle_ += 64;                   // time passes after the program: what was in flight lands
+    Land();
+}
+
 Vu::u64 Vu::Run(u32 pc, u64 limit) {
     u64 count = 0;
     u32 delayed = kNone;
     bool stopping = false;
     pc &= u32(micro.size() - 1) & ~7u;
+    ++starts_[pc];
     while (count < limit) {
         u32 lower, upper;
         std::memcpy(&lower, micro.data() + pc, 4);
         std::memcpy(&upper, micro.data() + pc + 4, 4);
+        const bool immediate = (upper & 0x80000000u) != 0;     // I bit: the lower is I's value
+
+        // Stalls: operands still in the pipeline, a busy divider or EFU, the waits.
+        Reads reads;
+        UpperReads(upper, reads);
+        if (!immediate) LowerReads(lower, reads);
+        u64 issue = cycle_;
+        for (int i = 0; i < reads.n; ++i)
+            for (int lane = 0; lane < 4; ++lane)
+                if (reads.lanes[i] & (8u >> lane)) issue = std::max(issue, vf_ready_[reads.reg[i]][lane]);
+        if (!immediate && q_busy_ && (IsDivide(lower) || IsWait(lower, 0x3B))) issue = std::max(issue, q_ready_);
+        if (!immediate && p_busy_ && (IsEfu(lower) || IsWait(lower, 0x7B))) issue = std::max(issue, p_ready_);
+        cycle_ = issue;
+        Land();
+
         Pending pending;
         u32 branch = kNone;
-        if (upper & 0x80000000u) regs.vc[kRegI] = lower;    // I bit: the lower is I's value
-        else Lower(lower, pc, pending, &branch);
+        if (!immediate) Lower(lower, pc, pending, &branch);
         int written = -1;
         u32 lanes = 0;
-        Upper(upper, &written, &lanes);
+        bool set_flags = false;
+        Upper(upper, &written, &lanes, &set_flags);
+        // LOI: the upper beside it read the I from before.
+        if (immediate) regs.vc[kRegI] = lower;
         if (pending.vf > 0) {
             for (int lane = 0; lane < 4; ++lane) {
                 const u32 bit = 8u >> lane;
-                if ((pending.lanes & bit) && !(written == pending.vf && (lanes & bit)))
+                if ((pending.lanes & bit) && !(written == pending.vf && (lanes & bit))) {
                     regs.vf[pending.vf][lane] = pending.value[lane];
+                    vf_ready_[pending.vf][lane] = cycle_ + kFmacLatency;
+                }
             }
         }
+        if (written > 0)
+            for (int lane = 0; lane < 4; ++lane)
+                if (lanes & (8u >> lane)) vf_ready_[written][lane] = cycle_ + kFmacLatency;
+        if (set_flags && flag_count_ < 8)
+            flag_queue_[flag_count_++] = {cycle_ + kFmacLatency, mac_latest_, status_latest_, clip_latest_,
+                                          (upper & 0x7FF) != 0x1FF, (upper & 0x7FF) == 0x1FF};
+        if (pending.q_latency) {
+            q_next_ = pending.vc_after[kRegQ];
+            q_ready_ = cycle_ + u64(pending.q_latency);
+            q_busy_ = true;
+            pending.vc_after[kRegQ] = regs.vc[kRegQ];
+        }
         if (pending.vc) std::memcpy(regs.vc, pending.vc_after, sizeof pending.vc_after);
-        if (pending.p) p = pending.p_value;
+        if (pending.p) {
+            p_next_ = pending.p_value;
+            p_ready_ = cycle_ + u64(pending.p_latency ? pending.p_latency : 1);
+            p_busy_ = true;
+        }
         regs.vc[0] = 0;
+        ++cycle_;
         ++count;
         if (stopping) {                      // the pair after an E bit runs, then the program ends
             pc = (pc + 8) & u32(micro.size() - 1);
@@ -315,6 +469,7 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
         delayed = branch;
         pc = next;
     }
+    LandAll();
     resume = pc;
     pairs_ += count;
     return count;
