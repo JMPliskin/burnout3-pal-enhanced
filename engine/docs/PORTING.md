@@ -144,9 +144,20 @@ so a new game gets them as soon as its routines are named.
    rewriting a module's protocol; sound drivers are the usual case. The iopheap
    server (`iopheap.cpp`) shares the interpreter's heap. `--iop-trace` logs
    every library call a module makes.
-5. **Graphics**: GIF packets to a GS renderer; VU1 microprograms translated or
-   emulated.
-6. **Audio, input, saves**, then enhancements.
+5. **Graphics** (begun): a software GS (`gs.cpp`, `gs_draw.cpp`,
+   `gs_memory.cpp`) takes GIF packets from all three paths. It keeps local
+   memory in the GS's own swizzled layouts and rasterises sprites, triangles
+   and lines with texturing, alpha, depth and destination alpha tests,
+   blending and FBMSK. The displayed picture goes to the window (`--window`)
+   or BMP files (`--frames`). VU1 runs microprograms in an interpreter
+   (`vu.cpp`). Its upper half goes through the runtime's verified VU0
+   arithmetic. VIF1 (`vif.cpp`) loads it with MPG and UNPACK and starts it with
+   MSCAL, and its XGKICKs are PATH1. VU0 micro mode (`vcallms`) and a GPU
+   renderer come next.
+6. **Audio** (begun): the SPU2 (`spu2.cpp`) decodes, envelopes and mixes its
+   voices at 48 kHz; `--audio` plays them and `--audio-wav` records them.
+   **Input**: a DualShock 2 on the keyboard (`dbc.cpp`). Then saves and
+   enhancements.
 
 Each stage is measured the same way: run, read the report, implement what
 stopped it.
