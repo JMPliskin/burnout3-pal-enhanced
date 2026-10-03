@@ -378,14 +378,25 @@ _CONDITIONS = {
 }
 
 
-def lift_function(image: bytes, base: int, start: int, end: int) -> str:
-    """The C++ definition of one function; raises Refused if it cannot be lifted."""
+def lift_function(image: bytes, base: int, start: int, end: int, chunks=()) -> str:
+    """The C++ definition of one function; raises Refused if it cannot be lifted.
+
+    `chunks` are the function's out-of-line pieces (analysis.py `chunks`): blocks
+    its branches reach outside [start, end), which the compiler placed among
+    other functions' code. They are translated after the body, as part of it, so
+    a branch to one is a goto rather than a tail transfer, and control never
+    falls from one piece into the next: each ends with a transfer to whatever
+    follows it in memory.
+    """
     if end <= start:
         raise Refused("empty function")
-    count = (end - start) // 4
-    words = struct.unpack_from("<%dI" % count, image, start - base)
-    code = [DISASM.decode(word, start + 4 * i) for i, word in enumerate(words)]
+    ranges = [(start, end)] + sorted((s, e) for s, e in chunks if e > s)
+    code = []
+    for first, last in ranges:
+        words = struct.unpack_from("<%dI" % ((last - first) // 4), image, first - base)
+        code += [DISASM.decode(word, first + 4 * i) for i, word in enumerate(words)]
     by_address = {ins.addr: ins for ins in code}
+    starts = {first: last for first, last in ranges}
 
     for ins in code:
         if not ins.is_valid:
@@ -401,7 +412,7 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
             if slot.has_delay_slot:
                 raise Refused("branch in a delay slot at 0x%08X" % ins.addr)
 
-    inside = lambda address: start <= address < end
+    inside = lambda address: any(first <= address < last for first, last in ranges)
     dispatch = any(ins.mnemonic == "jr" and ins.rs != 31 for ins in code)
     labels, loop_heads = set(), set()
     for ins in code:
@@ -415,6 +426,9 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
         # and any of them can begin a loop.
         labels = {ins.addr for ins in code}
         loop_heads = set(labels)
+    for _first, last in ranges[:-1]:
+        if inside(last):
+            labels.add(last)                # a piece that runs on into another
 
     lines = ["void %s(lifted::Context& c) {" % name_of(start),
              # Where this function returns to: a tail transfer to code it does not
@@ -424,8 +438,13 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
     if dispatch:
         lines.append("    u32 jump;")
     skip = set()
+    running = None                          # the end of the range being emitted
     for ins in code:
         address = ins.addr
+        if address in starts:
+            if running is not None:
+                lines.append("    " + _transfer(running, inside))
+            running = starts[address]
         if address in labels:
             lines.append("L_%08X:" % address)
             if address in loop_heads:
@@ -475,10 +494,10 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
         skip.add(address + 4)
         if address + 4 in labels:
             # Execution that branched past the delay slot continues after it.
-            lines.append("    goto L_%08X;" % after if after < end else
+            lines.append("    goto L_%08X;" % after if inside(after) else
                          "    lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp); return;" % after)
-            labels.add(after) if after < end else None
-    lines.append("    lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp);  /* runs off the end */" % end)
+            labels.add(after) if inside(after) else None
+    lines.append("    lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp);  /* runs off the end */" % running)
     lines.append("}")
     text = "\n".join(lines)
     # A label is only emitted at an instruction; make sure every goto has one.

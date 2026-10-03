@@ -143,6 +143,14 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
             if target in by_address:
                 by_address[target]["callers"] = sorted(set(by_address[target]["callers"]) | {start})
     functions = [by_address[a] for a in sorted(by_address)]
+    # Each function's out-of-line pieces (analysis.py `chunks`): translated with
+    # it, so a branch to one stays inside the function.
+    entries = {f["addr"] for f in functions if f["confidence"] in ("called", "entry")}
+    for f in functions:
+        f["chunks"] = [list(c) for c in analyzer.chunks(f["addr"], f["end"], entries)]
+    log("  %d functions have out-of-line pieces (%s bytes)"
+        % (sum(1 for f in functions if f["chunks"]),
+           format(sum(e - s for f in functions for s, e in f["chunks"]), ",")))
 
     regions = [
         {"start": r.start, "end": r.end, "size": r.size, "kind": r.kind}

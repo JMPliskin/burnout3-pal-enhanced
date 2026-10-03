@@ -294,6 +294,50 @@ class ImageAnalyzer:
             targets.append(target)
         return targets
 
+    # A function's pieces outside its range add up to no more than this; more is
+    # a closure that leaked into other code.
+    MAX_CHUNK_BYTES = 0x8000
+
+    def chunks(self, start: int, end: int, entries) -> list:
+        """The function's out-of-line pieces: [(start, end)] outside [start, end).
+
+        The compiler places a function's cold blocks after the hot code, among
+        other functions' cold blocks, and reaches them by branch. Following the
+        function's branches - conditional, `b` and switch tables, but not `j`,
+        which is how it tail-calls, and stopping at the entries of other
+        functions - gives every block that is its own. Those outside its range
+        are its chunks, each ending in a transfer.
+        """
+        seen = set()
+        queue = [start]
+        while queue:
+            addr = queue.pop()
+            while self.contains(addr) and addr not in seen:
+                if addr != start and addr in entries:
+                    break
+                ins = DISASM.decode(self.word_at(addr), addr)
+                if not ins.is_valid:
+                    return []                   # not code after all: claim nothing
+                seen.add(addr)
+                if ins.has_delay_slot:
+                    seen.add(addr + 4)
+                    if not ins.is_call and ins.mnemonic not in ("jr", "jalr", "j") and ins.target >= 0:
+                        queue.append(ins.target)
+                    if ins.mnemonic == "jr" and ins.rs != 31:
+                        queue.extend(self.jump_table(addr, ins.rs) or [])
+                if ins.is_return or ins.ends_block:
+                    break
+                addr += 8 if ins.has_delay_slot else 4
+        runs = []
+        for a in sorted(x for x in seen if not (start <= x < end)):
+            if runs and a == runs[-1][1]:
+                runs[-1][1] = a + 4
+            else:
+                runs.append([a, a + 4])
+        if sum(e - s for s, e in runs) > self.MAX_CHUNK_BYTES:
+            return []
+        return [(s, e) for s, e in runs]
+
     # -- stage 2b: pointer-table targets -------------------------------
 
     def _is_prologue(self, addr: int) -> bool:

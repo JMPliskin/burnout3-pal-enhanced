@@ -119,11 +119,13 @@ class Block:
         self.succs = []
 
 
-def _blocks(code, start, end):
-    """Basic blocks keyed by start address, with terminators decoded."""
-    inside = lambda address: start <= address < end
+def _blocks(code, start, end, ranges=None):
+    """Basic blocks keyed by start address, with terminators decoded. `ranges`
+    are the function's pieces, the body first (see lift.lift_function)."""
+    ranges = ranges or [(start, end)]
+    inside = lambda address: any(first <= address < last for first, last in ranges)
     by_address = {ins.addr: ins for ins in code}
-    leaders = {start}
+    leaders = {start} | {first for first, _last in ranges}
     for ins in code:
         if ins.has_delay_slot:
             if ins.mnemonic == "jr" and ins.rs != 31:
@@ -141,7 +143,10 @@ def _blocks(code, start, end):
     blocks = {}
     for i, first in enumerate(leaders):
         block = Block(first)
-        limit = leaders[i + 1] if i + 1 < len(leaders) else end
+        # A block ends at the next leader or its piece's end, whichever is first:
+        # pieces are not contiguous, and one does not fall into the next.
+        piece_end = next(last for f, last in ranges if f <= first < last)
+        limit = min(leaders[i + 1], piece_end) if i + 1 < len(leaders) else piece_end
         address = first
         while address < limit:
             ins = by_address[address]
@@ -422,7 +427,7 @@ class _Emitter:
             if block.slot:
                 lines.append(pad + block.slot)
             target = block.next
-            if target is not None and target >= self.end and target not in self.blocks:
+            if target is not None and target not in self.blocks:
                 lines.append(pad + "out(); lifted::TailCall(c, 0x%08Xu, entry_ra, entry_sp); "
                              "return;  /* runs off the end */" % target)
                 return lines, None
@@ -884,7 +889,8 @@ def _prepare_readable(blocks, elide, slots=None):
 
 
 def structure_function(image: bytes, base: int, start: int, end: int,
-                       elide: bool = True, strings=None, readable: bool = False) -> str:
+                       elide: bool = True, strings=None, readable: bool = False,
+                       chunks=()) -> str:
     """Structured C++ for one function; raises lift.Refused if it cannot be.
 
     `elide` drops the saves and restores of callee-saved registers (see
@@ -895,11 +901,13 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     changes registers no caller may rely on, so it is verified at that level:
     results, stack and global pointers, callee-saved registers and memory.
     """
-    lift.lift_function(image, base, start, end)       # the same refusals as lifting
-    count = (end - start) // 4
-    words = struct.unpack_from("<%dI" % count, image, start - base)
-    code = [DISASM.decode(word, start + 4 * i) for i, word in enumerate(words)]
-    blocks = _blocks(code, start, end)
+    lift.lift_function(image, base, start, end, chunks)    # the same refusals as lifting
+    ranges = [(start, end)] + sorted((s, e) for s, e in chunks if e > s)
+    code = []
+    for first, last in ranges:
+        words = struct.unpack_from("<%dI" % ((last - first) // 4), image, first - base)
+        code += [DISASM.decode(word, first + 4 * i) for i, word in enumerate(words)]
+    blocks = _blocks(code, start, end, ranges)
     slots = _save_slots(code, start)
     elide = elide and slots is not None
     if readable:

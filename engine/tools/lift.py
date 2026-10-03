@@ -39,7 +39,16 @@ def lift_all(functions, image, base):
     lifted, refused = {}, collections.Counter()
     for func in functions:
         try:
-            lifted[func["addr"]] = lift.lift_function(image, base, func["addr"], func["end"])
+            try:
+                # With its out-of-line pieces, where the analysis found them;
+                # pieces that cannot be joined leave the function as it was.
+                lifted[func["addr"]] = lift.lift_function(image, base, func["addr"], func["end"],
+                                                          func.get("chunks", ()))
+            except lift.Refused:
+                if not func.get("chunks"):
+                    raise
+                func["chunks"] = []
+                lifted[func["addr"]] = lift.lift_function(image, base, func["addr"], func["end"])
         except lift.Refused as exc:
             refused[re.sub(r" at 0x[0-9A-F]+", "", str(exc))] += 1
     return lifted, refused
@@ -224,7 +233,8 @@ def structure_verified(chosen, functions, image, base, game, seeds, jobs, string
             func = functions[address]
             try:
                 structured[address] = structure.structure_function(
-                    image, base, func["addr"], func["end"], strings=strings, **options)
+                    image, base, func["addr"], func["end"], strings=strings,
+                    chunks=func.get("chunks", ()), **options)
             except lift.Refused:
                 pass
         if not structured:
@@ -267,7 +277,8 @@ def structure_unverified(plain, functions, image, base, game, strings, cache) ->
             func = functions[address]
             try:
                 structured[address] = structure.structure_function(
-                    image, base, func["addr"], func["end"], strings=strings, **options)
+                    image, base, func["addr"], func["end"], strings=strings,
+                    chunks=func.get("chunks", ()), **options)
             except lift.Refused:
                 pass
         if not structured:

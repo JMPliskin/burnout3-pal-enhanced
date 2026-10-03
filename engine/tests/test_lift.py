@@ -375,6 +375,17 @@ class TestLiftRefusals(unittest.TestCase):
         with self.assertRaises(lift.Refused):
             lift.lift_function(image, BASE, BASE, BASE + 12)
 
+    def test_an_out_of_line_chunk_is_part_of_the_function(self):
+        # 00: beq $a0, $zero, 0x40 / 08: addiu $v0, 1 / 0C: jr $ra - and, out of
+        # line at 0x40: addiu $v0, 2 / b 0x0C.
+        words = [0x1080000F, NOP, 0x24020001, JR_RA, NOP] + [NOP] * 11 + [0x24020002, 0x1000FFF1, NOP]
+        image = struct.pack("<%dI" % len(words), *words)
+        text = lift.lift_function(image, BASE, BASE, BASE + 0x14, chunks=[(BASE + 0x40, BASE + 0x4C)])
+        self.assertIn("goto L_%08X;" % (BASE + 0x40), text)      # the branch out of line
+        self.assertIn("L_%08X:" % (BASE + 0x40), text)
+        self.assertIn("goto L_%08X;" % (BASE + 0x0C), text)      # and back
+        self.assertNotIn("TailCall(c, 0x%08Xu" % (BASE + 0x40), text)
+
     def test_vcallms_runs_vu0_through_the_host(self):
         # vcallms 0x30: the microprogram at instruction 6 (byte 0x30).
         image = struct.pack("<3I", 0x4A000038 | (6 << 6), JR_RA, NOP)

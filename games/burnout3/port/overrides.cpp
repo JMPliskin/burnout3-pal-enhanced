@@ -34,6 +34,17 @@ void TtyWrite(lifted::Context& c) {
     c.r[2] = length;
 }
 
+/* 0x00109F00, libmpeg's sceMpegGetPicture(mp, buffer, macroblocks): decodes the
+   next picture on the IPU. The host has no IPU yet (FINDINGS: movies), so a
+   movie ends at once: no picture, and the stream marked ended - sceMpegIsEnd
+   (0x0010A028) returns the first word of mp->sys, at mp+0x40. The frontend's
+   background movie and the intro then finish as soon as they start. */
+void MpegGetPicture(lifted::Context& c) {
+    const u32 sys = u32(generated::ReadU32(u32(c.r[4]) + 0x40));
+    generated::Write32(sys, 1);
+    c.r[2] = 0;
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
@@ -42,4 +53,5 @@ void RegisterGameOverrides() {
     RegisterGameIopServers();
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
+    ps2host::Override(0x00109F00u, MpegGetPicture, "sceMpegGetPicture: movies end at once (no IPU yet)");
 }
