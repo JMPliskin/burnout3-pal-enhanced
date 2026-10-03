@@ -7,6 +7,9 @@
  * ps2host::Override(address, function, name); see engine/docs/PORTING.md.
  */
 
+#include <cstdio>
+#include <string>
+
 #include "ps2host/host.h"
 
 namespace {
@@ -19,6 +22,18 @@ void KernelStore(lifted::Context& c) {
     generated::Write32(u32(c.r[4]), u32(c.r[5]));
 }
 
+/* 0x0010D3E8, the SDK's TTY write over DECI2 (buffer $a0, length $a1): what the
+   game prints with printf. A retail console has no debugger to send it to; the
+   port logs it, since it is the game telling what it is doing. */
+void TtyWrite(lifted::Context& c) {
+    const u32 buffer = u32(c.r[4]), length = u32(c.r[5]);
+    std::string text;
+    for (u32 i = 0; i < length && i < 4096; ++i) text += char(generated::ReadU8(buffer + i));
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+    if (!text.empty()) std::fprintf(stderr, "[tty] %s\n", text.c_str());
+    c.r[2] = length;
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
@@ -26,4 +41,5 @@ void RegisterGameIopServers();     // iop_servers.cpp
 void RegisterGameOverrides() {
     RegisterGameIopServers();
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
+    ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
 }
