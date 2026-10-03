@@ -74,6 +74,7 @@ struct Options {
     std::vector<u32> watch_writes; /* guest addresses whose every store is logged */
     std::string frames_dir;        /* write the displayed picture here as BMP files */
     int frames_every = 30;         /* ...every this many frames */
+    bool window = false;           /* show the picture in a window as it runs */
 };
 
 /* Load the executable, run it from its entry point, and report how far it got.

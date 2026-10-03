@@ -107,6 +107,11 @@ void InstallDevices();
    frames, at most `limit` of them (--frames). */
 void SetFrameDumps(const std::string& dir, int every, int limit);
 void FrameDone(u64 frame);
+/* The window (window.cpp): opened with --window, presented each frame. */
+bool OpenWindow(const wchar_t* title, int width, int height);
+bool WindowOpen();
+bool WindowClosed();
+void PresentFrame();
 
 }  // namespace ps2host
 

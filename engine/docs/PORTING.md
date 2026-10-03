@@ -46,6 +46,8 @@ Options for finding out why boot stops, passed after `run --`:
 | `--notes` | every host event (DMA, interrupts, SIF, kernel calls), repeats included |
 | `--watch ADDR` | each call of the function at ADDR, with its argument registers and `$ra` |
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
+| `--window` | the picture, live, in a window (close it to end the run) |
+| `--watch-write ADDR` | every store to a guest address, with the function making it |
 | `--iop-trace` | every IOP library call the game's own modules make |
 | `--timeout S` | the time limit (30 s); `--budget N` makes a run deterministic |
 

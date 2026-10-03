@@ -340,6 +340,7 @@ int Run(const Options& options) {
     g_trace = options.trace_calls;
     g_all_notes = options.all_notes;
     GuestMemory().WatchWrites(options.watch_writes);
+    if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
     g_watch = options.watch;
@@ -388,6 +389,7 @@ int Main(int argc, char** argv) {
         if (arg == "--trace") options.trace_calls = true;
         else if (arg == "--notes") options.all_notes = true;
         else if (arg == "--iop-trace") options.iop_trace = true;
+        else if (arg == "--window") options.window = true;
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
