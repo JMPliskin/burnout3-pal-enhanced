@@ -249,8 +249,8 @@ address,name,status,source,notes
 0x0010BE60,WaitSema,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010BE70,PollSema,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010BE80,lifted::F_0010BE80,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0010BEC0,GetOsdConfigParam,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0010BED0,SetOsdConfigParam,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0010BEC0,SetOsdConfigParam,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0010BED0,GetOsdConfigParam,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010BEE0,lifted::F_0010BEE0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C03C,lifted::F_0010C03C,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C0A0,FlushCache,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original

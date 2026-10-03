@@ -35,8 +35,8 @@ address,name,source
 0x0010BE40,SignalSema,kernel service 0x42
 0x0010BE60,WaitSema,kernel service 0x44
 0x0010BE70,PollSema,kernel service 0x45
-0x0010BEC0,GetOsdConfigParam,kernel service 0x4A
-0x0010BED0,SetOsdConfigParam,kernel service 0x4B
+0x0010BEC0,SetOsdConfigParam,kernel service 0x4A
+0x0010BED0,GetOsdConfigParam,kernel service 0x4B
 0x0010C0A0,FlushCache,kernel service 0x64
 0x0010C0F0,RFU107,kernel service 0x6B
 0x0010C130,RFU111,kernel service 0x6F

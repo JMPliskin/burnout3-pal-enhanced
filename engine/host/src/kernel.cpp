@@ -25,6 +25,11 @@ struct Kernel {
     u32 stack_base = 0;
     u64 gs_imr = 0;
     std::map<u32, u32> sif_registers;
+    // The console's settings, as Get/SetOsdConfigParam pass them: bit 0 S/PDIF,
+    // 1-2 screen (0 4:3), 3 video output, 4 non-Japanese language, 5-12 PS1
+    // driver settings, 13-15 version, 16-20 language (1 English), 21-31 time
+    // zone offset in minutes. A US console in English, at GMT.
+    u32 osd_config = (1u << 4) | (1u << 13) | (1u << 16);
 };
 
 // The kernel's syscall table, in guest kernel RAM as on the console: SetSyscall
@@ -73,7 +78,7 @@ const Service kServices[] = {
     {0x3D, "SetupHeap"}, {0x3E, "EndOfHeap"}, {0x40, "CreateSema"},
     {0x41, "DeleteSema"}, {0x42, "SignalSema"}, {0x43, "iSignalSema"},
     {0x44, "WaitSema"}, {0x45, "PollSema"}, {0x47, "ReferSemaStatus"},
-    {0x4A, "GetOsdConfigParam"}, {0x4B, "SetOsdConfigParam"}, {0x5A, "kCopy"},
+    {0x4A, "SetOsdConfigParam"}, {0x4B, "GetOsdConfigParam"}, {0x5A, "kCopy"},
     {0x64, "FlushCache"},
     {0x70, "GsGetIMR"}, {0x71, "GsPutIMR"}, {0x73, "SetVSyncFlag"},
     {0x74, "SetSyscall"}, {0x76, "SifDmaStat"}, {0x77, "SifSetDma"},
@@ -199,11 +204,14 @@ void KernelSyscall(lifted::Context& c) {
             // verification interpreter does (engine/ps2decomp/emu.py).
             Return(c, 0xFFFFFFFFu);
             return;
-        case 0x4A: {                                 // GetOsdConfigParam(config*): defaults
-            GuestMemory().Write(Arg(c, 0), 0, 4);
+        case 0x4A:                                   // SetOsdConfigParam(config*)
+            k.osd_config = u32(GuestMemory().Read(Arg(c, 0), 4));
             Return(c, 0);
             return;
-        }
+        case 0x4B:                                   // GetOsdConfigParam(config*)
+            GuestMemory().Write(Arg(c, 0), k.osd_config, 4);
+            Return(c, 0);
+            return;
         case 0x7C: {                                 // Deci2Call(function, params*)
             // DECI2 talks to a development tool's debugger. A retail console has
             // none attached, so every request fails - and code that sends its
