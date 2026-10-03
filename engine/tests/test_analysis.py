@@ -80,6 +80,14 @@ class TestSwitches(unittest.TestCase):
     def test_the_table_is_read_from_the_code_before_the_jump(self):
         self.assertEqual(self.image().jump_table(BASE + 0x20, 2), [BASE + 0x28, BASE + 0x34])
 
+    def test_the_low_half_may_be_in_the_load(self):
+        # lui $v1, 0x0010; addu $v1, $v1, $a0; lw $v1, 0x0100($v1); jr $v1
+        code = list(self.CODE)
+        code[3:9] = [0x00042080, 0x3C030010, 0x00641821, NOP, 0x8C630100, 0x00600008]
+        words = code + [NOP] * (0x40 - len(code)) + [BASE + 0x28, BASE + 0x34] + [NOP] * 32
+        a = ImageAnalyzer(struct.pack("<%dI" % len(words), *words), BASE, BASE)
+        self.assertEqual(a.jump_table(BASE + 0x20, 3), [BASE + 0x28, BASE + 0x34])
+
     def test_cases_are_labels_of_the_switch(self):
         a = self.image()
         a.run()

@@ -240,7 +240,7 @@ class ImageAnalyzer:
         return seen
 
     # How far back from a `jr` its table and bound are looked for.
-    JUMP_TABLE_WINDOW = 16
+    JUMP_TABLE_WINDOW = 32
     MAX_CASES = 1024
 
     def jump_table(self, jr_addr: int, register: int):
@@ -276,8 +276,10 @@ class ImageAnalyzer:
                     index = (ins.rs, ins.rt)
                 elif index and low is None and m == "addiu" and ins.rt in index:
                     low = (ins.rt, ins.imm)
-                elif low and m == "lui" and ins.rt == low[0]:
-                    table = ((ins.imm << 16) + low[1] + load.imm) & 0xFFFFFFFF
+                elif m == "lui" and ((low and ins.rt == low[0]) or (index and not low and ins.rt in index)):
+                    # The table's low half is in the addiu, or else in the load's
+                    # own offset: `lui $t, hi; addu $t, $t, $i; lw $r, lo($t)`.
+                    table = ((ins.imm << 16) + (low[1] if low else 0) + load.imm) & 0xFFFFFFFF
             elif m == "sltiu":
                 bound = ins.imm
                 break
