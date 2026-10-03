@@ -13,6 +13,7 @@
 #include "ps2host/dma.h"
 #include "ps2host/gs.h"
 #include "iop_vm_internal.h"
+#include "spu2.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
 #include "ps2rt/generated.h"
@@ -279,6 +280,46 @@ void IopInstructionsMatchTheR5900() {
 
 }  // namespace
 
+void SpuDecodesAdpcmAndPlaysAVoice() {
+    using ps2host::iop::Spu2;
+    // Shift 0, filter 0: a nibble is the sample's top four bits.
+    Spu2::u8 block[16] = {0x00, 0x00, 0x81};
+    Spu2::s32 out[28], older = 0, old = 0;
+    Spu2::DecodeBlock(block, out, &older, &old);
+    Check(out[0] == 4096 && out[1] == -32768 && out[2] == 0, "ADPCM: shift 0, filter 0");
+    // Filter 1 predicts 60/64 of the previous sample.
+    Spu2::u8 predicted[16] = {0x1C};
+    older = 0;
+    old = 64;
+    Spu2::DecodeBlock(predicted, out, &older, &old);
+    Check(out[0] == 60, "ADPCM: filter 1 predicts from the previous sample");
+
+    // A voice looping one block of 4096s, at full volume once its attack is done.
+    Spu2 spu;
+    Spu2::u8 loop[16] = {0x00, 0x07};
+    for (int i = 2; i < 16; ++i) loop[i] = 0x11;
+    spu.Write(0x5000, loop, 16);
+    std::vector<Spu2::s16> heard;
+    spu.SetOutput([&](const Spu2::s16* frames, Spu2::u32 count) { heard.assign(frames, frames + 2 * count); });
+    spu.SetAddr(0x2000, 0x5000);                    // SSA, voice 0 of core 0
+    spu.SetParam(0x0000, 0x3FFF);                   // VOLL
+    spu.SetParam(0x0100, 0x3FFF);                   // VOLR
+    spu.SetParam(0x0200, 0x1000);                   // pitch: 48 kHz
+    spu.SetParam(0x0300, 0x000F);                   // ADSR1: fastest attack, full sustain
+    spu.SetParam(0x0400, 0x1FC0);                   // ADSR2: sustain holds
+    spu.SetSwitch(0x1800, 1);                       // VMIXL
+    spu.SetSwitch(0x1A00, 1);                       // VMIXR
+    spu.SetSwitch(0x1500, 1);                       // KON
+    auto none = [](Spu2::u32) {};
+    spu.Advance(1000, none);
+    spu.Advance(2000, none);                        // 48 samples
+    Check(heard.size() == 96, "SPU2: a millisecond is 48 stereo frames");
+    Check(heard.size() == 96 && heard[90] > 3500 && heard[90] < 4200 && heard[91] == heard[90],
+          "SPU2: a voice sounds at its volume");
+    Check(spu.GetSwitch(0x1700) & 1, "SPU2: ENDX after the loop's end");
+    Check(spu.GetParam(0x0500) == 0x7FFF, "SPU2: ENVX after the attack");
+}
+
 int main() {
     MirrorsReachTheSameRam();
     LoadsExtendAsTheEeDoes();
@@ -293,6 +334,7 @@ int main() {
     GsLayoutsArePermutations();
     GsDrawsASprite();
     IopInstructionsMatchTheR5900();
+    SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

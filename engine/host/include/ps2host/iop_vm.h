@@ -64,6 +64,9 @@ void Run();
 /* Log every library call a module makes (--iop-trace). */
 void SetTrace(bool on);
 
+/* Send the SPU2's mixed output to the host's sound device (--audio). */
+void EnableSound();
+
 /* For the report: one line per IOP thread. */
 std::string Report();
 

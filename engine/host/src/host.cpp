@@ -342,6 +342,11 @@ int Run(const Options& options) {
     GuestMemory().WatchWrites(options.watch_writes);
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
+    gs::TheGs().trace = options.gs_trace;
+    if (options.audio) {
+        if (OpenAudio()) iop::EnableSound();
+        else std::fprintf(stderr, "no sound device: running silent\n");
+    }
     if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
     g_watch = options.watch;
     InstallDevices();
@@ -390,6 +395,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--notes") options.all_notes = true;
         else if (arg == "--iop-trace") options.iop_trace = true;
         else if (arg == "--window") options.window = true;
+        else if (arg == "--gs-trace") options.gs_trace = true;
+        else if (arg == "--audio") options.audio = true;
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);

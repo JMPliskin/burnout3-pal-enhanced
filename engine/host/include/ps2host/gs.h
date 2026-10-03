@@ -72,6 +72,8 @@ struct Context {                // one of the two drawing contexts
 class Gs {
 public:
     Memory memory;
+    /* --gs-trace: log image transfers and textured primitives (stderr). */
+    bool trace = false;
 
     /* A GS register write by address (A+D, REGLIST, or the GIF's own). */
     void WriteRegister(u32 address, u64 value);

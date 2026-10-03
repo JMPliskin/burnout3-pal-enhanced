@@ -931,6 +931,10 @@ std::string ExportName(const std::string& library, u32 index) {
     return found == names.end() ? "?" : found->second;
 }
 
+void EnableSound() {
+    S().spu.SetOutput([](const Spu2::s16* frames, u32 count) { AudioFrames(frames, count); });
+}
+
 // Due sound interrupts: a voice transfer's completion, a block transfer's
 // half-buffer. Called by the interpreter's scheduler (iop_vm.cpp).
 void SoundInterrupts(Vm& vm) {

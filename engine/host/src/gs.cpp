@@ -200,6 +200,12 @@ void Gs::WriteRegister(u32 address, u64 value) {
             trx_x_ = 0;
             trx_y_ = 0;
             trx_active_ = trxdir_ == 0;
+            if (trace)
+                std::fprintf(stderr, "[gs] transfer dir %u: src %X/%u psm %02X (%u,%u) -> dst %X/%u psm %02X (%u,%u), %ux%u\n",
+                             unsigned(trxdir_), Bits(bitbltbuf_, 0, 14), Bits(bitbltbuf_, 16, 6), Bits(bitbltbuf_, 24, 6),
+                             Bits(trxpos_, 0, 11), Bits(trxpos_, 16, 11), Bits(bitbltbuf_, 32, 14), Bits(bitbltbuf_, 48, 6),
+                             Bits(bitbltbuf_, 56, 6), Bits(trxpos_, 32, 11), Bits(trxpos_, 48, 11), Bits(trxreg_, 0, 12),
+                             Bits(trxreg_, 32, 12));
             if (trxdir_ == 2) LocalToLocal();
             break;
         case 0x54: Transfer(value, 0); break;          // HWREG: 64 bits

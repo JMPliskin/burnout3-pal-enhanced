@@ -116,6 +116,10 @@ void PresentFrame();
 bool WindowFocused();
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
+/* Sound (audio.cpp): opened with --audio; the SPU2 hands it 16-bit stereo
+   frames at 48 kHz. */
+bool OpenAudio();
+void AudioFrames(const short* frames, unsigned count);
 
 }  // namespace ps2host
 
