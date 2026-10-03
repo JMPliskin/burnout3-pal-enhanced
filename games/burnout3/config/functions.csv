@@ -289,7 +289,7 @@ address,name,status,source,notes
 0x0010C160,GsPutIMR,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C170,lifted::F_0010C170,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C190,SetVSyncFlag,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
-0x0010C1A0,lifted::F_0010C1A0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0010C1A0,SetSyscall,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C1C0,SifDmaStat,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C1D0,lifted::F_0010C1D0,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010C1E0,SifSetDma,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
@@ -409,7 +409,7 @@ address,name,status,source,notes
 0x0010F000,lifted::F_0010F000,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010F018,generated::func_0010F018,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0010F158,generated::func_0010F158,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
-0x0010F1E8,lifted::F_0010F1E8,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
+0x0010F1E8,sceSifCallRpc,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010F3E0,generated::func_0010F3E0,verified,src/generated/accessors.cpp,symbolically derived; differential-tested over 8 argument sets
 0x0010F420,lifted::F_0010F420,lifted,src/lifted/,lifted instruction by instruction; registers and memory differential-tested against the original
 0x0010F4B8,lifted::F_0010F4B8,reconstructed,src/lifted/,lifted; not verified: untestable: only 4 cases ran
