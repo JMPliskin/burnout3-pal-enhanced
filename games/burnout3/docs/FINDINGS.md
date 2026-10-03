@@ -1438,6 +1438,22 @@ one missing piece of the machine:
 GetOsdConfigParam and SetOsdConfigParam (0x4B and 0x4A) were swapped in the
 host's kernel; the console now reports English, 4:3.
 
+With functions whole (their out-of-line pieces joined), a run needs no new
+translation at all on the way to the main menu. In order, scripted with
+`--press up@1200 --press cross@1350 --press start@1900 --press down@2300
+--press cross@2450 --press cross@3000 --press cross@3400 --press up@3800
+--press cross@3950`: no memory card -> start anyway; the title screen ("A
+Criterion Games Production...") -> Start; "Burnout 3 requires a Profile" ->
+New Profile; the name entry (BURNOUT) -> Done; save the profile? -> No;
+autosave disabled? -> Yes; the main menu, "SELECT OPTION", with its ticker
+("RACE AND CRASH AROUND THE WORLD"). VU1 has still run nothing.
+
+Open there: the main menu's options and the name-entry keyboard's letters are
+drawn - textured triangle strips from the frontend font at 0x3B60 - with
+vertex colour and alpha 0, so they do not show. The ticker, the same font and
+primitive type, has colour 0x16242D80. Most likely a fade that does not
+advance; what its value waits on is the next question.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
