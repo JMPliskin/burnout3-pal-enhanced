@@ -73,6 +73,8 @@ private:
 
 /* The VIF1 stream fed by stores to its FIFO, 0x10005000. */
 VifStream& Vif1();
+/* VIF0's, at 0x10004000; it feeds VU0. */
+VifStream& Vif0();
 
 }  // namespace ps2host
 

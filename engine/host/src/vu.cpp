@@ -332,4 +332,15 @@ Vu& Vu1() {
     return vu;
 }
 
+Vu& Vu0() {
+    static Vu vu(0);
+    static const bool attached = [] {
+        // VU0's at 0x11000000 and 0x11004000.
+        vu.Attach(GuestMemory().Translate(0x11000000u, 4096), GuestMemory().Translate(0x11004000u, 4096));
+        return true;
+    }();
+    (void)attached;
+    return vu;
+}
+
 }  // namespace ps2host

@@ -126,6 +126,7 @@ std::string Walk(const Channel& ch, u32 chcr) {
                           u32(m.Read(ch.base + kTadr, 4)), u32(m.Read(ch.base + kAsr0, 4)),
                           u32(m.Read(ch.base + kAsr1, 4))};
     std::function<void(u32)> sink = [](u32) {};
+    if (ch.base == 0x10008000u) sink = [](u32 word) { Vif0().Word(word); };
     if (ch.base == 0x10009000u) sink = [](u32 word) { Vif1().Word(word); };
     if (ch.base == 0x1000A000u) sink = [](u32 word) { Path3(word); };
     char text[160];
@@ -214,6 +215,7 @@ void InstallDevices() {
     // VU1 behind VIF1; its XGKICKs are GIF PATH1.
     Vif1().vu = &Vu1();
     Vif1().double_buffered = true;
+    Vif0().vu = &Vu0();
     Vu1().on_kick = [](u64 low, u64 high) { gs::TheGs().Qword(1, low, high); };
     // The GS's privileged registers: what is displayed. A 64-bit store reaches
     // both words; each passes the whole register on.

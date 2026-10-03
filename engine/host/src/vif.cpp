@@ -226,4 +226,9 @@ VifStream& Vif1() {
     return stream;
 }
 
+VifStream& Vif0() {
+    static VifStream stream;
+    return stream;
+}
+
 }  // namespace ps2host

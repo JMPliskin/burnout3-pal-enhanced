@@ -80,6 +80,8 @@ private:
 
 /* VU1, which VIF1 loads and starts. */
 Vu& Vu1();
+/* VU0, which VIF0 loads and the EE starts (vcallms) or VIF0 does. */
+Vu& Vu0();
 
 }  // namespace ps2host
 
