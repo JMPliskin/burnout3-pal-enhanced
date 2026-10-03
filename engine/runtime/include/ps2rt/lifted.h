@@ -122,6 +122,10 @@ void StoreRight(u32 address, u64 value, u32 size);
    an arithmetic COP2 instruction, and the moves between it and the core. */
 void Cop2(Context& c, u32 word);
 void Cop2Move(Context& c, u32 word, u32 rt);
+/* vcallms / vcallmsr: VU0 runs the microprogram at `address` (bytes in its
+   instruction memory) on the registers macro mode shares with it. Defined by
+   whatever hosts the lifted code. */
+void Vcallms(Context& c, u32 address);
 
 }  // namespace lifted
 

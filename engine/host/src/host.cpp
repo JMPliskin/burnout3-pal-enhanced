@@ -17,6 +17,7 @@
 #include "ps2host/gs.h"
 #include "ps2host/iop_vm.h"
 #include "ps2host/vif.h"
+#include "ps2host/vu.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -446,6 +447,19 @@ void TailCall(Context& c, u32 target, u32 /*return_address*/, u32 /*entry_sp*/) 
 }
 
 void Syscall(Context& c) { ps2host::KernelSyscall(c); }
+
+// vcallms: VU0's registers are the ones macro mode uses, so the microprogram
+// runs on the calling thread's and leaves its results there.
+void Vcallms(Context& c, u32 address) {
+    ps2host::Vu& vu = ps2host::Vu0();
+    std::memcpy(vu.regs.vf, c.vf, sizeof c.vf);
+    std::memcpy(vu.regs.vc, c.vc, sizeof c.vc);
+    std::memcpy(vu.regs.vacc, c.vacc, sizeof c.vacc);
+    vu.Run(address);
+    std::memcpy(c.vf, vu.regs.vf, sizeof c.vf);
+    std::memcpy(c.vc, vu.regs.vc, sizeof c.vc);
+    std::memcpy(c.vacc, vu.regs.vacc, sizeof c.vacc);
+}
 
 }  // namespace lifted
 

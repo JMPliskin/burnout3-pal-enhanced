@@ -371,9 +371,15 @@ class TestStructured(TestLift):
 
 class TestLiftRefusals(unittest.TestCase):
     def test_unsupported_instruction_is_refused(self):
-        image = struct.pack("<3I", 0x4A000038, JR_RA, NOP)      # vcallms: runs VU0 microcode
+        image = struct.pack("<3I", 0x42000002, JR_RA, NOP)      # tlbwi: no TLB on the host
         with self.assertRaises(lift.Refused):
             lift.lift_function(image, BASE, BASE, BASE + 12)
+
+    def test_vcallms_runs_vu0_through_the_host(self):
+        # vcallms 0x30: the microprogram at instruction 6 (byte 0x30).
+        image = struct.pack("<3I", 0x4A000038 | (6 << 6), JR_RA, NOP)
+        text = lift.lift_function(image, BASE, BASE, BASE + 12)
+        self.assertIn("lifted::Vcallms(c, 0x0030u);", text)
 
     def test_delay_slot_reached_by_a_jump_is_emitted_again(self):
         # 0: beq $a0, $zero, +8 ; 4: addiu $v0, $zero, 1 ; 8: j 4 ; 12: nop

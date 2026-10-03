@@ -333,6 +333,12 @@ def statement(ins) -> str:
 def _cop2(ins) -> str:
     """VU0 macro mode: the operation runs in runtime/src/vu0.cpp, named in a comment."""
     m = ins.mnemonic
+    if m == "vcallms":
+        # The microprogram's address in instructions (8 bytes), bits 20-6.
+        return "lifted::Vcallms(c, 0x%04Xu);  /* vcallms */" % (((ins.raw >> 6) & 0x7FFF) * 8)
+    if m == "vcallmsr":
+        # From CMSAR0, VU0 control register 27.
+        return "lifted::Vcallms(c, (c.vc[27] & 0xFFFFu) * 8);  /* vcallmsr */"
     if m in ("qmtc2", "ctc2", "qmfc2", "cfc2"):
         if m == "cfc2" and ((ins.raw >> 11) & 0x1F) in vu0.UNREADABLE:
             raise Refused("cfc2 of an unmodelled VU0 flag register")
@@ -384,7 +390,9 @@ def lift_function(image: bytes, base: int, start: int, end: int) -> str:
     for ins in code:
         if not ins.is_valid:
             raise Refused("invalid instruction at 0x%08X" % ins.addr)
-        if not is_supported(ins):
+        # The interpreter that verifies lifted code has no VU0 micro mode, so a
+        # function that calls it lifts unverified rather than not at all.
+        if not is_supported(ins) and ins.mnemonic not in ("vcallms", "vcallmsr"):
             raise Refused("unsupported instruction %s" % ins.mnemonic)
         if ins.has_delay_slot:
             slot = by_address.get(ins.addr + 4)

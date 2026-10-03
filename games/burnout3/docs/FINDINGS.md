@@ -1356,8 +1356,50 @@ liveness.py now counts every synchronised register as live after a branch that
 leaves the function; engine/tests/test_liveness.py has the case.
 
 Verification missed it for a reason worth fixing too. The equivalence harness
-fills memory with hashes of addresses, so `ReadS32(a0 + 8) == 5` is never true
-and the branch that needed the store never ran.
+filled memory with hashes of addresses, so `ReadS32(a0 + 8) == 5` was never
+true and the branch that needed the store never ran. Half its cases now read
+memory, registers or both as small values (aligned words 0-8).
+
+With the music stream at 5, loading ran on to stage 23 and stopped on a
+store to 0x37943844. 0x00228400 returned with its caller's `$s0` replaced by
+0x37800000 - a float, 2^-16. Its callee 0x002284B0, a VU0 routine the
+interpreter cannot test (it loops past the step limit), was emitted in a
+structured form with its saves elided, which keeps `$s0` in a local and
+trusts the stack restore to be bookkeeping. But `qmfc2 $s0, $vf1` writes `$s0`
+through the context (Cop2Move), past the local, so the value reached the
+caller. Two fixes:
+
+* A function whose saved registers are reached through the context - a COP2
+  move of one, or a 128-bit write (`lq`, MMI) setting its upper half - keeps
+  its saves (structure.py `_save_slots`).
+* The structured forms of the 2,171 functions the interpreter cannot check
+  were emitted unchecked. Each now has to behave as its plain lifted form in
+  the native equivalence check, or the plain form is emitted
+  (lift.py `structure_unverified`).
+
+### Functions in pieces
+
+Counting the lift's tail transfers that land somewhere other than a function
+start: 2,377 functions do it, to 2,544 addresses. Most are not dead code. The
+compiler places cold blocks out of line, after the hot code, and the
+out-of-line blocks of neighbouring functions are interleaved (0x003FCB58-
+0x003FCBC4 holds pieces branching back into 0x003FC930, 0x003FCABC and on).
+The analysis models a function as one contiguous range, so those pieces
+become functions of their own ("recovered: adjacent") reached by tail
+transfer. Running and verifying are unaffected - a transfer runs the piece
+with the same registers and stack - but structuring and reading see
+fragments. Giving a function every block its traversal reaches, wherever it
+lies, is the fix the analysis needs.
+
+A prototype of that (following branches but not `j` from each start, and
+stopping at called functions) gives 2,388 functions 710 KB of chunks, and
+shows the bigger cause: many analysis "functions" are pieces of one. Switch
+statements jump through tables (`lui`/`addiu` the table, `sll`, `addu`, `lw`,
+`jr`), and the pointer harvest takes every table entry for a function - the
+case at 0x0019A9A8 of the switch in 0x0019A950 is `func_0019A9A8`. So
+0x00100B90-0x00100EA0 is four "functions" branching into one another.
+Recognising jump tables, and treating their targets as labels of the
+function that jumps through them, comes before chunks.
 
 ## Open questions
 
