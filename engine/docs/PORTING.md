@@ -46,6 +46,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--notes` | every host event (DMA, interrupts, SIF, kernel calls), repeats included |
 | `--watch ADDR` | each call of the function at ADDR, with its argument registers and `$ra` |
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
+| `--iop-trace` | every IOP library call the game's own modules make |
 | `--timeout S` | the time limit (30 s); `--budget N` makes a run deterministic |
 
 The guest's own debug output (`kputs`) appears as `[guest]` lines.
@@ -129,6 +130,15 @@ so a new game gets them as soon as its routines are named.
    (`games/<g>/port/iop_servers.cpp`). Pads, sound and memory cards follow.
    DMA channels VIF0, VIF1 and GIF are walked (`dma.cpp`), chains included,
    and VIF1's stream is decoded (`vif.cpp`).
+   **A game's own IOP modules run** in an R3000 interpreter (`iop_vm.cpp`).
+   Each is loaded from the disc and relocated, and its imports are bound to
+   the host's IOP libraries (`iop_libs.cpp`, by the numbers in
+   `engine/data/iop_exports.csv`). Its threads run under the IOP kernel's
+   scheduler, and its SIF commands go to and from the EE. The port names the
+   modules to run: `ps2host::iop::RunModule("RWA.IRX")`. Prefer this to
+   rewriting a module's protocol; sound drivers are the usual case. The iopheap
+   server (`iopheap.cpp`) shares the interpreter's heap. `--iop-trace` logs
+   every library call a module makes.
 5. **Graphics**: GIF packets to a GS renderer; VU1 microprograms translated or
    emulated.
 6. **Audio, input, saves**, then enhancements.

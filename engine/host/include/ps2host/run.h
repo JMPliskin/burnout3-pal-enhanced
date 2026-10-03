@@ -64,11 +64,17 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result);
    one queued answer to the EE (false when none waits). */
 void SifDma(u32 transfers, u32 count);
 bool DeliverIopReply();
+/* A packet from the IOP to the EE (a module's sceSifSendCmd): queued, and
+   delivered as the SIF0 interrupt at the next safe point. */
+void QueueIopPacket(std::vector<u8> packet);
+/* Ask for interrupts to be delivered at the running thread's next loop head. */
+void RequestDelivery();
 /* The IOP services the engine implements: CD/DVD (cdvd.cpp), ... */
 void InstallIopServers();
 void InstallFileIo();
 void InstallLoadFile();
 void InstallDbc();
+void InstallIopHeap();
 /* Signal an EE semaphore from the host (the IOP finishing a request); the
    running thread is not preempted. */
 void SignalSemaphore(u32 id);

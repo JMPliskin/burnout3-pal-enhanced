@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "ps2host/host.h"
+#include "ps2host/iop_vm.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -90,6 +91,7 @@ void QueueEnd(const std::vector<u8>& request, u32 answered, u32 server) {
     PutWord(packet, 40, server + 0x100);        // the server's receive buffer
     PutWord(packet, 44, server + 0x200);        // and its command buffer
     I().replies.push_back(std::move(packet));
+    RequestDelivery();
 }
 
 std::string Hex(u32 value) {
@@ -148,6 +150,17 @@ void Command(const std::vector<u8>& packet, const std::vector<u8>& data) {
             return;
         }
         default:
+            if (!(command & 0x80000000u)) {
+                // A command for a module's own handler (sceSifAddCmdHandler on
+                // the IOP): run it there, if a module the host runs added one.
+                if (iop::HasCommandHandler(command)) {
+                    iop::Command(command, packet);
+                    return;
+                }
+                Note("sif user " + Hex(command), "SIF: command " + Hex(command) +
+                     " for a module the host does not run (dropped)");
+                return;
+            }
             Note("sif command " + Hex(command), "SIF: command " + Hex(command) + " (not handled)");
             return;
     }
@@ -166,16 +179,30 @@ void SifDma(u32 transfers, u32 count) {
     for (u32 i = 0; i < count; ++i) {
         // struct SifDmaTransfer { void* src; void* dest; int size; int attr; }
         const u32 t = transfers + 16 * i;
-        const u32 src = u32(m.Read(t, 4)), size = u32(m.Read(t + 8, 4));
+        const u32 src = u32(m.Read(t, 4)), dest = u32(m.Read(t + 4, 4));
+        const u32 size = u32(m.Read(t + 8, 4));
         std::vector<u8> bytes = ReadGuest(src, size);
         const u32 command = Word(bytes, 8);
-        if (size >= 16 && (command & 0x80000000u) && (Word(bytes, 0) & 0xFF) == size) {
+        // A command packet's header gives its own size; user commands (below
+        // 0x80000000) are a module's, system ones the SIF library's.
+        const bool user = command < 0x100u;
+        if (size >= 16 && (command & 0x80000000u || user) && (Word(bytes, 0) & 0xFF) == size) {
             Command(bytes, data);
             data.clear();
         } else {
+            // Extra data, DMA'd into IOP memory where the sender said - a
+            // module reads it there. Data for the host's own servers is bound
+            // for their pretended addresses, above any module's memory.
+            if (dest < kServerBase)
+                for (u32 k = 0; k < size; ++k) m.Write(kIopRamBase + dest + k, bytes[k], 1);
             data = std::move(bytes);
         }
     }
+}
+
+void QueueIopPacket(std::vector<u8> packet) {
+    I().replies.push_back(std::move(packet));
+    RequestDelivery();
 }
 
 // Deliver one queued answer: into the EE's receive buffer, then the SIF0 DMA

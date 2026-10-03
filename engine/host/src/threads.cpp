@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "ps2host/host.h"
+#include "ps2host/iop_vm.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -194,6 +195,7 @@ bool RunHandlers(const std::map<u32, Handler>& handlers, u32 cause) {
 bool DeliverFrame() {
     Scheduler& s = S();
     ++s.frames;
+    iop::Run();                             // the IOP's timers and sound interrupts
     bool ran = false;
     for (u32 cause : {kVblankStart, kVblankEnd})
         if (s.intc_mask & (1u << cause)) ran |= RunHandlers(s.handlers, cause);
@@ -244,6 +246,8 @@ void LoopHead(lifted::Context& c, u32 address) {
     c.budget = requested ? s.saved_budget : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
     if (frame) DeliverFrame();
+    while (DeliverIopReply()) {
+    }
     DeliverPendingDmac();
     // Returning from the interrupt, a thread its handler woke may run first.
     Thread* best = PickReady();
@@ -275,8 +279,12 @@ void RaiseDmac(u32 channel) {
 }
 
 void PostDmac(u32 channel) {
+    S().pending_dmac |= 1u << channel;
+    RequestDelivery();
+}
+
+void RequestDelivery() {
     Scheduler& s = S();
-    s.pending_dmac |= 1u << channel;
     if (s.in_interrupt || !s.current || s.delivery_requested) return;
     lifted::Context& c = s.current->context;
     s.saved_budget = c.budget;

@@ -1257,6 +1257,51 @@ didn't model yet. They are listed in the order boot reached them.
 
 Boot now runs 1,050 distinct functions and reaches the iopheap server.
 
+## RenderWare Audio runs on an IOP interpreter
+
+The game's sound driver, RWA.IRX (RenderWare Audio), talks to its EE library
+over raw SIF commands rather than RPC:
+
+* **EE → IOP.** User command 0 carries 0x30-byte records: +0x10 type, then
+  arguments, plus a chunked data transfer. The EE side is 0x2AEFC0.
+* **IOP → EE.** User command 1, handled at 0x2AF340, which feeds the receiver
+  thread 0x2AF2A0. Types 9–16 are the library's own (9 is the handshake,
+  version 0x115). The rest go to the game's dispatcher 0x2B3B50: type 0x1A
+  answers command 0x11, and type 0x1B (two values) answers command 0x13.
+
+It has about 80 command types and drives the SPU2 through libsd, so
+reimplementing it would mean rewriting a sound engine. Instead the host now
+*runs* it (engine/host/src/iop_vm.cpp). An R3000 interpreter over IOP RAM loads
+the IRX from the disc, relocates it, and binds its imports to the host's IOP
+libraries (iop_libs.cpp). Those libraries are threads, semaphores, event flags,
+alarms, sysmem, sysclib, sifcmd/sifman and libsd. The export numbers come from
+ps2sdk's export tables (engine/data/iop_exports.csv) and the error codes from
+its kerr.h. The port opts modules in by name
+(`ps2host::iop::RunModule("RWA.IRX")`).
+
+What it took to get the conversation going:
+
+* **IOP heap.** Command 0x49 hands RWA a block the EE allocated through the
+  iopheap server (0x80000003). That server now allocates from the
+  interpreter's heap (procedure 4 = alloc {size, mode, address}, 2 = free).
+  With zeros, RWA cleared 8 KB at IOP address 0.
+* **Module start routines run as IOP threads**, as modload runs them; RWA's
+  asks for its own thread id.
+* **`sceSifSetCmdBuffer` sets a module's handler table**, not a packet buffer.
+  The host keeps handlers itself and gives packets a buffer of its own.
+* **libsd IO-mode transfers** (`SD_TRANS_MODE_IO`, 8) raise no transfer
+  interrupt. RWA's mixer threads woke on a spurious one and called a null
+  callback.
+* **Gap recovery had split the EE dispatcher 0x2B3B50**: its case bodies from
+  0x2B3CE0 on became a "function" of their own. Run-time discovery translates
+  them as tail calls, which works natively; the analysis should still learn
+  that branches past a function's end extend it.
+
+The EE now sends RWA commands 1, 2, 0x11, 0x13, 0x15, 0x30, 0x49 and 0x4E, and
+RWA's replies reach the game. Sound is not played yet: libsd keeps the SPU2's
+state and SPU RAM, and fires transfer interrupts at the hardware's rate, but
+nothing is mixed. Boot runs 1,385 distinct functions.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

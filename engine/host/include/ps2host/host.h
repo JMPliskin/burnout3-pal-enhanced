@@ -65,6 +65,7 @@ struct Options {
     s64 loop_budget = INT64_MAX;
     bool trace_calls = false;      /* log every call, not just the first of each */
     bool all_notes = false;        /* log every host note, not just the first of each */
+    bool iop_trace = false;        /* log every IOP library call a module makes */
     int report_limit = 40;         /* how many entries each report section lists */
     int timeout_seconds = 30;      /* stop and report a run that goes on longer */
     std::string discover_path;     /* where to record code found copied at run time */

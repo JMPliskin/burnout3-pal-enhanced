@@ -109,6 +109,7 @@ void InstallIopServers() {
     InstallFileIo();
     InstallLoadFile();
     InstallDbc();
+    InstallIopHeap();
     RegisterRpcServer(0x8000059Cu, DiskReady);
     RegisterRpcServer(0x80000597u, SearchFile);
     RegisterRpcServer(0x80000593u, SCommand);

@@ -23,7 +23,9 @@
 #include <string>
 #include <vector>
 
+#include "ps2host/disc.h"
 #include "ps2host/host.h"
+#include "ps2host/iop_vm.h"
 #include "ps2host/run.h"
 
 namespace ps2host {
@@ -41,6 +43,28 @@ std::vector<u8> Words(s32 first, u32 second) {
     return out;
 }
 
+// A module the port runs (iop_vm.h): read from the disc and started.
+std::vector<u8> RunFromDisc(s32 id, const std::string& path, const std::vector<u8>& data) {
+    std::string disc_path = path;
+    const std::size_t colon = disc_path.find(':');
+    if (colon != std::string::npos) disc_path = disc_path.substr(colon + 1);
+    Disc::File file;
+    if (!GuestDisc().IsOpen() || !GuestDisc().Find(disc_path, &file))
+        throw Unimplemented{"IOP: module " + path + " is to run, but is not on the disc"};
+    std::vector<u8> image((file.size + kSectorSize - 1) / kSectorSize * kSectorSize);
+    GuestDisc().Read(file.lsn, u32(image.size() / kSectorSize), image.data());
+    image.resize(file.size);
+    s32 arg_length = 0;
+    std::memcpy(&arg_length, &data[0], 4);
+    std::vector<u8> args;
+    if (arg_length > 0 && data.size() >= 0x104 + std::size_t(arg_length))
+        args.assign(data.begin() + 0x104, data.begin() + 0x104 + arg_length);
+    s32 result = 0;
+    if (!iop::LoadModule(path, image, args, &result))
+        throw Unimplemented{"IOP: " + path + " is not a module the interpreter can load"};
+    return Words(id, u32(result));
+}
+
 std::vector<u8> LoadFile(u32 procedure, const std::vector<u8>& data) {
     static s32 next_id = 1;
     if (procedure == 0xFF) return std::vector<u8>(kVersion, kVersion + 4);
@@ -48,6 +72,7 @@ std::vector<u8> LoadFile(u32 procedure, const std::vector<u8>& data) {
         const char* begin = reinterpret_cast<const char*>(&data[8]);
         const std::string path(begin, strnlen(begin, 252));
         const s32 id = next_id++;
+        if (iop::RunsModule(path)) return RunFromDisc(id, path, data);
         Note("module " + path, "IOP: module " + path + " loaded as " + std::to_string(id) +
                                    " (its services are the host's)");
         return Words(id, kResidentEnd);

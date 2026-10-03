@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ps2host/host.h"
+#include "ps2host/iop_vm.h"
 #include "ps2host/run.h"
 
 namespace {
@@ -50,5 +51,8 @@ std::vector<u8> LgDev(u32 procedure, const std::vector<u8>& data) {
 }  // namespace
 
 void RegisterGameIopServers() {
+    // RenderWare Audio, the game's sound driver: its protocol is its own (EE
+    // side at 0x002AEFC0), so the module itself runs (iop_vm.h).
+    ps2host::iop::RunModule("RWA.IRX");
     ps2host::RegisterRpcServer(0x046D046Du, LgDev);
 }

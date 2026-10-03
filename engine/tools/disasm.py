@@ -157,6 +157,9 @@ def main(argv=None) -> int:
     game_config.add_argument(parser)
     parser.add_argument("--addr", help="render a single function at this address")
     parser.add_argument("--all", action="store_true", help="render every function")
+    parser.add_argument("--range", nargs=2, metavar=("START", "END"),
+                        help="render the code from START to END, whatever the "
+                             "analysis says its functions are")
     parser.add_argument("--top", type=int, help="render the N largest functions")
     parser.add_argument("--with-strings", action="store_true",
                         help="only functions that reference a string")
@@ -171,6 +174,13 @@ def main(argv=None) -> int:
     writer = AsmWriter(database, image)
 
     selected = database["functions"]
+    if args.range:
+        start, end = (int(value, 0) for value in args.range)
+        print(writer.render({"addr": start, "end": end, "size": end - start,
+                             "instructions": (end - start) // 4, "label": "range_%08X" % start,
+                             "confidence": "--range", "callers": [], "string_hint": "",
+                             "uses_vu": False}, args.bytes))
+        return 0
     if args.addr:
         wanted = int(args.addr, 0)
         selected = [f for f in selected if f["addr"] == wanted]
