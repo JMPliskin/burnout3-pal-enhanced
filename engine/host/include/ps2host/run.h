@@ -65,6 +65,10 @@ void SifDma(u32 transfers, u32 count);
 bool DeliverIopReply();
 /* The IOP services the engine implements: CD/DVD (cdvd.cpp), ... */
 void InstallIopServers();
+void InstallFileIo();
+/* Signal an EE semaphore from the host (the IOP finishing a request); the
+   running thread is not preempted. */
+void SignalSemaphore(u32 id);
 /* Run the DMA-completion handlers registered for a channel, as its interrupt. */
 void RaiseDmac(u32 channel);
 

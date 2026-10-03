@@ -258,6 +258,21 @@ std::string ThreadReport() {
     return out;
 }
 
+void SignalSemaphore(u32 id) {
+    Scheduler& s = S();
+    auto found = s.semaphores.find(id);
+    if (found == s.semaphores.end()) return;
+    Thread* taker = nullptr;
+    for (auto& [tid, t] : s.threads) {
+        if (t->state == State::Waiting && t->waiting_on == id &&
+            (!taker || t->priority < taker->priority ||
+             (t->priority == taker->priority && t->queued < taker->queued)))
+            taker = t.get();
+    }
+    if (taker) MakeReady(*taker);
+    else found->second.count++;
+}
+
 // The thread, semaphore and interrupt services; false for any other.
 bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
     Scheduler& s = S();

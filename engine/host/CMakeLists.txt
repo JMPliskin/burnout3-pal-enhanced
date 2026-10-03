@@ -23,7 +23,8 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/iop.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/sdk.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/disc.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/cdvd.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/src/cdvd.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/fileio.cpp)
 target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ps2host PUBLIC ps2rt)
 

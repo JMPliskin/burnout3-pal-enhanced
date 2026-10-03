@@ -29,8 +29,12 @@ import re
 from . import cppcheck
 
 CASES = 2000
+# A function whose cases take longer than this stops early with what it has run.
+SECONDS_PER_FUNCTION = 1.0
+BATCH = 500
 
 HARNESS = r'''
+#include <chrono>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -48,8 +52,16 @@ u8 Byte(u32 a) {
     x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 32;
     return u8(x);
 }
+// A case that runs away - random registers can make a loop sweep megabytes, or
+// call without end - stops, as both forms then do at the same point.
+struct Runaway {};
+constexpr std::size_t kMaxWritten = 1 << 16, kMaxCalls = 4096 * 17;
+
 u64 Load(u32 a, u32 n) { u64 v = 0; for (u32 i = 0; i < n; ++i) v |= u64(Byte(a + i)) << (8 * i); return v; }
-void Store(u32 a, u64 v, u32 n) { for (u32 i = 0; i < n; ++i) g_written[a + i] = u8(v >> (8 * i)); }
+void Store(u32 a, u64 v, u32 n) {
+    for (u32 i = 0; i < n; ++i) g_written[a + i] = u8(v >> (8 * i));
+    if (g_written.size() > kMaxWritten) throw Runaway{};
+}
 u64 Mix(u64 x) { x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29; return x; }
 }
 
@@ -75,6 +87,7 @@ namespace lifted {
 // its arguments. A register live at a call is never folded away (a call reads
 // every register), so the arguments must match exactly between the forms.
 void Call(Context& c, u32 target) {
+    if (g_calls.size() > kMaxCalls) throw Runaway{};
     u64 h = Mix(g_seed ^ (u64(target) << 20) ^ g_calls.size());
     g_calls.push_back(target);
     for (int r : {4, 5, 6, 7, 8, 9, 10, 11}) { g_calls.push_back(c.r[r]); h = Mix(h ^ c.r[r]); }
@@ -144,12 +157,20 @@ int Differ(const Outcome& a, const Outcome& b, int abi, u32 sp) {
 }
 
 /* For each pair, the first case that differs and what differs (case * 1000 +
-   Differ's code), or -1 if none did. */
-extern "C" __declspec(dllexport) int equiv_run(int cases, long long* first_difference) {
+   Differ's code), or -1 if none did; and how many cases ran - fewer than asked
+   when a pair's cases took longer than `seconds`. */
+extern "C" __declspec(dllexport) int equiv_run(int cases, double seconds, long long* first_difference,
+                                               int* ran, int first, int last) {
     const int count = int(sizeof kPairs / sizeof kPairs[0]);
-    for (int i = 0; i < count; ++i) {
+    for (int i = first; i < last && i < count; ++i) {
         first_difference[i] = -1;
+        ran[i] = 0;
+        const auto started = std::chrono::steady_clock::now();
         for (int k = 0; k < cases; ++k) {
+            if ((k & 63) == 0 && std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - started).count() > seconds)
+                break;
+            ran[i] = k + 1;
             const u64 seed = Mix(u64(kPairs[i].address) * 7919 + u64(k));
             lifted::Context start{};
             for (int r = 1; r < 32; ++r) start.r[r] = Mix(seed + r);
@@ -200,16 +221,23 @@ def _build(paths, work: str) -> str:
                                  ("eefpu.cpp", "eeint.cpp", "lifted_support.cpp", "vu0.cpp")]
     cppcheck._BUILDS += 1
     dll = os.path.join(work, "equivalence_%d_%d.dll" % (os.getpid(), cppcheck._BUILDS))
+    # The sources go in a response file: a hundred and more paths are longer than
+    # the 8,191 characters a cmd command line may be.
+    response = os.path.join(work, "sources.rsp")
+    with open(response, "w", encoding="utf-8") as handle:
+        handle.write("\n".join('"%s"' % p for p in all_sources) + "\n")
     script = os.path.join(work, "build.bat")
     with open(script, "w", encoding="utf-8") as handle:
         handle.write('@echo off\ncall "%s" >nul\ncd /d "%s"\n' % (cppcheck.find_vcvars(), work))
-        handle.write('cl /nologo /std:c++17 /O2 /EHsc /bigobj /MP4 /W1 /LD /I"%s" %s /Fe"%s" '
+        handle.write('cl /nologo /std:c++17 /O2 /EHsc /bigobj /MP4 /W1 /LD /I"%s" @"%s" /Fe"%s" '
                      '>build.log 2>&1\nexit /b %%errorlevel%%\n'
-                     % (os.path.join(cppcheck.RUNTIME, "include"),
-                        " ".join('"%s"' % p for p in all_sources), dll))
-    if subprocess.run(["cmd", "/c", script], capture_output=True).returncode:
-        with open(os.path.join(work, "build.log"), encoding="utf-8", errors="replace") as handle:
-            raise cppcheck.CompileError(handle.read()[-3000:])
+                     % (os.path.join(cppcheck.RUNTIME, "include"), response, dll))
+    if subprocess.run(["cmd", "/c", script], capture_output=True).returncode or \
+            not os.path.exists(dll):
+        log = os.path.join(work, "build.log")
+        text = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else ""
+        errors = [line for line in text.splitlines() if " error " in line or "fatal" in line]
+        raise cppcheck.CompileError("\n".join(errors[:20]) or text[-3000:] or "the build did not run")
     return dll
 
 
@@ -224,10 +252,27 @@ def check(pairs: dict, work: str, cases: int = CASES) -> dict:
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
         paths.append(path)
+    import time
+
+    started = time.time()
     library = ctypes.CDLL(_build(paths, work))
+    built = time.time()
     library.equiv_run.restype = ctypes.c_int
+    library.equiv_run.argtypes = [ctypes.c_int, ctypes.c_double,
+                                  ctypes.POINTER(ctypes.c_longlong), ctypes.POINTER(ctypes.c_int),
+                                  ctypes.c_int, ctypes.c_int]
     ordered = sorted(pairs)
     results = (ctypes.c_longlong * len(ordered))()
-    library.equiv_run(cases, results)
+    ran = (ctypes.c_int * len(ordered))()
+    # In batches, each followed by a heartbeat (tools/watchdog.py takes long
+    # silence for a hang).
+    for first in range(0, len(ordered), BATCH):
+        library.equiv_run(cases, SECONDS_PER_FUNCTION, results, ran, first, first + BATCH)
+        print("    equivalence: %d of %d checked" % (min(first + BATCH, len(ordered)), len(ordered)),
+              flush=True)
+    short = sum(1 for i in range(len(ordered)) if results[i] < 0 and ran[i] < cases)
+    print("  equivalence: %d functions, built in %.0fs, run in %.0fs%s"
+          % (len(ordered), built - started, time.time() - built,
+             (", %d stopped early on time" % short) if short else ""))
     return {address: (None if results[i] < 0 else divmod(int(results[i]), 1000))
             for i, address in enumerate(ordered)}

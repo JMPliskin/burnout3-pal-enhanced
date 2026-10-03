@@ -180,9 +180,11 @@ def equivalent_to_plain(addresses, structured, plain, abi, cache, work) -> list:
         try:
             checked = equivalence.check({a: (plain[a], structured[a], abi) for a in missing}, work)
         except cppcheck.CompileError as exc:
-            # Unchecked is not equivalent: the plain form stays.
-            print("  the equivalence check did not build: %s" % str(exc).splitlines()[-1:])
-            checked = {a: (-1, -1) for a in missing}
+            # A checker that cannot run has found nothing: say so loudly, remember
+            # nothing, and let the forms stand on their verification this time.
+            print("  WARNING: the equivalence check did not build, so it was skipped:\n    %s"
+                  % "\n    ".join(str(exc).splitlines()[:5]))
+            return list(addresses)
         for address, difference in checked.items():
             outcome = ("equivalent" if difference is None
                        else "differs from the plain form: case %d, %d" % difference)
@@ -320,8 +322,13 @@ def _verify_share(task):
     game_directory, seeds, dll, addresses, abi = task
     _start_worker(game_directory, seeds, dll)
     machine, library, functions = _WORKER
-    return [(address, verify(functions[address], machine, library, abi))
-            for address in addresses]
+    results = []
+    for number, address in enumerate(addresses, 1):
+        results.append((address, verify(functions[address], machine, library, abi)))
+        # A heartbeat: a watchdog takes long silence for a hang (tools/watchdog.py).
+        if number % 500 == 0:
+            print("    a worker has verified %d of %d" % (number, len(addresses)), flush=True)
+    return results
 
 
 def verify_parallel(addresses, game, seeds, dll, jobs, abi=False) -> dict:

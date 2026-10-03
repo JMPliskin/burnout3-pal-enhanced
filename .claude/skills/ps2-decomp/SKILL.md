@@ -182,6 +182,12 @@ Each of these has already produced plausible wrong output once:
 
 ## Working practices that paid off
 
+- Never just wait on a long run. Start a watchdog beside it -
+  `python engine/tools/watchdog.py --log <its log> --done <its last line>` under
+  a monitor - which reports a log silent too long, memory past a limit, or a
+  traceback. Every long stage prints a heartbeat, so silence means stuck. Bound
+  any new per-item work (a time and memory cap per function) before running it
+  at full scale: a check without one once hung for two hours at 10 GB.
 - Make tests deterministic: seed every random input from the function address,
   and reset all registers on every interpreter call.
 - When derivation and the interpreter share a bug, they agree and "verify"
