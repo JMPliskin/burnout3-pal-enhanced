@@ -21,6 +21,9 @@ void KernelStore(lifted::Context& c) {
 
 }  // namespace
 
+void RegisterGameIopServers();     // iop_servers.cpp
+
 void RegisterGameOverrides() {
+    RegisterGameIopServers();
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
 }

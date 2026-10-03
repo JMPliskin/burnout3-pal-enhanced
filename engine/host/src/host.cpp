@@ -26,6 +26,7 @@ std::size_t g_count = 0;
 u32 g_image_start = 0, g_image_end = 0;       // the executable's bytes, as loaded
 std::unordered_map<u32, FunctionEntry> g_overrides;
 bool g_trace = false;
+bool g_all_notes = false;
 std::vector<u32> g_watch;
 std::set<std::string> g_noted;
 
@@ -139,6 +140,8 @@ void Note(const std::string& key, const std::string& text) {
     if (g_noted.insert(key).second) {
         RunStats().notes.push_back(text);
         std::fprintf(stderr, "[host] %s\n", text.c_str());
+    } else if (g_all_notes) {
+        std::fprintf(stderr, "[host] %s (again)\n", text.c_str());
     }
 }
 
@@ -224,6 +227,17 @@ void Report(const Options& options, const std::string& outcome) {
             std::printf("  %s\n", Describe(stack[i]).c_str());
     }
     std::printf("threads:\n%s", ThreadReport().c_str());
+    for (u32 address : options.peek) {
+        std::printf("memory at 0x%08X:", unsigned(address));
+        for (u32 i = 0; i < 64; i += 4) {
+            if (i % 16 == 0) std::printf("\n  +%02X", unsigned(i));
+            const u8* bytes = GuestMemory().Translate(address + i, 4);
+            u32 word = 0;
+            if (bytes) std::memcpy(&word, bytes, 4);
+            std::printf(bytes ? "  %08X" : "  --------", unsigned(word));
+        }
+        std::printf("\n");
+    }
     std::printf("kernel services used:\n");
     for (const auto& [service, count] : stats.syscalls)
         std::printf("  %4d  %-24s x%llu\n", service, SyscallName(service),
@@ -265,6 +279,7 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
         if (!done_.wait_for(lock, std::chrono::seconds(seconds), [this] { return finished_; })) {
             fired = true;
+            StopRequested() = true;
             ForEachContext([](lifted::Context& each) {
                 reinterpret_cast<std::atomic<s64>*>(&each.budget)->store(-1);
             });
@@ -291,6 +306,7 @@ private:
 
 int Run(const Options& options) {
     g_trace = options.trace_calls;
+    g_all_notes = options.all_notes;
     g_watch = options.watch;
     InstallDevices();
     InstallIopServers();
@@ -323,6 +339,8 @@ int Run(const Options& options) {
         if (abort.reason == 2 && watchdog.fired)
             reason = "the time limit, in the loop";
         outcome = std::string("stopped: ") + reason + " at " + Hex(abort.address);
+        if (abort.reason == 2 && watchdog.fired && abort.address == 0)
+            outcome = "stopped: the time limit, between threads (no thread was in a loop)";
     }
     Report(options, outcome);
     return code;
@@ -333,6 +351,7 @@ int Main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--trace") options.trace_calls = true;
+        else if (arg == "--notes") options.all_notes = true;
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
         else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
         else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);
@@ -340,6 +359,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--disc" && i + 1 < argc) options.disc_path = argv[++i];
         else if (arg == "--watch" && i + 1 < argc)
             options.watch.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
+        else if (arg == "--peek" && i + 1 < argc)
+            options.peek.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg.rfind("--", 0) != 0) options.elf_path = arg;
         else {
             std::fprintf(stderr, "unknown option %s\n", arg.c_str());
@@ -347,7 +368,7 @@ int Main(int argc, char** argv) {
         }
     }
     if (options.elf_path.empty()) {
-        std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] "
+        std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] [--notes] [--watch addr] [--peek addr] "
                              "[--budget N] [--limit N] [--timeout seconds]\n", argv[0]);
         return 64;
     }

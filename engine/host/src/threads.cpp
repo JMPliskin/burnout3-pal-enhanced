@@ -8,11 +8,19 @@
  * blocks (WaitSema on zero, SleepThread), yields (RotateThreadReadyQueue), exits,
  * or makes a better thread ready - there is no time slicing.
  *
- * Time advances only when every thread waits: then a frame's interrupts are
- * delivered - vertical blank start and end - running the handlers the game
- * registered, which is how a PS2 game wakes the threads that wait on the display.
- * If no thread becomes ready even then, the program is deadlocked here, and the
- * run stops with each thread's state in the report.
+ * Interrupts run the handlers the game registered, in interrupt context, at a
+ * safe point: the running thread's next loop head (lifted::loop_head_hook, which
+ * a spent budget reaches - the host spends it to get control there), or between
+ * threads. Two sources:
+ *   - DMA completion (PostDmac), posted by the transfer and delivered after the
+ *     store that started it, since code goes on to set up for its interrupt;
+ *   - the vertical blank, start and end, 60 times a second in real time, as the
+ *     display raises it whatever the processor is doing - code busy-waiting on
+ *     work a vblank handler does depends on it. When every thread waits, frames
+ *     are delivered at once instead, so idle time costs nothing. Runs with an
+ *     explicit --budget have no real-time vblank, so they are deterministic.
+ * If no thread becomes ready even after many frames, the program is deadlocked
+ * here, and the run stops with each thread's state in the report.
  *
  * A fault inside a fiber cannot unwind across fibers, so it is caught there and
  * rethrown by the scheduler, on the host's own stack.
@@ -22,8 +30,11 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <exception>
+#include <thread>
 #include <map>
 #include <memory>
 #include <string>
@@ -94,6 +105,12 @@ struct Scheduler {
     u64 frames = 0;
     bool in_interrupt = false;
     lifted::Context interrupt_context{};
+    u32 pending_dmac = 0;                   // channels whose interrupt waits
+    bool realtime = false;                  // a vblank timer runs (unlimited budget)
+    std::atomic<bool> vblank_due{false};    // set by the timer, taken by LoopHead
+    std::atomic<lifted::Context*> running{nullptr};     // the thread on the processor
+    bool delivery_requested = false;        // the current thread's budget was zeroed
+    s64 saved_budget = 0;                   // ...and this is what it was
     std::vector<u32> interrupt_calls;
 };
 
@@ -160,7 +177,10 @@ bool RunHandlers(const std::map<u32, Handler>& handlers, u32 cause) {
         c.r[5] = h.argument;
         c.r[29] = 0x01F80000u;                  // an interrupt stack clear of the threads'
         c.r[31] = 0;
-        c.budget = s.loop_budget;
+        // The kernel leaves $gp as the interrupted code had it: the program's.
+        if (s.current) c.r[28] = s.current->context.r[28];
+        else if (!s.threads.empty()) c.r[28] = s.threads.begin()->second->context.r[28];
+        c.budget = StopRequested() ? -1 : s.loop_budget;     // a handler stops too
         const bool nested = s.in_interrupt;
         s.in_interrupt = true;
         Dispatch(c, h.function);
@@ -180,11 +200,88 @@ bool DeliverFrame() {
     return ran;
 }
 
+void DeliverPendingDmac() {
+    Scheduler& s = S();
+    while (s.pending_dmac) {
+        u32 channel = 0;
+        while (!((s.pending_dmac >> channel) & 1)) ++channel;
+        s.pending_dmac &= s.pending_dmac - 1;
+        RaiseDmac(channel);
+    }
+}
+
+void SpendBudget(lifted::Context& c) {
+    reinterpret_cast<std::atomic<s64>*>(&c.budget)->store(0);
+}
+
+// Raises the vertical blank in real time: marks a frame due and spends the
+// running thread's budget, so its next loop head delivers it.
+void VblankTimer() {
+    using clock = std::chrono::steady_clock;
+    const auto period = std::chrono::microseconds(16683);      // NTSC, 59.94 Hz
+    auto next = clock::now() + period;
+    while (!StopRequested()) {
+        std::this_thread::sleep_until(next);
+        next += period;
+        Scheduler& s = S();
+        s.vblank_due = true;
+        if (lifted::Context* c = s.running.load()) SpendBudget(*c);
+    }
+}
+
+// lifted::loop_head_hook: a spent budget is either this host's request to
+// deliver interrupts, or the end of the run.
+void LoopHead(lifted::Context& c, u32 address) {
+    Scheduler& s = S();
+    if (StopRequested() || s.in_interrupt || !s.current || &c != &s.current->context)
+        throw lifted::Abort{address, 2};
+    const bool frame = s.vblank_due.exchange(false);
+    const bool requested = s.delivery_requested;
+    // With a real-time timer a budget can be spent for a frame another loop head
+    // already took; without one, a spent budget that nobody asked for is the end.
+    if (!frame && !requested && !s.realtime) throw lifted::Abort{address, 2};
+    s.delivery_requested = false;
+    c.budget = requested ? s.saved_budget : s.loop_budget;
+    if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
+    if (frame) DeliverFrame();
+    DeliverPendingDmac();
+    // Returning from the interrupt, a thread its handler woke may run first.
+    Thread* best = PickReady();
+    if (best && best->priority < s.current->priority) {
+        MakeReady(*s.current);
+        GiveWay();
+    }
+}
+
 }  // namespace
+
+std::atomic<bool>& StopRequested() {
+    static std::atomic<bool> stop{false};
+    return stop;
+}
 
 void RaiseDmac(u32 channel) {
     Scheduler& s = S();
-    if (s.dmac_mask & (1u << channel)) RunHandlers(s.dmac_handlers, channel);
+    const std::string key = "dmac " + std::to_string(channel);
+    if (!(s.dmac_mask & (1u << channel))) {
+        Note(key + " masked", "DMAC: channel " + std::to_string(channel) +
+                              " completed while its interrupt is disabled");
+        return;
+    }
+    if (RunHandlers(s.dmac_handlers, channel))
+        Note(key, "DMAC: channel " + std::to_string(channel) + " interrupt delivered");
+    else
+        Note(key + " none", "DMAC: channel " + std::to_string(channel) + " interrupt has no handler");
+}
+
+void PostDmac(u32 channel) {
+    Scheduler& s = S();
+    s.pending_dmac |= 1u << channel;
+    if (s.in_interrupt || !s.current || s.delivery_requested) return;
+    lifted::Context& c = s.current->context;
+    s.saved_budget = c.budget;
+    s.delivery_requested = true;
+    c.budget = 0;
 }
 
 std::vector<u32>& CurrentCalls() {
@@ -201,6 +298,9 @@ void ForEachContext(void (*visit)(lifted::Context&)) {
 void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     Scheduler& s = S();
     s.loop_budget = loop_budget;
+    lifted::loop_head_hook = LoopHead;
+    s.realtime = loop_budget == INT64_MAX;
+    if (s.realtime) std::thread(VblankTimer).detach();
     s.host_fiber = ConvertThreadToFiber(nullptr);
     auto main = std::make_unique<Thread>();
     main->id = s.next_thread++;
@@ -214,9 +314,11 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     u64 idle = 0;
     for (;;) {
         if (s.stop) std::rethrow_exception(s.stop);
+        if (StopRequested()) throw lifted::Abort{0, 2};     // the time limit, between threads
         // Answers from the IOP arrive between threads, as interrupts.
         while (DeliverIopReply()) {
         }
+        DeliverPendingDmac();
         Thread* next = PickReady();
         if (!next) {
             if (first.state == State::Dormant)
@@ -234,8 +336,11 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         idle = 0;
         s.current = next;
         next->state = State::Running;
+        s.running = &next->context;
         SwitchToFiber(next->fiber);
+        s.running = nullptr;
         s.current = nullptr;
+        if (s.vblank_due.exchange(false)) DeliverFrame();
         if (s.stop) std::rethrow_exception(s.stop);
     }
 }
@@ -351,7 +456,7 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
             }
             result = 0;
             return true;
-        case 0x33: case -0x33: {                     // WakeupThread / iWakeupThread
+        case 0x33: case 0x34: case -0x34: {          // WakeupThread / iWakeupThread
             Thread* t = Find(a0);
             if (!t) { result = u64(-1); return true; }
             if (t->state == State::Sleeping) {

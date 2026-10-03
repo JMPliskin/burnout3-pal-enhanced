@@ -107,6 +107,8 @@ std::vector<u8> SCommand(u32 procedure, const std::vector<u8>& /*data*/) {
 
 void InstallIopServers() {
     InstallFileIo();
+    InstallLoadFile();
+    InstallDbc();
     RegisterRpcServer(0x8000059Cu, DiskReady);
     RegisterRpcServer(0x80000597u, SearchFile);
     RegisterRpcServer(0x80000593u, SCommand);

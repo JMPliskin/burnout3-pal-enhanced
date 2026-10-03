@@ -25,6 +25,7 @@ service,name
 0x30,ReferThreadStatus
 0x32,SleepThread
 0x33,WakeupThread
+0x34,iWakeupThread
 0x37,SuspendThread
 0x39,ResumeThread
 0x3E,EndOfHeap

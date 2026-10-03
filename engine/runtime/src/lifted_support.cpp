@@ -9,6 +9,13 @@
 
 namespace lifted {
 
+void (*loop_head_hook)(Context& c, u32 address) = nullptr;
+
+void BudgetSpent(Context& c, u32 address) {
+    if (loop_head_hook) loop_head_hook(c, address);
+    else throw Abort{address, 2};
+}
+
 void Multiply(u64& hi, u64& lo, u64 a, u64 b, bool is_signed, bool accumulate) {
     const u64 product = is_signed
         ? (u64)((s64)(s32)(u32)a * (s64)(s32)(u32)b)

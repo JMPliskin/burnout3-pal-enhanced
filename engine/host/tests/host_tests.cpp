@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "ps2host/disc.h"
+#include "ps2host/dma.h"
 #include "ps2host/memory.h"
+#include "ps2host/vif.h"
 #include "ps2rt/generated.h"
 
 namespace {
@@ -115,6 +117,82 @@ void BiosIsReadOnly() {
     Check(m.Read(ps2host::kBiosBase, 1) == 0, "the BIOS window ignores writes");
 }
 
+void WideWritesReachEveryWordsHook() {
+    ps2host::Memory& m = ps2host::GuestMemory();
+    u32 seen[2] = {0, 0};
+    m.OnWrite(0x10006000u, [&seen](u32, u64 value) { seen[0] = u32(value); });
+    m.OnWrite(0x10006004u, [&seen](u32, u64 value) { seen[1] = u32(value); });
+    m.Write(0x10006000u, 0x2222222211111111ull, 8);
+    Check(seen[0] == 0x11111111u && seen[1] == 0x22222222u, "a 64-bit write reaches both words");
+    m.OnWrite(0x10006000u, nullptr);
+    m.OnWrite(0x10006004u, nullptr);
+}
+
+void VifSkipsDataAndAppliesMaskPath3() {
+    ps2host::VifStream vif;
+    int masks = 0;
+    bool masked = false;
+    vif.on_mask_path3 = [&](bool on) { ++masks; masked = on; };
+    // DIRECT of one quadword whose data looks like MSKPATH3: it must be skipped.
+    vif.Word(0x50000001u);
+    for (int i = 0; i < 4; ++i) vif.Word(0x06008000u);
+    Check(masks == 0, "DIRECT data is not decoded");
+    vif.Word(0x06008000u);
+    Check(masks == 1 && masked, "MSKPATH3 masks");
+    vif.Word(0x06000000u);
+    Check(masks == 2 && !masked, "MSKPATH3 unmasks");
+    // UNPACK V4-32 of 2 elements: 8 words. V2-16 of 3: 3 words.
+    vif.Word(0x6C020000u);
+    for (int i = 0; i < 8; ++i) vif.Word(0x06008000u);
+    vif.Word(0x65030000u);
+    for (int i = 0; i < 3; ++i) vif.Word(0x06008000u);
+    Check(masks == 2 && vif.data_words() == 4 + 8 + 3, "UNPACK lengths");
+    // STCYCL CL=1 WL=2: an UNPACK V4-32 of 4 reads 2 elements (filling writes).
+    vif.Word(0x01000201u);
+    vif.Word(0x6C040000u);
+    for (int i = 0; i < 8; ++i) vif.Word(0);
+    vif.Word(0x06008000u);
+    Check(masks == 3, "UNPACK with WL > CL reads CL of every WL");
+    // MPG of 1 instruction pair: 2 words.
+    vif.Word(0x4A010000u);
+    vif.Word(0x06000000u);
+    vif.Word(0x06000000u);
+    Check(masks == 3, "MPG data is not decoded");
+}
+
+void PutTag(u32 at, u32 qwc, u32 id, u32 address, u32 upper0, u32 upper1) {
+    ps2host::Memory& m = ps2host::GuestMemory();
+    m.Write(at, qwc | (id << 28), 4);
+    m.Write(at + 4, address, 4);
+    m.Write(at + 8, upper0, 4);
+    m.Write(at + 12, upper1, 4);
+}
+
+void DmaChainsAreWalked() {
+    ps2host::Memory& m = ps2host::GuestMemory();
+    const u32 chain = 0x00200000u, table = 0x00210000u, sub = 0x00220000u;
+    // cnt (1 qword after it) -> ref (1 qword at table) -> call sub -> end
+    PutTag(chain, 1, 1, 0, 0xA0000001u, 0xA0000002u);
+    for (u32 i = 0; i < 4; ++i) m.Write(chain + 16 + 4 * i, 0xD0 + i, 4);
+    PutTag(chain + 32, 1, 3, table, 0, 0);
+    for (u32 i = 0; i < 4; ++i) m.Write(table + 4 * i, 0xE0 + i, 4);
+    PutTag(chain + 48, 0, 5, sub, 0, 0);
+    PutTag(sub, 0, 6, 0, 0, 0);                     // ret: back to chain + 64
+    PutTag(chain + 64, 0, 7, 0, 0, 0);              // end
+    ps2host::DmaChannelState ch{0x145u, 0, 0, chain, 0, 0};    // chain, TTE, STR
+    std::vector<u32> words;
+    const ps2host::DmaOutcome out = ps2host::SendDma(ch, [&words](u32 w) { words.push_back(w); });
+    Check(out.ended && out.tags == 5 && out.quadwords == 2, "a chain is walked to its end tag");
+    Check(words.size() == 2 * 5 + 8 && words[0] == 0xA0000001u && words[2] == 0xD0u &&
+          words[8] == 0xE0u, "tags' upper halves, then each tag's data, in order");
+    Check(((ch.chcr >> 28) & 7) == 7 && ((ch.chcr >> 4) & 3) == 0,
+          "the TAG field and the call depth are left as at the end");
+    // A chain that never ends is stopped, not followed forever.
+    PutTag(chain, 0, 2, chain, 0, 0);               // next -> itself
+    ps2host::DmaChannelState loop{0x105u, 0, 0, chain, 0, 0};
+    Check(!ps2host::SendDma(loop, [](u32) {}, 100).ended, "a looping chain is cut off");
+}
+
 }  // namespace
 
 int main() {
@@ -125,6 +203,9 @@ int main() {
     BiosIsReadOnly();
     Kseg1ReachesDeviceRegisters();
     DiscFindsFilesByPath();
+    WideWritesReachEveryWordsHook();
+    VifSkipsDataAndAppliesMaskPath3();
+    DmaChainsAreWalked();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

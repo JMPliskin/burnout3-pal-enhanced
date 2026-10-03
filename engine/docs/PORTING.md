@@ -38,6 +38,18 @@ python engine/tools/port.py --game games/<g>                      # build and ru
 python engine/tools/port.py --game games/<g> run -- --trace       # log every call
 ```
 
+Options for finding out why boot stops, passed after `run --`:
+
+| option | what it shows |
+|---|---|
+| `--trace` | every call, not just the first of each function |
+| `--notes` | every host event (DMA, interrupts, SIF, kernel calls), repeats included |
+| `--watch ADDR` | each call of the function at ADDR, with its argument registers and `$ra` |
+| `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
+| `--timeout S` | the time limit (30 s); `--budget N` makes a run deterministic |
+
+The guest's own debug output (`kputs`) appears as `[guest]` lines.
+
 `port.py` generates `build/port/generated/dispatch.cpp` (every translated
 function by address, with names from `config/names.csv`), builds `port/` with
 the CMake and Ninja that ship with Visual Studio, and runs the result on the
@@ -49,7 +61,9 @@ each thread's state, the kernel services used, and every device register
 touched. That report is the port's progress measure, as `progress.py` is the
 decompilation's. The first thing in it that the host lacks is the next thing to
 implement. A run that goes on longer than `--timeout` seconds (30 by default)
-stops at its next loop head and reports where it was.
+stops at its next loop head and reports where it was. If the host process
+itself outlives that by 90 seconds, port.py kills it and says so: that is a
+host bug, not the game's.
 
 ## Code that exists only at run time
 
@@ -97,17 +111,24 @@ so a new game gets them as soon as its routines are named.
    completing at once; GS vertical blank; timers that advance.
 2. **Threads** (done): EE threads as host fibers under the kernel's
    strict-priority scheduler; semaphores, sleep and wake-up block and resume.
-3. **Interrupts** (vertical blank done): when every thread waits, a frame's
-   interrupts run the handlers the game registered. DMA completion and alarms
-   are next.
+3. **Interrupts** (vertical blank and DMA done): handlers run at a safe point,
+   which is the running thread's next loop head (`lifted::loop_head_hook`) or
+   between threads. Vertical blank comes 60 times a second in real time, or at
+   once when every thread waits. DMA completion is posted by the transfer and
+   delivered after the store that started it. Alarms are next.
 4. **IOP services** (begun): the host answers the SDK's SIF commands as the
    IOP would (`iop.cpp`): RPC bind and call answered with RPC-end packets in
    the EE's receive buffer and the SIF0 DMA interrupt, run by the scheduler.
    Servers are host functions registered by id (`RegisterRpcServer`); a server
    with none still binds and its calls are noted with their callers, which
    names the library function behind each. CD/DVD (`cdvd.cpp`) reads the
-   user's disc image (`disc.cpp`, ISO 9660, `--disc`); file I/O, pads, sound
-   and memory cards follow.
+   user's disc image (`disc.cpp`, ISO 9660, `--disc`). Also done: file I/O
+   (`fileio.cpp`), module loading (`loadfile.cpp`: loads succeed and run
+   nothing) and the controller manager's handshake (`dbc.cpp`). Servers for
+   modules a game ships on its own disc belong to its port
+   (`games/<g>/port/iop_servers.cpp`). Pads, sound and memory cards follow.
+   DMA channels VIF0, VIF1 and GIF are walked (`dma.cpp`), chains included,
+   and VIF1's stream is decoded (`vif.cpp`).
 5. **Graphics**: GIF packets to a GS renderer; VU1 microprograms translated or
    emulated.
 6. **Audio, input, saves**, then enhancements.

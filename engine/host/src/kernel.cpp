@@ -68,7 +68,7 @@ const Service kServices[] = {
     {0x22, "StartThread"}, {0x23, "ExitThread"}, {0x24, "ExitDeleteThread"},
     {0x25, "TerminateThread"}, {0x29, "ChangeThreadPriority"},
     {0x2B, "RotateThreadReadyQueue"}, {0x2F, "GetThreadId"},
-    {0x30, "ReferThreadStatus"}, {0x32, "SleepThread"}, {0x33, "WakeupThread"},
+    {0x30, "ReferThreadStatus"}, {0x32, "SleepThread"}, {0x33, "WakeupThread"}, {0x34, "iWakeupThread"},
     {0x37, "SuspendThread"}, {0x39, "ResumeThread"}, {0x3C, "SetupThread"},
     {0x3D, "SetupHeap"}, {0x3E, "EndOfHeap"}, {0x40, "CreateSema"},
     {0x41, "DeleteSema"}, {0x42, "SignalSema"}, {0x43, "iSignalSema"},
@@ -192,6 +192,28 @@ void KernelSyscall(lifted::Context& c) {
         case 0x4A: {                                 // GetOsdConfigParam(config*): defaults
             GuestMemory().Write(Arg(c, 0), 0, 4);
             Return(c, 0);
+            return;
+        }
+        case 0x7C: {                                 // Deci2Call(function, params*)
+            // DECI2 talks to a development tool's debugger. A retail console has
+            // none attached, so every request fails - and code that sends its
+            // TTY output over DECI2 gives up rather than waiting on a reply that
+            // never comes. kputs (0x10) is the kernel's own debug print: the text
+            // is the game's, so it goes to the log.
+            if (Arg(c, 0) == 0x10) {
+                Memory& m = GuestMemory();
+                std::string text;
+                for (u32 p = u32(m.Read(Arg(c, 1), 4)); text.size() < 1024; ++p) {
+                    const char ch = char(m.Read(p, 1));
+                    if (!ch) break;
+                    text += ch;
+                }
+                while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+                std::fprintf(stderr, "[guest] %s\n", text.c_str());
+                Return(c, 0);
+                return;
+            }
+            Return(c, 0xFFFFFFFFu);
             return;
         }
         default:

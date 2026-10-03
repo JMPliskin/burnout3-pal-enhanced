@@ -86,10 +86,13 @@ void Memory::Write(u32 address, u64 value, u32 size) {
     if (!bytes) throw MemoryFault{address, true};
     if (address >= kBiosBase && address - kBiosBase < kBiosSize) return;   // ROM
     std::memcpy(bytes, &value, size);
-    const int index = HookIndex(address & ~3u);
-    if (index >= 0) {
-        RunStats().register_writes[address & ~3u]++;
-        if (write_hooks_[index]) write_hooks_[index](address, value);
+    // A write wider than a word reaches each register word it covers, in order.
+    for (u32 offset = 0; offset < size; offset += 4) {
+        const u32 word = (address & ~3u) + offset;
+        const int index = HookIndex(word);
+        if (index < 0) continue;
+        RunStats().register_writes[word]++;
+        if (write_hooks_[index]) write_hooks_[index](word, offset ? value >> (8 * offset) : value);
     }
 }
 

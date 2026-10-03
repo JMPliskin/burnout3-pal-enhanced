@@ -68,9 +68,16 @@ inline u64 Sx32(u64 value) { return (u64)(s64)(s32)(u32)value; }
 
 inline u64 Read64(u32 address) { return generated::ReadU64(address); }
 
+/* A loop head reached with the budget spent. Without a hook the run is
+   abandoned. A host that sets `loop_head_hook` is called instead: it can zero a
+   context's budget to get control at that context's next loop head - to deliver
+   an interrupt, say - and throws Abort itself when the run must stop. */
+extern void (*loop_head_hook)(Context& c, u32 address);
+void BudgetSpent(Context& c, u32 address);
+
 /* At every loop head, so a loop that never ends cannot hang the host. */
 inline void Tick(Context& c, u32 address) {
-    if (--c.budget < 0) throw Abort{address, 2};
+    if (--c.budget < 0) BudgetSpent(c, address);
 }
 
 inline void Trap(u32 address) { throw Abort{address, 1}; }

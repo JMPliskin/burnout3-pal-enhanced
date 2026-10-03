@@ -6,6 +6,7 @@
 #ifndef PS2HOST_RUN_H
 #define PS2HOST_RUN_H
 
+#include <atomic>
 #include <map>
 #include <string>
 #include <vector>
@@ -66,11 +67,20 @@ bool DeliverIopReply();
 /* The IOP services the engine implements: CD/DVD (cdvd.cpp), ... */
 void InstallIopServers();
 void InstallFileIo();
+void InstallLoadFile();
+void InstallDbc();
 /* Signal an EE semaphore from the host (the IOP finishing a request); the
    running thread is not preempted. */
 void SignalSemaphore(u32 id);
 /* Run the DMA-completion handlers registered for a channel, as its interrupt. */
 void RaiseDmac(u32 channel);
+/* A channel's transfer has completed: its interrupt is delivered at the running
+   thread's next loop head, or between threads - never inside the store that
+   started the transfer, since code goes on to set up for the interrupt. */
+void PostDmac(u32 channel);
+/* Set (before budgets are spent) when the run must end, so the loop-head hook
+   does not take a spent budget for its own request. */
+std::atomic<bool>& StopRequested();
 
 /* SDK library routines the host implements, applied by name (sdk.cpp). */
 void ApplySdkOverrides(const FunctionEntry* table, std::size_t count);

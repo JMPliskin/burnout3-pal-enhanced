@@ -64,10 +64,12 @@ struct Options {
        runs indefinitely - the timeout is what stops a run that is stuck. */
     s64 loop_budget = INT64_MAX;
     bool trace_calls = false;      /* log every call, not just the first of each */
+    bool all_notes = false;        /* log every host note, not just the first of each */
     int report_limit = 40;         /* how many entries each report section lists */
     int timeout_seconds = 30;      /* stop and report a run that goes on longer */
     std::string discover_path;     /* where to record code found copied at run time */
     std::vector<u32> watch;        /* functions whose every call logs its argument registers */
+    std::vector<u32> peek;         /* guest addresses whose 64 bytes the report shows */
 };
 
 /* Load the executable, run it from its entry point, and report how far it got.

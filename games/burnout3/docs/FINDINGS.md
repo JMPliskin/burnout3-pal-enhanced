@@ -1215,6 +1215,48 @@ counting the lifter's `F_xxxxxxxx` placeholders as names. They made up 7,245 of
 the "status table" names and hid every later source of evidence. The honest
 count is 128 named functions.
 
+## Boot: the DMA scheduler, interrupts and the IOP modules
+
+Each wait the boot ran into came from hardware or kernel behaviour the host
+didn't model yet. They are listed in the order boot reached them.
+
+* **PATH3 handover.** 0x1F1778 is EA's DMA scheduler, run directly and as the
+  DMAC handler for VIF1 and GIF. It masks PATH3 by storing MSKPATH3 into the
+  VIF1 FIFO, then waits for GIF_STAT.M3P. It starts the GIF chain and waits for
+  GIF_STAT.FQC to show the GIF holding data before letting VIF1 go. The host now
+  decodes VIFcodes from FIFO stores and VIF1 DMA (vif.cpp). It walks source
+  chains (dma.cpp), and holds GIF data in the FIFO while PATH3 is masked.
+* **DMA-completion interrupts.** The scheduler counts transfers in flight
+  (`$gp-0x5E40`). It increments the count *after* starting them, so the
+  interrupt can't run inside the store to CHCR. Interrupts are posted and then
+  delivered at the running thread's next loop head (a runtime hook,
+  `lifted::loop_head_hook`) or between threads. Handlers run with the program's
+  `$gp`. D_STAT now clears and toggles when written, as the hardware's does.
+* **Real-time vblank.** Some queue entries pause the DMA queue until the next
+  frame (`$gp-0x5EA1`), and the vblank handler (0x1F1CE8) resumes it while
+  thread 1 busy-waits. Vblank is now raised 60 times a second, as the display
+  does. Runs with `--budget` stay deterministic.
+* **iWakeupThread is service -0x34, not -0x33.** The vblank handler wakes the
+  sleeping threads with GetThreadId (-47) then iWakeupThread (-52).
+* **loadfile.** `sceSifLoadModule` asks for the module's version (procedure
+  0xFF) and refuses to load anything unless it is "2800" (SDK 2.8). Loading now
+  succeeds without running anything; the modules' services are the host's. The
+  game loads these modules: SIO2MAN, SIO2D, DBCMAN, DS2O, MC2_S1, LIBSD, RWA,
+  B3ROUTE, GTFSCDVD, USBD, LGAUD and LGDEVW, then the network stack (INET,
+  NETCNF, INETCTL, MSIFRPC, LIBNET, NETCNFIF, IFCONFIG, EZNETCNF, EZNETCTL, DEV9,
+  SMAP, DRTYSCKF).
+* **DECI2.** The SDK's TTY output goes over DECI2 and polls until the debugger
+  answers. A retail console has no debugger, so `Deci2Call` requests now fail
+  and the writer gives up. `kputs` text is logged as `[guest]` lines. The first
+  one: `libdbc: Module version mismatch [libdbc.a = 3.0, dbcman.irx = 0.0]`.
+* **dbcman** (0x80001300) reports version 3.0 through procedure 0x80001363.
+* **lgDev** (0x046D046D, Logitech's USB vendor ID) is the wheel driver from the
+  game's disc, so its server lives in the port (port/iop_servers.cpp). It
+  reports version 0x010B1B00 through procedure 12, and enumeration (procedure 1)
+  fails at every index because no wheel is attached.
+
+Boot now runs 1,050 distinct functions and reaches the iopheap server.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
