@@ -77,6 +77,7 @@ struct Options {
     bool window = false;           /* show the picture in a window as it runs */
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
     bool audio = false;            /* play the SPU2's output on the sound device */
+    std::string audio_wav;         /* record the SPU2's output to this WAV file */
 };
 
 /* Load the executable, run it from its entry point, and report how far it got.

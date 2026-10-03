@@ -8,6 +8,9 @@
  * matches playback on average. Buffers are queued as they fill; when every
  * buffer is still queued the newest samples are dropped rather than the
  * emulation waiting, and an empty queue simply plays silence until the next.
+ *
+ * --audio-wav records the same output to a WAV file instead of (or as well as)
+ * playing it: how sound is checked without anyone listening.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -16,7 +19,9 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "ps2host/run.h"
@@ -37,6 +42,27 @@ struct Device {
     int filling = 0;                            // the buffer being filled
     DWORD filled = 0;                           // frames in it
     unsigned long long dropped = 0;
+    std::FILE* wav = nullptr;
+    unsigned long long wav_frames = 0;
+
+    // The WAV header's sizes are known only at the end.
+    ~Device() {
+        if (!wav) return;
+        const unsigned data = unsigned(wav_frames * 4);
+        WriteHeader(data);
+        std::fclose(wav);
+    }
+    void WriteHeader(unsigned data) {
+        unsigned char h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',
+                               16, 0, 0, 0, 1, 0, 2, 0, 0x80, 0xBB, 0, 0, 0, 0xEE, 2, 0,
+                               4, 0, 16, 0, 'd', 'a', 't', 'a', 0, 0, 0, 0};
+        const unsigned riff = 36 + data;
+        std::memcpy(h + 4, &riff, 4);
+        std::memcpy(h + 40, &data, 4);
+        std::fseek(wav, 0, SEEK_SET);
+        std::fwrite(h, 1, 44, wav);
+        std::fseek(wav, 0, SEEK_END);
+    }
 };
 
 Device& D() {
@@ -68,8 +94,20 @@ bool OpenAudio() {
     return true;
 }
 
+bool OpenWavDump(const std::string& path) {
+    Device& d = D();
+    d.wav = std::fopen(path.c_str(), "wb");
+    if (!d.wav) return false;
+    d.WriteHeader(0);
+    return true;
+}
+
 void AudioFrames(const short* frames, unsigned count) {
     Device& d = D();
+    if (d.wav) {
+        std::fwrite(frames, 4, count, d.wav);
+        d.wav_frames += count;
+    }
     if (!d.out) return;
     while (count) {
         WAVEHDR& h = d.headers[d.filling];

@@ -49,6 +49,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--window` | the picture, live, in a window (close it to end the run) |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
+| `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
 | `--watch-write ADDR` | every store to a guest address, with the function making it |
 | `--iop-trace` | every IOP library call the game's own modules make |
 | `--timeout S` | the time limit (30 s); `--budget N` makes a run deterministic |

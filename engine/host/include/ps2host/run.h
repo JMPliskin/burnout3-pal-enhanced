@@ -119,6 +119,8 @@ void DbcFrame();
 /* Sound (audio.cpp): opened with --audio; the SPU2 hands it 16-bit stereo
    frames at 48 kHz. */
 bool OpenAudio();
+/* ...and/or recorded to a WAV file (--audio-wav). */
+bool OpenWavDump(const std::string& path);
 void AudioFrames(const short* frames, unsigned count);
 
 }  // namespace ps2host
