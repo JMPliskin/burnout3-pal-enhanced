@@ -13,13 +13,26 @@ Microcode is stored as 8-byte bundles holding two instructions issued together:
 The upper word also carries the bundle's control flags in its top bits:
 
     I  bit 31   the lower word is a 32-bit float immediate, not an instruction
-    E  bit 30   end of microprogram (two more bundles execute after it)
-    M  bit 29   start of a MAC-flag-dependent sequence
-    D  bit 28   data-dependency stall hint
-    T  bit 27   T-bit stop
+    E  bit 30   end of microprogram (one more bundle executes after it)
+    M  bit 29   (VU0) interlock with the EE's COP2 transfers
+    D  bit 28   debug break
+    T  bit 27   debug halt
 
 Bits 24..21 are the destination field mask, naming which of the x/y/z/w lanes a
 result is written to; it is rendered as a suffix, so `addx.xy` writes only x and y.
+
+The opcode tables are the hardware's, as the host's micro-mode interpreter
+(engine/host/src/vu.cpp) runs them and PCSX2 lays them out:
+
+  * upper: bits 5..0. 0x00-0x2F are the arithmetic forms; 0x3C-0x3F extend into
+    bits 10..6, the "special" index being (bits 1..0) | (bits 10..6) << 2.
+  * lower: bits 31..25. 0x40 is the special group, named by bits 5..0, which
+    extends at 0x3C-0x3F into bits 10..6 the same way as the upper does.
+
+Each decoded instruction also says which registers it reads and writes, as
+strings: "vf5x" (one lane of a vector register), "vi3", "ACCx", "Q", "P", "I",
+"R", "MAC", "STATUS", "CLIP". The hazard scanner (engine/tools/vuhazards.py)
+works from those.
 
 Coverage is reported rather than assumed: `decode_bundle` marks anything it cannot
 identify, and `engine/tools/vudis.py --stats` measures how much of a real microcode blob
@@ -47,30 +60,46 @@ FLAG_D = 1 << 28
 FLAG_T = 1 << 27
 
 _BC = "xyzw"
+_LANES = (("x", 8), ("y", 4), ("z", 2), ("w", 1))
 
 
 def _dest(word: int) -> str:
     """Render the destination field mask as a lane suffix."""
     mask = (word >> 21) & 0xF
     # Bit 24 is x, descending to bit 21 for w.
-    lanes = "".join(c for c, bit in zip("xyzw", (8, 4, 2, 1)) if mask & bit)
+    lanes = "".join(c for c, bit in _LANES if mask & bit)
     return lanes or "none"
+
+
+def _vf(reg: int, lanes: str) -> set:
+    """A vector register's lanes; vf0 is a constant and never a dependency."""
+    if reg == 0:
+        return set()
+    return {"vf%d%s" % (reg, lane) for lane in lanes}
+
+
+def _vi(reg: int) -> set:
+    return {"vi%d" % reg} if reg else set()
+
+
+def _acc(lanes: str) -> set:
+    return {"ACC" + lane for lane in lanes}
 
 
 # -- upper (FMAC) opcodes ------------------------------------------------
 #
-# 0x00..0x1B come in broadcast groups of four: the low two opcode bits select
+# Bits 5..0. 0x00..0x1B come in broadcast groups of four: the low two bits select
 # which lane of ft is broadcast across the operation.
 _UPPER_BC = {
     0x00: "add", 0x04: "sub", 0x08: "madd", 0x0C: "msub",
     0x10: "max", 0x14: "mini", 0x18: "mul",
 }
 
-# Single-operand-source forms using the Q or I special registers.
+# Forms whose second operand is the Q or I register.
 _UPPER_QI = {
-    0x1C: ("mulq", "q"), 0x1D: ("maxi", "i"), 0x1E: ("muli", "i"), 0x1F: ("minii", "i"),
-    0x20: ("addq", "q"), 0x21: ("maddq", "q"), 0x22: ("addi", "i"), 0x23: ("maddi", "i"),
-    0x24: ("subq", "q"), 0x25: ("msubq", "q"), 0x26: ("subi", "i"), 0x27: ("msubi", "i"),
+    0x1C: ("mulq", "Q"), 0x1D: ("maxi", "I"), 0x1E: ("muli", "I"), 0x1F: ("minii", "I"),
+    0x20: ("addq", "Q"), 0x21: ("maddq", "Q"), 0x22: ("addi", "I"), 0x23: ("maddi", "I"),
+    0x24: ("subq", "Q"), 0x25: ("msubq", "Q"), 0x26: ("subi", "I"), 0x27: ("msubi", "I"),
 }
 
 # Plain three-register forms.
@@ -79,75 +108,72 @@ _UPPER_REG = {
     0x2C: "sub", 0x2D: "msub", 0x2E: "opmsub", 0x2F: "mini",
 }
 
-# Opcodes 0x3C..0x3F extend into bits 10..6. Only the forms below are treated as
-# known; anything else is reported as unknown rather than invented.
-_UPPER_SPECIAL = {
-    # (opcode, ext): mnemonic
-    (0x3C, 0x04): "itof0", (0x3C, 0x05): "itof4", (0x3C, 0x06): "itof12",
-    (0x3C, 0x07): "itof15",
-    (0x3D, 0x04): "ftoi0", (0x3D, 0x05): "ftoi4", (0x3D, 0x06): "ftoi12",
-    (0x3D, 0x07): "ftoi15",
-    (0x3E, 0x04): "abs",
-    (0x3F, 0x0B): "nop",
-    (0x3F, 0x0F): "clip",
+# The special index (bits 1..0 | bits 10..6 << 2) for opcodes 0x3C..0x3F.
+_UPPER_SPECIAL_BC = {0x00: "adda", 0x04: "suba", 0x08: "madda", 0x0C: "msuba", 0x18: "mula"}
+_UPPER_SPECIAL_CONVERT = {
+    0x10: "itof0", 0x11: "itof4", 0x12: "itof12", 0x13: "itof15",
+    0x14: "ftoi0", 0x15: "ftoi4", 0x16: "ftoi12", 0x17: "ftoi15",
+    0x1D: "abs",
+}
+_UPPER_SPECIAL_QI = {
+    0x1C: ("mulaq", "Q"), 0x1E: ("mulai", "I"),
+    0x20: ("addaq", "Q"), 0x21: ("maddaq", "Q"), 0x22: ("addai", "I"), 0x23: ("maddai", "I"),
+    0x24: ("subaq", "Q"), 0x25: ("msubaq", "Q"), 0x26: ("subai", "I"), 0x27: ("msubai", "I"),
+}
+_UPPER_SPECIAL_REG = {
+    0x28: "adda", 0x29: "madda", 0x2A: "mula", 0x2C: "suba", 0x2D: "msuba", 0x2E: "opmula",
 }
 
-# Accumulator-writing variants share the 0x3C..0x3F space via the broadcast idiom.
-_UPPER_SPECIAL_BC = {
-    (0x3C, 0x00): "adda", (0x3C, 0x01): "suba", (0x3C, 0x02): "madda",
-    (0x3C, 0x03): "msuba", (0x3D, 0x00): "mula",
-    (0x3E, 0x00): "opmula",
-}
+# Which forms read the accumulator (the multiply-adds) or leave the flags alone.
+_READS_ACC = ("madd", "msub", "opmsub")
+_NO_FLAGS = ("max", "mini", "abs", "itof", "ftoi")
 
 
 # -- lower opcodes -------------------------------------------------------
 #
-# The lower slot is a mix of a few encoding shapes. Branches and the integer ALU
-# use the top six bits; the rest live in a special group.
-_LOWER_MAIN = {
-    0x10: "lq", 0x11: "sq",
-    0x14: "ilw", 0x15: "isw",
-    0x18: "iaddiu", 0x19: "isubiu",
-    0x20: "fceq", 0x21: "fcset", 0x22: "fcand", 0x23: "fcor",
-    0x24: "fseq", 0x25: "fsset", 0x26: "fsand", 0x27: "fsor",
-    0x28: "fmeq", 0x2A: "fmand", 0x2B: "fmor",
-    0x2C: "fcget",
-    0x30: "b", 0x31: "bal",
-    0x32: "jr", 0x33: "jalr",
-    0x34: "ibeq", 0x35: "ibne",
-    0x36: "ibltz", 0x37: "ibgtz", 0x38: "iblez", 0x39: "ibgez",
-}
-
-# The lower opcode is seven bits wide, not six. The value 0x40 - that is, bit 31
-# set with the rest clear - selects a whole special group whose instruction is
-# named by bits 5..0 instead, which is where the integer ALU and the elementary
-# function unit live.
+# Bits 31..25 - seven bits, not six: 0x40 (bit 31 set, the rest clear) selects
+# the special group, named by bits 5..0, where the integer ALU, the transfers
+# between register files and the elementary function unit live.
 LOWER_SPECIAL_GROUP = 0x40
 
-# Special group, selected by bits 5..0.
-_LOWER_SPECIAL = {
-    0x30: "iadd", 0x31: "isub", 0x32: "iaddi",
-    0x34: "iand", 0x35: "ior",
+_LOWER_MAIN = {
+    0x00: "lq", 0x01: "sq", 0x04: "ilw", 0x05: "isw",
+    0x08: "iaddiu", 0x09: "isubiu",
+    0x10: "fceq", 0x11: "fcset", 0x12: "fcand", 0x13: "fcor",
+    0x14: "fseq", 0x15: "fsset", 0x16: "fsand", 0x17: "fsor",
+    0x18: "fmeq", 0x1A: "fmand", 0x1B: "fmor", 0x1C: "fcget",
+    0x20: "b", 0x21: "bal", 0x24: "jr", 0x25: "jalr",
+    0x28: "ibeq", 0x29: "ibne",
+    0x2C: "ibltz", 0x2D: "ibgtz", 0x2E: "iblez", 0x2F: "ibgez",
 }
 
-# Within the special group, 0x3C..0x3F extend again into bits 10..6.
-_LOWER_SPECIAL_EXT = {
-    (0x3C, 0x04): "itof0", (0x3C, 0x05): "itof4",
-    (0x3C, 0x00): "move", (0x3C, 0x01): "mr32",
-    (0x3C, 0x06): "lqi", (0x3C, 0x07): "sqi",
-    (0x3C, 0x0A): "lqd", (0x3C, 0x0B): "sqd",
-    (0x3D, 0x00): "div", (0x3D, 0x01): "sqrt", (0x3D, 0x02): "rsqrt",
-    (0x3D, 0x03): "waitq",
-    (0x3D, 0x04): "mtir", (0x3D, 0x05): "mfir",
-    (0x3D, 0x06): "ilwr", (0x3D, 0x07): "iswr",
-    (0x3D, 0x08): "rnext", (0x3D, 0x09): "rget",
-    (0x3D, 0x0A): "rinit", (0x3D, 0x0B): "rxor",
-    (0x3E, 0x00): "mfp", (0x3E, 0x01): "xtop", (0x3E, 0x02): "xitop",
-    (0x3F, 0x00): "xgkick",
-    (0x3F, 0x06): "esadd", (0x3F, 0x07): "ersadd",
-    (0x3F, 0x0A): "eleng", (0x3F, 0x0B): "erleng",
-    (0x3F, 0x0E): "esum", (0x3F, 0x0F): "ercpr",
+# Special group, by bits 5..0.
+_LOWER_SPECIAL = {
+    0x30: "iadd", 0x31: "isub", 0x32: "iaddi", 0x34: "iand", 0x35: "ior",
 }
+
+# Within the special group, 0x3C..0x3F extend into bits 10..6; the index is
+# (bits 1..0) | (bits 10..6) << 2.
+_LOWER_SPECIAL_EXT = {
+    0x30: "move", 0x31: "mr32",
+    0x34: "lqi", 0x35: "sqi", 0x36: "lqd", 0x37: "sqd",
+    0x38: "div", 0x39: "sqrt", 0x3A: "rsqrt", 0x3B: "waitq",
+    0x3C: "mtir", 0x3D: "mfir", 0x3E: "ilwr", 0x3F: "iswr",
+    0x40: "rnext", 0x41: "rget", 0x42: "rinit", 0x43: "rxor",
+    0x64: "mfp", 0x68: "xtop", 0x69: "xitop", 0x6C: "xgkick",
+    0x70: "esadd", 0x71: "ersadd", 0x72: "eleng", 0x73: "erleng",
+    0x74: "eatanxy", 0x75: "eatanxz", 0x76: "esum",
+    0x78: "esqrt", 0x79: "ersqrt", 0x7A: "ercpr", 0x7B: "waitp",
+    0x7C: "esin", 0x7D: "eatan", 0x7E: "eexp",
+}
+
+# Latencies in cycles, for the hazard scanner: when a result can be read.
+LATENCY_Q = {"div": 7, "sqrt": 7, "rsqrt": 13}
+LATENCY_P = {
+    "esadd": 11, "ersadd": 18, "eleng": 18, "erleng": 24, "eatanxy": 54, "eatanxz": 54,
+    "esum": 12, "esqrt": 12, "ersqrt": 18, "ercpr": 12, "esin": 29, "eatan": 54, "eexp": 44,
+}
+LATENCY_FMAC = 4
 
 
 @dataclasses.dataclass(frozen=True)
@@ -158,6 +184,8 @@ class VuInstruction:
     mnemonic: str
     operands: tuple = ()
     known: bool = True
+    reads: frozenset = frozenset()
+    writes: frozenset = frozenset()
 
     def format(self) -> str:
         if not self.known:
@@ -168,6 +196,14 @@ class VuInstruction:
 
     def __str__(self) -> str:
         return self.format()
+
+
+def _ins(word, mnemonic, operands=(), reads=(), writes=()):
+    return VuInstruction(word, mnemonic, tuple(operands), True, frozenset(reads), frozenset(writes))
+
+
+def _unknown(word, half):
+    return VuInstruction(word, half + "?", (), known=False)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -208,121 +244,184 @@ class Bundle:
         return "%08x %s %-34s %s" % (self.addr, marker, self.upper.format(), lower_text)
 
 
+def _arith(word, name, fd, fs, second, second_reads, dest, to_acc):
+    """An FMAC operation: `second` is ft (with its lanes) or Q or I."""
+    lanes = "".join(c for c, bit in _LANES if (word >> 21) & bit)
+    reads = set(second_reads)
+    if name.startswith("opm"):
+        # The outer product crosses lanes: x from y,z; y from z,x; z from x,y.
+        reads = _vf(fs, "xyz") | _vf((word >> 16) & 0x1F, "xyz")
+    else:
+        reads |= _vf(fs, lanes)
+    if name.startswith(_READS_ACC):
+        reads |= _acc("xyz" if name.startswith("opm") else lanes)
+    writes = _acc(lanes) if to_acc else _vf(fd, lanes)
+    if not any(name.startswith(n) for n in _NO_FLAGS):
+        writes = writes | {"MAC", "STATUS"}
+    target = "ACC" if to_acc else VF[fd]
+    return _ins(word, "%s.%s" % (name, dest), (target, VF[fs], second), reads, writes)
+
+
 def decode_upper(word: int) -> VuInstruction:
     """Decode the FMAC half of a bundle."""
     opcode = word & 0x3F
     fd, fs, ft = (word >> 6) & 0x1F, (word >> 11) & 0x1F, (word >> 16) & 0x1F
     dest = _dest(word)
+    lanes = "".join(c for c, bit in _LANES if (word >> 21) & bit)
 
-    base = opcode & 0x3C
-    if base in _UPPER_BC and opcode <= 0x1B:
-        name = _UPPER_BC[base]
-        lane = _BC[opcode & 0x3]
-        return VuInstruction(
-            word, "%s%s.%s" % (name, lane, dest),
-            (VF[fd], VF[fs], "%s%s" % (VF[ft], lane)),
-        )
-
+    if opcode < 0x1C:
+        name = _UPPER_BC[opcode & 0x1C] + _BC[opcode & 3]
+        lane = _BC[opcode & 3]
+        return _arith(word, name, fd, fs, "%s%s" % (VF[ft], lane), _vf(ft, lane), dest, False)
     if opcode in _UPPER_QI:
         name, special = _UPPER_QI[opcode]
-        return VuInstruction(
-            word, "%s.%s" % (name, dest), (VF[fd], VF[fs], special.upper())
-        )
-
+        return _arith(word, name, fd, fs, special, {special}, dest, False)
     if opcode in _UPPER_REG:
-        return VuInstruction(
-            word, "%s.%s" % (_UPPER_REG[opcode], dest), (VF[fd], VF[fs], VF[ft])
-        )
+        name = _UPPER_REG[opcode]
+        return _arith(word, name, fd, fs, VF[ft], _vf(ft, lanes), dest, False)
+    if opcode < 0x3C:
+        return _unknown(word, "upper")
 
-    if opcode >= 0x3C:
-        ext = (word >> 6) & 0x1F
-        key = (opcode, ext)
-        if key in _UPPER_SPECIAL:
-            name = _UPPER_SPECIAL[key]
-            if name == "nop":
-                return VuInstruction(word, "nop")
-            if name == "clip":
-                return VuInstruction(word, "clip", (VF[fs], "%sw" % VF[ft]))
-            return VuInstruction(word, "%s.%s" % (name, dest), (VF[fd], VF[fs]))
-        # The accumulator forms reuse the broadcast idiom in this opcode space.
-        acc_key = (opcode, ext & 0x3)
-        if acc_key in _UPPER_SPECIAL_BC and ext <= 0x03:
-            name = _UPPER_SPECIAL_BC[acc_key]
-            return VuInstruction(
-                word, "%s.%s" % (name, dest), ("ACC", VF[fs], VF[ft])
-            )
-        return VuInstruction(word, "upper?", (), known=False)
+    index = (opcode & 3) | (((word >> 6) & 0x1F) << 2)
+    if index == 0x2F:
+        return _ins(word, "nop")
+    if index == 0x1F:
+        return _ins(word, "clip", (VF[fs] + "xyz", VF[ft] + "w"),
+                    _vf(fs, "xyz") | _vf(ft, "w"), {"CLIP"})
+    if index in _UPPER_SPECIAL_CONVERT:
+        return _ins(word, "%s.%s" % (_UPPER_SPECIAL_CONVERT[index], dest), (VF[ft], VF[fs]),
+                    _vf(fs, lanes), _vf(ft, lanes))
+    if index < 0x1C and (index & 0x1C) in _UPPER_SPECIAL_BC:
+        name = _UPPER_SPECIAL_BC[index & 0x1C] + _BC[index & 3]
+        lane = _BC[index & 3]
+        return _arith(word, name, 0, fs, "%s%s" % (VF[ft], lane), _vf(ft, lane), dest, True)
+    if index in _UPPER_SPECIAL_QI:
+        name, special = _UPPER_SPECIAL_QI[index]
+        return _arith(word, name, 0, fs, special, {special}, dest, True)
+    if index in _UPPER_SPECIAL_REG:
+        name = _UPPER_SPECIAL_REG[index]
+        return _arith(word, name, 0, fs, VF[ft], _vf(ft, lanes), dest, True)
+    return _unknown(word, "upper")
 
-    return VuInstruction(word, "upper?", (), known=False)
+
+def _imm11(word: int) -> int:
+    value = word & 0x7FF
+    return value - 0x800 if value & 0x400 else value
 
 
 def decode_lower(word: int) -> VuInstruction:
     """Decode the load/store/integer/branch half of a bundle."""
     if word == LOWER_NOP:
-        return VuInstruction(word, "nop")
+        return _ins(word, "nop")
 
-    # Seven bits, not six: bit 31 distinguishes the special group from everything
-    # else, and masking it away collapses the two spaces together.
     opcode = (word >> 25) & 0x7F
-    it, is_ = (word >> 16) & 0x1F, (word >> 11) & 0x1F
-    imm11 = word & 0x7FF
-    if imm11 & 0x400:
-        imm11 -= 0x800
+    it, is_, id_ = (word >> 16) & 0x1F, (word >> 11) & 0x1F, (word >> 6) & 0x1F
+    dest = _dest(word)
+    lanes = "".join(c for c, bit in _LANES if (word >> 21) & bit)
+    imm11 = _imm11(word)
 
     if opcode == LOWER_SPECIAL_GROUP:
         sub = word & 0x3F
         if sub in _LOWER_SPECIAL:
             name = _LOWER_SPECIAL[sub]
             if name == "iaddi":
-                imm5 = (word >> 6) & 0x1F
-                if imm5 & 0x10:
-                    imm5 -= 0x20
-                return VuInstruction(word, name, (VI[it], VI[is_], "%+d" % imm5))
-            return VuInstruction(word, name, (VI[(word >> 6) & 0x1F], VI[is_], VI[it]))
-        if sub >= 0x3C:
-            ext = (word >> 6) & 0x1F
-            ext_name = _LOWER_SPECIAL_EXT.get((sub, ext))
-            if ext_name is None:
-                return VuInstruction(word, "lower?", (), known=False)
-            fs, ft = (word >> 11) & 0x1F, (word >> 16) & 0x1F
-            if ext_name in ("div", "rsqrt"):
-                return VuInstruction(
-                    word, ext_name, ("Q", "%s%s" % (VF[fs], _BC[(word >> 21) & 3]),
-                                     "%s%s" % (VF[ft], _BC[(word >> 23) & 3])),
-                )
-            if ext_name == "sqrt":
-                return VuInstruction(word, ext_name, ("Q", "%s%s" % (VF[ft], _BC[(word >> 23) & 3])))
-            if ext_name in ("waitq", "xgkick", "xtop", "xitop", "mfp"):
-                return VuInstruction(word, ext_name, (VI[it],) if ext_name != "waitq" else ())
-            if ext_name in ("move", "mr32", "lqi", "sqi", "lqd", "sqd"):
-                return VuInstruction(word, "%s.%s" % (ext_name, _dest(word)), (VF[ft], VF[fs]))
-            if ext_name in ("mtir", "mfir", "ilwr", "iswr"):
-                return VuInstruction(word, ext_name, (VI[it], VF[fs]))
-            return VuInstruction(word, ext_name, (VF[ft], VF[fs]))
-        return VuInstruction(word, "lower?", (), known=False)
+                imm5 = id_ - 0x20 if id_ & 0x10 else id_
+                return _ins(word, name, (VI[it], VI[is_], "%+d" % imm5), _vi(is_), _vi(it))
+            return _ins(word, name, (VI[id_], VI[is_], VI[it]), _vi(is_) | _vi(it), _vi(id_))
+        if sub < 0x3C:
+            return _unknown(word, "lower")
+        index = (sub & 3) | (id_ << 2)
+        name = _LOWER_SPECIAL_EXT.get(index)
+        if name is None:
+            return _unknown(word, "lower")
+        fsf, ftf = _BC[(word >> 21) & 3], _BC[(word >> 23) & 3]
+        if name in ("move", "mr32"):
+            source = "yzwx" if name == "mr32" else "xyzw"
+            reads = set().union(*(_vf(is_, source[i]) for i, c in enumerate("xyzw") if c in lanes))
+            return _ins(word, "%s.%s" % (name, dest), (VF[it], VF[is_]), reads, _vf(it, lanes))
+        if name in ("lqi", "lqd"):
+            text = "(%s++)" % VI[is_] if name == "lqi" else "(--%s)" % VI[is_]
+            return _ins(word, "%s.%s" % (name, dest), (VF[it], text), _vi(is_), _vf(it, lanes) | _vi(is_))
+        if name in ("sqi", "sqd"):
+            text = "(%s++)" % VI[it] if name == "sqi" else "(--%s)" % VI[it]
+            return _ins(word, "%s.%s" % (name, dest), (VF[is_], text), _vf(is_, lanes) | _vi(it), _vi(it))
+        if name == "div" or name == "rsqrt":
+            return _ins(word, name, ("Q", VF[is_] + fsf, VF[it] + ftf),
+                        _vf(is_, fsf) | _vf(it, ftf), {"Q"})
+        if name == "sqrt":
+            return _ins(word, name, ("Q", VF[it] + ftf), _vf(it, ftf), {"Q"})
+        if name in ("waitq", "waitp"):
+            return _ins(word, name, (), {name[-1].upper()})
+        if name == "mtir":
+            return _ins(word, name, (VI[it], VF[is_] + fsf), _vf(is_, fsf), _vi(it))
+        if name == "mfir":
+            return _ins(word, "%s.%s" % (name, dest), (VF[it], VI[is_]), _vi(is_), _vf(it, lanes))
+        if name in ("ilwr", "iswr"):
+            if name == "ilwr":
+                return _ins(word, "%s.%s" % (name, dest), (VI[it], "(%s)" % VI[is_]), _vi(is_), _vi(it))
+            return _ins(word, "%s.%s" % (name, dest), (VI[it], "(%s)" % VI[is_]), _vi(is_) | _vi(it))
+        if name in ("rnext", "rget"):
+            return _ins(word, "%s.%s" % (name, dest), (VF[it], "R"), {"R"},
+                        _vf(it, lanes) | ({"R"} if name == "rnext" else set()))
+        if name in ("rinit", "rxor"):
+            return _ins(word, name, ("R", VF[is_] + fsf), _vf(is_, fsf) | ({"R"} if name == "rxor" else set()), {"R"})
+        if name == "mfp":
+            return _ins(word, "%s.%s" % (name, dest), (VF[it], "P"), {"P"}, _vf(it, lanes))
+        if name in ("xtop", "xitop"):
+            return _ins(word, name, (VI[it],), (), _vi(it))
+        if name == "xgkick":
+            return _ins(word, name, (VI[is_],), _vi(is_))
+        if name in ("esadd", "ersadd", "eleng", "erleng"):
+            return _ins(word, name, ("P", VF[is_]), _vf(is_, "xyz"), {"P"})
+        if name == "esum":
+            return _ins(word, name, ("P", VF[is_]), _vf(is_, "xyzw"), {"P"})
+        if name in ("eatanxy", "eatanxz"):
+            return _ins(word, name, ("P", VF[is_]), _vf(is_, "xy" if name == "eatanxy" else "xz"), {"P"})
+        # esqrt ersqrt ercpr esin eatan eexp: one lane.
+        return _ins(word, name, ("P", VF[is_] + fsf), _vf(is_, fsf), {"P"})
 
     name = _LOWER_MAIN.get(opcode)
     if name is None:
-        return VuInstruction(word, "lower?", (), known=False)
+        return _unknown(word, "lower")
 
     if name in ("b", "bal"):
-        ops = ("%+d" % imm11,) if name == "b" else (VI[it], "%+d" % imm11)
-        return VuInstruction(word, name, ops)
-    if name in ("jr", "jalr"):
-        return VuInstruction(word, name, (VI[is_],))
+        if name == "b":
+            return _ins(word, name, ("%+d" % imm11,))
+        return _ins(word, name, (VI[it], "%+d" % imm11), (), _vi(it))
+    if name == "jr":
+        return _ins(word, name, (VI[is_],), _vi(is_))
+    if name == "jalr":
+        return _ins(word, name, (VI[it], VI[is_]), _vi(is_), _vi(it))
     if name in ("ibeq", "ibne"):
-        return VuInstruction(word, name, (VI[it], VI[is_], "%+d" % imm11))
+        return _ins(word, name, (VI[it], VI[is_], "%+d" % imm11), _vi(is_) | _vi(it))
     if name in ("ibltz", "ibgtz", "iblez", "ibgez"):
-        return VuInstruction(word, name, (VI[is_], "%+d" % imm11))
+        return _ins(word, name, (VI[is_], "%+d" % imm11), _vi(is_))
     if name in ("iaddiu", "isubiu"):
         # The immediate is split, with its high bits above the register fields.
         imm15 = (word & 0x7FF) | (((word >> 21) & 0xF) << 11)
-        return VuInstruction(word, name, (VI[it], VI[is_], "0x%x" % imm15))
-    if name in ("lq", "sq", "ilw", "isw"):
-        return VuInstruction(
-            word, "%s.%s" % (name, _dest(word)), (VI[it], "0x%x(%s)" % (imm11 & 0x7FF, VI[is_]))
-        )
-    return VuInstruction(word, name, (VI[it], VI[is_]))
+        return _ins(word, name, (VI[it], VI[is_], "0x%x" % imm15), _vi(is_), _vi(it))
+    if name == "lq":
+        return _ins(word, "lq.%s" % dest, (VF[it], "%d(%s)" % (imm11, VI[is_])), _vi(is_), _vf(it, lanes))
+    if name == "sq":
+        return _ins(word, "sq.%s" % dest, (VF[is_], "%d(%s)" % (imm11, VI[it])), _vf(is_, lanes) | _vi(it))
+    if name == "ilw":
+        return _ins(word, "ilw.%s" % dest, (VI[it], "%d(%s)" % (imm11, VI[is_])), _vi(is_), _vi(it))
+    if name == "isw":
+        return _ins(word, "isw.%s" % dest, (VI[it], "%d(%s)" % (imm11, VI[is_])), _vi(is_) | _vi(it))
+    imm24 = word & 0xFFFFFF
+    if name in ("fceq", "fcand", "fcor"):
+        return _ins(word, name, (VI[1], "0x%06x" % imm24), {"CLIP"}, _vi(1))
+    if name == "fcset":
+        return _ins(word, name, ("0x%06x" % imm24,), (), {"CLIP"})
+    if name == "fcget":
+        return _ins(word, name, (VI[it],), {"CLIP"}, _vi(it))
+    imm12 = (((word >> 21) & 1) << 11) | (word & 0x7FF)
+    if name in ("fseq", "fsand", "fsor"):
+        return _ins(word, name, (VI[it], "0x%03x" % imm12), {"STATUS"}, _vi(it))
+    if name == "fsset":
+        return _ins(word, name, ("0x%03x" % imm12,), (), {"STATUS"})
+    # fmeq fmand fmor
+    return _ins(word, name, (VI[it], VI[is_]), {"MAC"} | _vi(is_), _vi(it))
 
 
 def decode_bundle(lower_word: int, upper_word: int, addr: int = 0) -> Bundle:
@@ -334,7 +433,7 @@ def decode_bundle(lower_word: int, upper_word: int, addr: int = 0) -> Bundle:
     upper = decode_upper(upper_word)
     if upper_word & FLAG_I:
         immediate = struct.unpack("<f", struct.pack("<I", lower_word))[0]
-        lower = VuInstruction(lower_word, "loi", ("%g" % immediate,))
+        lower = _ins(lower_word, "loi", ("%g" % immediate,), (), {"I"})
         return Bundle(addr, lower_word, upper_word, lower, upper, immediate)
     return Bundle(addr, lower_word, upper_word, decode_lower(lower_word), upper)
 
@@ -347,6 +446,15 @@ def decode_blob(data: bytes, base_addr: int = 0):
         lower, upper = struct.unpack_from("<II", data, i * 8)
         out.append(decode_bundle(lower, upper, base_addr + i * 8))
     return out
+
+
+def branch_target(bundle: Bundle):
+    """Where a branch in the bundle's lower goes, in bytes, or None."""
+    if bundle.immediate is not None or not bundle.lower.known:
+        return None
+    if bundle.lower.mnemonic in ("b", "bal", "ibeq", "ibne", "ibltz", "ibgtz", "iblez", "ibgez"):
+        return bundle.addr + 8 + _imm11(bundle.lower_raw) * 8
+    return None
 
 
 def coverage(bundles) -> dict:

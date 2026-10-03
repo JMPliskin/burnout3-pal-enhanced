@@ -109,9 +109,9 @@ class TestLower(unittest.TestCase):
             self.assertEqual(decode_lower(word).mnemonic, name)
 
     def test_branch_offset_is_signed(self):
-        forward = decode_lower((0x30 << 25) | 4)
+        forward = decode_lower((0x20 << 25) | 4)
         self.assertEqual(forward.operands, ("+4",))
-        backward = decode_lower((0x30 << 25) | (0x800 - 4))
+        backward = decode_lower((0x20 << 25) | (0x800 - 4))
         self.assertEqual(backward.operands, ("-4",))
 
     def test_unknown_opcode_is_reported(self):
