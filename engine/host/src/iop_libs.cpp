@@ -624,6 +624,15 @@ Outcome RpcLoop(Vm& vm, Context& c) {
     return Outcome::Block;          // the scheduler starts serving (ServeNext)
 }
 
+// sceSifSetDmaIntr(transfers, count, callback, data): sceSifSetDma, then the
+// callback once the transfer is done - as an interrupt, after this returns.
+Outcome SetDmaIntr(Vm& vm, Context& c) {
+    const u32 callback = A(vm, c, 2), data = A(vm, c, 3);
+    SetDma(vm, c);
+    if (callback) vm.completions.push_back({callback, data});
+    return Ret(c, 1);
+}
+
 Outcome DmaStat(Vm&, Context& c) { return Ret(c, u32(-1)); }    // < 0: finished
 
 // ---------------------------------------------------------------- cdvdman
@@ -854,7 +863,7 @@ const Map& Table() {
         {{"sifcmd", 10}, AddCmdHandler}, {{"sifcmd", 11}, RemoveCmdHandler},
         {{"sifcmd", 12}, SendCmd}, {{"sifcmd", 13}, SendCmd}, {{"sifcmd", 14}, Succeed},
         {{"sifcmd", 17}, RegisterRpc}, {{"sifcmd", 19}, SetRpcQueue}, {{"sifcmd", 22}, RpcLoop},
-        {{"sifman", 32}, Succeed},
+        {{"sifman", 32}, SetDmaIntr},
         {{"cdvdman", 4}, Succeed}, {{"cdvdman", 6}, CdRead}, {{"cdvdman", 8}, CdGetError},
         {{"cdvdman", 11}, CdSync}, {{"cdvdman", 12}, CdGetDiskType}, {{"cdvdman", 13}, CdDiskReady},
         {{"loadcore", 5}, FlushDcache},

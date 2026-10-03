@@ -93,6 +93,7 @@ struct Vm {
     std::map<u32, Semaphore> semaphores;
     std::map<u32, EventFlag> events;
     std::map<u32, Alarm> alarms;
+    std::vector<std::pair<u32, u32>> completions;  // (function, data): DMA-done callbacks due
     std::map<u32, std::pair<u32, u32>> command_handlers;   // command -> (function, data)
     std::map<u32, RpcServerEntry> rpc_servers;            // server address -> entry
     std::map<u32, u32> rpc_queues;                        // queue address -> thread

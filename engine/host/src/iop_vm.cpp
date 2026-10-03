@@ -356,10 +356,16 @@ u32 Vm::Call(u32 function, std::vector<u32> args) {
 
 void Run() {
     Vm& vm = TheVm();
-    if (vm.threads.empty() && vm.alarms.empty()) return;
+    if (vm.threads.empty() && vm.alarms.empty() && vm.completions.empty()) return;
     const u64 start = vm.instructions;
     for (;;) {
         SoundInterrupts(vm);
+        // Completion callbacks of finished SIF DMA (sceSifSetDmaIntr), as interrupts.
+        while (!vm.completions.empty()) {
+            const auto done = vm.completions.front();
+            vm.completions.erase(vm.completions.begin());
+            vm.Call(done.first, {done.second});
+        }
         const u64 now = vm.NowUs();
         for (auto& [id, t] : vm.threads)
             if (t.wait == Wait::Delay && now >= t.until_us) {
@@ -578,6 +584,25 @@ void RpcCall(u32 server, u32 procedure, u32 size, u32 receive, u32 receive_size,
              const std::vector<u8>& packet) {
     Vm& vm = TheVm();
     const RpcServerEntry& entry = vm.rpc_servers[server];
+    char text[160];
+    std::snprintf(text, sizeof text, "IOP: RPC 0x%08X procedure %u (%u bytes in, %u out) served by a module",
+                  unsigned(entry.sid), unsigned(procedure), unsigned(size), unsigned(receive_size));
+    Note("iop rpc call " + std::to_string(entry.sid) + " " + std::to_string(procedure), text);
+    if (vm.trace) {
+        // The request as it sits in the server's buffer: words, and any text.
+        std::string words, chars;
+        for (u32 i = 0; i < size && i < 64; i += 4) {
+            char w[12];
+            std::snprintf(w, sizeof w, " %08X", unsigned(vm.Read(entry.buffer + i, 4)));
+            words += w;
+        }
+        for (u32 i = 0; i < size && i < 64; ++i) {
+            const char ch = char(vm.Read(entry.buffer + i, 1));
+            chars += (ch >= 32 && ch < 127) ? ch : '.';
+        }
+        std::fprintf(stderr, "[iop] RPC 0x%08X procedure %u:%s  \"%s\"\n", unsigned(entry.sid),
+                     unsigned(procedure), words.c_str(), chars.c_str());
+    }
     RpcRequest request{server, procedure, size, receive, receive_size, packet};
     vm.rpc_pending[entry.queue].push_back(request);
     auto thread = vm.rpc_queues.find(entry.queue);

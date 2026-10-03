@@ -269,6 +269,16 @@ void Report(const Options& options, const std::string& outcome) {
             std::printf("  0x%08X x%llu\n", address, (unsigned long long)count);
         }
     };
+    {
+        // Where the time goes: the functions called most - a loop that never
+        // ends shows here as the functions it keeps calling.
+        std::vector<std::pair<u64, u32>> hot;
+        for (const auto& [address, count] : stats.calls) hot.push_back({count, address});
+        std::sort(hot.rbegin(), hot.rend());
+        std::printf("most called:\n");
+        for (std::size_t i = 0; i < hot.size() && i < std::size_t(options.report_limit); ++i)
+            std::printf("  %-40s x%llu\n", Describe(hot[i].second).c_str(), (unsigned long long)hot[i].first);
+    }
     registers("device registers read", stats.register_reads);
     registers("device registers written", stats.register_writes);
     for (const auto& [run, source] : stats.discovered)

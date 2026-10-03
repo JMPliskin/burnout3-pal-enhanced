@@ -70,6 +70,7 @@ struct Thread {
     u64 queued = 0;                 // order among ready threads of equal priority
     u32 waiting_on = 0;             // the semaphore, while Waiting
     s32 wakeups = 0;                // WakeupThread calls not yet consumed by a sleep
+    u64 runs = 0;                   // times the scheduler switched to it, for the report
     lifted::Context context{};
     std::vector<u32> calls;         // the guest call stack, for the report
     LPVOID fiber = nullptr;
@@ -349,6 +350,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         }
         idle = 0;
         s.current = next;
+        ++next->runs;
         next->state = State::Running;
         s.running = &next->context;
         SwitchToFiber(next->fiber);
@@ -363,8 +365,8 @@ std::string ThreadReport() {
     std::string out;
     for (auto& [id, t] : S().threads) {
         char line[160];
-        std::snprintf(line, sizeof line, "  thread %u: %s, priority %d, entry 0x%08X\n", id,
-                      StateName(t->state), t->priority, t->entry);
+        std::snprintf(line, sizeof line, "  thread %u: %s, priority %d, entry 0x%08X, ran %llu times\n", id,
+                      StateName(t->state), t->priority, t->entry, static_cast<unsigned long long>(t->runs));
         out += line;
         // Where it is: the innermost calls of its guest stack.
         const std::size_t from = t->calls.size() > 10 ? t->calls.size() - 10 : 0;
