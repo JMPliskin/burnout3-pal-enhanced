@@ -1407,6 +1407,37 @@ functions where there were 11,247. 0x0019A950 runs to 0x0019B37C with its
 25 cases inside. The out-of-line blocks remain to be joined to their
 functions.
 
+## From the loading screen to the frontend
+
+With the structuring fixes, loading finishes - stage 0x17 of 0x00131480 is
+its last, "done" - and the frontend's frame loop runs. Each step past it was
+one missing piece of the machine:
+
+* **Alarms.** The frame loop paces itself by sleeping on an alarm each frame
+  (0x00131B90 -> 0x00237050: SetAlarm, then SleepThread; the callback wakes
+  the thread). The SDK patches the kernel's alarm calls with code that runs
+  on timer 3 through the kernel's own interrupt table (SetSyscall slot 0x12C),
+  so the host keeps SetAlarm and its relatives as its own, timed in horizontal
+  blanks on the host clock. The game's own alarm library runs on timer 2's
+  compare and overflow interrupts, so the EE timers are modelled too
+  (timers.cpp). Idle, the host now waits for the next event instead of
+  running frames at once.
+* **The first menu**: "Burnout 3 supports 480p (Progressive Scan) video...".
+* **Input.** libpad2's DualShock 2 report is the button bits, then the sticks
+  (right X, Y, left X, Y), then twelve pressures; the sticks were reported at
+  0, pushed fully up-left, and the menu never saw a press. `--press
+  BUTTON@FRAME` answers menus in a scripted run.
+* **The memory card.** libmc2 opens its slot (port 2) through dbcman, like a
+  pad; dbcman now opens a socket on any port and reports what is plugged in -
+  nothing but the pad. The game says no memory card is inserted and offers to
+  start without saving.
+* **Movies.** Then it plays a movie through libmpeg, which waits on the IPU
+  (IPU_CTRL read 274 million times). Until the IPU is modelled,
+  sceMpegGetPicture marks a movie ended at once.
+
+GetOsdConfigParam and SetOsdConfigParam (0x4B and 0x4A) were swapped in the
+host's kernel; the console now reports English, 4:3.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
