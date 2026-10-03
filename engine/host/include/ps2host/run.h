@@ -112,6 +112,10 @@ bool OpenWindow(const wchar_t* title, int width, int height);
 bool WindowOpen();
 bool WindowClosed();
 void PresentFrame();
+/* Whether the window has the keyboard (input is read only then). */
+bool WindowFocused();
+/* Controllers (dbc.cpp): each frame, the devices write their state. */
+void DbcFrame();
 
 }  // namespace ps2host
 

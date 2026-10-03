@@ -56,6 +56,7 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
 }
 
 bool WindowOpen() { return g_window != nullptr; }
+bool WindowFocused() { return g_window && GetForegroundWindow() == g_window; }
 bool WindowClosed() { return g_closed; }
 
 void PresentFrame() {
