@@ -87,7 +87,7 @@ const std::pair<int, int> kKeys[] = {
     {8, '1'}, {9, '3'}, {10, 'Q'}, {11, 'E'}, {12, 'V'}, {13, 'C'}, {14, 'X'}, {15, 'Z'},
 };
 
-bool Pressed(int key) { return WindowFocused() && (GetAsyncKeyState(key) & 0x8000) != 0; }
+bool Pressed(int key) { return WindowFocused() && HostKeyDown(key); }
 
 // Scripted presses (--press): (input, first frame, last frame).
 struct Press { int input; u64 from, to; };

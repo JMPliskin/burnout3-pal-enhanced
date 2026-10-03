@@ -45,6 +45,14 @@ target_compile_definitions(ps2host PRIVATE PS2_ENGINE_DATA="${PS2_ENGINE_DIR}/da
 target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ps2host PUBLIC ps2rt)
 
+# The window through SDL3 and Vulkan (engine/gpu), with GDI as the fallback.
+option(PS2HOST_VULKAN "Present the picture through SDL3 and Vulkan" OFF)
+if(PS2HOST_VULKAN)
+    add_subdirectory(${PS2_ENGINE_DIR}/gpu ${CMAKE_BINARY_DIR}/ps2gpu)
+    target_link_libraries(ps2host PUBLIC ps2gpu)
+    target_compile_definitions(ps2host PRIVATE PS2HOST_VULKAN=1)
+endif()
+
 if(MSVC)
     # Translated code throws lifted::Abort; its chunks are large.
     target_compile_options(ps2rt PUBLIC /EHsc /bigobj /W3 /wd4100 /wd4189)

@@ -1,21 +1,30 @@
 /*
  * The port's window (--window): the GS's displayed picture, every vertical
- * blank, scaled to the window. Win32 and GDI only, so the host needs nothing
- * beyond the system; a GPU renderer can replace the presentation later without
- * changing who calls it.
+ * blank, scaled to the window, and the keyboard the controller reads.
  *
- * Everything runs on the host's one thread: the window is pumped at each frame
- * (FrameDone), which is also where input will be read.
+ * With the GPU display built in (PS2HOST_VULKAN, engine/gpu) the window is an
+ * SDL3 window presenting through Vulkan; without it, or when no Vulkan device
+ * can be had, a plain Win32 window drawn with GDI. Both are pumped on the host's
+ * thread at each frame (FrameDone).
  */
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 
+#include <cstdio>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "ps2host/gs.h"
 #include "ps2host/run.h"
+
+#ifdef PS2HOST_VULKAN
+#include <SDL3/SDL_scancode.h>
+
+#include "ps2gpu/display.h"
+#endif
 
 namespace ps2host {
 
@@ -23,6 +32,27 @@ namespace {
 
 HWND g_window = nullptr;
 bool g_closed = false;
+
+#ifdef PS2HOST_VULKAN
+std::unique_ptr<ps2gpu::Display> g_display;
+
+// The keys the controller reads, as Win32 virtual keys, by position.
+int Scancode(int key) {
+    switch (key) {
+        case VK_BACK: return SDL_SCANCODE_BACKSPACE;
+        case VK_RETURN: return SDL_SCANCODE_RETURN;
+        case VK_UP: return SDL_SCANCODE_UP;
+        case VK_DOWN: return SDL_SCANCODE_DOWN;
+        case VK_LEFT: return SDL_SCANCODE_LEFT;
+        case VK_RIGHT: return SDL_SCANCODE_RIGHT;
+        default: break;
+    }
+    if (key >= 'A' && key <= 'Z') return SDL_SCANCODE_A + (key - 'A');
+    if (key >= '1' && key <= '9') return SDL_SCANCODE_1 + (key - '1');
+    if (key == '0') return SDL_SCANCODE_0;
+    return -1;
+}
+#endif
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     switch (message) {
@@ -38,9 +68,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
 }
 
-}  // namespace
-
-bool OpenWindow(const wchar_t* title, int width, int height) {
+bool OpenGdiWindow(const wchar_t* title, int width, int height) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -55,12 +83,7 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
     return g_window != nullptr;
 }
 
-bool WindowOpen() { return g_window != nullptr; }
-bool WindowFocused() { return g_window && GetForegroundWindow() == g_window; }
-bool WindowClosed() { return g_closed; }
-
-void PresentFrame() {
-    if (!g_window) return;
+void PresentGdi() {
     MSG message;
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         TranslateMessage(&message);
@@ -84,6 +107,63 @@ void PresentFrame() {
     StretchDIBits(dc, 0, 0, client.right, client.bottom, 0, 0, LONG(w), LONG(h), pixels.data(), &info,
                   DIB_RGB_COLORS, SRCCOPY);
     ReleaseDC(g_window, dc);
+}
+
+}  // namespace
+
+bool OpenWindow(const wchar_t* title, int width, int height) {
+#ifdef PS2HOST_VULKAN
+    std::string narrow;
+    for (const wchar_t* p = title; *p; ++p) narrow += char(*p < 128 ? *p : '?');
+    std::string error;
+    g_display = ps2gpu::CreateVulkanDisplay(narrow.c_str(), width, height, &error);
+    if (g_display) {
+        Note("window", "window: Vulkan on " + g_display->Describe());
+        return true;
+    }
+    Note("window", "window: no Vulkan display (" + error + "); drawing with GDI");
+#endif
+    return OpenGdiWindow(title, width, height);
+}
+
+bool WindowOpen() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) return !g_closed;
+#endif
+    return g_window != nullptr;
+}
+
+bool WindowFocused() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) return g_display->Focused();
+#endif
+    return g_window && GetForegroundWindow() == g_window;
+}
+
+bool WindowClosed() { return g_closed; }
+
+bool HostKeyDown(int key) {
+#ifdef PS2HOST_VULKAN
+    if (g_display) return g_display->KeyDown(Scancode(key));
+#endif
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
+void PresentFrame() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) {
+        if (!g_display->Pump()) {
+            g_closed = true;
+            return;
+        }
+        std::vector<u32> pixels;
+        u32 w = 0, h = 0;
+        if (gs::TheGs().Picture(&pixels, &w, &h) && !g_display->Present(pixels.data(), w, h))
+            g_closed = true;
+        return;
+    }
+#endif
+    if (g_window) PresentGdi();
 }
 
 }  // namespace ps2host

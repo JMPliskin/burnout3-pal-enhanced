@@ -114,6 +114,8 @@ bool WindowClosed();
 void PresentFrame();
 /* Whether the window has the keyboard (input is read only then). */
 bool WindowFocused();
+/* Whether a key (a Win32 virtual key) is down, on the window's keyboard. */
+bool HostKeyDown(int key);
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
 /* --press: hold `button` (cross, start, up, ...) for 6 frames from `frame`. */
