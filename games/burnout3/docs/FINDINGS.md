@@ -1401,6 +1401,23 @@ case at 0x0019A9A8 of the switch in 0x0019A950 is `func_0019A9A8`. So
 Recognising jump tables, and treating their targets as labels of the
 function that jumps through them, comes before chunks.
 
+The analysis now does (analysis.py `jump_table`): 426 switch tables, 1,785
+case "functions" dropped, 219 functions grown to hold their cases - 9,360
+functions where there were 11,247. 0x0019A950 runs to 0x0019B37C with its
+25 cases inside. The out-of-line blocks remain to be joined to their
+functions.
+
+## Memory cards: libmc2
+
+The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
+MC2_S1.IRX, with MCMAN, MCSERV and SIO2MAN. MC2_S1 drives the card itself -
+it imports sio2man, sio2d, secrman (MagicGate authentication) and dbcman -
+so running it would mean emulating SIO2 and the card's protocol. The host
+will answer libmc2's RPC instead, over a directory standing for the card; the
+protocol is read from the game's own libmc2 when the frontend first uses it:
+it lives at 0x00241000-0x0024B000, binds server 0x80001101 at 0x00249A0C, and
+calls it from 0x00249B48, 0x00249BD8 and 0x0024AAE8.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

@@ -112,7 +112,8 @@ private:
     void DrawLine(const Vertex& a, const Vertex& b);
     void Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
               float u, float v, bool textured);
-    u32 Texel(float u, float v) const;
+    u32 Texel(float u, float v) const;          /* filtered as TEX1 says */
+    u32 TexelAt(int u, int v) const;            /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
     void LocalToLocal();
 

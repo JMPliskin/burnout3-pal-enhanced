@@ -222,13 +222,38 @@ void Gs::DrawLine(const Vertex& a, const Vertex& b) {
 
 // ---------------------------------------------------------------- pixels
 
+// TEX1: MMAG (bit 5) filters magnification, MMIN (6-8) minification, chosen by
+// the level of detail - K (bits 32-43, 4 fractional bits) here; LOD from Q is
+// not modelled yet. Linear filtering samples the four texels around
+// (u - 0.5, v - 0.5), as the GS does.
 u32 Gs::Texel(float fu, float fv) const {
+    const u64 tex1 = Ctx().tex1;
+    const int k = int(s32(Bits(tex1, 32, 12) << 20) >> 20);
+    const u32 mmin = Bits(tex1, 6, 3);
+    const bool linear = k <= 0 ? Bits(tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
+    if (!linear) return TexelAt(int(std::floor(fu)), int(std::floor(fv)));
+    const float x = fu - 0.5f, y = fv - 0.5f;
+    const int u0 = int(std::floor(x)), v0 = int(std::floor(y));
+    const float a = x - float(u0), b = y - float(v0);
+    const u32 t00 = TexelAt(u0, v0), t10 = TexelAt(u0 + 1, v0);
+    const u32 t01 = TexelAt(u0, v0 + 1), t11 = TexelAt(u0 + 1, v0 + 1);
+    u32 out = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        const float c00 = float((t00 >> shift) & 0xFF), c10 = float((t10 >> shift) & 0xFF);
+        const float c01 = float((t01 >> shift) & 0xFF), c11 = float((t11 >> shift) & 0xFF);
+        const float top = c00 + (c10 - c00) * a, bottom = c01 + (c11 - c01) * a;
+        out |= u32(std::lround(top + (bottom - top) * b)) << shift;
+    }
+    return out;
+}
+
+u32 Gs::TexelAt(int iu, int iv) const {
     const Context& c = Ctx();
     const u64 tex0 = c.tex0, clamp = c.clamp;
     const u32 tbp = Bits(tex0, 0, 14), tbw = Bits(tex0, 14, 6), psm = Bits(tex0, 20, 6);
     const u32 tw = 1u << std::min(Bits(tex0, 26, 4), 10u), th = 1u << std::min(Bits(tex0, 30, 4), 10u);
-    const int u = Wrap(int(std::floor(fu)), tw, Bits(clamp, 0, 2), Bits(clamp, 4, 10), Bits(clamp, 14, 10));
-    const int v = Wrap(int(std::floor(fv)), th, Bits(clamp, 2, 2), Bits(clamp, 24, 10), Bits(clamp, 34, 10));
+    const int u = Wrap(iu, tw, Bits(clamp, 0, 2), Bits(clamp, 4, 10), Bits(clamp, 14, 10));
+    const int v = Wrap(iv, th, Bits(clamp, 2, 2), Bits(clamp, 24, 10), Bits(clamp, 34, 10));
     const u32 raw = memory.Read(tbp, tbw, u32(u) & 2047, u32(v) & 2047, psm);
     switch (psm) {
         case PSMCT32: return raw;
