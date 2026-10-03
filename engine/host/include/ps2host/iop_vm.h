@@ -46,6 +46,18 @@ void Command(std::uint32_t command, const std::vector<std::uint8_t>& packet);
 std::uint32_t Allocate(std::uint32_t size);
 void Free(std::uint32_t address);
 
+/* RPC servers a module registered (sceSifRegisterRpc). For a bind: the
+   server's address and its receive buffers, false if no module serves `sid`. */
+bool RpcServer(std::uint32_t sid, std::uint32_t* server, std::uint32_t* buffer,
+               std::uint32_t* cbuffer);
+bool OwnsServer(std::uint32_t server);
+/* A call to such a server: its arguments are already in the server's buffer
+   (the EE DMA'd them there); the module's thread runs the function, and the
+   answer goes back as the IOP's would (QueueRpcEnd). */
+void RpcCall(std::uint32_t server, std::uint32_t procedure, std::uint32_t size,
+             std::uint32_t receive, std::uint32_t receive_size,
+             const std::vector<std::uint8_t>& packet);
+
 /* Runs the IOP until every thread waits (or a time slice is used up). */
 void Run();
 

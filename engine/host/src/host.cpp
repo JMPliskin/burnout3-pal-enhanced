@@ -177,7 +177,10 @@ void Dispatch(lifted::Context& c, u32 address) {
     } catch (...) {
         // The innermost frame keeps the stack as it was where the run stopped;
         // unwinding empties it on the way out.
-        if (RunStats().stopped_in.empty()) RunStats().stopped_in = CurrentCalls();
+        if (RunStats().stopped_in.empty()) {
+            RunStats().stopped_in = CurrentCalls();
+            RunStats().interrupted_in = InterruptedCalls();
+        }
         throw;
     }
 }
@@ -226,6 +229,14 @@ void Report(const Options& options, const std::string& outcome) {
                                      ? stack.size() - options.report_limit : 0;
         for (std::size_t i = from; i < stack.size(); ++i)
             std::printf("  %s\n", Describe(stack[i]).c_str());
+    }
+    if (!stats.interrupted_in.empty()) {
+        std::printf("in an interrupt handler; the thread it interrupted was in:\n");
+        const std::vector<u32>& thread = stats.interrupted_in;
+        const std::size_t from = thread.size() > std::size_t(options.report_limit)
+                                     ? thread.size() - options.report_limit : 0;
+        for (std::size_t i = from; i < thread.size(); ++i)
+            std::printf("  %s\n", Describe(thread[i]).c_str());
     }
     std::printf("threads:\n%s%s", ThreadReport().c_str(), iop::Report().c_str());
     for (u32 address : options.peek) {

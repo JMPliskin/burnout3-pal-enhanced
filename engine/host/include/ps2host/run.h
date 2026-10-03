@@ -36,6 +36,7 @@ struct Stats {
     std::map<s32, u64> syscalls;               /* service -> times called */
     std::map<u32, u64> register_reads, register_writes;   /* device register -> count */
     std::vector<u32> stopped_in;               /* the stack when the run stopped */
+    std::vector<u32> interrupted_in;           /* ...and, if that was a handler, the thread's */
     std::vector<std::string> notes;            /* one line per first-time event */
     /* Code run where it was copied to: (run address, the executable's copy). */
     std::vector<std::pair<u32, u32>> discovered;
@@ -53,6 +54,8 @@ void Note(const std::string& key, const std::string& text);
 void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget);
 /* The running thread's guest call stack (or the interrupt handlers'). */
 std::vector<u32>& CurrentCalls();
+/* In an interrupt handler: the call stack of the thread it interrupted. */
+std::vector<u32> InterruptedCalls();
 /* Every guest register context: the threads' and the interrupt handlers'. */
 void ForEachContext(void (*visit)(lifted::Context&));
 /* Each thread's state, for the report. */
@@ -69,6 +72,9 @@ bool DeliverIopReply();
 void QueueIopPacket(std::vector<u8> packet);
 /* Ask for interrupts to be delivered at the running thread's next loop head. */
 void RequestDelivery();
+/* The RPC-end packet answering an RPC request packet, for a server at
+   `server` with receive buffers `buffer`/`cbuffer` (IOP addresses). */
+void QueueRpcEnd(const std::vector<u8>& request, u32 server, u32 buffer, u32 cbuffer);
 /* The IOP services the engine implements: CD/DVD (cdvd.cpp), ... */
 void InstallIopServers();
 void InstallFileIo();

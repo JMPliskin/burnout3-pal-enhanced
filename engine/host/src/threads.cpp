@@ -298,6 +298,11 @@ std::vector<u32>& CurrentCalls() {
     return s.current->calls;
 }
 
+std::vector<u32> InterruptedCalls() {
+    Scheduler& s = S();
+    return s.in_interrupt && s.current ? s.current->calls : std::vector<u32>();
+}
+
 void ForEachContext(void (*visit)(lifted::Context&)) {
     for (auto& [id, t] : S().threads) visit(t->context);
     visit(S().interrupt_context);

@@ -23,6 +23,8 @@ constexpr u32 kRamSize = 2u << 20;
 // entry returns to (ExitThread): addresses no code occupies.
 constexpr u32 kReturnFromCall = 0x1FFFFFF0u;
 constexpr u32 kThreadExit = 0x1FFFFFE0u;
+// Where an RPC server's function returns to, in its server thread.
+constexpr u32 kRpcReturn = 0x1FFFFFD0u;
 
 struct Context {
     u32 r[32] = {};
@@ -30,7 +32,16 @@ struct Context {
     u32 pc = 0, npc = 4;
 };
 
-enum class Wait { None, Sema, Event, Sleep, Delay, Dormant };
+enum class Wait { None, Sema, Event, Sleep, Delay, Dormant, Rpc };
+
+struct RpcRequest {
+    u32 server = 0, procedure = 0, size = 0, receive = 0, receive_size = 0;
+    std::vector<u8> packet;
+};
+
+struct RpcServerEntry {
+    u32 sid = 0, server = 0, function = 0, buffer = 0, cfunction = 0, cbuffer = 0, queue = 0;
+};
 
 struct Thread {
     u32 id = 0;
@@ -44,6 +55,8 @@ struct Thread {
     s32 wakeups = 0;
     u64 until_us = 0;               // DelayThread
     u32 entry = 0, stack = 0, stack_size = 0;
+    RpcRequest serving;             // the RPC request its server function is running
+    u32 rpc_queue = 0;              // the queue it serves (sceSifRpcLoop)
 };
 
 struct Semaphore {
@@ -81,6 +94,9 @@ struct Vm {
     std::map<u32, EventFlag> events;
     std::map<u32, Alarm> alarms;
     std::map<u32, std::pair<u32, u32>> command_handlers;   // command -> (function, data)
+    std::map<u32, RpcServerEntry> rpc_servers;            // server address -> entry
+    std::map<u32, u32> rpc_queues;                        // queue address -> thread
+    std::map<u32, std::deque<RpcRequest>> rpc_pending;    // queue address -> requests
     u32 command_buffer = 0;                      // where arriving packets are put (the host's)
     u32 handler_table = 0;                       // sceSifSetCmdBuffer's, for its answer
     u64 instructions = 0;
@@ -122,6 +138,9 @@ inline void Return(Context& c, u32 value) { c.r[2] = value; }
 Library FindLibrary(const std::string& library, u32 index);
 /* Its documented name, for messages. */
 std::string ExportName(const std::string& library, u32 index);
+
+/* Starts the next waiting request of a server thread in sceSifRpcLoop. */
+void ServeNext(Vm& vm, Thread& t);
 
 /* Due sound-hardware interrupts (iop_libs.cpp), run by the scheduler. */
 void SoundInterrupts(Vm& vm);

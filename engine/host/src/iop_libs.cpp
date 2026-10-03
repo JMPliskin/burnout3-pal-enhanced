@@ -29,6 +29,7 @@
 #include <sstream>
 
 #include "iop_vm_internal.h"
+#include "ps2host/disc.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 
@@ -587,7 +588,61 @@ Outcome SetDma(Vm& vm, Context& c) {
     return Ret(c, 1);
 }
 
+// sceSifSetRpcQueue(queue, thread): the thread that serves the queue.
+Outcome SetRpcQueue(Vm& vm, Context& c) {
+    vm.rpc_queues[A(vm, c, 0)] = A(vm, c, 1);
+    return Ret(c, KE_OK);
+}
+
+// sceSifRegisterRpc(server, sid, function, buffer, cfunction, cbuffer, queue)
+Outcome RegisterRpc(Vm& vm, Context& c) {
+    RpcServerEntry e;
+    e.server = A(vm, c, 0);
+    e.sid = A(vm, c, 1);
+    e.function = A(vm, c, 2);
+    e.buffer = A(vm, c, 3);
+    e.cfunction = A(vm, c, 4);
+    e.cbuffer = A(vm, c, 5);
+    e.queue = A(vm, c, 6);
+    vm.rpc_servers[e.server] = e;
+    char text[128];
+    std::snprintf(text, sizeof text, "IOP: a module serves RPC 0x%08X (function 0x%08X)",
+                  unsigned(e.sid), unsigned(e.function));
+    Note("iop rpc " + std::to_string(e.sid), text);
+    return Ret(c, KE_OK);
+}
+
+// sceSifRpcLoop(queue): the thread serves requests for ever. It waits here;
+// each request runs the server's function in it (ServeNext), and returning
+// from that sends the answer and waits for the next (iop_vm.cpp).
+Outcome RpcLoop(Vm& vm, Context& c) {
+    Thread* t = vm.Current();
+    if (!t) return Ret(c, u32(KE_CAN_NOT_WAIT));
+    t->rpc_queue = A(vm, c, 0);
+    vm.rpc_queues[t->rpc_queue] = t->id;
+    vm.Block(c, Wait::Rpc, t->rpc_queue);
+    return Outcome::Block;          // the scheduler starts serving (ServeNext)
+}
+
 Outcome DmaStat(Vm&, Context& c) { return Ret(c, u32(-1)); }    // < 0: finished
+
+// ---------------------------------------------------------------- cdvdman
+// The disc, read from the user's image. Reads finish at once.
+
+Outcome CdRead(Vm& vm, Context& c) {
+    const u32 lsn = A(vm, c, 0), sectors = A(vm, c, 1), buffer = A(vm, c, 2);
+    std::vector<u8> data(std::size_t(sectors) * kSectorSize);
+    if (!GuestDisc().IsOpen() || !GuestDisc().Read(lsn, sectors, data.data())) return Ret(c, 0);
+    std::memcpy(vm.At(buffer, u32(data.size())), data.data(), data.size());
+    return Ret(c, 1);
+}
+
+Outcome CdSync(Vm&, Context& c) { return Ret(c, 0); }              // done
+Outcome CdGetError(Vm&, Context& c) { return Ret(c, 0); }          // SCECdErNO
+Outcome CdGetDiskType(Vm&, Context& c) { return Ret(c, 0x14); }    // SCECdPS2DVD
+Outcome CdDiskReady(Vm&, Context& c) { return Ret(c, 2); }         // SCECdComplete
+
+Outcome FlushDcache(Vm&, Context& c) { return Ret(c, 0); }
 Outcome CheckInit(Vm&, Context& c) { return Ret(c, 1); }
 Outcome GetSreg(Vm&, Context& c) { return Ret(c, 0); }
 
@@ -798,6 +853,11 @@ const Map& Table() {
         {{"sifcmd", 7}, Succeed}, {{"sifcmd", 8}, SetCmdBuffer}, {{"sifcmd", 9}, Succeed},
         {{"sifcmd", 10}, AddCmdHandler}, {{"sifcmd", 11}, RemoveCmdHandler},
         {{"sifcmd", 12}, SendCmd}, {{"sifcmd", 13}, SendCmd}, {{"sifcmd", 14}, Succeed},
+        {{"sifcmd", 17}, RegisterRpc}, {{"sifcmd", 19}, SetRpcQueue}, {{"sifcmd", 22}, RpcLoop},
+        {{"sifman", 32}, Succeed},
+        {{"cdvdman", 4}, Succeed}, {{"cdvdman", 6}, CdRead}, {{"cdvdman", 8}, CdGetError},
+        {{"cdvdman", 11}, CdSync}, {{"cdvdman", 12}, CdGetDiskType}, {{"cdvdman", 13}, CdDiskReady},
+        {{"loadcore", 5}, FlushDcache},
         {{"libsd", 2}, SdInit}, {{"libsd", 4}, SdInit},
         {{"libsd", 5}, SdSetParam}, {{"libsd", 6}, SdGetParam},
         {{"libsd", 7}, SdSetSwitch}, {{"libsd", 8}, SdGetSwitch},

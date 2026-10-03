@@ -54,5 +54,10 @@ void RegisterGameIopServers() {
     // RenderWare Audio, the game's sound driver: its protocol is its own (EE
     // side at 0x002AEFC0), so the module itself runs (iop_vm.h).
     ps2host::iop::RunModule("RWA.IRX");
+    // EA's file system on the disc (RPC server "GTS", 0x00475453): how the
+    // game loads its data. It reads the disc through cdvdman.
+    ps2host::iop::RunModule("GTFSCDVD.IRX");
+    // B3ROUTE: an RPC server of the game's own (0x00150276).
+    ps2host::iop::RunModule("B3ROUTE.IRX");
     ps2host::RegisterRpcServer(0x046D046Du, LgDev);
 }

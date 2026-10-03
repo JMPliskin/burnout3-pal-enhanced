@@ -1,7 +1,66 @@
 # IOP library exports: (library, index) -> name, as IRX import stubs name them.
-# From the ps2sdk sources (github.com/ps2dev/ps2sdk): each module's src/exports.tab,
-# where an export's number is its position in the table. Fetched 2026-10-03.
+# From the ps2sdk sources (github.com/ps2dev/ps2sdk): each module's src/exports.tab
+# (iop/system/*, iop/sound/libsd, iop/cdvd/cdvdman), where an export's number is its
+# position in the table. Fetched 2026-10-03.
 library,index,name
+cdvdman,2,cdvdman_termcall
+cdvdman,4,sceCdInit
+cdvdman,5,sceCdStandby
+cdvdman,6,sceCdRead
+cdvdman,7,sceCdSeek
+cdvdman,8,sceCdGetError
+cdvdman,9,sceCdGetToc
+cdvdman,10,sceCdSearchFile
+cdvdman,11,sceCdSync
+cdvdman,12,sceCdGetDiskType
+cdvdman,13,sceCdDiskReady
+cdvdman,14,sceCdTrayReq
+cdvdman,15,sceCdStop
+cdvdman,16,sceCdPosToInt
+cdvdman,17,sceCdIntToPos
+cdvdman,21,sceCdCheckCmd
+cdvdman,22,sceCdRI
+cdvdman,24,sceCdReadClock
+cdvdman,28,sceCdStatus
+cdvdman,29,sceCdApplySCmd
+cdvdman,37,sceCdCallback
+cdvdman,38,sceCdPause
+cdvdman,39,sceCdBreak
+cdvdman,40,sceCdReadCDDA
+cdvdman,44,sceCdGetReadPos
+cdvdman,45,sceCdCtrlADout
+cdvdman,46,sceCdNop
+cdvdman,47,sceGetFsvRbuf
+cdvdman,48,sceCdstm0Cb
+cdvdman,49,sceCdstm1Cb
+cdvdman,50,sceCdSC
+cdvdman,51,sceCdRC
+cdvdman,54,sceCdApplyNCmd
+cdvdman,56,sceCdStInit
+cdvdman,57,sceCdStRead
+cdvdman,58,sceCdStSeek
+cdvdman,59,sceCdStStart
+cdvdman,60,sceCdStStat
+cdvdman,61,sceCdStStop
+cdvdman,62,sceCdRead0
+cdvdman,63,sceCdRV
+cdvdman,64,sceCdRM
+cdvdman,66,sceCdReadChain
+cdvdman,67,sceCdStPause
+cdvdman,68,sceCdStResume
+cdvdman,74,sceCdPowerOff
+cdvdman,75,sceCdMmode
+cdvdman,77,sceCdStSeekF
+cdvdman,78,sceCdPOffCallback
+cdvdman,79,sceCdReadDiskID
+cdvdman,80,sceCdReadGUID
+cdvdman,83,sceCdSetTimeout
+cdvdman,84,sceCdReadModelID
+cdvdman,86,sceCdReadDvdDualInfo
+cdvdman,87,sceCdLayerSearchFile
+cdvdman,115,sceCdApplySCmd2
+cdvdman,117,sceCdRE
+cdvdman,182,sceCdDoesUniqueKeyExist
 libsd,2,sceSdQuit
 libsd,4,sceSdInit
 libsd,5,sceSdSetParam
@@ -374,7 +433,6 @@ sysclib,40,_wmemcopy
 sysclib,41,_wmemset
 sysclib,42,vsprintf
 sysclib,43,strtok_r
-sysclib,44,_retnegativeone
 sysmem,1,sysmem_reinit
 sysmem,3,GetSysmemInternalData
 sysmem,4,AllocSysMemory
@@ -490,15 +548,11 @@ timrman,15,GetHoldReg
 timrman,16,GetHardTimerIntrCode
 timrman,17,GetTimerMode
 timrman,18,GetTimerReadFunc
-timrman,19,_retneg
 timrman,20,SetTimerHandler
 timrman,21,SetOverflowHandler
 timrman,22,SetupHardTimer
 timrman,23,StartHardTimer
 timrman,24,StopHardTimer
-timrman,25,_retneg
-timrman,26,_retneg
-timrman,27,_retneg
 vblank,3,GetVblankInternalData
 vblank,4,WaitVblankStart
 vblank,5,WaitVblankEnd

@@ -78,7 +78,8 @@ std::vector<u8> ReadGuest(u32 address, u32 size) {
 
 // An RPC-end packet answering `request`: its header fields, then client, the
 // command it answers, the server, and the server's receive buffers.
-void QueueEnd(const std::vector<u8>& request, u32 answered, u32 server) {
+void QueueEnd(const std::vector<u8>& request, u32 answered, u32 server,
+              u32 buffer, u32 cbuffer) {
     std::vector<u8> packet(0x40, 0);
     PutWord(packet, 0, 0x40);                   // packet size; no extra data
     PutWord(packet, 8, kRpcEnd);
@@ -88,8 +89,8 @@ void QueueEnd(const std::vector<u8>& request, u32 answered, u32 server) {
     PutWord(packet, 28, Word(request, 28));     // client
     PutWord(packet, 32, answered);
     PutWord(packet, 36, server);
-    PutWord(packet, 40, server + 0x100);        // the server's receive buffer
-    PutWord(packet, 44, server + 0x200);        // and its command buffer
+    PutWord(packet, 40, buffer);                // the server's receive buffer
+    PutWord(packet, 44, cbuffer);               // and its command buffer
     I().replies.push_back(std::move(packet));
     RequestDelivery();
 }
@@ -113,11 +114,18 @@ void Command(const std::vector<u8>& packet, const std::vector<u8>& data) {
             return;
         case kRpcBind: {
             const u32 sid = Word(packet, 32);
+            u32 vm_server = 0, buffer = 0, cbuffer = 0;
+            if (iop::RpcServer(sid, &vm_server, &buffer, &cbuffer)) {
+                Note("bind " + Hex(sid), "SIF: bound to IOP server " + Hex(sid) +
+                     " (a module the host runs)");
+                QueueEnd(packet, kRpcBind, vm_server, buffer, cbuffer);
+                return;
+            }
             u32& server = iop.servers[sid];
             if (!server) server = kServerBase + 0x400 * u32(iop.servers.size());
             Note("bind " + Hex(sid), "SIF: bound to IOP server " + Hex(sid) +
                  (Servers().count(sid) ? "" : " (no host implementation yet)"));
-            QueueEnd(packet, kRpcBind, server);
+            QueueEnd(packet, kRpcBind, server, server + 0x100, server + 0x200);
             return;
         }
         case kRpcCall: {
@@ -125,6 +133,10 @@ void Command(const std::vector<u8>& packet, const std::vector<u8>& data) {
             // rpc_number, send_size, receive, recv_size, rmode, server
             const u32 procedure = Word(packet, 32), receive = Word(packet, 40);
             const u32 receive_size = Word(packet, 44), server = Word(packet, 52);
+            if (iop::OwnsServer(server)) {
+                iop::RpcCall(server, procedure, Word(packet, 36), receive, receive_size, packet);
+                return;
+            }
             u32 sid = 0;
             for (const auto& [id, address] : iop.servers)
                 if (address == server) sid = id;
@@ -146,7 +158,7 @@ void Command(const std::vector<u8>& packet, const std::vector<u8>& data) {
             Memory& m = GuestMemory();
             for (u32 i = 0; i < receive_size && receive; ++i)
                 m.Write(receive + i, i < reply.size() ? reply[i] : 0, 1);
-            QueueEnd(packet, kRpcCall, server);
+            QueueEnd(packet, kRpcCall, server, server + 0x100, server + 0x200);
             return;
         }
         default:
@@ -198,6 +210,10 @@ void SifDma(u32 transfers, u32 count) {
             data = std::move(bytes);
         }
     }
+}
+
+void QueueRpcEnd(const std::vector<u8>& request, u32 server, u32 buffer, u32 cbuffer) {
+    QueueEnd(request, kRpcCall, server, buffer, cbuffer);
 }
 
 void QueueIopPacket(std::vector<u8> packet) {

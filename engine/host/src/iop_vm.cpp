@@ -192,7 +192,7 @@ Outcome Execute(Vm& vm, Context& c, u32 stop, u64 limit, bool* stopped) {
             *stopped = true;
             return Outcome::Return;
         }
-        if (c.pc == kThreadExit) {
+        if (c.pc == kThreadExit || c.pc == kRpcReturn) {
             *stopped = true;
             return Outcome::Block;
         }
@@ -383,12 +383,25 @@ void Run() {
         vm.reschedule = false;
         bool stopped = false;
         const Outcome outcome = Execute(vm, best->c, kReturnFromCall, kSlice, &stopped);
-        if (best->c.pc == kThreadExit) {                     // returned from its entry
+        if (best->c.pc == kRpcReturn) {                      // a server function returned
+            const RpcRequest& done = best->serving;
+            Memory& ee = GuestMemory();
+            const u32 answer = best->c.r[2];
+            for (u32 i = 0; i < done.receive_size && done.receive && answer; ++i)
+                ee.Write(done.receive + i, vm.Read(answer + i, 1), 1);
+            const RpcServerEntry& entry = vm.rpc_servers[done.server];
+            QueueRpcEnd(done.packet, entry.server, entry.buffer, entry.cbuffer);
+            best->ready = false;
+            best->wait = Wait::Rpc;
+            ServeNext(vm, *best);
+        } else if (best->c.pc == kThreadExit) {              // returned from its entry
             best->ready = false;
             best->wait = Wait::Dormant;
         } else if (outcome == Outcome::Yield && best->ready) {
             best->queued = ++vm.counter;                     // back of its priority's queue
         }
+        // A thread that has just entered sceSifRpcLoop serves what is waiting.
+        if (!best->ready && best->wait == Wait::Rpc) ServeNext(vm, *best);
         vm.current = 0;
     }
 }
@@ -533,6 +546,45 @@ bool LoadModule(const std::string& path, const std::vector<u8>& image,
     return true;
 }
 
+void ServeNext(Vm& vm, Thread& t) {
+    auto& pending = vm.rpc_pending[t.rpc_queue];
+    if (pending.empty() || t.ready || t.wait != Wait::Rpc) return;
+    t.serving = pending.front();
+    pending.pop_front();
+    const RpcServerEntry& entry = vm.rpc_servers[t.serving.server];
+    t.c.r[4] = t.serving.procedure;
+    t.c.r[5] = entry.buffer;
+    t.c.r[6] = t.serving.size;
+    t.c.r[31] = kRpcReturn;
+    t.c.pc = entry.function;
+    t.c.npc = entry.function + 4;
+    vm.MakeReady(t);
+}
+
+bool RpcServer(u32 sid, u32* server, u32* buffer, u32* cbuffer) {
+    for (const auto& [address, entry] : TheVm().rpc_servers)
+        if (entry.sid == sid) {
+            *server = address;
+            *buffer = entry.buffer;
+            *cbuffer = entry.cbuffer;
+            return true;
+        }
+    return false;
+}
+
+bool OwnsServer(u32 server) { return TheVm().rpc_servers.count(server) != 0; }
+
+void RpcCall(u32 server, u32 procedure, u32 size, u32 receive, u32 receive_size,
+             const std::vector<u8>& packet) {
+    Vm& vm = TheVm();
+    const RpcServerEntry& entry = vm.rpc_servers[server];
+    RpcRequest request{server, procedure, size, receive, receive_size, packet};
+    vm.rpc_pending[entry.queue].push_back(request);
+    auto thread = vm.rpc_queues.find(entry.queue);
+    if (thread != vm.rpc_queues.end()) ServeNext(vm, vm.threads[thread->second]);
+    Run();
+}
+
 u32 Allocate(u32 size) { return TheVm().Allocate(size); }
 void Free(u32 address) { TheVm().Free(address); }
 
@@ -560,7 +612,7 @@ std::string Report() {
     Vm& vm = TheVm();
     std::string out;
     static const char* waits[] = {"ready", "waiting on a semaphore", "waiting on an event flag",
-                                  "sleeping", "delayed", "dormant"};
+                                  "sleeping", "delayed", "dormant", "serving RPC"};
     for (auto& [id, t] : vm.threads) {
         char line[160];
         std::snprintf(line, sizeof line, "  IOP thread %u: %s, priority %d, entry 0x%08X, at 0x%08X\n",
