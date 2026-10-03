@@ -46,7 +46,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--notes` | every host event (DMA, interrupts, SIF, kernel calls), repeats included |
 | `--watch ADDR` | each call of the function at ADDR, with its argument registers and `$ra` |
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
-| `--window` | the picture, live, in a window (close it to end the run) |
+| `--window` | the picture, live, in a window (close it to end the run): SDL3 + Vulkan (`engine/gpu`), or GDI when built without `PS2HOST_VULKAN` or without a Vulkan device |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
@@ -155,8 +155,8 @@ so a new game gets them as soon as its routines are named.
    or BMP files (`--frames`). VU1 runs microprograms in an interpreter
    (`vu.cpp`). Its upper half goes through the runtime's verified VU0
    arithmetic. VIF1 (`vif.cpp`) loads it with MPG and UNPACK and starts it with
-   MSCAL, and its XGKICKs are PATH1. VU0 micro mode (`vcallms`) and a GPU
-   renderer come next.
+   MSCAL, and its XGKICKs are PATH1; VU0 micro mode runs `vcallms`. The
+   GPU renderer is under way: engine/docs/GPU.md.
 6. **Audio** (begun): the SPU2 (`spu2.cpp`) decodes, envelopes and mixes its
    voices at 48 kHz; `--audio` plays them and `--audio-wav` records them.
    **Input**: a DualShock 2 on the keyboard (`dbc.cpp`). Then saves and

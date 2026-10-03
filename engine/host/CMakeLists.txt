@@ -46,7 +46,7 @@ target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ps2host PUBLIC ps2rt)
 
 # The window through SDL3 and Vulkan (engine/gpu), with GDI as the fallback.
-option(PS2HOST_VULKAN "Present the picture through SDL3 and Vulkan" OFF)
+option(PS2HOST_VULKAN "Present the picture through SDL3 and Vulkan" ON)
 if(PS2HOST_VULKAN)
     add_subdirectory(${PS2_ENGINE_DIR}/gpu ${CMAKE_BINARY_DIR}/ps2gpu)
     target_link_libraries(ps2host PUBLIC ps2gpu)
