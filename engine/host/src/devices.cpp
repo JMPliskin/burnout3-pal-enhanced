@@ -30,6 +30,7 @@
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
 #include "ps2host/vif.h"
+#include "ps2host/vu.h"
 
 namespace ps2host {
 
@@ -210,6 +211,10 @@ void InstallDevices() {
         }
     };
     Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
+    // VU1 behind VIF1; its XGKICKs are GIF PATH1.
+    Vif1().vu = &Vu1();
+    Vif1().double_buffered = true;
+    Vu1().on_kick = [](u64 low, u64 high) { gs::TheGs().Qword(1, low, high); };
     // The GS's privileged registers: what is displayed. A 64-bit store reaches
     // both words; each passes the whole register on.
     for (u32 reg : {0x12000000u, 0x12000070u, 0x12000080u, 0x12000090u, 0x120000A0u, 0x120000E0u}) {

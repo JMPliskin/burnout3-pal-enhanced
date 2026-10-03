@@ -1,11 +1,15 @@
 /*
- * The VIF's command stream (stage one): VIFcodes are decoded so that the words
- * of data after them are skipped rather than read as commands, and the commands
- * with an effect the EE can observe without a VU or GS behind them are applied.
+ * A VIF's command stream (EE User's Manual, chapter 6): VIFcodes and their
+ * data, delivered to the VU behind the VIF and to the GS.
  *
- * So far that is MSKPATH3, which masks GIF PATH3 and shows in GIF_STAT's M3P
- * bit - code that hands PATH3 over waits on it. UNPACK, MPG and DIRECT carry
- * data for VU memory and the GS; it is counted, not yet delivered.
+ * MPG loads microprograms into the VU's instruction memory, UNPACK expands
+ * packed vectors into its data memory (formats S/V2/V3/V4 of 32, 16 or 8 bits
+ * and V4-5, with STMASK/STROW/STCOL masking, STMOD's offset and difference
+ * modes, and STCYCL's skipping and filling writes), and MSCAL, MSCALF and MSCNT
+ * run the microprogram - to its end, at once: the EE sees it done by the time
+ * it could look. VIF1's double buffering (BASE, OFFSET, TOPS and the FLG bit of
+ * UNPACK) and ITOP feed XTOP and XITOP. DIRECT and DIRECTHL carry GIF data on
+ * PATH2; MSKPATH3 masks PATH3, which code that hands PATH3 over waits on.
  */
 
 #ifndef PS2HOST_VIF_H
@@ -15,11 +19,17 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace ps2host {
 
+class Vu;
+
 class VifStream {
 public:
+    /* The VU behind this VIF (VU1 for VIF1); none drops VU traffic. */
+    Vu* vu = nullptr;
+    bool double_buffered = false;   /* VIF1's BASE/OFFSET/TOPS */
     /* Called when MSKPATH3 masks (true) or unmasks (false) PATH3. */
     std::function<void(bool masked)> on_mask_path3;
     /* Each word of DIRECT/DIRECTHL data: GIF data on PATH2. */
@@ -33,15 +43,32 @@ public:
     /* For the report: how often each command came, by name. */
     std::string Summary() const;
 
+    // Registers the EE can read (VIF1_TOP, VIF1_TOPS, ITOP, ...).
+    std::uint32_t top = 0, tops = 0, base = 0, offset = 0, itop = 0, itops = 0, dbf = 0;
+    std::uint32_t mask = 0, mode = 0, row[4] = {}, col[4] = {};
+
 private:
+    enum class Data { None, Direct, Mpg, Unpack, Mask, Row, Col };
     std::uint32_t pending_ = 0;     /* data words still owed to the last command */
-    bool direct_ = false;           /* ...and they are DIRECT's */
+    Data data_ = Data::None;
     std::uint32_t cycle_length_ = 0, write_length_ = 0;     /* STCYCL's CL and WL */
+    std::uint32_t data_index_ = 0;  /* words of the current command's data so far */
+    std::uint32_t mpg_address_ = 0;
+    std::uint32_t end_pc_ = 0;      /* where MSCNT continues */
+    struct Unpack {
+        std::uint32_t address = 0, format = 0, num = 0, written = 0;
+        bool masked = false, unsigned_ = false;
+        std::vector<std::uint8_t> bytes;
+    } unpack_;
     std::uint64_t commands_ = 0, data_words_ = 0;
     std::array<std::uint64_t, 128> by_command_{};
 
     /* Words of data an UNPACK of `num` elements in format `format` reads. */
     std::uint32_t UnpackWords(std::uint32_t format, std::uint32_t num) const;
+    void UnpackData(std::uint32_t word);
+    void UnpackFill();
+    void WriteElement(const std::uint32_t value[4], bool from_data);
+    void Start(std::uint32_t pc);
 };
 
 /* The VIF1 stream fed by stores to its FIFO, 0x10005000. */

@@ -16,6 +16,7 @@
 #include "spu2.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
+#include "ps2host/vu.h"
 #include "ps2rt/generated.h"
 
 namespace {
@@ -261,6 +262,63 @@ void GsKeepsAFlatDepthExact() {
     Check(missing == 0, "a flat depth passes GEQUAL against itself everywhere");
 }
 
+// VIF1 into a VU: a microprogram loaded with MPG and run with MSCAL, UNPACK's
+// formats, mask and skipping writes, and XGKICK.
+void VifRunsMicroprogramsOnAVu() {
+    ps2host::Vu vu(1);
+    ps2host::VifStream vif;
+    vif.vu = &vu;
+    vif.double_buffered = true;
+    std::vector<std::uint64_t> kicked;
+    vu.on_kick = [&](std::uint64_t low, std::uint64_t) { kicked.push_back(low); };
+    auto f = [](float x) { std::uint32_t u; std::memcpy(&u, &x, 4); return u; };
+    const std::uint32_t kNopU = 0x000002FF, kNopL = 0x8000033C, kEnd = 0x40000000;
+    const std::uint32_t program[] = {
+        // 0: lq.xyzw vf1, 0(vi0)              1: add.xyzw vf2, vf1, vf1
+        0x01E10000, kNopU, kNopL, 0x01E108A8,
+        // 2: sq.xyzw vf2, 1(vi0) [E]          3: (the pair after the end)
+        0x03E01001, kNopU | kEnd, kNopL, kNopU,
+        // 4: iaddiu vi1, vi0, 2               5: xgkick vi1 [E]          6: -
+        0x10010002, kNopU, 0x80000EFC, kNopU | kEnd, kNopL, kNopU};
+    vif.Word(0x4A000000u | (7u << 16));                     // MPG 7 pairs at 0
+    for (std::uint32_t w : program) vif.Word(w);
+    vif.Word(0x01000101u);                                  // STCYCL CL 1 WL 1
+    vif.Word(0x6C010000u);                                  // UNPACK V4-32, 1 at 0
+    for (float x : {1.0f, 2.0f, 3.0f, 4.0f}) vif.Word(f(x));
+    vif.Word(0x14000000u);                                  // MSCAL 0
+    const std::uint32_t* q = vu.Quad(1);
+    Check(q[0] == f(2) && q[1] == f(4) && q[2] == f(6) && q[3] == f(8), "VU: lq, add, sq");
+    Check(vu.resume == 4 * 8, "VU: a program ends after the pair following its E bit");
+
+    // V3-16 masked: w from the row register.
+    vif.Word(0x20000000u);                                  // STMASK
+    vif.Word(0x40u);                                        // cycle 0, w: row
+    vif.Word(0x30000000u);                                  // STROW
+    for (std::uint32_t w : {0u, 0u, 0u, f(1)}) vif.Word(w);
+    vif.Word(0x79010003u);                                  // UNPACK V3-16 masked, 1 at 3
+    vif.Word(0x0002FFFFu);
+    vif.Word(0x00000003u);
+    q = vu.Quad(3);
+    Check(q[0] == 0xFFFFFFFFu && q[1] == 2 && q[2] == 3 && q[3] == f(1), "UNPACK V3-16, sign-extended, masked");
+
+    // CL 2, WL 1: every other quadword.
+    vif.Word(0x01000102u);                                  // STCYCL CL 2 WL 1
+    vif.Word(0x6002000Au);                                  // UNPACK S-32, 2 at 10
+    vif.Word(5);
+    vif.Word(6);
+    Check(vu.Quad(10)[3] == 5 && vu.Quad(11)[0] == 0 && vu.Quad(12)[1] == 6, "UNPACK skipping writes");
+
+    // A GIF packet at quadword 2: one A+D register write, then EOP.
+    std::uint32_t* tag = vu.Quad(2);
+    tag[0] = 1u | 1u << 15;                                 // NLOOP 1, EOP
+    tag[1] = 1u << 28;                                      // FLG PACKED, NREG 1
+    tag[2] = 0xE;                                           // A+D
+    tag[3] = 0;
+    vif.Word(0x01000101u);
+    vif.Word(0x14000004u);                                  // MSCAL 4 (byte 32)
+    Check(kicked.size() == 2 && (kicked[0] & 0x7FFF) == 1, "XGKICK sends the tag and its data");
+}
+
 // The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
 // instruction per vector (engine/tools/iop_vectors.py).
 struct CpuVector {
@@ -359,6 +417,7 @@ int main() {
     GsLayoutsArePermutations();
     GsDrawsASprite();
     GsKeepsAFlatDepthExact();
+    VifRunsMicroprogramsOnAVu();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);
