@@ -30,8 +30,10 @@ import re
 import subprocess
 import sys
 
-# The host stops itself after 30 s (its --timeout); past this it is stuck.
-HOST_KILL_SECONDS = 120
+# The host stops itself at its --timeout (30 s by default); this long past it,
+# it is stuck.
+HOST_TIMEOUT_SECONDS = 30
+HOST_GRACE_SECONDS = 90
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
@@ -190,16 +192,20 @@ def run(game, executable: str, extra) -> int:
     with open(report, "w", encoding="utf-8") as out:
         disc = game.path(game.iso) if game.iso else ""
         options = ["--disc", disc] if disc and os.path.exists(disc) else []
+        timeout = HOST_TIMEOUT_SECONDS
+        extra = list(extra)
+        if "--timeout" in extra and extra.index("--timeout") + 1 < len(extra):
+            timeout = int(extra[extra.index("--timeout") + 1])
         try:
             result = subprocess.run([executable, elf, "--discover", discoveries_path(game)]
                                     + options + list(extra), stdout=out, stderr=subprocess.STDOUT,
-                                    timeout=HOST_KILL_SECONDS)
+                                    timeout=timeout + HOST_GRACE_SECONDS)
             code = result.returncode
         except subprocess.TimeoutExpired:
             # The host stops itself at its own time limit; outliving it by this
             # much means the host itself is stuck, which is a host bug to report.
             out.write("\n=== host report ===\nkilled: the host outlived its own time limit by "
-                      "%ds - a bug in the host, not the game\n" % (HOST_KILL_SECONDS - 30))
+                      "%ds - a bug in the host, not the game\n" % HOST_GRACE_SECONDS)
             code = 3
     with open(report, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
