@@ -13,7 +13,7 @@
  *      go. Unmasking drains it.
  * GS:  CSR reports a vertical blank on every read, its field bit alternating, so
  *      a wait for the next frame ends.
- * Timers: a counter advances whenever it is read, so a busy-wait on it ends.
+ * Timers: in host time, with their interrupts (timers.cpp).
  * VIF1: quadwords stored to its FIFO are decoded as VIFcodes (vif.cpp);
  *      MSKPATH3 shows in GIF_STAT's M3P bit, which code that hands PATH3 over
  *      waits on.
@@ -151,7 +151,6 @@ std::string Walk(const Channel& ch, u32 chcr) {
     return text;
 }
 constexpr u32 kVif1Fifo = 0x10005000u;
-constexpr u32 kTimerCounts[] = {0x10000000u, 0x10000800u, 0x10001000u, 0x10001800u};
 
 }  // namespace
 
@@ -236,13 +235,7 @@ void InstallDevices() {
         field ^= 1u << 13;                          // FIELD alternates each frame
         return (stored & ~u64(1u << 13)) | field | (1u << 3);   // VSINT pending
     });
-    for (u32 counter : kTimerCounts) {
-        m.OnRead(counter, [](u32 address, u64 stored) {
-            const u64 next = (stored + 0x100) & 0xFFFF;
-            *reinterpret_cast<u32*>(GuestMemory().Translate(address, 4)) = u32(next);
-            return next;
-        });
-    }
+    InstallTimers();
 }
 
 }  // namespace ps2host

@@ -78,7 +78,8 @@ const Service kServices[] = {
     {0x70, "GsGetIMR"}, {0x71, "GsPutIMR"}, {0x73, "SetVSyncFlag"},
     {0x74, "SetSyscall"}, {0x76, "SifDmaStat"}, {0x77, "SifSetDma"},
     {0x78, "SifSetDChain"}, {0x79, "SifSetReg"}, {0x7A, "SifGetReg"},
-    {0x7C, "Deci2Call"},
+    {0x7C, "Deci2Call"}, {0xFC, "SetAlarm"}, {0xFD, "iSetAlarm"},
+    {0xFE, "ReleaseAlarm"}, {0xFF, "iReleaseAlarm"},
 };
 
 }  // namespace
@@ -144,8 +145,17 @@ void KernelSyscall(lifted::Context& c) {
             Return(c, 0);
             return;
         case 0x74:                                   // SetSyscall(service, handler)
-            if (Arg(c, 0) < kSyscallEntries)
+            // The SDK patches the kernel's alarms (SetAlarm, iSetAlarm, ReleaseAlarm,
+            // iReleaseAlarm, and their timer 3 handler at 0x12C) with code that
+            // drives the kernel's own interrupt dispatch. The host keeps those
+            // calls: its alarms are the same API, run by its own scheduler.
+            if (Arg(c, 0) >= 0xFC && Arg(c, 0) <= 0xFF) {
+                std::snprintf(text, sizeof text, "kernel: the program's patch of syscall 0x%02X is not "
+                              "installed: the host's alarms stand", unsigned(Arg(c, 0)));
+                Note("syscall patch " + std::to_string(Arg(c, 0)), text);
+            } else if (Arg(c, 0) < kSyscallEntries) {
                 GuestMemory().Write(kSyscallTable + 4 * Arg(c, 0), Arg(c, 1), 4);
+            }
             Return(c, 0);
             return;
         case 0x5A: {                                 // kCopy(dest, src, size): from kernel memory

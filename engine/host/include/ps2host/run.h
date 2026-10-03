@@ -116,6 +116,13 @@ void PresentFrame();
 bool WindowFocused();
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
+/* The EE timers (timers.cpp): their registers, the host time to their next
+   interrupt (< 0: none), and raising the interrupts that are due. */
+void InstallTimers();
+s64 NanosToNextTimerEvent();
+void DeliverTimers();
+/* Run the INTC handlers for `cause`, if it is enabled (threads.cpp). */
+void RaiseIntc(u32 cause);
 /* Sound (audio.cpp): opened with --audio; the SPU2 hands it 16-bit stereo
    frames at 48 kHz. */
 bool OpenAudio();

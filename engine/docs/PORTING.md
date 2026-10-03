@@ -121,7 +121,8 @@ so a new game gets them as soon as its routines are named.
    which is the running thread's next loop head (`lifted::loop_head_hook`) or
    between threads. Vertical blank comes 60 times a second in real time, or at
    once when every thread waits. DMA completion is posted by the transfer and
-   delivered after the store that started it. Alarms are next.
+   delivered after the store that started it. Alarms (SetAlarm) run their
+   callbacks at the first frame at or past their time.
 4. **IOP services** (begun): the host answers the SDK's SIF commands as the
    IOP would (`iop.cpp`): RPC bind and call answered with RPC-end packets in
    the EE's receive buffer and the SIF0 DMA interrupt, run by the scheduler.

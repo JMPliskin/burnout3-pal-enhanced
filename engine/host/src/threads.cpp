@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <cstdio>
 #include <exception>
 #include <thread>
@@ -110,10 +111,18 @@ struct Scheduler {
     u32 pending_dmac = 0;                   // channels whose interrupt waits
     bool realtime = false;                  // a vblank timer runs (unlimited budget)
     std::atomic<bool> vblank_due{false};    // set by the timer, taken by LoopHead
+    std::atomic<bool> timer_due{false};     // an EE timer's interrupt time has come
     std::atomic<lifted::Context*> running{nullptr};     // the thread on the processor
     bool delivery_requested = false;        // the current thread's budget was zeroed
     s64 saved_budget = 0;                   // ...and this is what it was
     std::vector<u32> interrupt_calls;
+    // SetAlarm: a callback after a number of horizontal blanks (15,734 a
+    // second, NTSC), run in interrupt context when the host clock passes it.
+    // The timer thread wakes for the next one, as for a timer interrupt.
+    struct Alarm { u32 callback, common, time; u64 due_ns; };
+    std::map<s32, Alarm> alarms;
+    s32 next_alarm = 1;
+    std::mutex alarms_lock;                 // the timer thread reads the next due time
 };
 
 Scheduler& S() {
@@ -192,6 +201,58 @@ bool RunHandlers(const std::map<u32, Handler>& handlers, u32 cause) {
     return ran;
 }
 
+// Alarms whose time has come: each callback(id, time, common), in interrupt
+// context, once.
+u64 NowNs() {
+    using namespace std::chrono;
+    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+bool DeliverAlarms() {
+    Scheduler& s = S();
+    bool ran = false;
+    for (;;) {
+        s32 id = 0;
+        Scheduler::Alarm alarm{};
+        {
+            std::lock_guard<std::mutex> hold(s.alarms_lock);
+            const u64 now = NowNs();
+            auto it = s.alarms.begin();
+            while (it != s.alarms.end() && it->second.due_ns > now) ++it;
+            if (it == s.alarms.end()) break;
+            id = it->first;
+            alarm = it->second;
+            s.alarms.erase(it);
+        }
+        lifted::Context& c = s.interrupt_context;
+        c.r[4] = u64(s64(id));
+        c.r[5] = alarm.time;
+        c.r[6] = alarm.common;
+        c.r[29] = 0x01F80000u;
+        c.r[31] = 0;
+        if (s.current) c.r[28] = s.current->context.r[28];
+        else if (!s.threads.empty()) c.r[28] = s.threads.begin()->second->context.r[28];
+        c.budget = StopRequested() ? -1 : s.loop_budget;
+        const bool nested = s.in_interrupt;
+        s.in_interrupt = true;
+        Dispatch(c, alarm.callback);
+        s.in_interrupt = nested;
+        ran = true;
+    }
+    return ran;
+}
+
+// Host time to the next alarm, < 0 when none is set.
+s64 NanosToNextAlarm() {
+    Scheduler& s = S();
+    std::lock_guard<std::mutex> hold(s.alarms_lock);
+    if (s.alarms.empty()) return -1;
+    u64 next = ~u64(0);
+    for (const auto& [id, a] : s.alarms) next = std::min(next, a.due_ns);
+    const u64 now = NowNs();
+    return next > now ? s64(next - now) : 0;
+}
+
 // One frame's interrupts, delivered to the handlers registered for them.
 bool DeliverFrame() {
     Scheduler& s = S();
@@ -201,6 +262,7 @@ bool DeliverFrame() {
     bool ran = false;
     for (u32 cause : {kVblankStart, kVblankEnd})
         if (s.intc_mask & (1u << cause)) ran |= RunHandlers(s.handlers, cause);
+    ran |= DeliverAlarms();
     return ran;
 }
 
@@ -225,10 +287,20 @@ void VblankTimer() {
     const auto period = std::chrono::microseconds(16683);      // NTSC, 59.94 Hz
     auto next = clock::now() + period;
     while (!StopRequested()) {
-        std::this_thread::sleep_until(next);
-        next += period;
+        // Sleep to the next vertical blank, or to an EE timer's interrupt if that
+        // comes first.
+        auto wake = next;
+        s64 timer = NanosToNextTimerEvent();
+        const s64 alarm = NanosToNextAlarm();
+        if (alarm >= 0 && (timer < 0 || alarm < timer)) timer = alarm;
+        if (timer >= 0) wake = std::min(wake, clock::now() + std::chrono::nanoseconds(timer));
+        std::this_thread::sleep_until(wake);
         Scheduler& s = S();
-        s.vblank_due = true;
+        if (clock::now() >= next) {
+            next += period;
+            s.vblank_due = true;
+        }
+        if (timer >= 0) s.timer_due = true;
         if (lifted::Context* c = s.running.load()) SpendBudget(*c);
     }
 }
@@ -240,14 +312,19 @@ void LoopHead(lifted::Context& c, u32 address) {
     if (StopRequested() || s.in_interrupt || !s.current || &c != &s.current->context)
         throw lifted::Abort{address, 2};
     const bool frame = s.vblank_due.exchange(false);
+    const bool timers = s.timer_due.exchange(false);
     const bool requested = s.delivery_requested;
     // With a real-time timer a budget can be spent for a frame another loop head
     // already took; without one, a spent budget that nobody asked for is the end.
-    if (!frame && !requested && !s.realtime) throw lifted::Abort{address, 2};
+    if (!frame && !timers && !requested && !s.realtime) throw lifted::Abort{address, 2};
     s.delivery_requested = false;
     c.budget = requested ? s.saved_budget : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
     if (frame) DeliverFrame();
+    if (timers) {
+        DeliverTimers();
+        DeliverAlarms();
+    }
     while (DeliverIopReply()) {
     }
     DeliverPendingDmac();
@@ -278,6 +355,11 @@ void RaiseDmac(u32 channel) {
         Note(key, "DMAC: channel " + std::to_string(channel) + " interrupt delivered");
     else
         Note(key + " none", "DMAC: channel " + std::to_string(channel) + " interrupt has no handler");
+}
+
+void RaiseIntc(u32 cause) {
+    Scheduler& s = S();
+    if (s.intc_mask & (1u << cause)) RunHandlers(s.handlers, cause);
 }
 
 void PostDmac(u32 channel) {
@@ -338,6 +420,17 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         if (!next) {
             if (first.state == State::Dormant)
                 throw GuestExit{0};                 // the program's first thread returned
+            if (s.realtime) {
+                // Every thread waits: so does the host, for the next vertical
+                // blank or timer interrupt - the game runs at its own pace.
+                while (!s.vblank_due && !s.timer_due && !StopRequested())
+                    std::this_thread::sleep_for(std::chrono::microseconds(200));
+                if (s.timer_due.exchange(false)) {
+                    DeliverTimers();
+                    DeliverAlarms();
+                }
+                if (!s.vblank_due.exchange(false)) continue;
+            }
             DeliverFrame();
             if (++idle > kIdleFrames) {
                 std::string states;
@@ -357,6 +450,10 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         s.running = nullptr;
         s.current = nullptr;
         if (s.vblank_due.exchange(false)) DeliverFrame();
+        if (s.timer_due.exchange(false)) {
+            DeliverTimers();
+            DeliverAlarms();
+        }
         if (s.stop) std::rethrow_exception(s.stop);
     }
 }
@@ -400,6 +497,21 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
     Memory& m = GuestMemory();
     const u32 a0 = u32(c.r[4]), a1 = u32(c.r[5]);
     switch (number) {
+        case 0xFC: case -0xFD: {                     // SetAlarm / iSetAlarm(time, callback, common)
+            // time is in horizontal blanks: 262.5 a field, NTSC.
+            const u32 time = a0 & 0xFFFF;
+            std::lock_guard<std::mutex> hold(s.alarms_lock);
+            const s32 id = s.next_alarm++;
+            s.alarms[id] = {a1, u32(c.r[6]), time, NowNs() + u64(double(time) * 1e9 / 15734.25)};
+            result = u64(s64(id));
+            if (!s.in_interrupt) RequestDelivery();   // one already due runs at once
+            return true;
+        }
+        case 0xFE: case -0xFF: {                     // ReleaseAlarm / iReleaseAlarm(id)
+            std::lock_guard<std::mutex> hold(s.alarms_lock);
+            result = s.alarms.erase(s32(a0)) ? 0 : u64(s64(-1));
+            return true;
+        }
         case 0x20: {                                 // CreateThread(param*)
             auto t = std::make_unique<Thread>();
             t->id = s.next_thread++;
