@@ -571,6 +571,15 @@ Outcome SendCmd(Vm& vm, Context& c) {
     vm.Write(packet + 8, command, 4);
     std::vector<u8> bytes(psize);
     std::memcpy(bytes.data(), vm.At(packet, psize), psize);
+    if (vm.trace) {
+        std::string words;
+        for (u32 i = 16; i + 4 <= psize && i < 48; i += 4) {
+            char w[12];
+            std::snprintf(w, sizeof w, " %08X", unsigned(vm.Read(packet + i, 4)));
+            words += w;
+        }
+        std::fprintf(stderr, "[iop] to the EE: command %u,%s\n", unsigned(command), words.c_str());
+    }
     QueueIopPacket(std::move(bytes));
     return Ret(c, 1);
 }
@@ -758,7 +767,8 @@ Outcome SdVoiceTrans(Vm& vm, Context& c) {
     // Only a DMA transfer interrupts when done; SD_TRANS_MODE_IO (8) is the CPU
     // writing through the SPU2's registers, finished when the call returns.
     if (!(mode & 8)) s.pending.push_back(channel);
-    return Ret(c, size);
+    // As libsd answers (ps2sdk voice.c): DMA the size, IO-mode writes 0.
+    return Ret(c, (mode & 8) ? 0 : size);
 }
 
 Outcome SdVoiceTransStatus(Vm&, Context& c) { return Ret(c, 1); }     // complete

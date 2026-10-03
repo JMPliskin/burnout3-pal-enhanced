@@ -218,7 +218,13 @@ Outcome Execute(Vm& vm, Context& c, u32 stop, u64 limit, bool* stopped) {
                     case 0x06: set(rd, r[rt] >> (r[rs] & 31)); break;                // srlv
                     case 0x07: set(rd, u32(s32(r[rt]) >> (r[rs] & 31))); break;      // srav
                     case 0x08: c.npc = r[rs]; break;                                 // jr
-                    case 0x09: { const u32 t = r[rs]; set(rd, pc + 8); c.npc = t; break; }  // jalr
+                    case 0x09: {                                                     // jalr
+                        const u32 t = r[rs];
+                        set(rd, pc + 8);
+                        c.npc = t;
+                        if (vm.trace) { auto& e = vm.calls[t]; ++e.first; e.second = pc; }
+                        break;
+                    }
                     case 0x0C: {                                                     // syscall
                         const u32 code = (w >> 6) & 0xFFFFF;
                         if (code < kHleCode || code - kHleCode >= vm.libraries.size())
@@ -284,7 +290,11 @@ Outcome Execute(Vm& vm, Context& c, u32 stop, u64 limit, bool* stopped) {
                 break;
             }
             case 0x02: c.npc = (pc & 0xF0000000u) | ((w & 0x03FFFFFFu) << 2); break;  // j
-            case 0x03: r[31] = pc + 8; c.npc = (pc & 0xF0000000u) | ((w & 0x03FFFFFFu) << 2); break;
+            case 0x03:                                                               // jal
+                r[31] = pc + 8;
+                c.npc = (pc & 0xF0000000u) | ((w & 0x03FFFFFFu) << 2);
+                if (vm.trace) { auto& e = vm.calls[c.npc]; ++e.first; e.second = pc; }
+                break;
             case 0x04: branch(r[rs] == r[rt]); break;
             case 0x05: branch(r[rs] != r[rt]); break;
             case 0x06: branch(s32(r[rs]) <= 0); break;
@@ -636,6 +646,19 @@ void Command(u32 command, const std::vector<u8>& packet) {
 std::string Report() {
     Vm& vm = TheVm();
     std::string out;
+    if (vm.trace && !vm.calls.empty()) {
+        // The IOP's busiest call targets (with --iop-trace): where its time goes.
+        std::vector<std::pair<u64, u32>> hot;
+        for (const auto& [target, e] : vm.calls) hot.push_back({e.first, target});
+        std::sort(hot.rbegin(), hot.rend());
+        out += "  IOP calls, most frequent:\n";
+        for (std::size_t i = 0; i < hot.size() && i < 30; ++i) {
+            char line[96];
+            std::snprintf(line, sizeof line, "    0x%08X x%llu (from 0x%08X)\n", unsigned(hot[i].second),
+                          static_cast<unsigned long long>(hot[i].first), unsigned(vm.calls[hot[i].second].second));
+            out += line;
+        }
+    }
     static const char* waits[] = {"ready", "waiting on a semaphore", "waiting on an event flag",
                                   "sleeping", "delayed", "dormant", "serving RPC"};
     for (auto& [id, t] : vm.threads) {

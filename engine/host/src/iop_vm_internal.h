@@ -102,6 +102,7 @@ struct Vm {
     u32 handler_table = 0;                       // sceSifSetCmdBuffer's, for its answer
     u64 instructions = 0;
     bool trace = false;
+    std::map<u32, std::pair<u64, u32>> calls;    // with trace: target -> (count, a caller)
     u32 executing = 0;                           // the instruction being run, for messages
 
     // Memory, by IOP address (any segment; the RAM mirrors every 2 MB).

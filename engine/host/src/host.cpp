@@ -185,6 +185,9 @@ void Dispatch(lifted::Context& c, u32 address) {
         }
         throw;
     }
+    if (std::find(g_watch.begin(), g_watch.end(), address) != g_watch.end())
+        std::fprintf(stderr, "[watch] %s returned v0=%016llX f0=%08X\n", Describe(address).c_str(),
+                     (unsigned long long)c.r[2], c.f[0]);
 }
 
 namespace {
