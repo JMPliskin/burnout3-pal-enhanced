@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "ps2host/memory.h"
 #include "ps2rt/generated.h"
 
 namespace lifted {
@@ -44,8 +45,15 @@ struct Vu::Pending {
 };
 
 Vu::Vu(int index)
-    : micro(index ? 16384 : 4096), data(index ? 16384 : 4096), data_mask_(index ? 0x3FF : 0xFF) {
+    : own_micro_(index ? 16384 : 4096), own_data_(index ? 16384 : 4096), data_mask_(index ? 0x3FF : 0xFF) {
+    micro = {own_micro_.data(), own_micro_.size()};
+    data = {own_data_.data(), own_data_.size()};
     regs.vf[0][3] = 0x3F800000u;    // vf0 = (0, 0, 0, 1)
+}
+
+void Vu::Attach(std::uint8_t* micro_memory, std::uint8_t* data_memory) {
+    if (micro_memory) micro.p = micro_memory;
+    if (data_memory) data.p = data_memory;
 }
 
 Vu::u32* Vu::Quad(u32 address) {
@@ -314,6 +322,13 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
 
 Vu& Vu1() {
     static Vu vu(1);
+    static const bool attached = [] {
+        // The EE sees VU1's memories at 0x11008000 (instructions) and
+        // 0x1100C000 (data).
+        vu.Attach(GuestMemory().Translate(0x11008000u, 16384), GuestMemory().Translate(0x1100C000u, 16384));
+        return true;
+    }();
+    (void)attached;
     return vu;
 }
 

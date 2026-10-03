@@ -37,8 +37,19 @@ public:
 
     /* VU0 (4 KB of each memory) or VU1 (16 KB). */
     explicit Vu(int index);
+    Vu(const Vu&) = delete;             /* its memory spans point into itself */
+    Vu& operator=(const Vu&) = delete;
 
-    std::vector<std::uint8_t> micro, data;
+    /* Instruction and data memory: the VU's own, or (Attach) the EE's view of
+       it at 0x11000000, which code also reads and writes directly. */
+    struct Span {
+        std::uint8_t* p;
+        std::size_t n;
+        std::uint8_t* data() const { return p; }
+        std::size_t size() const { return n; }
+    };
+    Span micro, data;
+    void Attach(std::uint8_t* micro_memory, std::uint8_t* data_memory);
     lifted::Context regs{};         /* vf, vc (VI0-15, R 20, I 21, Q 22), vacc */
     u32 mac = 0, status = 0, clip = 0, p = 0;
     u32 top = 0, itop = 0;          /* what XTOP and XITOP read (VU1) */
@@ -58,6 +69,7 @@ public:
     u32* Quad(u32 address);
 
 private:
+    std::vector<std::uint8_t> own_micro_, own_data_;
     u32 data_mask_;                 /* in quadwords */
     u64 pairs_ = 0, kicks_ = 0;
     struct Pending;
