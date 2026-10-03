@@ -127,6 +127,70 @@ class TestNaming(unittest.TestCase):
         self.assertEqual(naming.diagnostic_names(database), {})
 
 
+def ori(rt, rs, imm): return (0x0D << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+class TestStatusNames(unittest.TestCase):
+    def test_placeholders_are_not_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "functions.csv")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("address,name\n0x00100000,lifted::F_00100000\n"
+                             "0x00100100,lifted::RenderCar\n0x00100200,generated::x\n")
+            self.assertEqual(naming.status_names(path), {0x00100100: "RenderCar"})
+
+
+class TestRpcNames(unittest.TestCase):
+    CALL, BIND, OTHER = 0x00180000, 0x00180100, 0x00180200
+
+    def _build(self, functions):
+        """Each function is a list of words; they sit 0x100 apart from BASE."""
+        image = bytearray(0x00090000)
+        database = {"functions": []}
+        for index, words in enumerate(functions):
+            start = BASE + 0x100 * index
+            struct.pack_into("<%dI" % len(words), image, start - BASE, *words)
+            database["functions"].append({"addr": start, "end": start + 4 * len(words)})
+        return database, bytes(image)
+
+    def _call_rpc(self, target):
+        # a0-a3 and t0-t3, the last in the delay slot
+        return [move(4, 16), addiu(5, 0, 1), addiu(6, 0, 0), move(7, 17),
+                addiu(8, 0, 16), move(9, 18), addiu(10, 0, 16), jal(target), move(11, 0),
+                JR_RA, NOP]
+
+    def _bind(self, server):
+        return [move(4, 16), lui(5, server >> 16), ori(5, 5, server), jal(self.BIND),
+                move(6, 0), JR_RA, NOP]
+
+    def _functions(self, rpc_callers, servers):
+        return ([self._call_rpc(self.CALL)] * rpc_callers
+                + [self._call_rpc(self.OTHER)] * 2
+                + [self._bind(server) for server in servers])
+
+    def test_call_sites_name_call_and_bind(self):
+        database, image = self._build(self._functions(10, [0x80000001, 0x80000592, 0x8000059C]))
+        names = naming.rpc_names(database, image, BASE)
+        self.assertEqual(names[self.CALL][0], "sceSifCallRpc")
+        self.assertEqual(names[self.BIND][0], "sceSifBindRpc")
+        self.assertNotIn(self.OTHER, names)
+
+    def test_too_few_callers_names_nothing(self):
+        database, image = self._build(self._functions(3, [0x80000001, 0x80000592, 0x8000059C]))
+        self.assertEqual(naming.rpc_names(database, image, BASE), {})
+
+    def test_bind_needs_several_sdk_servers(self):
+        database, image = self._build(self._functions(10, [0x80000001, 0x12345678]))
+        names = naming.rpc_names(database, image, BASE)
+        self.assertNotIn(self.BIND, names)
+
+    def test_a_branch_ends_the_argument_window(self):
+        call = self._call_rpc(self.CALL)
+        call.insert(7, (0x04 << 26) | 2)        # beq $zero, $zero, +2 before the jal
+        database, image = self._build([call] * 10)
+        self.assertEqual(naming.rpc_names(database, image, BASE), {})
+
+
 class TestAddressPairing(unittest.TestCase):
     STRING = 0x00100100
 

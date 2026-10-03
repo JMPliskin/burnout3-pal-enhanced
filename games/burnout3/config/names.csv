@@ -43,6 +43,7 @@ address,name,source
 0x0010C140,GsGetIMR,kernel service 0x70
 0x0010C160,GsPutIMR,kernel service 0x71
 0x0010C190,SetVSyncFlag,kernel service 0x73
+0x0010C1A0,SetSyscall,kernel service 0x74
 0x0010C1C0,SifDmaStat,kernel service 0x76
 0x0010C1E0,SifSetDma,kernel service 0x77
 0x0010C1F0,iSifSetDma,kernel service -0x77
@@ -53,6 +54,8 @@ address,name,source
 0x0010C250,Deci2Call,kernel service 0x7C
 0x0010C280,RFU127,kernel service 0x7F
 0x0010C290,RFU082,kernel service 0x82
+0x0010F018,sceSifBindRpc,SIF RPC call sites - passed 13 SDK server IDs (0x80000001, 0x80000003, 0x80000006...)
+0x0010F1E8,sceSifCallRpc,SIF RPC call sites - called with eight arguments by 121 functions (next most: 40)
 0x0010FEA0,SignalSemaGlobal,status table
 0x001146A0,MachineType_or_rfu,kernel service 0x5A
 0x001146E8,GetMemorySize_or_rfu,kernel service 0x5B
@@ -76,12 +79,12 @@ address,name,source
 0x002161F8,sceDbcSetWorkAddr,diagnostic string
 0x00216268,sceDbcCreateSocket,diagnostic string
 0x00216340,sceDbcDeleteSocket,diagnostic string
-0x002163C8,sceDbcGetDepNumber,diagnostic string
+0x002163C8,sceDbcGetDepNumber,status table
 0x00216608,sceDbcInitSocket,diagnostic string
 0x00216678,sceDbcResetSocket,diagnostic string
-0x002167E0,sceDbcSRData,diagnostic string
-0x00216928,sceDbcSendData,diagnostic string
-0x00216A58,sceDbcSendData2,status table
+0x002167E0,sceDbcSRData,status table
+0x00216928,sceDbcSendData,status table
+0x00216A58,sceDbcSendData2,signature library (SLUS_210.50)
 0x00216D20,sceDbcReceiveData,diagnostic string
 0x0021B9B0,LookupVariantC,status table
 0x0021BB60,LookupByPath,status table
@@ -89,38 +92,38 @@ address,name,source
 0x0021BFA0,HashName,status table
 0x0024FDF0,HashNameAlias,status table
 0x00299550,FindFirstSet,status table
-0x002E0838,lgAudInit,diagnostic string
-0x002E0CF0,lgAudOpen,diagnostic string
+0x002E0838,lgAudInit,status table
+0x002E0CF0,lgAudOpen,status table
 0x002E0E58,lgAudRead,diagnostic string
 0x002E0FC8,lgAudWrite,diagnostic string
 0x002E1138,lgAudWriteVag,diagnostic string
-0x002E12A8,lgAudPrepareForReboot,diagnostic string
+0x002E12A8,lgAudPrepareForReboot,status table
 0x002E1398,lgAudARead,diagnostic string
 0x002E1510,lgAudAWrite,diagnostic string
 0x002E1698,lgAudAWriteVag,diagnostic string
 0x002E18F0,lgAudEnumHint,diagnostic string
-0x002E1960,lgAudEnumerate,diagnostic string
-0x00305F18,lgKbMInit,diagnostic string
-0x003B88E0,AdvanceBufferCursor,status table
-0x00404D88,_LobbyApiGlobalCallback,diagnostic string
-0x00404EF0,_LobbyApiCancelOneShotCB,diagnostic string
-0x00405668,_LobbyApiConfigCallback,diagnostic string
-0x0040C078,_LobbyRankSnapCb,diagnostic string
-0x0040DF78,_LobbyStatbookViewCb,diagnostic string
-0x0040E268,_LobbyStatbookRowCb,diagnostic string
-0x0040E440,_LobbyStatbookCreate,diagnostic string
+0x002E1960,lgAudEnumerate,status table
+0x00305F18,lgKbMInit,status table
+0x003B88E0,AdvanceBufferCursor,signature library (SLUS_210.50)
+0x00404D88,_LobbyApiGlobalCallback,status table
+0x00404EF0,_LobbyApiCancelOneShotCB,status table
+0x00405668,_LobbyApiConfigCallback,status table
+0x0040C078,_LobbyRankSnapCb,status table
+0x0040DF78,_LobbyStatbookViewCb,status table
+0x0040E268,_LobbyStatbookRowCb,status table
+0x0040E440,_LobbyStatbookCreate,status table
 0x00443C70,lgDevEnumHint,diagnostic string
-0x00443CC8,lgDevEnumerate,diagnostic string
-0x00443DB0,lgDevOpen,diagnostic string
-0x00443EF8,lgDevGetDeviceProperty,diagnostic string
-0x00444070,lgDevRead,diagnostic string
-0x00444168,lgDevReadMulti,diagnostic string
-0x00444330,lgDevDownloadForceEffect,diagnostic string
-0x00444490,lgDevUpdateForceEffect,diagnostic string
-0x00444660,lgDevStartForceEffectMulti,diagnostic string
-0x004447F8,lgDevStopForceEffectMulti,diagnostic string
-0x00444C08,lgDevARead,diagnostic string
-0x00444CD8,lgDevAReadMulti,diagnostic string
-0x00444E48,lgDevAUpdateForceEffect,diagnostic string
-0x00444F98,lgDevAStartForceEffect,diagnostic string
-0x00445148,lgDevAStopForceEffect,diagnostic string
+0x00443CC8,lgDevEnumerate,status table
+0x00443DB0,lgDevOpen,status table
+0x00443EF8,lgDevGetDeviceProperty,status table
+0x00444070,lgDevRead,status table
+0x00444168,lgDevReadMulti,status table
+0x00444330,lgDevDownloadForceEffect,status table
+0x00444490,lgDevUpdateForceEffect,status table
+0x00444660,lgDevStartForceEffectMulti,status table
+0x004447F8,lgDevStopForceEffectMulti,status table
+0x00444C08,lgDevARead,status table
+0x00444CD8,lgDevAReadMulti,status table
+0x00444E48,lgDevAUpdateForceEffect,status table
+0x00444F98,lgDevAStartForceEffect,status table
+0x00445148,lgDevAStopForceEffect,status table

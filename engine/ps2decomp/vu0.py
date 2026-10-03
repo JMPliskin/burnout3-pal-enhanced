@@ -37,7 +37,11 @@ ONE = 0x3F800000
 
 # Control registers: 0-15 are the integer registers VI0-VI15.
 REG_STATUS, REG_MAC, REG_CLIP, REG_R, REG_I, REG_Q = 16, 17, 18, 20, 21, 22
-UNREADABLE = {REG_STATUS, REG_MAC, REG_CLIP, 26, 29}
+# VPU-STAT: whether VU0 and VU1 are running. No microprogram runs in this model
+# (vcallms is refused) and transfers to VU1 complete when they start, so both are
+# always idle: it reads 0. Code that waits for VU1 polls it, so it is modelled.
+REG_VPU_STAT = 29
+UNREADABLE = {REG_STATUS, REG_MAC, REG_CLIP, 26}
 
 
 # The operations execute() implements (mnemonics without their mask suffix).
@@ -328,4 +332,6 @@ def move_from(m, word: int, mnemonic: str):
         return v[0] | (v[1] << 32), v[2] | (v[3] << 32)
     if index in UNREADABLE:
         raise Refused("cfc2 of control register %d (flags are not modelled)" % index)
+    if index == REG_VPU_STAT:
+        return 0, None
     return m.vc[index], None

@@ -56,6 +56,8 @@ def name(game) -> int:
         names.setdefault(address, (text, "status table"))
     for address, (text, message) in naming.diagnostic_names(database).items():
         names.setdefault(address, (text, "diagnostic string"))
+    for address, (text, evidence) in naming.rpc_names(database, image, base).items():
+        names.setdefault(address, (text, "SIF RPC call sites - " + evidence))
     from_library = 0
     for address, key in sigs.items():
         if address in names or sizes.get(address, 0) < MIN_INSTRUCTIONS:
@@ -67,7 +69,7 @@ def name(game) -> int:
             from_library += 1
     path = _names_path(game)
     naming.save(path, names)
-    sources = collections.Counter(source.split(" (")[0].split(" 0x")[0].split(" -0x")[0]
+    sources = collections.Counter(source.split(" (")[0].split(" - ")[0].split(" 0x")[0].split(" -0x")[0]
                                   for _n, source in names.values())
     print("named %d functions -> %s" % (len(names), path))
     for source, count in sources.most_common():

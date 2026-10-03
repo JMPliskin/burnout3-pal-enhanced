@@ -326,7 +326,8 @@ void Cop2Move(Context& c, u32 word, u32 rt) {
             }
             return;
         case 0x02:                                         /* cfc2 */
-            if (rt) c.r[rt] = Sx32(c.vc[index]);
+            /* VPU-STAT (29): no VU program runs here, so both units are idle. */
+            if (rt) c.r[rt] = index == 29 ? 0 : Sx32(c.vc[index]);
             return;
     }
     throw Abort{word, 5};

@@ -1201,6 +1201,20 @@ implementation yet, so their calls are answered with zeros and noted.
 Boot now reaches 665 functions, six threads and its first GIF and VIF1
 transfers.
 
+Boot then stopped at 0x1F1778, which polls VPU-STAT (`cfc2 vi29`) to wait for
+VU1. No VU microprogram runs in either model, so both units are always idle
+and VPU-STAT reads 0 (vu0.py, runtime vu0.cpp). The cold lift that followed
+verified the two functions that read it: 9,045 lifted and verified, 69.63%.
+
+The SDK's two RPC entry points are now named from their call sites, with no
+signature needed (`naming.rpc_names`). `sceSifCallRpc` (0x10F1E8) is the target
+of 121 call sites that set all eight argument registers; the next most is 40.
+`sceSifBindRpc` (0x10F018) is passed 13 distinct SDK server IDs in `$a1`. The
+same rule applies to any game linked against the SDK. Naming also stopped
+counting the lifter's `F_xxxxxxxx` placeholders as names. They made up 7,245 of
+the "status table" names and hid every later source of evidence. The honest
+count is 128 named functions.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

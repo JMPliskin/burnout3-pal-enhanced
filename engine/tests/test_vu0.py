@@ -91,6 +91,11 @@ class TestRefusals(unittest.TestCase):
     def test_reading_vi_registers_is_fine(self):
         run([cfc2(2, 5), JR_RA, 0])
 
+    def test_vpu_stat_reads_idle(self):
+        # No VU program runs in the model, so a wait for VU1 ends at once.
+        m = run([cfc2(2, vu0.REG_VPU_STAT), JR_RA, 0])
+        self.assertEqual(m.get(2), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
