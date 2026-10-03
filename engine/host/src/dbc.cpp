@@ -56,8 +56,13 @@ struct Socket {
 struct Dbc {
     u32 work = 0;
     std::map<s32, Socket> sockets;
-    s32 next = 0;
 };
+
+// Ports 0 and 1 are the controller ports, 2 and 3 the memory card slots. A
+// socket opens on any of them; what is plugged in shows in its blocks. There is
+// a DualShock 2 on port 0 and nothing else - no second pad, no memory card.
+constexpr u32 kPorts = 4;
+bool Present(u32 port) { return port == 0; }
 
 Dbc& D() {
     static Dbc dbc;
@@ -126,12 +131,15 @@ std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
             s.port = At(request, 8);
             s.block[0] = At(request, 0x28);
             s.block[1] = At(request, 0x2C);
-            const s32 id = s.port == 0 ? d.next++ % 16 : -1;   // a pad on port 0 only
+            s32 id = -1;
+            if (s.port < kPorts)
+                for (s32 n = 0; n < 16 && id < 0; ++n)
+                    if (!d.sockets.count(n)) id = n;
             if (id >= 0) d.sockets[id] = s;
             char text[128];
             std::snprintf(text, sizeof text, "DBC: socket %d on port %u (blocks 0x%08X, 0x%08X)%s",
                           int(id), unsigned(s.port), unsigned(s.block[0]), unsigned(s.block[1]),
-                          id < 0 ? ": nothing there" : "");
+                          id < 0 ? ": no such port" : Present(s.port) ? "" : ": nothing plugged in");
             Note("dbc socket " + std::to_string(s.port), text);
             Put(answer, 0x24, u32(id));
             return answer;
@@ -139,15 +147,18 @@ std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
         case 0x80001302u:
             d.sockets.erase(s32(At(request, 0)));
             return answer;
-        case 0x80001303u:
-            Put(answer, 4, d.sockets.count(s32(At(request, 0))) ? 0 : u32(-1));
+        case 0x80001303u: {
+            const auto found = d.sockets.find(s32(At(request, 0)));
+            Put(answer, 4, found != d.sockets.end() && Present(found->second.port) ? 0 : u32(-1));
             return answer;
+        }
         case 0x8000131Au: {
             // sceDbcReceiveData: +0 socket, +4 command, +8 room. Answer: +0x20C
             // the result (< 0: failed), +8 the length, +0xC the data - whose
             // first byte libpad2 reads as the device's state (1: connected).
             if (answer.size() < 0x210) answer.resize(0x210, 0);
-            const bool there = d.sockets.count(s32(At(request, 0))) != 0;
+            const auto found = d.sockets.find(s32(At(request, 0)));
+            const bool there = found != d.sockets.end() && Present(found->second.port);
             Put(answer, 0x20C, there ? 0 : u32(-1));
             Put(answer, 8, there ? 1 : 0);
             answer[0xC] = there ? 1 : 0;
@@ -183,9 +194,16 @@ void DbcFrame() {
     Dbc& d = D();
     Memory& m = GuestMemory();
     for (auto& [id, s] : d.sockets) {
-        if (d.work) m.Write(d.work + 4 * u32(id), 1, 4);
+        const bool present = Present(s.port);
+        if (d.work) m.Write(d.work + 4 * u32(id), present ? 1 : 0, 4);
         const u32 b = s.block[(s.counter + 1) & 1];
         if (!b) continue;
+        if (!present) {                                 // an empty port: disconnected
+            m.Write(b + 0, 0, 1);
+            m.Write(b + 4, 0, 4);
+            m.Write(b + 0x7C, ++s.counter, 4);
+            continue;
+        }
         u8 data[kDataBytes];
         PadData(data);
         m.Write(b + 0, 1, 1);                           // connected
