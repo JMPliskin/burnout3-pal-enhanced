@@ -52,6 +52,7 @@ engine/tools/
   analyze.py    full static-analysis pipeline
   disasm.py     annotated assembly emitter
   vudis.py      VU microcode disassembler driver
+  vuhazards.py  where VU microcode reads Q, P or the flags early, or stalls
   imagemap.py   byte-level accounting of the image
   candidates.py ranks functions by reconstructability
   derive.py     derives, verifies and emits accessor functions
@@ -75,7 +76,21 @@ engine/runtime/
   src/eefpu.cpp   reference EE FPU arithmetic (no IEEE infinities or NaNs)
   src/lifted_support.cpp  multiply/divide, MMI lanes, unaligned access for lifted code
   src/vu0.cpp     VU0 macro mode for lifted code, mirroring vu0.py
+
+engine/host/      the PC port's platform layer (engine/docs/PORTING.md): the
+                  kernel, threads and interrupts, DMA, VIF, the VUs in micro
+                  mode, the software GS, the IOP over SIF, SPU2, input, the
+                  window, timers and the clock (--virtual-time), and
+                  --gpu-shadow, which checks the GPU renderer against the
+                  software GS frame by frame
+engine/gpu/       ps2gpu: SDL3 and Vulkan - the window's presentation, and the
+                  GS on the GPU (engine/docs/GPU.md), with its own tests
 ```
+
+Two more tools watch and read what the port runs: `engine/tools/watchdog.py`
+alerts when a long job's log goes silent or its memory grows, and
+`engine/tools/vuhazards.py` reads a dump of VU instruction memory (written
+beside `--frames` pictures) for the pipeline timing the microcode depends on.
 
 Game-specific code lives with its game: for Burnout 3,
 `games/burnout3/tools/vdb.py` and `vdbhash.py` read the ValueDB tuning database.
