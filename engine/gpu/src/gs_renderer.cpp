@@ -43,6 +43,7 @@ struct PackedVertex {
 struct FragmentParams {
     std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol, pabe;
     std::uint32_t bilinear, wms, wmt, minu, maxu, minv, maxv;
+    std::uint32_t tw, th, tex_format, ta0, ta1, aem;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -143,7 +144,10 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.wms == y.wms && x.wmt == y.wmt && x.minu == y.minu &&
-           x.maxu == y.maxu && x.minv == y.minv && x.maxv == y.maxv)) &&
+           x.maxu == y.maxu && x.minv == y.minv && x.maxv == y.maxv && x.tw == y.tw && x.th == y.th &&
+           x.texture_target == y.texture_target && x.tex_fbp == y.tex_fbp && x.tex_fbw == y.tex_fbw &&
+           x.tex_target_psm == y.tex_target_psm && x.tex_format == y.tex_format && x.ta0 == y.ta0 &&
+           x.ta1 == y.ta1 && x.aem == y.aem)) &&
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
            PipelineKey(x) == PipelineKey(y) && (!x.blend || (x.fix == y.fix && x.pabe == y.pabe)) && x.depth == y.depth &&
            (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
@@ -158,6 +162,9 @@ public:
     void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
                        std::uint32_t height) override;
     void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, const std::uint32_t* z) override;
+    bool HasTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm) const override {
+        return targets_.count(Key{fbp, fbw, psm}) != 0;
+    }
     void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) override;
     void Flush() override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
@@ -178,6 +185,9 @@ private:
        alpha bit equals DATM. */
     bool MakeDatePipeline();
     void DateSetup(VkCommandBuffer cmd, Image& target, Image& depth, std::uint32_t datm);
+    /* A target's descriptor for sampling it. */
+    VkDescriptorSet SampledSet(Image& image);
+    Image feedback_;                /* a copy of the target being drawn, when it is also the texture */
     VkPipeline date_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSet SetFor(Texture& texture, int sampler);
     bool Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory, void** mapped);
@@ -453,21 +463,25 @@ bool VulkanGsRenderer::MakeDatePipeline() {
     return r == VK_SUCCESS;
 }
 
+VkDescriptorSet VulkanGsRenderer::SampledSet(Image& image) {
+    if (image.sampled) return image.sampled;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &set_layout_;
+    if (vkAllocateDescriptorSets(g_.device, &ai, &image.sampled) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkDescriptorImageInfo info{samplers_[3], image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = image.sampled;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
+    return image.sampled;
+}
+
 void VulkanGsRenderer::DateSetup(VkCommandBuffer cmd, Image& target, Image& depth, std::uint32_t datm) {
-    if (!target.sampled) {
-        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        ai.descriptorPool = pool_;
-        ai.descriptorSetCount = 1;
-        ai.pSetLayouts = &set_layout_;
-        if (vkAllocateDescriptorSets(g_.device, &ai, &target.sampled) != VK_SUCCESS) return;
-        VkDescriptorImageInfo info{samplers_[3], target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = target.sampled;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &info;
-        vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
-    }
+    if (!SampledSet(target)) return;
     Transition(cmd, target, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     Transition(cmd, depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -651,9 +665,29 @@ void VulkanGsRenderer::Flush() {
     }
     // The shader addresses and filters texels itself (texelFetch), as the GS does.
     const int sampler = 3;
-    const VkDescriptorSet set = SetFor(*texture, sampler);
+    VkDescriptorSet set = SetFor(*texture, sampler);
+    // Render to texture: the target itself, or a copy when it is also drawn into.
+    Image* source = nullptr;
+    bool copy_first = false;
+    if (state_.textured && state_.texture_target) {
+        auto found = targets_.find(Key{state_.tex_fbp, state_.tex_fbw, state_.tex_target_psm});
+        if (found != targets_.end()) {
+            source = &found->second;
+            if (source == t) {
+                if (feedback_.width != t->width || feedback_.height != t->height) {
+                    vkDeviceWaitIdle(g_.device);
+                    DestroyImage(feedback_);
+                    MakeImage(feedback_, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                }
+                copy_first = true;
+                set = SampledSet(feedback_);
+            } else {
+                set = SampledSet(*source);
+            }
+        }
+    }
     FragmentParams params{};
-    params.textured = state_.textured && texture != &blank_;
+    params.textured = state_.textured && (texture != &blank_ || source);
     params.tfx = std::uint32_t(state_.tfx);
     params.tcc = state_.tcc;
     params.atst = state_.alpha_test ? state_.atst : 1;
@@ -693,6 +727,12 @@ void VulkanGsRenderer::Flush() {
     params.maxu = state_.maxu;
     params.minv = state_.minv;
     params.maxv = state_.maxv;
+    params.tw = state_.tw;
+    params.th = state_.th;
+    params.tex_format = source ? state_.tex_format : 0;
+    params.ta0 = state_.ta0;
+    params.ta1 = state_.ta1;
+    params.aem = state_.aem;
     const std::uint32_t count = std::uint32_t(pending_.size());
     static int complaints = 0;
     if ((!pipeline || !set) && complaints < 5) {
@@ -702,6 +742,23 @@ void VulkanGsRenderer::Flush() {
     if (pipeline && set) {
         g_.Run([&](VkCommandBuffer cmd) {
             if (state_.date) DateSetup(cmd, *t, *depth, state_.datm);
+            if (copy_first) {
+                Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT);
+                Transition(cmd, feedback_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT);
+                VkImageCopy region{};
+                region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                region.dstSubresource = region.srcSubresource;
+                region.extent = {t->width, t->height, 1};
+                vkCmdCopyImage(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, feedback_.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                Transition(cmd, feedback_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            } else if (source) {
+                Transition(cmd, *source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            }
             Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -803,6 +860,7 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     for (auto& [key, d] : depths_) DestroyImage(d);
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
     DestroyImage(blank_.image);
+    DestroyImage(feedback_);
     if (vertices_) {
         vkDestroyBuffer(g_.device, vertices_, nullptr);
         vkFreeMemory(g_.device, vertex_memory_, nullptr);

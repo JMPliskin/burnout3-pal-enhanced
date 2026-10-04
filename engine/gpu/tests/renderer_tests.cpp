@@ -298,6 +298,39 @@ void Addressed(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x7F, 32, 20) == Rgba(25, 0, 0, 0x80), "bilinear mixes the two texels around u - 0.5");
 }
 
+void RenderToTexture(ps2gpu::GsRenderer& renderer) {
+    // Draw into target 0x90, then sample it into 0x91.
+    ps2gpu::GsDrawState a = Target(0x90);
+    Rect(renderer, a, 0, 0, 32, 64, Rgba(0x11, 0x22, 0x33, 0x80));
+    Rect(renderer, a, 32, 0, 64, 64, Rgba(0x44, 0x55, 0x66, 0x10));
+    ps2gpu::GsDrawState b = Target(0x91);
+    b.textured = true;
+    b.tfx = ps2gpu::TextureFunction::Decal;
+    b.texture_target = true;
+    b.tex_fbp = 0x90;
+    b.tex_fbw = 1;
+    b.tex_target_psm = 0;
+    b.tw = b.th = 64;
+    Rect(renderer, b, 0, 0, 64, 64, 0);
+    Check(Pixel(renderer, 0x91, 4, 4) == Rgba(0x11, 0x22, 0x33, 0x80), "a target sampled as a texture");
+    Check(Pixel(renderer, 0x91, 40, 4) == Rgba(0x44, 0x55, 0x66, 0x10), "...all of it");
+    // Read as 16-bit texels: 5 bits a channel, alpha TA1 or TA0 by the alpha bit.
+    ps2gpu::GsDrawState b16 = b;
+    b16.tex_format = 2;
+    b16.ta0 = 0x20;
+    b16.ta1 = 0x70;
+    Rect(renderer, b16, 0, 0, 64, 32, 0);
+    Check(Pixel(renderer, 0x91, 4, 4) == Rgba(0x10, 0x20, 0x30, 0x70), "16-bit texels: 5 bits, TA1 for the bit");
+    Check(Pixel(renderer, 0x91, 40, 4) == Rgba(0x40, 0x50, 0x60, 0x20), "...TA0 without it");
+    // Sampling the target being drawn: a copy is taken first.
+    ps2gpu::GsDrawState self = b;
+    self.fbp = 0x90;
+    self.texture_target = true;
+    self.tex_fbp = 0x90;
+    Rect(renderer, self, 0, 0, 32, 64, 0);                        // left half reads itself: unchanged
+    Check(Pixel(renderer, 0x90, 4, 4) == Rgba(0x11, 0x22, 0x33, 0x80), "a target drawing itself reads a copy");
+}
+
 void PerPixelBlending(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x7E);
     Rect(renderer, state, 0, 0, 64, 64, Rgba(0xFF, 0xFF, 0xFF, 0x80));
@@ -361,6 +394,7 @@ int main() {
     DestinationAlphaTested(*renderer);
     PerPixelBlending(*renderer);
     Addressed(*renderer);
+    RenderToTexture(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

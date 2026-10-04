@@ -78,6 +78,7 @@ struct Options {
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
     long long gs_trace_frame = -1; /* ... during this frame only */
     bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_shadow.cpp) */
+    bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */
     bool virtual_time = false;     /* the scheduler keeps time: runs repeat exactly (run.h) */
     bool audio = false;            /* play the SPU2's output on the sound device */
     std::string audio_wav;         /* record the SPU2's output to this WAV file */

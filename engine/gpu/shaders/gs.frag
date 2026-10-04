@@ -27,6 +27,9 @@ layout(push_constant) uniform Params {
     uint bilinear;      // the four texels around, else the nearest
     uint wms, wmt;      // CLAMP: 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP, 3 REGION_REPEAT
     uint minu, maxu, minv, maxv;
+    uint tw, th;        // TEX0's size (0: the image's own)
+    uint tex_format;    // a target read as 0 32-bit, 1 24-bit, 2 16-bit texels
+    uint ta0, ta1, aem; // TEXA
 } p;
 
 // A texel coordinate wrapped as CLAMP says, as the software GS's Wrap.
@@ -37,10 +40,26 @@ int Wrap(int i, int size, uint mode, uint lo, uint hi) {
     return (i & int(lo)) | int(hi);
 }
 
+ivec2 TextureSize() {
+    return p.tw != 0u ? ivec2(int(p.tw), int(p.th)) : textureSize(texture_image, 0);
+}
+
 vec4 Texel(int u, int v) {
-    ivec2 size = textureSize(texture_image, 0);
-    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu), Wrap(v, size.y, p.wmt, p.minv, p.maxv));
-    return floor(texelFetch(texture_image, at & 2047, 0) * 255.0 + 0.5);
+    ivec2 size = TextureSize();
+    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu), Wrap(v, size.y, p.wmt, p.minv, p.maxv)) & 2047;
+    // A target may be smaller than TEX0 says: what lies beyond is not drawn here.
+    at = min(at, textureSize(texture_image, 0) - 1);
+    vec4 t = floor(texelFetch(texture_image, at, 0) * 255.0 + 0.5);
+    bool black = t.r + t.g + t.b == 0.0;
+    if (p.tex_format == 1u) {                       // 24-bit: TEXA's alpha
+        t.a = (p.aem != 0u && black) ? 0.0 : float(p.ta0);
+    } else if (p.tex_format == 2u) {                // 16-bit: 5 bits a channel, alpha by its bit
+        bool bit = t.a >= 128.0;
+        t.rgb = floor(t.rgb / 8.0) * 8.0;
+        black = t.r + t.g + t.b == 0.0;
+        t.a = bit ? float(p.ta1) : ((p.aem != 0u && black) ? 0.0 : float(p.ta0));
+    }
+    return t;
 }
 
 // The texel at (u, v) in texels: the nearest, or the four around (u - 0.5,
@@ -68,7 +87,7 @@ void main() {
     vec4 v = round(shade * 255.0);
     vec4 c = v;
     if (p.textured != 0u) {
-        vec4 t = Sample(coordinate.xy / coordinate.z * vec2(textureSize(texture_image, 0)));
+        vec4 t = Sample(coordinate.xy / coordinate.z * vec2(TextureSize()));
         vec3 product = floor(t.rgb * v.rgb / 128.0);
         if (p.tfx == 0u) {
             c.rgb = product;

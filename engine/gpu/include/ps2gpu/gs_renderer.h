@@ -74,6 +74,15 @@ struct GsDrawState {
     /* CLAMP: WMS/WMT 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP (to MIN..MAX), 3
        REGION_REPEAT (MIN is a mask, MAX ORed in). */
     std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
+    std::uint32_t tw = 0, th = 0;                        /* TEX0's size (0: the texture's own) */
+    /* ...or a target sampled as the texture (render to texture): TEX0's TBP is
+       the target's FBP * 32 and TBW its FBW. 24- and 16-bit texture formats
+       read it as the GS would - TEXA's alpha, 16-bit colour to 5 bits. */
+    bool texture_target = false;
+    std::uint32_t tex_fbp = 0, tex_fbw = 0, tex_target_psm = 0;
+    std::uint32_t tex_format = 0;                        /* 0 32-bit, 1 24-bit, 2 16-bit */
+    std::uint32_t ta0 = 0, ta1 = 0x80;                   /* TEXA */
+    bool aem = false;
 
     /* The alpha test (TEST.ATE, ATST, AREF, AFAIL). What a failing pixel
        writes: AFAIL 0 KEEP nothing, 1 FB_ONLY its colour (not depth), 2
@@ -117,6 +126,8 @@ public:
        memory holds there (the GS's Z, unsigned). */
     virtual void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
                              const std::uint32_t* z) = 0;
+    /* Whether a target exists for (FBP, FBW, PSM) - what a draw can sample. */
+    virtual bool HasTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm) const = 0;
     /* Triangles, three vertices each, in GS order. */
     virtual void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) = 0;
     /* Runs what has been drawn. */

@@ -4,13 +4,21 @@
  *
  * Every primitive the software GS draws is also handed to ps2gpu - triangles as
  * they are, sprites as two triangles - with the state it was drawn with:
- * FRAME, SCISSOR, TEX0/TEX1/CLAMP, TEST, ALPHA. Textures are decoded from the
- * software GS's local memory, so the GPU samples what the reference has; what
- * it draws goes into its own targets. At the end of each frame every target
- * drawn into is read back and compared with the same region of local memory,
- * and the agreement is reported - the measure of how far the GPU renderer is
- * from replacing the software one. Depth is not yet on the GPU, so 3D scenes
- * differ where surfaces overlap.
+ * FRAME, SCISSOR, TEX0/TEX1/CLAMP, TEST, ALPHA, ZBUF, FOGCOL, PABE. Textures
+ * are decoded from the software GS's local memory, so the GPU samples what the
+ * reference has (with --gpu-shadow-rtt, a texture that is a GPU target is
+ * sampled from the target instead, as the GPU renderer will on its own); depth
+ * buffers start each frame as local memory has them. What the GPU draws goes
+ * into its own targets. At the end of each frame every target drawn into is
+ * read back and compared with the same region of local memory, and the
+ * agreement is reported - the measure of how far the GPU renderer is from
+ * replacing the software one.
+ *
+ * Known difference: the GPU's blender rounds where the GS truncates, so a
+ * blended pixel can be 1 brighter; the comparison allows 2 (8 for 16-bit
+ * formats). Burnout 3's frame copy doubles its colours into a 16-bit display
+ * buffer, which makes that visible to the -rtt comparison (about half the
+ * display's pixels then differ by 9, invisibly).
  *
  * Without PS2HOST_VULKAN the option reports that it is unavailable.
  */
@@ -76,6 +84,10 @@ struct Shadow {
     double agreement_sum = 0;
     std::string dump_dir;           // a dump asked for, made at the next frame with drawing
     std::set<u32> depth_seeded;     // depth buffers loaded from local memory this frame
+    // --gpu-shadow-rtt: a texture that is a GPU target is sampled from it, as
+    // the GPU will have to on its own. Off, every texture comes from local
+    // memory, so each draw is checked on the software GS's own inputs.
+    bool targets_as_textures = false;
 };
 
 Shadow* g_shadow = nullptr;
@@ -125,10 +137,32 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     if (state.textured) {
         // Decoded again when the texture's registers change, local memory is
         // uploaded into, or a draw since went into the texture's blocks.
+        // A texture that is a target the GPU has drawn is sampled from it
+        // (render to texture), as the GPU renderer will have to on its own.
+        const u32 tex_psm = Bits(c.tex0, 20, 6), tbp_blocks = Bits(c.tex0, 0, 14);
+        const u32 tex_format = tex_psm == gs::PSMCT32 ? 0 : tex_psm == gs::PSMCT24 ? 1
+                             : (tex_psm == gs::PSMCT16 || tex_psm == gs::PSMCT16S) ? 2 : 3;
+        state.tw = tw;
+        state.th = th;
+        if (s.targets_as_textures && tex_format < 3 && tbp_blocks % 32 == 0) {
+            const u32 candidates[2] = {tex_format == 2 ? tex_psm : gs::PSMCT32, tex_format == 2 ? tex_psm : gs::PSMCT24};
+            for (u32 psm : candidates)
+                if (s.renderer->HasTarget(tbp_blocks / 32, Bits(c.tex0, 14, 6), psm)) {
+                    state.texture_target = true;
+                    state.tex_fbp = tbp_blocks / 32;
+                    state.tex_fbw = Bits(c.tex0, 14, 6);
+                    state.tex_target_psm = psm;
+                    break;
+                }
+            state.tex_format = tex_format;
+            state.ta0 = Bits(call.texa, 0, 8);
+            state.ta1 = Bits(call.texa, 32, 8);
+            state.aem = Bits(call.texa, 15, 1) != 0;
+        }
         const auto key = std::make_tuple(c.tex0, c.clamp, call.texa, gs::TheGs().uploads());
         const u32 tbp = Bits(c.tex0, 0, 14);
         const u32 tex_blocks = std::max(1u, Bits(c.tex0, 14, 6) * 64 * th * PixelBits(Bits(c.tex0, 20, 6)) / 8 / 256);
-        if (key != s.texture_state || s.drawn_into(tbp, tex_blocks)) {
+        if (!state.texture_target && (key != s.texture_state || s.drawn_into(tbp, tex_blocks))) {
             std::vector<u32> pixels;
             u32 w = 0, h = 0;
             gs::TheGs().DecodeTexture(&pixels, &w, &h);
@@ -240,13 +274,14 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
 
 }  // namespace
 
-bool StartGpuShadow(std::string* error) {
+bool StartGpuShadow(std::string* error, bool targets_as_textures) {
     static Shadow shadow;
     shadow.gpu = ps2gpu::CreateGpu(error);
     if (!shadow.gpu) return false;
     shadow.renderer = ps2gpu::CreateGsRenderer(*shadow.gpu, error);
     if (!shadow.renderer) return false;
     g_shadow = &shadow;
+    shadow.targets_as_textures = targets_as_textures;
     gs::TheGs().on_draw = OnDraw;
     std::fprintf(stderr, "gpu-shadow: drawing on %s beside the software GS\n", shadow.gpu->Describe().c_str());
     return true;
@@ -323,7 +358,7 @@ std::string GpuShadowSummary() {
 
 #else
 
-bool StartGpuShadow(std::string* error) {
+bool StartGpuShadow(std::string* error, bool targets_as_textures) {
     if (error) *error = "built without the GPU renderer (PS2HOST_VULKAN)";
     return false;
 }
