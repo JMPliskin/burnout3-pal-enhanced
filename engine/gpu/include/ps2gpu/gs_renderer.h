@@ -186,6 +186,10 @@ public:
 };
 std::unique_ptr<GsRenderer> CreateGsRenderer(Gpu& gpu, std::string* error);
 
+/* How often the CPU has waited for the GPU to finish what was submitted, and
+   for how long in all: "N submissions, S s waiting". */
+std::string SubmitStats();
+
 }  // namespace ps2gpu
 
 #endif  /* PS2GPU_GS_RENDERER_H */

@@ -1427,6 +1427,13 @@ VulkanGsRenderer::~VulkanGsRenderer() {
 
 }  // namespace
 
+std::string SubmitStats() {
+    char text[96];
+    std::snprintf(text, sizeof text, "%llu submissions, %.1f s waiting for them",
+                  static_cast<unsigned long long>(g_submits), g_wait_seconds);
+    return text;
+}
+
 std::unique_ptr<GsRenderer> CreateGsRenderer(Gpu& gpu, std::string* error) {
     auto renderer = std::make_unique<VulkanGsRenderer>(static_cast<VulkanGpu&>(gpu));
     if (!renderer->Init(error)) return nullptr;

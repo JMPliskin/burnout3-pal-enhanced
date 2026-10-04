@@ -982,7 +982,7 @@ std::string GpuShadowSummary() {
                       static_cast<unsigned long long>(g_bridge->decodes),
                       static_cast<unsigned long long>(g_bridge->unchanged),
                       static_cast<unsigned long long>(g_bridge->gpu_decodes));
-        return text;
+        return std::string(text) + "\ngpu: " + ps2gpu::SubmitStats();
     }
     if (!g_bridge->frames) return "";
     std::snprintf(text, sizeof text, "gpu-shadow: %llu frames compared, %.1f%% of pixels agree on average",

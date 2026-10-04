@@ -121,7 +121,7 @@ struct Vu::Pending {
     int vf = -1;                    // a vector register the lower writes
     u32 lanes = 0, value[4] = {};
     bool vc = false;                // the lower changed control registers
-    u32 vc_after[32] = {};
+    u32 vc_after[32];               // ...to these (only when vc: a pair is not worth zeroing 128 bytes)
     bool p = false;
     u32 p_value = 0;
     int p_latency = 0;              // the EFU op's, in cycles
@@ -266,7 +266,20 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
     switch (op) {
         case 0x40: {
             const u32 funct = word & 0x3F;
-            if (funct < 0x3C) { through_cop2(); return; }   // IADD, ISUB, IADDI, IAND, IOR
+            if (funct >= 0x30 && funct <= 0x35) {
+                // IADD ISUB IADDI IAND IOR, as the macro-mode unit has them: they
+                // write vi1-vi15, which no upper reads, so they need not wait.
+                const u32 id = Field(word, 6, 5);
+                if (funct == 0x32) {
+                    const std::int32_t imm = (id & 0x10) ? std::int32_t(id) - 32 : std::int32_t(id);
+                    setvi(it, u32(std::int32_t(vi[is]) + imm));
+                    return;
+                }
+                const u32 x = vi[is], y = vi[it];
+                setvi(id, funct == 0x30 ? x + y : funct == 0x31 ? x - y : funct == 0x34 ? (x & y) : (x | y));
+                return;
+            }
+            if (funct < 0x3C) { through_cop2(); return; }
             const u32 index = (word & 3) | ((word >> 4) & 0x7C);
             const u32 fsf = Field(word, 21, 2);
             const u32* v = regs.vf[is];
@@ -448,10 +461,11 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
             flag_queue_[flag_count_++] = {cycle_ + kFmacLatency, mac_latest_, status_latest_, clip_latest_,
                                           (upper & 0x7FF) != 0x1FF, (upper & 0x7FF) == 0x1FF};
         if (pending.q_latency) {
-            q_next_ = pending.vc_after[kRegQ];
+            // (A quotient equal to the Q before changes no register: it is that Q.)
+            q_next_ = pending.vc ? pending.vc_after[kRegQ] : regs.vc[kRegQ];
             q_ready_ = cycle_ + u64(pending.q_latency);
             q_busy_ = true;
-            pending.vc_after[kRegQ] = regs.vc[kRegQ];
+            if (pending.vc) pending.vc_after[kRegQ] = regs.vc[kRegQ];
         }
         if (pending.vc) std::memcpy(regs.vc, pending.vc_after, sizeof pending.vc_after);
         if (pending.p) {

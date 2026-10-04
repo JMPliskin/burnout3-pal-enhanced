@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <cstdio>
 #include <map>
@@ -18,6 +19,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <dbghelp.h>
+#include <intrin.h>
 #include <timeapi.h>
 #endif
 
@@ -27,12 +29,25 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Sections are timed in the processor's timestamp counter - a clock read on
+// every entry and exit, hundreds of thousands a frame, which the system clock
+// made a tenth of the run - and turned into seconds against the steady clock
+// when reported.
+std::uint64_t Ticks() {
+#if defined(_MSC_VER)
+    return __rdtsc();
+#else
+    return std::uint64_t(Clock::now().time_since_epoch().count());
+#endif
+}
+
 const Clock::time_point g_start = Clock::now();
-double g_seconds[int(Section::Count)] = {};
+const std::uint64_t g_start_ticks = Ticks();
+std::uint64_t g_ticks[int(Section::Count)] = {};
 // The sections open now, innermost last, and when the innermost resumed.
 Section g_stack[16];
 int g_depth = 0;
-Clock::time_point g_since;
+std::uint64_t g_since = 0;
 
 double Elapsed(Clock::time_point from, Clock::time_point to) {
     return std::chrono::duration<double>(to - from).count();
@@ -41,16 +56,16 @@ double Elapsed(Clock::time_point from, Clock::time_point to) {
 }  // namespace
 
 Timed::Timed(Section section) : section_(section) {
-    const Clock::time_point now = Clock::now();
-    if (g_depth > 0) g_seconds[int(g_stack[g_depth - 1])] += Elapsed(g_since, now);
+    const std::uint64_t now = Ticks();
+    if (g_depth > 0) g_ticks[int(g_stack[g_depth - 1])] += now - g_since;
     if (g_depth < 16) g_stack[g_depth] = section;
     ++g_depth;
     g_since = now;
 }
 
 Timed::~Timed() {
-    const Clock::time_point now = Clock::now();
-    g_seconds[int(section_)] += Elapsed(g_since, now);
+    const std::uint64_t now = Ticks();
+    g_ticks[int(section_)] += now - g_since;
     --g_depth;
     g_since = now;
 }
@@ -60,14 +75,16 @@ std::string ProfileSummary() {
                                          "GPU bookkeeping", "GPU drawing", "GPU and memory in step",
                                          "DMA and VIF", "IOP", "SPU2"};
     const double total = Elapsed(g_start, Clock::now());
+    const double seconds_per_tick = total / double(std::max<std::uint64_t>(1, Ticks() - g_start_ticks));
     std::string out = "time:";
     char text[64];
     std::snprintf(text, sizeof text, " %.1f s;", total);
     out += text;
     for (int i = 0; i < int(Section::Count); ++i) {
-        if (i >= int(Section::GpuBridge) && g_seconds[i] == 0) continue;   // the GPU's, when it ran
+        if (i >= int(Section::GpuBridge) && g_ticks[i] == 0) continue;   // the GPU's, when it ran
+        const double seconds = double(g_ticks[i]) * seconds_per_tick;
         std::snprintf(text, sizeof text, "%s %s %.1f%%", i ? "," : "", kNames[i],
-                      total > 0 ? 100.0 * g_seconds[i] / total : 0.0);
+                      total > 0 ? 100.0 * seconds / total : 0.0);
         out += text;
     }
     return out;
@@ -77,7 +94,7 @@ std::string ProfileSummary() {
 
 namespace {
 
-constexpr int kFrames = 3;              // the function running, and two callers
+constexpr int kFrames = 8;              // the function running, and seven callers
 
 struct Sampler {
     std::atomic<bool> stop{false};
@@ -211,7 +228,7 @@ std::string SampleReport(int top) {
                       fn.substr(0, 90).c_str(), from.substr(0, 160).c_str());
         out += line;
     }
-    out += "  total (anywhere in the three frames):\n";
+    out += "  total (anywhere in the eight frames):\n";
     const auto by_total = ranked(total);
     for (int i = 0; i < top && i < int(by_total.size()); ++i) {
         std::snprintf(line, sizeof line, "  %5.1f%%  %s\n",

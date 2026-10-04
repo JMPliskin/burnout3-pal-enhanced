@@ -5,6 +5,7 @@
 
 #include <volk.h>
 
+#include <chrono>
 #include <functional>
 #include <string>
 #include <utility>
@@ -13,6 +14,10 @@
 #include "ps2gpu/gs_renderer.h"
 
 namespace ps2gpu {
+
+/* SubmitStats: submissions waited for, and the time spent waiting. */
+inline std::uint64_t g_submits = 0;
+inline double g_wait_seconds = 0;
 
 class VulkanGpu final : public Gpu {
 public:
@@ -80,8 +85,11 @@ inline bool VulkanGpu::Submit() {
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd;
         vkResetFences(device, 1, &fence);
+        const auto start = std::chrono::steady_clock::now();
         ok = vkQueueSubmit(queue, 1, &submit, fence) == VK_SUCCESS &&
              vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+        ++g_submits;
+        g_wait_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     std::vector<std::function<void()>> done;
     done.swap(after_submit_);
