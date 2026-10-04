@@ -4,6 +4,7 @@
 
 #include "ps2host/dma.h"
 
+#include <cstdint>
 #include <cstring>
 
 #include "ps2host/memory.h"
@@ -22,25 +23,20 @@ std::uint32_t Address(std::uint64_t tag) {
     return (tag >> 63) ? kScratchpad | (address & 0x3FF0u) : address;
 }
 
-void Send(std::uint32_t from, std::uint32_t quadwords, DmaOutcome& outcome,
-          const std::function<void(std::uint32_t)>& word) {
+void Send(std::uint32_t from, std::uint32_t quadwords, DmaOutcome& outcome, const DmaBlockSink& words) {
     Memory& m = GuestMemory();
     // Main RAM or the scratchpad, as DMA reads them: one pointer for the lot
     // (a word at a time through Read cost a tenth of a frame). Anything with
     // register hooks goes word by word.
     const std::uint32_t physical = from & 0x1FFFFFFFu;
     const bool plain = physical < 0x10000000u || (from >> 28) == 0x7;
-    if (const std::uint8_t* p = plain ? m.Translate(from, 16 * quadwords) : nullptr) {
-        for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
-            g_dma_source = from + 4 * i;
-            std::uint32_t value;
-            std::memcpy(&value, p + 4 * i, 4);
-            word(value);
-        }
+    const std::uint8_t* p = plain && quadwords ? m.Translate(from, 16 * quadwords) : nullptr;
+    if (p && reinterpret_cast<std::uintptr_t>(p) % 4 == 0) {
+        words(reinterpret_cast<const std::uint32_t*>(p), 4 * quadwords, from);
     } else {
         for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
-            g_dma_source = from + 4 * i;
-            word(std::uint32_t(m.Read(from + 4 * i, 4)));
+            const std::uint32_t value = std::uint32_t(m.Read(from + 4 * i, 4));
+            words(&value, 1, from + 4 * i);
         }
     }
     outcome.quadwords += quadwords;
@@ -50,6 +46,15 @@ void Send(std::uint32_t from, std::uint32_t quadwords, DmaOutcome& outcome,
 
 DmaOutcome SendDma(DmaChannelState& ch, const std::function<void(std::uint32_t)>& word,
                    std::uint32_t max_tags) {
+    return SendDmaBlocks(ch, [&word](const std::uint32_t* words, std::uint32_t count, std::uint32_t from) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            g_dma_source = from + 4 * i;
+            word(words[i]);
+        }
+    }, max_tags);
+}
+
+DmaOutcome SendDmaBlocks(DmaChannelState& ch, const DmaBlockSink& word, std::uint32_t max_tags) {
     DmaOutcome outcome;
     const std::uint32_t mode = (ch.chcr >> 2) & 3;
     // Normal mode, or a chain resumed with QWC still owed: data from MADR first.
@@ -70,8 +75,8 @@ DmaOutcome SendDma(DmaChannelState& ch, const std::function<void(std::uint32_t)>
         ++outcome.tags;
         ch.chcr = (ch.chcr & 0xFFFFu) | (std::uint32_t(tag) & 0xFFFF0000u);     // TAG
         if (transfer_tags) {
-            word(std::uint32_t(m.Read(ch.tadr + 8, 4)));
-            word(std::uint32_t(m.Read(ch.tadr + 12, 4)));
+            const std::uint32_t high[2] = {std::uint32_t(m.Read(ch.tadr + 8, 4)), std::uint32_t(m.Read(ch.tadr + 12, 4))};
+            word(high, 2, ch.tadr + 8);
         }
         const std::uint32_t qwc = std::uint32_t(tag) & 0xFFFFu;
         const std::uint32_t id = std::uint32_t(tag >> 28) & 7;

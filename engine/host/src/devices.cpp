@@ -143,14 +143,29 @@ std::string Walk(const Channel& ch, u32 chcr) {
     DmaChannelState state{chcr, u32(m.Read(ch.base + kMadr, 4)), u32(m.Read(ch.base + kQwc, 4)),
                           u32(m.Read(ch.base + kTadr, 4)), u32(m.Read(ch.base + kAsr0, 4)),
                           u32(m.Read(ch.base + kAsr1, 4))};
-    std::function<void(u32)> sink = [](u32) {};
-    if (ch.base == 0x10008000u) sink = [](u32 word) { Vif0().Word(word); };
-    if (ch.base == 0x10009000u) sink = [](u32 word) { Vif1().Word(word); };
-    if (ch.base == 0x1000A000u) sink = [](u32 word) { Path3(word); };
+    // A run of words at a time, each handed on directly.
+    auto to_vif = [](VifStream& vif) {
+        return [&vif](const u32* words, u32 count, u32 from) {
+            for (u32 i = 0; i < count; ++i) {
+                g_dma_source = from + 4 * i;
+                vif.Word(words[i]);
+            }
+        };
+    };
+    DmaBlockSink sink = [](const u32*, u32, u32) {};
+    if (ch.base == 0x10008000u) sink = to_vif(Vif0());
+    if (ch.base == 0x10009000u) sink = to_vif(Vif1());
+    if (ch.base == 0x1000A000u)
+        sink = [](const u32* words, u32 count, u32 from) {
+            for (u32 i = 0; i < count; ++i) {
+                g_dma_source = from + 4 * i;
+                Path3(words[i]);
+            }
+        };
     char text[160];
     try {
         Timed timed(Section::Dma);      // (VU1 and the GS, which it drives, timed apart)
-        const DmaOutcome outcome = SendDma(state, sink);
+        const DmaOutcome outcome = SendDmaBlocks(state, sink);
         std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
                       static_cast<unsigned long long>(outcome.quadwords), outcome.tags,
                       outcome.ended ? "" : ", stopped: the chain does not end");

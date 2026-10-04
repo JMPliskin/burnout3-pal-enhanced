@@ -45,6 +45,13 @@ extern std::uint32_t g_dma_source;
 DmaOutcome SendDma(DmaChannelState& channel, const std::function<void(std::uint32_t)>& word,
                    std::uint32_t max_tags = 1u << 16);
 
+/* The same, a run of words at a time: `count` words read from guest address
+   `from` on (the receiver keeps g_dma_source as it takes each). One call a
+   run rather than one a word: VIF1 takes most of a frame's data. */
+using DmaBlockSink = std::function<void(const std::uint32_t* words, std::uint32_t count, std::uint32_t from)>;
+DmaOutcome SendDmaBlocks(DmaChannelState& channel, const DmaBlockSink& words,
+                         std::uint32_t max_tags = 1u << 16);
+
 }  // namespace ps2host
 
 #endif  /* PS2HOST_DMA_H */
