@@ -140,6 +140,15 @@ proved itself in PCSX2's hardware renderers, made smaller:
    * *read-backs*: where the EE reads local memory (an IMAGE transfer from
      the GS) or a texture in another format overlaps a target, the target is
      written back to local memory first, in the GS's swizzled layout;
-   * *display*: DISPFB names the target shown.
+   * *display*: DISPFB names the target shown;
+   * *aliasing*: targets are keyed by (FBP, FBW, PSM), but the GS has one
+     memory - Burnout 3's car select draws its reflection buffer at FBP 0x18B
+     both 32 pixels wide and 128 wide, two GPU images where the GS has one.
+     A target drawn under another width or format must be converted from the
+     one that holds its memory (the shadow run's 27-58% on those buffers);
+     and memory a frame never draws (the corners of its 256x256 sphere map)
+     keeps what was there before, which the GPU must also keep.
+   On the car select the shadow run agrees on 96.7% of the 3D frame (the
+   rest is the blender's rounding) and 100% of the display.
    Local memory stays the meeting point: the shadow mode's comparison, run on
    a few frames, checks each step.
