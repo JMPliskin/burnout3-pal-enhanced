@@ -648,7 +648,7 @@ void VulkanGsRenderer::MemoryRead(std::uint32_t begin, std::uint32_t end, std::u
         const VkBufferCopy copy{VkDeviceSize(begin) * 256, 0, size};
         vkCmdCopyBuffer(cmd, gsmem_, buffer, 1, &copy);
         MemoryBarrier(cmd);
-    });
+    }, "a memory read-back");
     std::memcpy(bytes, mapped, std::size_t(size));
     vkUnmapMemory(g_.device, memory);
     vkDestroyBuffer(g_.device, buffer, nullptr);
@@ -963,7 +963,7 @@ void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pix
 Texture* VulkanGsRenderer::TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height) {
     Texture& texture = textures_[key];
     if (texture.image.width != width || texture.image.height != height) {
-        if (texture.image.image) g_.Submit();   // recorded draws may still sample it
+        if (texture.image.image) g_.Submit("a texture resized");   // recorded draws may still sample it
         for (VkDescriptorSet& set : texture.sets)
             if (set) {
                 vkFreeDescriptorSets(g_.device, pool_, 1, &set);
@@ -1157,7 +1157,7 @@ void VulkanGsRenderer::Flush() {
             source = &found->second;
             if (source == t) {
                 if (feedback_.width != t->width || feedback_.height != t->height) {
-                    g_.Submit();                        // what is recorded may still use the old copy
+                    g_.Submit("the feedback copy resized");                        // what is recorded may still use the old copy
                     if (feedback_.sampled) vkFreeDescriptorSets(g_.device, pool_, 1, &feedback_.sampled);
                     feedback_.sampled = VK_NULL_HANDLE;
                     DestroyImage(feedback_);
@@ -1353,7 +1353,7 @@ bool VulkanGsRenderer::ReadDepth(std::uint32_t zbp, std::uint32_t width, std::ui
         copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
         copy.imageExtent = {width, height, 1};
         vkCmdCopyImageToBuffer(cmd, d.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
-    });
+    }, "a depth read-back");
     // Z / 2^32 back to the GS's Z.
     const float* in = static_cast<const float*>(mapped);
     z->resize(std::size_t(width) * height);
@@ -1381,7 +1381,7 @@ bool VulkanGsRenderer::ReadImage(Image& t, std::vector<std::uint32_t>* pixels) {
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {t.width, t.height, 1};
         vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
-    });
+    }, "a texture read-back");
     pixels->assign(std::size_t(t.width) * t.height, 0);
     std::memcpy(pixels->data(), mapped, bytes);
     vkUnmapMemory(g_.device, memory);
@@ -1417,7 +1417,7 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {t.width, t.height, 1};
         vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
-    });
+    }, "a target read-back");
     pixels->assign(std::size_t(t.width) * t.height, 0);
     std::memcpy(pixels->data(), mapped, bytes);
     *width = t.width;
@@ -1467,10 +1467,17 @@ VulkanGsRenderer::~VulkanGsRenderer() {
 }  // namespace
 
 std::string SubmitStats() {
-    char text[96];
+    char text[160];
     std::snprintf(text, sizeof text, "%llu submissions, %.1f s waiting for them",
                   static_cast<unsigned long long>(g_submits), g_wait_seconds);
-    return text;
+    std::string out = text;
+    for (const WaitReason& w : g_waits) {
+        if (!w.why || !w.count) continue;
+        std::snprintf(text, sizeof text, "; %s %llu, %.1f s", w.why, static_cast<unsigned long long>(w.count),
+                      w.seconds);
+        out += text;
+    }
+    return out;
 }
 
 std::unique_ptr<GsRenderer> CreateGsRenderer(Gpu& gpu, std::string* error) {

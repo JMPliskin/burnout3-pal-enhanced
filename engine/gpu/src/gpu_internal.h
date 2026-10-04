@@ -15,9 +15,22 @@
 
 namespace ps2gpu {
 
-/* SubmitStats: submissions waited for, and the time spent waiting. */
+/* SubmitStats: submissions, the time spent waiting for the GPU, and what
+   waited (a read-back of which kind, a resize, a full ring). */
 inline std::uint64_t g_submits = 0;
 inline double g_wait_seconds = 0;
+struct WaitReason { const char* why; std::uint64_t count; double seconds; };
+inline WaitReason g_waits[16] = {};
+inline void CountWait(const char* why, double seconds) {
+    for (WaitReason& w : g_waits) {
+        if (!w.why) w.why = why;
+        if (w.why == why || std::string(w.why) == why) {
+            ++w.count;
+            w.seconds += seconds;
+            return;
+        }
+    }
+}
 
 class VulkanGpu final : public Gpu {
 public:
@@ -43,7 +56,7 @@ public:
     /* Runs what has been recorded and waits for it, and for everything
        Flush handed over before; then what was waiting for that (AfterSubmit:
        freeing staging buffers, say) runs. */
-    bool Submit();
+    bool Submit(const char* why = "other");
     /* Hands what has been recorded to the GPU without waiting for it, so that
        the GPU works while the CPU goes on: the next recording goes into the
        next of kSlots command buffers (waiting only if that one is still
@@ -56,9 +69,9 @@ public:
     int slot() const { return current_; }
     /* Records with `record`, submits, and waits for it to finish. */
     template <typename F>
-    bool Run(F&& record) {
+    bool Run(F&& record, const char* why = "other") {
         Record(std::forward<F>(record));
-        return Submit();
+        return Submit(why);
     }
 
     VkInstance instance = VK_NULL_HANDLE;
@@ -81,8 +94,9 @@ private:
     int current_ = 0;
     bool in_flight_[kSlots] = {};
     std::vector<std::function<void()>> slot_done_[kSlots];
-    /* Waits for a slot's work, if handed over, and runs what waited on it. */
-    bool Retire(int slot);
+    /* Waits for a slot's work, if handed over, and runs what waited on it;
+       the time it waited goes to `why`. */
+    bool Retire(int slot, const char* why);
 };
 
 template <typename F>
@@ -105,11 +119,13 @@ void VulkanGpu::Record(F&& record) {
     });
 }
 
-inline bool VulkanGpu::Retire(int slot) {
+inline bool VulkanGpu::Retire(int slot, const char* why) {
     if (!in_flight_[slot]) return true;
     const auto start = std::chrono::steady_clock::now();
     const bool ok = vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX) == VK_SUCCESS;
-    g_wait_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    g_wait_seconds += waited;
+    CountWait(why, waited);
     in_flight_[slot] = false;
     std::vector<std::function<void()>> done;
     done.swap(slot_done_[slot]);
@@ -136,13 +152,13 @@ inline bool VulkanGpu::Flush() {
     }
     current_ = (current_ + 1) % kSlots;
     cmd = cmds[current_];
-    return Retire(current_) && ok;
+    return Retire(current_, "a full ring") && ok;
 }
 
-inline bool VulkanGpu::Submit() {
+inline bool VulkanGpu::Submit(const char* why) {
     bool ok = Flush();
     // Oldest first: current_ is free, the one after it was handed over first.
-    for (int i = 1; i <= kSlots; ++i) ok = Retire((current_ + i) % kSlots) && ok;
+    for (int i = 1; i <= kSlots; ++i) ok = Retire((current_ + i) % kSlots, why) && ok;
     std::vector<std::function<void()>> done;        // waited on nothing recorded
     done.swap(after_submit_);
     for (auto& f : done) f();
