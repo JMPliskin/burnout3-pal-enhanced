@@ -139,7 +139,8 @@ Since: an IMAGE packet's quadwords go to the transfer together (Gs::Words);
 the FMAC computes four lanes at once in single precision (SSE; the
 equivalence with the double-precision model is argued in vu_math.h and
 checked by VuLanesAreTheModel); and VU microprograms are compiled ahead of
-time (below). The car select under `--gpu` now takes about 27 s.
+time (below). Under `--gpu` the car select now takes about 24 s and the
+race script about 2 minutes (the software GS: 46 minutes).
 
 Each of these was checked by running the scripted runs and comparing the
 pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
@@ -179,8 +180,14 @@ byte of data memory; delaying one result by a cycle fails it in 397 of 720
 runs. The report's VU line says how many pairs ran compiled, how many
 programs were entered and how many were found stale.
 
-Burnout 3's car select: 28 programs, 5,646 pairs; every pair of the run's
-428 million compiled; 33 s to 27 s (`--vu-interpret` for the comparison).
+The pairs macro mode shares (MOVE, MR32, MFIR, MTIR, DIV, SQRT, RSQRT;
+OPMULA, OPMSUB, ITOF, FTOI, ABS) are VuCore steps of their own rather than
+a trip through macro mode's COP2; the R register's few go that way still.
+
+Burnout 3, the car select and the race recorded: 67 programs, 11,364 pairs;
+every pair of either run compiled (428 million and 2.46 billion). The car
+select 32 s to 24 s on the same build (`--vu-interpret` for the
+comparison); the race script about 2 minutes.
 
 ## Code that exists only at run time
 
