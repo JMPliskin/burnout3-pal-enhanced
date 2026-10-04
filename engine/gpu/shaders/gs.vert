@@ -6,6 +6,7 @@
 layout(location = 0) in vec2 position;
 layout(location = 1) in vec4 colour;
 layout(location = 2) in vec3 stq;
+layout(location = 3) in uint z;     // the GS's Z, unsigned; larger is nearer
 
 layout(push_constant) uniform Target {
     vec2 size;          // the target, in pixels
@@ -18,7 +19,7 @@ layout(location = 1) noperspective out vec3 coordinate;
 
 void main() {
     vec2 ndc = (position + 0.5) / target.size * 2.0 - 1.0;
-    gl_Position = vec4(ndc, 0.0, 1.0);
+    gl_Position = vec4(ndc, float(z) / 4294967296.0, 1.0);
     shade = colour;
     coordinate = stq;
 }

@@ -4,12 +4,12 @@
  * regions of the GS's local memory.
  *
  * Drawn so far: triangles - flat or Gouraud, scissored - textured or not, with
- * the GS's four texture functions, its alpha test and its blending, into 32-bit
- * targets at the native resolution, which read back for testing against the
- * software GS (engine/host/src/gs_draw.cpp). Textures arrive decoded: the host
+ * the GS's four texture functions, its alpha test, its blending and its depth
+ * test, into 32-bit targets at the native resolution, which read back for
+ * testing against the software GS (engine/host/src/gs_draw.cpp). Textures arrive decoded: the host
  * reads them out of local memory (swizzle, CLUT, TEXA) into RGBA and names
- * them with a key of its choosing. Depth and the destination alpha test are
- * next.
+ * them with a key of its choosing. Depth is a 32-bit float buffer holding
+ * Z / 2^32. The destination alpha test, fog and FBMSK are next.
  *
  * Colours are in the GS's terms throughout: 0-255 per channel, with 0x80 as
  * 1.0 where the GS multiplies (vertex colour against texture, alpha as a blend
@@ -83,6 +83,13 @@ struct GsDrawState {
     BlendColour a = BlendColour::Source, b = BlendColour::Dest, d = BlendColour::Dest;
     BlendAlpha c = BlendAlpha::Source;
     std::uint32_t fix = 0x80;
+
+    /* Depth (ZBUF, TEST.ZTE/ZTST): a depth buffer named by ZBP, as large as
+       the target. ZTST 0 NEVER, 1 ALWAYS, 2 GEQUAL, 3 GREATER - the GS keeps
+       the larger Z. Without `depth` nothing is tested or written. */
+    bool depth = false;
+    std::uint32_t zbp = 0, ztst = 1;
+    bool depth_write = true;                             /* !ZBUF.ZMSK */
 };
 
 class GsRenderer {
@@ -92,6 +99,10 @@ public:
        top-down. Replaces what the key named. */
     virtual void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
                                std::uint32_t height) = 0;
+    /* A depth buffer's contents, one Z per pixel, rows top-down: what local
+       memory holds there (the GS's Z, unsigned). */
+    virtual void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
+                             const std::uint32_t* z) = 0;
     /* Triangles, three vertices each, in GS order. */
     virtual void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) = 0;
     /* Runs what has been drawn. */

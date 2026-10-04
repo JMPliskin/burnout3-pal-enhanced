@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -74,6 +75,7 @@ struct Shadow {
     u64 frames = 0;
     double agreement_sum = 0;
     std::string dump_dir;           // a dump asked for, made at the next frame with drawing
+    std::set<u32> depth_seeded;     // depth buffers loaded from local memory this frame
 };
 
 Shadow* g_shadow = nullptr;
@@ -82,7 +84,7 @@ ps2gpu::GsVertex Convert(const gs::Vertex& v, bool fst, u32 tw, u32 th) {
     ps2gpu::GsVertex out{};
     out.x = v.x;
     out.y = v.y;
-    out.z = v.z;
+    out.z = v.z;                    // clamped to the depth format by the caller
     out.r = v.r;
     out.g = v.g;
     out.b = v.b;
@@ -154,6 +156,22 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.c = ps2gpu::BlendAlpha(std::min(2u, Bits(c.alpha, 4, 2)));
     state.d = ps2gpu::BlendColour(std::min(2u, Bits(c.alpha, 6, 2)));
     state.fix = Bits(c.alpha, 32, 8);
+    // Depth: ZTE with ZBUF. Each depth buffer starts the frame as local memory
+    // has it, so the GPU tests against what the software GS drew.
+    const u32 zpsm = 0x30 | Bits(c.zbuf, 24, 4);
+    const u32 zmax = zpsm == gs::PSMZ32 ? 0xFFFFFFFFu : zpsm == gs::PSMZ24 ? 0xFFFFFFu : 0xFFFFu;
+    state.depth = Bits(c.test, 16, 1) != 0;
+    state.ztst = Bits(c.test, 17, 2);
+    state.zbp = Bits(c.zbuf, 0, 9);
+    state.depth_write = Bits(c.zbuf, 32, 1) == 0;
+    if (state.depth && s.depth_seeded.insert(state.zbp).second) {
+        std::vector<u32> z(std::size_t(state.width) * state.height);
+        const gs::Gs& g = gs::TheGs();
+        for (u32 y = 0; y < state.height; ++y)
+            for (u32 x = 0; x < state.width; ++x)
+                z[std::size_t(y) * state.width + x] = g.memory.Read(state.zbp * 32, state.fbw, x, y, zpsm);
+        s.renderer->UploadDepth(state.zbp, state.width, state.height, z.data());
+    }
 
     ps2gpu::GsVertex v[6];
     std::size_t n = 0;
@@ -172,6 +190,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         n = 3;
     }
     if (!n) return;
+    for (std::size_t i = 0; i < n; ++i) v[i].z = std::min(v[i].z, zmax);
     s.renderer->DrawTriangles(state, v, n);
     Extent& e = s.drawn[std::make_tuple(state.fbp, state.fbw, state.psm)];
     for (std::size_t i = 0; i < n; ++i) {
@@ -280,6 +299,7 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
     }
     if (!s.drawn.empty()) s.dump_dir.clear();
     s.drawn.clear();
+    s.depth_seeded.clear();
 }
 
 std::string GpuShadowSummary() {

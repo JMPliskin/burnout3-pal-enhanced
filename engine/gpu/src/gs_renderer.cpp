@@ -33,6 +33,7 @@ struct PackedVertex {
     float x, y;
     std::uint8_t r, g, b, a;
     float s, t, q;
+    std::uint32_t z;
 };
 
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
@@ -47,7 +48,10 @@ struct Image {
     VkImageView view = VK_NULL_HANDLE;
     std::uint32_t width = 0, height = 0;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 };
+
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 
 struct Texture {
     Image image;
@@ -64,7 +68,7 @@ void Transition(VkCommandBuffer cmd, Image& t, VkImageLayout to, VkAccessFlags d
     b.dstAccessMask = dst_access;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = t.image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.subresourceRange = {t.aspect, 0, 1, 0, 1};
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
     t.layout = to;
 }
@@ -123,7 +127,8 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
-           PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix);
+           PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix) && x.depth == y.depth &&
+           (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write));
 }
 
 class VulkanGsRenderer final : public GsRenderer {
@@ -133,6 +138,7 @@ public:
     bool Init(std::string* error);
     void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
                        std::uint32_t height) override;
+    void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, const std::uint32_t* z) override;
     void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) override;
     void Flush() override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
@@ -141,7 +147,11 @@ public:
 private:
     using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
     Image* TargetFor(const GsDrawState& state);
-    bool MakeImage(Image& image, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage);
+    /* The depth buffer a draw uses: ZBP's, or the target's own when it tests
+       nothing (dynamic rendering wants one attachment layout throughout). */
+    Image* DepthFor(std::uint32_t key, std::uint32_t width, std::uint32_t height);
+    bool MakeImage(Image& image, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
+                   VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
     void DestroyImage(Image& image);
     void Fill(Texture& texture, const std::uint32_t* pixels);
     VkPipeline PipelineFor(std::uint32_t key);
@@ -156,6 +166,7 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     std::map<std::uint32_t, VkPipeline> pipelines_;
     std::map<Key, Image> targets_;
+    std::map<Key, Image> depths_;   /* by (ZBP or a target's own, width, height) */
     std::map<std::uint64_t, Texture> textures_;
     Texture blank_;                 /* bound when nothing is textured */
     GsDrawState state_;
@@ -183,12 +194,14 @@ bool VulkanGsRenderer::Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBu
     return vkMapMemory(g_.device, *memory, 0, bytes, 0, mapped) == VK_SUCCESS;
 }
 
-bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage) {
+bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
+                                 VkFormat format) {
     t.width = width;
     t.height = height;
+    t.aspect = format == kDepthFormat ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D;
-    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.format = format;
     ici.extent = {width, height, 1};
     ici.mipLevels = 1;
     ici.arrayLayers = 1;
@@ -206,8 +219,8 @@ bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t he
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = t.image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vci.format = format;
+    vci.subresourceRange = {t.aspect, 0, 1, 0, 1};
     return vkCreateImageView(g_.device, &vci, nullptr, &t.view) == VK_SUCCESS;
 }
 
@@ -290,14 +303,15 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     stages[1].module = frag_;
     stages[1].pName = "main";
     VkVertexInputBindingDescription binding{0, sizeof(PackedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[3] = {
+    VkVertexInputAttributeDescription attributes[4] = {
         {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PackedVertex, x)},
         {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(PackedVertex, r)},
-        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PackedVertex, s)}};
+        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PackedVertex, s)},
+        {3, 0, VK_FORMAT_R32_UINT, offsetof(PackedVertex, z)}};
     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 3;
+    input.vertexAttributeDescriptionCount = 4;
     input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -314,14 +328,19 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blending.attachmentCount = 1;
     blending.pAttachments = &blend;
-    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    // Depth's test, write and comparison are set per batch (Vulkan 1.3).
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                       VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                                       VK_DYNAMIC_STATE_DEPTH_COMPARE_OP};
     VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 2;
+    dynamic.dynamicStateCount = 5;
     dynamic.pDynamicStates = dynamic_states;
     const VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
+    rendering.depthAttachmentFormat = kDepthFormat;
     VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pci.pNext = &rendering;
     pci.stageCount = 2;
@@ -332,6 +351,7 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     pci.pRasterizationState = &raster;
     pci.pMultisampleState = &multisample;
     pci.pColorBlendState = &blending;
+    pci.pDepthStencilState = &depth;
     pci.pDynamicState = &dynamic;
     pci.layout = layout_;
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -416,6 +436,46 @@ Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
     return &t;
 }
 
+Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::uint32_t height) {
+    Image& d = depths_[Key{key, width, height}];
+    if (d.image) return &d;
+    MakeImage(d, width, height, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+              kDepthFormat);
+    // Local memory starts as zeros: the farthest Z.
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkClearDepthStencilValue zero{0.0f, 0};
+        const VkImageSubresourceRange all{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        vkCmdClearDepthStencilImage(cmd, d.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &all);
+    });
+    return &d;
+}
+
+void VulkanGsRenderer::UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
+                                   const std::uint32_t* z) {
+    Flush();
+    Image* d = DepthFor(zbp, width, height);
+    const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    float* out = static_cast<float*>(mapped);
+    for (std::size_t i = 0; i < std::size_t(width) * height; ++i) out[i] = float(double(z[i]) / 4294967296.0);
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, *d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+        copy.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd, buffer, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    });
+    vkUnmapMemory(g_.device, memory);
+    vkDestroyBuffer(g_.device, buffer, nullptr);
+    vkFreeMemory(g_.device, memory, nullptr);
+}
+
 void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v, std::size_t count) {
     if (!SameBatch(state, state_)) Flush();
     state_ = state;
@@ -424,7 +484,7 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
             // Flat shading takes the colour of the triangle's last vertex.
             const GsVertex& c = state.gouraud ? v[i + k] : v[i + 2];
             const GsVertex& p = v[i + k];
-            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q});
+            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q, p.z});
         }
     }
 }
@@ -442,6 +502,8 @@ void VulkanGsRenderer::Flush() {
     }
     std::memcpy(vertex_map_, pending_.data(), bytes);
     Image* t = TargetFor(state_);
+    // A target's own depth buffer is keyed past any ZBP (which has 9 bits).
+    Image* depth = DepthFor(state_.depth ? state_.zbp : 0x10000u + state_.fbp, t->width, t->height);
     const VkPipeline pipeline = PipelineFor(PipelineKey(state_));
     Texture* texture = &blank_;
     if (state_.textured) {
@@ -475,13 +537,28 @@ void VulkanGsRenderer::Flush() {
             colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            Transition(cmd, *depth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                       VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
+            VkRenderingAttachmentInfo z{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            z.imageView = depth->view;
+            z.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            z.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            z.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
             ri.renderArea = {{0, 0}, {t->width, t->height}};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &colour;
+            ri.pDepthAttachment = &z;
             vkCmdBeginRendering(cmd, &ri);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            // ZTST: NEVER, ALWAYS, GEQUAL, GREATER - the larger Z is nearer.
+            static const VkCompareOp kCompare[4] = {VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS,
+                                                    VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
+            vkCmdSetDepthTestEnable(cmd, state_.depth ? VK_TRUE : VK_FALSE);
+            vkCmdSetDepthWriteEnable(cmd, state_.depth && state_.depth_write ? VK_TRUE : VK_FALSE);
+            vkCmdSetDepthCompareOp(cmd, kCompare[state_.ztst & 3]);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
             VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
             vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -534,6 +611,7 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
 VulkanGsRenderer::~VulkanGsRenderer() {
     vkDeviceWaitIdle(g_.device);
     for (auto& [key, t] : targets_) DestroyImage(t);
+    for (auto& [key, d] : depths_) DestroyImage(d);
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     if (vertices_) {

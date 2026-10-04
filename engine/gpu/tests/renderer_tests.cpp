@@ -176,6 +176,54 @@ void AlphaTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x40, 4, 36) == Rgba(0, 0, 0xFF, 0x80), "a failed test with AFAIL FB_ONLY writes colour");
 }
 
+/* A rectangle at one depth. */
+void DepthRect(ps2gpu::GsRenderer& r, const ps2gpu::GsDrawState& state, float x0, float y0, float x1, float y1,
+               std::uint32_t z, std::uint32_t rgba) {
+    const std::uint8_t cr = rgba & 0xFF, cg = (rgba >> 8) & 0xFF, cb = (rgba >> 16) & 0xFF, ca = rgba >> 24;
+    const ps2gpu::GsVertex v[6] = {
+        {x0, y0, z, cr, cg, cb, ca, 0, 0, 1}, {x1, y0, z, cr, cg, cb, ca, 1, 0, 1},
+        {x0, y1, z, cr, cg, cb, ca, 0, 1, 1}, {x1, y0, z, cr, cg, cb, ca, 1, 0, 1},
+        {x1, y1, z, cr, cg, cb, ca, 1, 1, 1}, {x0, y1, z, cr, cg, cb, ca, 0, 1, 1}};
+    r.DrawTriangles(state, v, 6);
+}
+
+void DepthTested(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x50);
+    state.depth = true;
+    state.zbp = 0x60;
+    state.ztst = 2;                                 // GEQUAL: the larger Z wins
+    // Near then far: the far one is hidden.
+    DepthRect(renderer, state, 0, 0, 32, 32, 0x200000, Rgba(0xFF, 0, 0, 0x80));
+    DepthRect(renderer, state, 0, 0, 32, 32, 0x100000, Rgba(0, 0xFF, 0, 0x80));
+    Check(Pixel(renderer, 0x50, 4, 4) == Rgba(0xFF, 0, 0, 0x80), "GEQUAL keeps the nearer (larger) Z");
+    // Far then near: the near one covers it.
+    DepthRect(renderer, state, 32, 0, 64, 32, 0x100000, Rgba(0, 0xFF, 0, 0x80));
+    DepthRect(renderer, state, 32, 0, 64, 32, 0x200000, Rgba(0xFF, 0, 0, 0x80));
+    Check(Pixel(renderer, 0x50, 36, 4) == Rgba(0xFF, 0, 0, 0x80), "a nearer Z draws over a farther one");
+    // Equal Z: GEQUAL passes, GREATER does not.
+    DepthRect(renderer, state, 0, 32, 32, 64, 0x300000, Rgba(0, 0, 0xFF, 0x80));
+    DepthRect(renderer, state, 0, 32, 32, 64, 0x300000, Rgba(0xFF, 0xFF, 0, 0x80));
+    Check(Pixel(renderer, 0x50, 4, 36) == Rgba(0xFF, 0xFF, 0, 0x80), "GEQUAL passes an equal Z");
+    ps2gpu::GsDrawState greater = state;
+    greater.ztst = 3;
+    DepthRect(renderer, greater, 0, 32, 32, 64, 0x300000, Rgba(0, 0xFF, 0xFF, 0x80));
+    Check(Pixel(renderer, 0x50, 4, 36) == Rgba(0xFF, 0xFF, 0, 0x80), "GREATER fails an equal Z");
+    // ZMSK: tested, not written.
+    ps2gpu::GsDrawState masked = state;
+    masked.depth_write = false;
+    DepthRect(renderer, masked, 32, 32, 64, 64, 0x500000, Rgba(0xFF, 0, 0xFF, 0x80));
+    DepthRect(renderer, state, 32, 32, 64, 64, 0x400000, Rgba(0, 0, 0xFF, 0x80));
+    Check(Pixel(renderer, 0x50, 36, 36) == Rgba(0, 0, 0xFF, 0x80), "with ZMSK the Z is not written");
+    // What local memory held: uploaded depth hides a farther draw.
+    std::vector<std::uint32_t> z(64 * 64, 0x800000);
+    renderer.UploadDepth(0x61, 64, 64, z.data());
+    ps2gpu::GsDrawState uploaded = state;
+    uploaded.fbp = 0x51;
+    uploaded.zbp = 0x61;
+    DepthRect(renderer, uploaded, 0, 0, 64, 64, 0x700000, Rgba(0xFF, 0, 0, 0x80));
+    Check(Pixel(renderer, 0x51, 10, 10) == 0, "an uploaded depth buffer hides what is behind it");
+}
+
 }  // namespace
 
 int main() {
@@ -194,6 +242,7 @@ int main() {
     Textured(*renderer);
     Blended(*renderer);
     AlphaTested(*renderer);
+    DepthTested(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;
