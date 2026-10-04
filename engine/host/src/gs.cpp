@@ -225,6 +225,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
 
 void Gs::Transfer(u64 low, u64 high) {
     if (!trx_active_) return;
+    Finish();                                   // the draws before it land first
     Timed timed(Section::GsUpload);
     ++uploads_;
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
@@ -269,6 +270,7 @@ void Gs::Transfer(u64 low, u64 high) {
 }
 
 void Gs::LocalToLocal() {
+    Finish();
     Timed timed(Section::GsUpload);
     ++uploads_;
     const u32 sbp = Bits(bitbltbuf_, 0, 14), sbw = Bits(bitbltbuf_, 16, 6), spsm = Bits(bitbltbuf_, 24, 6);
@@ -305,6 +307,8 @@ void Gs::LoadClut(u64 tex0) {
     if (cld == 2 || cld == 4) cbp0_ = cbp;
     if (cld == 3 || cld == 5) cbp1_ = cbp;
     if (!load) return;
+    Finish();                                   // the CLUT may have been drawn
+    auto clut = std::make_shared<std::array<u32, 256>>(*clut_);
     const bool eight = psm == PSMT8 || psm == PSMT8H;
     const u32 count = eight ? 256 : 16;
     for (u32 i = 0; i < count; ++i) {
@@ -321,8 +325,9 @@ void Gs::LoadClut(u64 tex0) {
         }
         const u32 raw = memory.Read(cbp, 1, x, y, cpsm == 0 ? PSMCT32 : cpsm);
         const u32 color = cpsm == 0 ? raw : From16(raw, texa_);
-        clut_[eight ? i : (csa * 16 + i) % 256] = color;
+        (*clut)[eight ? i : (csa * 16 + i) % 256] = color;
     }
+    clut_ = clut;
 }
 
 // ---------------------------------------------------------------- display
@@ -340,6 +345,7 @@ void Gs::SetPrivileged(u32 address, u64 value) {
 }
 
 bool Gs::Picture(std::vector<u32>* pixels, u32* width, u32* height) const {
+    Finish();
     // The read circuit shown: 2 if enabled, else 1.
     int circuit = Bits(pmode_, 1, 1) ? 1 : Bits(pmode_, 0, 1) ? 0 : -1;
     if (circuit < 0) {

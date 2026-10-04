@@ -232,6 +232,7 @@ void GsDrawsASprite() {
     gs.WriteRegister(0x01, 0x80402010ull);                                          // RGBAQ
     gs.WriteRegister(0x05, (u64(4) << 4) | (u64(4) << 4) << 16);                    // XYZ2 (4,4)
     gs.WriteRegister(0x05, (u64(8) << 4) | (u64(6) << 4) << 16);                    // XYZ2 (8,6)
+    gs.Finish();                                                                    // the queued draws
     Check(gs.memory.Read(0, 1, 5, 5, PSMCT32) == 0x80402010u, "a sprite's pixels take its colour");
     Check(gs.memory.Read(0, 1, 8, 5, PSMCT32) == 0 && gs.memory.Read(0, 1, 5, 6, PSMCT32) == 0,
           "a sprite stops short of its far edges");
@@ -276,10 +277,12 @@ void GsFogsTowardsFogcol() {
     gs.WriteRegister(0x01, 0x80FFFFFFull);                                          // RGBAQ: white
     gs.WriteRegister(0x04, (u64(0) << 4) | (u64(0) << 4) << 16 | u64(0x80) << 56);  // XYZF2 (0,0) F 0x80
     gs.WriteRegister(0x04, (u64(4) << 4) | (u64(4) << 4) << 16 | u64(0x80) << 56);  // XYZF2 (4,4)
+    gs.Finish();
     Check(gs.memory.Read(0, 1, 1, 1, PSMCT32) == 0x807F7FFEu, "fog halfway to red: (128 * 255 + 127 * FOGCOL) >> 8");
     gs.WriteRegister(0x0A, u64(0) << 56);                                           // FOG: F 0 for XYZ2
     gs.WriteRegister(0x05, (u64(8) << 4) | (u64(0) << 4) << 16);                    // XYZ2 (8,0)
     gs.WriteRegister(0x05, (u64(12) << 4) | (u64(4) << 4) << 16);                   // XYZ2 (12,4)
+    gs.Finish();
     Check(gs.memory.Read(0, 1, 9, 1, PSMCT32) == 0x800000FEu, "F 0 from the FOG register: FOGCOL (* 255 / 256)");
 }
 
@@ -301,6 +304,7 @@ void GsKeepsAFlatDepthExact() {
     gs.WriteRegister(0x05, (u64(3) << 4) | (u64(1) << 4) << 16 | z);
     gs.WriteRegister(0x05, (u64(61) << 4) | (u64(1) << 4) << 16 | z);
     gs.WriteRegister(0x05, (u64(3) << 4) | (u64(37) << 4) << 16 | z);
+    gs.Finish();
     u32 missing = 0;
     for (u32 y = 2; y < 18; ++y)
         for (u32 x = 4; x < 20; ++x)

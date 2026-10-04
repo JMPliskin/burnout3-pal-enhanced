@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -118,7 +119,13 @@ public:
     u64 uploads() const { return uploads_; }
 
     u64 primitives() const { return primitives_; }
-    u64 pixels_drawn() const { return pixels_; }
+    u64 pixels_drawn() const { Finish(); return pixels_; }
+
+    /* Draws what is queued. Primitives are queued and drawn in batches, rows
+       spread over threads (each pixel still sees them in order); anything
+       that reads local memory - the picture, transfers, CLUT loads - finishes
+       them first, and so must a caller reading `memory` directly. */
+    void Finish() const;
     /* For the report: GIF tags per path, register writes, image data. */
     std::string Summary() const;
 
@@ -132,8 +139,12 @@ private:
     };
     Path paths_[4];
     /* The drawing state a primitive's pixels all use, decoded from the
-       registers once per primitive (Prepare) rather than once per pixel. */
+       registers once per primitive (Prepare) rather than once per pixel, and
+       kept with the primitive while it waits to be drawn. */
     struct Setup {
+        u64 prim, texa;                             // PRIM (with PRMODE), TEXA
+        std::shared_ptr<const std::array<u32, 256>> clut;
+        u32 tex_end, frame_end, z_end;              // the blocks it reads and writes, exclusive
         int sx0, sx1, sy0, sy1;                     // SCISSOR, inclusive
         u32 tfx;
         bool tcc, linear;
@@ -148,20 +159,27 @@ private:
     };
     Setup setup_{};
     void Prepare();
-    /* Rows [begin, end) of a primitive of about `pixels` pixels: on the row
-       workers when it is large and does not sample what it draws into. */
-    bool FeedsBack(bool textured) const;
-    void DrawRows(int begin, int end, long long pixels, bool textured, const std::function<void(int, int)>& rows);
+    /* A primitive waiting to be drawn. */
+    struct Job {
+        Setup s;
+        Vertex v[3];
+        u32 count;
+        long long pixels;                       // about how many, for spreading the work
+    };
+    std::vector<Job> jobs_;
+    void FinishJobs();
+    /* One primitive, the rows of band `band` of `bands` (rows in groups of 8
+       dealt round). */
+    void DrawJob(const Job& job, int band, int bands);
     void Packed(u32 descriptor, u64 low, u64 high);
     void Kick(bool draw);
     void Draw();
-    void DrawSprite(const Vertex& a, const Vertex& b);
-    void DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c);
-    void DrawLine(const Vertex& a, const Vertex& b);
-    void Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
-              float u, float v, bool textured, u8 fog = 0);
-    u32 Texel(float u, float v) const;          /* filtered as TEX1 says */
-    u32 TexelAt(int u, int v) const;            /* one texel, wrapped or clamped */
+    void DrawSprite(const Job& job, int band, int bands);
+    void DrawTriangle(const Job& job, int band, int bands);
+    void DrawLine(const Job& job, int band, int bands);
+    void Plot(const Setup& st, int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float u, float v, bool textured, u8 fog);
+    u32 Texel(const Setup& st, float u, float v) const;      /* filtered as TEX1 says */
+    u32 TexelAt(const Setup& st, int u, int v) const;        /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
     void LocalToLocal();
 
@@ -186,8 +204,9 @@ private:
     std::atomic<u64> pixels_{0};               // written by the row workers too
     u64 tags_[4] = {}, image_qwords_ = 0;
     std::array<u64, 256> register_writes_{};
-    // CLUT, loaded per TEX0's CLD.
-    std::array<u32, 256> clut_{};
+    // CLUT, loaded per TEX0's CLD; copied when it changes, so that queued
+    // primitives keep the one they were drawn with.
+    std::shared_ptr<std::array<u32, 256>> clut_ = std::make_shared<std::array<u32, 256>>();
     void LoadClut(u64 tex0);
     u64 Prim() const { return (prmodecont_ & 1) ? prim_ : ((prim_ & 7) | (prmode_ & ~7ull)); }
     const Context& Ctx() const { return ctx_[(Prim() >> 9) & 1]; }

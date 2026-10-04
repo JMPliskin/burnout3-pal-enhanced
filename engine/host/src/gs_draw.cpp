@@ -6,8 +6,17 @@
  *   -> fog -> alpha test (TEST) -> depth test (ZBUF) -> blending (ALPHA,
  *   PABE, COLCLAMP) -> frame mask (FBMSK) -> FRAME and ZBUF writes.
  *
- * Stage one samples textures at the nearest texel and does not dither; the
- * destination alpha test, anti-aliasing and mipmapping are not modelled.
+ * Primitives are queued with their decoded state (Setup, the CLUT they use)
+ * and drawn in batches: the rows are dealt out in groups of 8 to worker
+ * threads, each of which draws every queued primitive over its own rows, so
+ * every pixel still sees the primitives in order and the picture is the same
+ * as drawn one by one. A primitive that samples memory queued ones write waits
+ * for them; one that samples what it writes itself is drawn alone, in order.
+ * Whatever reads local memory - the picture, transfers, CLUT loads - finishes
+ * the queue first (Gs::Finish).
+ *
+ * Stage one samples textures at the nearest texel or bilinearly and does not
+ * dither; anti-aliasing and mipmapping are not modelled.
  */
 
 #include <algorithm>
@@ -49,6 +58,101 @@ int Wrap(int i, u32 size, u32 mode, u32 min, u32 max) {
         case 1: return std::clamp(i, 0, int(size) - 1);                     // CLAMP
         case 2: return std::clamp(i, int(min), int(max));                   // REGION_CLAMP
         default: return (i & int(min)) | int(max);                         // REGION_REPEAT
+    }
+}
+
+u32 BitsPerPixel(u32 psm) {
+    switch (psm) {
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return 16;
+        case PSMT8: return 8;
+        case PSMT4: return 4;
+        default: return 32;
+    }
+}
+
+// Whether row y belongs to band `band` of `bands`: rows go round in groups of 8.
+bool Owned(int y, int band, int bands) { return bands <= 1 || (y >= 0 && ((y >> 3) % bands) == band); }
+
+/* The worker threads a batch's bands are drawn on. Workers live for the
+   process. */
+class RowPool {
+public:
+    static RowPool& Get() {
+        static RowPool* pool = new RowPool;     // never destroyed: its threads wait to the end
+        return *pool;
+    }
+    int threads() const { return int(workers_) + 1; }
+    /* body(i0, i1) over [begin, end), in chunks, on the workers and the caller. */
+    void Run(int begin, int end, const std::function<void(int, int)>& body) {
+        {
+            std::lock_guard<std::mutex> hold(lock_);
+            body_ = &body;
+            next_ = begin;
+            end_ = end;
+            chunk_ = 1;
+            pending_ = workers_;
+            ++generation_;
+        }
+        wake_.notify_all();
+        int a, b;
+        while (Take(&a, &b)) body(a, b);
+        std::unique_lock<std::mutex> hold(lock_);
+        done_.wait(hold, [&] { return pending_ == 0; });
+        body_ = nullptr;
+    }
+
+private:
+    RowPool() {
+        const unsigned cores = std::thread::hardware_concurrency();
+        workers_ = cores > 2 ? std::min(cores - 1, 7u) : 1u;
+        for (unsigned i = 0; i < workers_; ++i) std::thread([this] { Work(); }).detach();
+    }
+    bool Take(int* a, int* b) {
+        std::lock_guard<std::mutex> hold(lock_);
+        if (next_ >= end_) return false;
+        *a = next_;
+        *b = std::min(end_, next_ + chunk_);
+        next_ = *b;
+        return true;
+    }
+    void Work() {
+        u64 seen = 0;
+        for (;;) {
+            const std::function<void(int, int)>* body;
+            {
+                std::unique_lock<std::mutex> hold(lock_);
+                wake_.wait(hold, [&] { return generation_ != seen; });
+                seen = generation_;
+                body = body_;
+            }
+            int a, b;
+            while (body && Take(&a, &b)) (*body)(a, b);
+            std::lock_guard<std::mutex> hold(lock_);
+            if (--pending_ == 0) done_.notify_one();
+        }
+    }
+    unsigned workers_ = 0;
+    std::mutex lock_;
+    std::condition_variable wake_, done_;
+    const std::function<void(int, int)>* body_ = nullptr;
+    int next_ = 0, end_ = 0, chunk_ = 1;
+    unsigned pending_ = 0;
+    u64 generation_ = 0;
+};
+
+// A batch is drawn when it holds this many primitives, or before anything
+// reads local memory; one of fewer pixels than this is drawn on one thread.
+constexpr std::size_t kBatchPrimitives = 1024;
+constexpr long long kParallelPixels = 8192;
+
+// Texture coordinates of a vertex in texels: UV directly (1/16 texel), or
+// S/Q, T/Q scaled by the texture's size.
+void Coords(const Vertex& v, bool fst, u32 tw, u32 th, float* u, float* t) {
+    if (fst) { *u = float(v.u) / 16.0f; *t = float(v.v) / 16.0f; }
+    else {
+        const float q = v.q != 0.0f ? v.q : 1.0f;
+        *u = v.s / q * float(tw);
+        *t = v.t / q * float(th);
     }
 }
 
@@ -100,13 +204,13 @@ void Gs::Kick(bool draw) {
 }
 
 void Gs::DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const {
-    const u64 tex0 = Ctx().tex0;
-    const u32 tw = 1u << std::min(Bits(tex0, 26, 4), 10u), th = 1u << std::min(Bits(tex0, 30, 4), 10u);
-    pixels->resize(std::size_t(tw) * th);
-    for (u32 v = 0; v < th; ++v)
-        for (u32 u = 0; u < tw; ++u) (*pixels)[std::size_t(v) * tw + u] = TexelAt(int(u), int(v));
-    *width = tw;
-    *height = th;
+    Finish();
+    const Setup& s = setup_;
+    pixels->resize(std::size_t(s.tw) * s.th);
+    for (u32 v = 0; v < s.th; ++v)
+        for (u32 u = 0; u < s.tw; ++u) (*pixels)[std::size_t(v) * s.tw + u] = TexelAt(s, int(u), int(v));
+    *width = s.tw;
+    *height = s.th;
 }
 
 bool Gs::Displayed(u32* fbp, u32* fbw, u32* psm) const {
@@ -123,17 +227,23 @@ bool Gs::Displayed(u32* fbp, u32* fbw, u32* psm) const {
 }
 
 u32 Gs::FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const {
+    Finish();
     const u32 c = memory.Read(fbp * 32, fbw, x, y, psm);
     if (psm == PSMCT16 || psm == PSMCT16S) return From16(c, 0x80ull << 32);
     if (psm == PSMCT24) return (c & 0xFFFFFF) | 0x80000000u;
     return c;
 }
 
+void Gs::Finish() const { const_cast<Gs*>(this)->FinishJobs(); }
+
 void Gs::Draw() {
     Timed timed(Section::GsDraw);
     ++primitives_;
     Prepare();
-    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_, (pabe_ & 1) != 0});
+    if (on_draw) {
+        Finish();                               // the second renderer reads local memory as of now
+        on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_, (pabe_ & 1) != 0});
+    }
     if (trace) {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];
@@ -152,236 +262,167 @@ void Gs::Draw() {
                      Bits(c.zbuf, 0, 9), Bits(c.zbuf, 24, 4), Bits(c.zbuf, 32, 1),
                      (unsigned long long)c.test, (unsigned long long)c.alpha);
     }
-    switch (Prim() & 7) {
-        case 0: DrawLine(queue_[queued_ - 1], queue_[queued_ - 1]); break;
-        case 1: case 2: DrawLine(queue_[0], queue_[1]); break;
-        case 3: case 4: case 5: DrawTriangle(queue_[0], queue_[1], queue_[2]); break;
-        case 6: DrawSprite(queue_[0], queue_[1]); break;
-        default: break;
+    const u32 type = u32(Prim() & 7);
+    if (type == 7) return;
+    Job job{setup_, {}, queued_, 0};
+    for (u32 i = 0; i < queued_ && i < 3; ++i) job.v[i] = queue_[i];
+    // About how many pixels: the box around it (half for a triangle).
+    float x0 = job.v[0].x, x1 = x0, y0 = job.v[0].y, y1 = y0;
+    for (u32 i = 1; i < queued_ && i < 3; ++i) {
+        x0 = std::min(x0, job.v[i].x); x1 = std::max(x1, job.v[i].x);
+        y0 = std::min(y0, job.v[i].y); y1 = std::max(y1, job.v[i].y);
     }
-    pixels_ += t_pixels;
-    t_pixels = 0;
-}
-
-namespace {
-
-// Texture coordinates of a vertex in texels: UV directly (1/16 texel), or
-// S/Q, T/Q scaled by the texture's size.
-void Coords(const Vertex& v, bool fst, u32 tw, u32 th, float* u, float* t) {
-    if (fst) { *u = float(v.u) / 16.0f; *t = float(v.v) / 16.0f; }
-    else {
-        const float q = v.q != 0.0f ? v.q : 1.0f;
-        *u = v.s / q * float(tw);
-        *t = v.t / q * float(th);
-    }
-}
-
-}  // namespace
-
-namespace {
-
-/* Rows of one large primitive, drawn by several threads. A pixel's result does
-   not depend on any other pixel of the same primitive, unless the primitive
-   samples memory it writes (FeedsBack), so the picture is the same as drawn in
-   order. Workers live for the process. */
-class RowPool {
-public:
-    static RowPool& Get() {
-        static RowPool* pool = new RowPool;     // never destroyed: its threads wait to the end
-        return *pool;
-    }
-    int threads() const { return int(workers_) + 1; }
-    /* body(y0, y1) over [begin, end), in chunks, on the workers and the caller. */
-    void Run(int begin, int end, const std::function<void(int, int)>& body) {
-        {
-            std::lock_guard<std::mutex> hold(lock_);
-            body_ = &body;
-            next_ = begin;
-            end_ = end;
-            chunk_ = std::max(1, (end - begin) / (threads() * 4));
-            pending_ = workers_;
-            ++generation_;
-        }
-        wake_.notify_all();
-        int a, b;
-        while (Take(&a, &b)) body(a, b);
-        std::unique_lock<std::mutex> hold(lock_);
-        done_.wait(hold, [&] { return pending_ == 0; });
-        body_ = nullptr;
-    }
-
-private:
-    RowPool() {
-        const unsigned cores = std::thread::hardware_concurrency();
-        workers_ = cores > 2 ? std::min(cores - 1, 7u) : 1u;
-        for (unsigned i = 0; i < workers_; ++i) std::thread([this] { Work(); }).detach();
-    }
-    bool Take(int* a, int* b) {
-        std::lock_guard<std::mutex> hold(lock_);
-        if (next_ >= end_) return false;
-        *a = next_;
-        *b = std::min(end_, next_ + chunk_);
-        next_ = *b;
-        return true;
-    }
-    void Work() {
-        u64 seen = 0;
-        for (;;) {
-            const std::function<void(int, int)>* body;
-            {
-                std::unique_lock<std::mutex> hold(lock_);
-                wake_.wait(hold, [&] { return generation_ != seen; });
-                seen = generation_;
-                body = body_;
+    const double box = double(x1 - x0 + 1) * double(y1 - y0 + 1);
+    job.pixels = (long long)std::min(1e9, type >= 3 && type <= 5 ? box / 2 : box);
+    const Setup& s = job.s;
+    const bool textured = Bits(s.prim, 4, 1) != 0;
+    if (textured) {
+        // Sampling what queued primitives write: they go first.
+        for (const Job& queued : jobs_) {
+            const Setup& q = queued.s;
+            if ((s.tbp < q.frame_end && q.fbp < s.tex_end) || (s.tbp < q.z_end && q.zbp < s.tex_end)) {
+                FinishJobs();
+                break;
             }
-            int a, b;
-            while (body && Take(&a, &b)) (*body)(a, b);
-            std::lock_guard<std::mutex> hold(lock_);
-            if (--pending_ == 0) done_.notify_one();
+        }
+        // Sampling what it writes itself: drawn alone, in order.
+        if ((s.tbp < s.frame_end && s.fbp < s.tex_end) || ((s.zte || !s.zmsk) && s.tbp < s.z_end && s.zbp < s.tex_end)) {
+            FinishJobs();
+            DrawJob(job, 0, 1);
+            pixels_ += t_pixels;
+            t_pixels = 0;
+            return;
         }
     }
-    unsigned workers_ = 0;
-    std::mutex lock_;
-    std::condition_variable wake_, done_;
-    const std::function<void(int, int)>* body_ = nullptr;
-    int next_ = 0, end_ = 0, chunk_ = 1;
-    unsigned pending_ = 0;
-    u64 generation_ = 0;
-};
-
-// Primitives smaller than this are drawn on the calling thread.
-constexpr long long kParallelPixels = 16384;
-
-u32 BitsPerPixel(u32 psm) {
-    switch (psm) {
-        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return 16;
-        case PSMT8: return 8;
-        case PSMT4: return 4;
-        default: return 32;
-    }
+    jobs_.push_back(job);
+    if (jobs_.size() >= kBatchPrimitives) FinishJobs();
 }
 
-}  // namespace
-
-// Whether the primitive samples local memory that it may also write - its frame
-// or depth buffer - so that its pixels must be drawn in order.
-bool Gs::FeedsBack(bool textured) const {
-    if (!textured) return false;
-    const Setup& s = setup_;
-    const u32 tex_end = s.tbp + std::max(1u, s.tbw * 64 * s.th * BitsPerPixel(s.tpsm) / 8 / 256);
-    const u32 rows = u32(std::max(0, s.sy1 + 1));
-    const u32 frame_end = s.fbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.fpsm) / 8 / 256);
-    const u32 z_end = s.zbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.zpsm) / 8 / 256);
-    const bool frame = s.tbp < frame_end && s.fbp < tex_end;
-    const bool depth = (s.zte || !s.zmsk) && s.tbp < z_end && s.zbp < tex_end;
-    return frame || depth;
-}
-
-void Gs::DrawRows(int begin, int end, long long pixels, bool textured,
-                  const std::function<void(int, int)>& rows) {
-    if (end <= begin) return;
-    if (pixels >= kParallelPixels && !FeedsBack(textured)) {
-        RowPool::Get().Run(begin, end, [&](int y0, int y1) {
-            rows(y0, y1);
+void Gs::FinishJobs() {
+    if (jobs_.empty()) return;
+    Timed timed(Section::GsDraw);
+    long long pixels = 0;
+    for (const Job& job : jobs_) pixels += job.pixels;
+    if (pixels < kParallelPixels) {
+        for (const Job& job : jobs_) DrawJob(job, 0, 1);
+        pixels_ += t_pixels;
+        t_pixels = 0;
+    } else {
+        RowPool& pool = RowPool::Get();
+        const int bands = pool.threads();
+        pool.Run(0, bands, [&](int b0, int b1) {
+            for (int band = b0; band < b1; ++band)
+                for (const Job& job : jobs_) DrawJob(job, band, bands);
             pixels_ += t_pixels;
             t_pixels = 0;
         });
-    } else {
-        rows(begin, end);
-        pixels_ += t_pixels;
-        t_pixels = 0;
+    }
+    jobs_.clear();
+}
+
+void Gs::DrawJob(const Job& job, int band, int bands) {
+    switch (job.s.prim & 7) {
+        case 0: DrawLine(job, band, bands); break;      // a point: the line from its vertex to itself
+        case 1: case 2: DrawLine(job, band, bands); break;
+        case 3: case 4: case 5: DrawTriangle(job, band, bands); break;
+        case 6: DrawSprite(job, band, bands); break;
+        default: break;
     }
 }
 
-void Gs::DrawSprite(const Vertex& a, const Vertex& b) {
-    const u64 prim = Prim();
-    const bool tme = Bits(prim, 4, 1), fst = Bits(prim, 8, 1);
-    const Context& c = Ctx();
-    const u32 tw = 1u << std::min(Bits(c.tex0, 26, 4), 10u), th = 1u << std::min(Bits(c.tex0, 30, 4), 10u);
+void Gs::DrawSprite(const Job& job, int band, int bands) {
+    const Setup& st = job.s;
+    const Vertex& a = job.v[0];
+    const Vertex& b = job.v[1];
+    const bool tme = Bits(st.prim, 4, 1), fst = Bits(st.prim, 8, 1);
     float ua, va, ub, vb;
-    Coords(a, fst, tw, th, &ua, &va);
-    Coords(b, fst, tw, th, &ub, &vb);
+    Coords(a, fst, st.tw, st.th, &ua, &va);
+    Coords(b, fst, st.tw, st.th, &ub, &vb);
     const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
     const float y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
     const int ix0 = int(std::ceil(x0)), ix1 = int(std::ceil(x1));
     const int iy0 = int(std::ceil(y0)), iy1 = int(std::ceil(y1));
     const float du = x1 > x0 ? (ub - ua) / (b.x - a.x) : 0, dv = y1 > y0 ? (vb - va) / (b.y - a.y) : 0;
     // Only what the scissor lets through (Plot would drop the rest).
-    const int cx0 = std::max({ix0, setup_.sx0, 0}), cx1 = std::min(ix1, setup_.sx1 + 1);
-    const int cy0 = std::max({iy0, setup_.sy0, 0}), cy1 = std::min(iy1, setup_.sy1 + 1);
-    DrawRows(cy0, cy1, (long long)(cy1 - cy0) * std::max(0, cx1 - cx0), tme, [&](int r0, int r1) {
-        for (int y = r0; y < r1; ++y)
-            for (int x = cx0; x < cx1; ++x) {
-                const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
-                Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme, b.fog);
-            }
-    });
+    const int cx0 = std::max({ix0, st.sx0, 0}), cx1 = std::min(ix1, st.sx1 + 1);
+    const int cy0 = std::max({iy0, st.sy0, 0}), cy1 = std::min(iy1, st.sy1 + 1);
+    for (int y = cy0; y < cy1; ++y) {
+        if (!Owned(y, band, bands)) continue;
+        for (int x = cx0; x < cx1; ++x) {
+            const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
+            Plot(st, x, y, b.z, b.r, b.g, b.b, b.a, u, v, tme, b.fog);
+        }
+    }
 }
 
-void Gs::DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c) {
-    const u64 prim = Prim();
-    const bool iip = Bits(prim, 3, 1), tme = Bits(prim, 4, 1), fst = Bits(prim, 8, 1);
-    const Context& ctx = Ctx();
-    const u32 tw = 1u << std::min(Bits(ctx.tex0, 26, 4), 10u), th = 1u << std::min(Bits(ctx.tex0, 30, 4), 10u);
+void Gs::DrawTriangle(const Job& job, int band, int bands) {
+    const Setup& st = job.s;
+    const Vertex& a = job.v[0];
+    const Vertex& b = job.v[1];
+    const Vertex& c = job.v[2];
+    const bool iip = Bits(st.prim, 3, 1), tme = Bits(st.prim, 4, 1), fst = Bits(st.prim, 8, 1);
+    const u32 tw = st.tw, th = st.th;
     const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if (area == 0.0f) return;
-    const u64 sc = ctx.scissor;
-    const int minx = std::max(int(std::floor(std::min({a.x, b.x, c.x}))), int(Bits(sc, 0, 11)));
-    const int maxx = std::min(int(std::ceil(std::max({a.x, b.x, c.x}))), int(Bits(sc, 16, 11)));
-    const int miny = std::max(int(std::floor(std::min({a.y, b.y, c.y}))), int(Bits(sc, 32, 11)));
-    const int maxy = std::min(int(std::ceil(std::max({a.y, b.y, c.y}))), int(Bits(sc, 48, 11)));
+    const int minx = std::max(int(std::floor(std::min({a.x, b.x, c.x}))), st.sx0);
+    const int maxx = std::min(int(std::ceil(std::max({a.x, b.x, c.x}))), st.sx1);
+    const int miny = std::max(int(std::floor(std::min({a.y, b.y, c.y}))), st.sy0);
+    const int maxy = std::min(int(std::ceil(std::max({a.y, b.y, c.y}))), st.sy1);
     float ua = 0, va = 0, ub = 0, vb = 0, uc = 0, vc = 0;
     if (fst) { Coords(a, true, tw, th, &ua, &va); Coords(b, true, tw, th, &ub, &vb); Coords(c, true, tw, th, &uc, &vc); }
-    const long long box = (long long)std::max(0, maxy - miny + 1) * std::max(0, maxx - minx + 1);
-    DrawRows(miny, maxy + 1, box / 2, tme, [&](int r0, int r1) {
-        for (int y = r0; y < r1; ++y)
-            for (int x = minx; x <= maxx; ++x) {
-                const float px = float(x), py = float(y);
-                float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
-                float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
-                float w2 = 1.0f - w0 - w1;
-                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-                const Vertex& last = c;
-                u8 r = last.r, g = last.g, bl = last.b, al = last.a;
-                if (iip) {
-                    r = u8(w0 * a.r + w1 * b.r + w2 * c.r);
-                    g = u8(w0 * a.g + w1 * b.g + w2 * c.g);
-                    bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
-                    al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
-                }
-                const u8 fog = u8(w0 * a.fog + w1 * b.fog + w2 * c.fog);
-                // Depth in double, from the first vertex: 24 and 32-bit depths do not
-                // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
-                const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
-                                             double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
-                if (fst) {
-                    Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme, fog);
-                } else {
-                    const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
-                    const float q = w0 * a.q + w1 * b.q + w2 * c.q;
-                    const float qq = q != 0.0f ? q : 1.0f;
-                    Plot(x, y, z, r, g, bl, al, s, t, q, s / qq * float(tw), t / qq * float(th), tme, fog);
-                }
+    for (int y = miny; y <= maxy; ++y) {
+        if (!Owned(y, band, bands)) continue;
+        for (int x = minx; x <= maxx; ++x) {
+            const float px = float(x), py = float(y);
+            float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
+            float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
+            float w2 = 1.0f - w0 - w1;
+            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            const Vertex& last = c;
+            u8 r = last.r, g = last.g, bl = last.b, al = last.a;
+            if (iip) {
+                r = u8(w0 * a.r + w1 * b.r + w2 * c.r);
+                g = u8(w0 * a.g + w1 * b.g + w2 * c.g);
+                bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
+                al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
             }
-    });
+            const u8 fog = u8(w0 * a.fog + w1 * b.fog + w2 * c.fog);
+            // Depth in double, from the first vertex: 24 and 32-bit depths do not
+            // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
+            const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
+                                         double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
+            if (fst) {
+                Plot(st, x, y, z, r, g, bl, al, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme, fog);
+            } else {
+                const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
+                const float q = w0 * a.q + w1 * b.q + w2 * c.q;
+                const float qq = q != 0.0f ? q : 1.0f;
+                Plot(st, x, y, z, r, g, bl, al, s / qq * float(tw), t / qq * float(th), tme, fog);
+            }
+        }
+    }
 }
 
-void Gs::DrawLine(const Vertex& a, const Vertex& b) {
-    const u64 prim = Prim();
-    const bool iip = Bits(prim, 3, 1), tme = Bits(prim, 4, 1), fst = Bits(prim, 8, 1);
-    const Context& ctx = Ctx();
-    const u32 tw = 1u << std::min(Bits(ctx.tex0, 26, 4), 10u), th = 1u << std::min(Bits(ctx.tex0, 30, 4), 10u);
+void Gs::DrawLine(const Job& job, int band, int bands) {
+    const Setup& st = job.s;
+    // A point is the line from its (last) vertex to itself.
+    const bool point = (st.prim & 7) == 0;
+    const Vertex& a = point ? job.v[job.count ? job.count - 1 : 0] : job.v[0];
+    const Vertex& b = point ? a : job.v[1];
+    const bool iip = Bits(st.prim, 3, 1), tme = Bits(st.prim, 4, 1), fst = Bits(st.prim, 8, 1);
     const int steps = std::max(1, int(std::max(std::fabs(b.x - a.x), std::fabs(b.y - a.y))));
     float ua, va, ub, vb;
-    Coords(a, fst, tw, th, &ua, &va);
-    Coords(b, fst, tw, th, &ub, &vb);
+    Coords(a, fst, st.tw, st.th, &ua, &va);
+    Coords(b, fst, st.tw, st.th, &ub, &vb);
     for (int i = 0; i <= steps; ++i) {
         const float f = float(i) / float(steps);
         const auto mix = [&](float p, float q) { return p + (q - p) * f; };
+        const int y = int(std::lround(mix(a.y, b.y)));
+        if (!Owned(y, band, bands)) continue;
         const u8 r = iip ? u8(mix(a.r, b.r)) : b.r, g = iip ? u8(mix(a.g, b.g)) : b.g;
         const u8 bl = iip ? u8(mix(a.b, b.b)) : b.b, al = iip ? u8(mix(a.a, b.a)) : b.a;
-        Plot(int(std::lround(mix(a.x, b.x))), int(std::lround(mix(a.y, b.y))), u32(double(a.z) + (double(b.z) - double(a.z)) * double(f)),
-             r, g, bl, al, 0, 0, 1, mix(ua, ub), mix(va, vb), tme, u8(mix(a.fog, b.fog)));
+        Plot(st, int(std::lround(mix(a.x, b.x))), y, u32(double(a.z) + (double(b.z) - double(a.z)) * double(f)),
+             r, g, bl, al, mix(ua, ub), mix(va, vb), tme, u8(mix(a.fog, b.fog)));
     }
 }
 
@@ -392,6 +433,9 @@ void Gs::Prepare() {
     const Context& c = Ctx();
     const u64 prim = Prim(), test = c.test;
     Setup& s = setup_;
+    s.prim = prim;
+    s.texa = texa_;
+    s.clut = clut_;
     s.sx0 = int(Bits(c.scissor, 0, 11));
     s.sx1 = int(Bits(c.scissor, 16, 11));
     s.sy0 = int(Bits(c.scissor, 32, 11));
@@ -441,19 +485,25 @@ void Gs::Prepare() {
     s.fcr = Bits(fogcol_, 0, 8);
     s.fcg = Bits(fogcol_, 8, 8);
     s.fcb = Bits(fogcol_, 16, 8);
+    // The blocks it reads (its texture) and writes (frame and depth, down to
+    // the scissor's last row).
+    const u32 rows = u32(std::max(0, s.sy1 + 1));
+    s.tex_end = s.tbp + std::max(1u, s.tbw * 64 * s.th * BitsPerPixel(s.tpsm) / 8 / 256);
+    s.frame_end = s.fbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.fpsm) / 8 / 256);
+    s.z_end = s.zbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.zpsm) / 8 / 256);
 }
 
 // TEX1: MMAG (bit 5) filters magnification, MMIN (6-8) minification, chosen by
 // the level of detail - K (bits 32-43, 4 fractional bits) here; LOD from Q is
 // not modelled yet. Linear filtering samples the four texels around
 // (u - 0.5, v - 0.5), as the GS does.
-u32 Gs::Texel(float fu, float fv) const {
-    if (!setup_.linear) return TexelAt(int(std::floor(fu)), int(std::floor(fv)));
+u32 Gs::Texel(const Setup& st, float fu, float fv) const {
+    if (!st.linear) return TexelAt(st, int(std::floor(fu)), int(std::floor(fv)));
     const float x = fu - 0.5f, y = fv - 0.5f;
     const int u0 = int(std::floor(x)), v0 = int(std::floor(y));
     const float a = x - float(u0), b = y - float(v0);
-    const u32 t00 = TexelAt(u0, v0), t10 = TexelAt(u0 + 1, v0);
-    const u32 t01 = TexelAt(u0, v0 + 1), t11 = TexelAt(u0 + 1, v0 + 1);
+    const u32 t00 = TexelAt(st, u0, v0), t10 = TexelAt(st, u0 + 1, v0);
+    const u32 t01 = TexelAt(st, u0, v0 + 1), t11 = TexelAt(st, u0 + 1, v0 + 1);
     u32 out = 0;
     for (int shift = 0; shift < 32; shift += 8) {
         const float c00 = float((t00 >> shift) & 0xFF), c10 = float((t10 >> shift) & 0xFF);
@@ -464,8 +514,7 @@ u32 Gs::Texel(float fu, float fv) const {
     return out;
 }
 
-u32 Gs::TexelAt(int iu, int iv) const {
-    const Setup& s = setup_;
+u32 Gs::TexelAt(const Setup& s, int iu, int iv) const {
     const int u = Wrap(iu, s.tw, s.wms, s.minu, s.maxu);
     const int v = Wrap(iv, s.th, s.wmt, s.minv, s.maxv);
     const u32 raw = memory.Read(s.tbp, s.tbw, u32(u) & 2047, u32(v) & 2047, s.tpsm);
@@ -473,25 +522,23 @@ u32 Gs::TexelAt(int iu, int iv) const {
         case PSMCT32: return raw;
         case PSMCT24: {
             const u32 rgb = raw & 0xFFFFFF;
-            const u32 a = (Bits(texa_, 15, 1) && !rgb) ? 0 : Bits(texa_, 0, 8);
+            const u32 a = (Bits(s.texa, 15, 1) && !rgb) ? 0 : Bits(s.texa, 0, 8);
             return rgb | a << 24;
         }
-        case PSMCT16: case PSMCT16S: return From16(raw, texa_);
-        case PSMT8: case PSMT8H: return clut_[raw & 0xFF];
-        case PSMT4: case PSMT4HL: case PSMT4HH: return clut_[(s.csa * 16 + (raw & 15)) & 0xFF];
+        case PSMCT16: case PSMCT16S: return From16(raw, s.texa);
+        case PSMT8: case PSMT8H: return (*s.clut)[raw & 0xFF];
+        case PSMT4: case PSMT4HL: case PSMT4HH: return (*s.clut)[(s.csa * 16 + (raw & 15)) & 0xFF];
         default: return raw;
     }
 }
 
-void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
-              float u, float v, bool textured, u8 fog) {
-    (void)s; (void)t; (void)q;
-    const Setup& st = setup_;
+void Gs::Plot(const Setup& st, int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float u, float v, bool textured,
+              u8 fog) {
     // Scissor.
     if (x < st.sx0 || x > st.sx1 || y < st.sy0 || y > st.sy1 || x < 0 || y < 0) return;
     u32 cr = r, cg = g, cb = b, ca = a;
     if (textured) {
-        const u32 texel = Texel(u, v);
+        const u32 texel = Texel(st, u, v);
         const u32 tr = texel & 0xFF, tg = (texel >> 8) & 0xFF, tb = (texel >> 16) & 0xFF, ta = texel >> 24;
         const bool tcc = st.tcc;
         switch (st.tfx) {
