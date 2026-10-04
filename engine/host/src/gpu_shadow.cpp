@@ -145,8 +145,12 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         const int k = int(std::int32_t(Bits(c.tex1, 32, 12) << 20) >> 20);
         const u32 mmin = Bits(c.tex1, 6, 3);
         state.bilinear = k <= 0 ? Bits(c.tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
-        state.repeat_s = Bits(c.clamp, 0, 2) == 0;
-        state.repeat_t = Bits(c.clamp, 2, 2) == 0;
+        state.wms = Bits(c.clamp, 0, 2);
+        state.wmt = Bits(c.clamp, 2, 2);
+        state.minu = Bits(c.clamp, 4, 10);
+        state.maxu = Bits(c.clamp, 14, 10);
+        state.minv = Bits(c.clamp, 24, 10);
+        state.maxv = Bits(c.clamp, 34, 10);
     }
     state.alpha_test = Bits(c.test, 0, 1) != 0;
     state.atst = Bits(c.test, 1, 3);

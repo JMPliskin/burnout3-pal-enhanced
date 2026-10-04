@@ -70,8 +70,10 @@ struct GsDrawState {
     std::uint64_t texture = 0;
     TextureFunction tfx = TextureFunction::Modulate;
     bool tcc = true;                                     /* TEX0.TCC: the texel's alpha counts */
-    bool bilinear = false;                               /* TEX1.MMAG */
-    bool repeat_s = true, repeat_t = true;               /* CLAMP.WMS/WMT: repeat, else clamp */
+    bool bilinear = false;                               /* TEX1: the four texels around */
+    /* CLAMP: WMS/WMT 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP (to MIN..MAX), 3
+       REGION_REPEAT (MIN is a mask, MAX ORed in). */
+    std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
 
     /* The alpha test (TEST.ATE, ATST, AREF, AFAIL). What a failing pixel
        writes: AFAIL 0 KEEP nothing, 1 FB_ONLY its colour (not depth), 2

@@ -24,7 +24,38 @@ layout(push_constant) uniform Params {
     uint fge;           // fog
     uint fogcol;        // FOGCOL, R G B in bytes 0-2
     uint pabe;          // which pixels this pass draws: 0 all, 1 As >= 0x80, 2 As < 0x80
+    uint bilinear;      // the four texels around, else the nearest
+    uint wms, wmt;      // CLAMP: 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP, 3 REGION_REPEAT
+    uint minu, maxu, minv, maxv;
 } p;
+
+// A texel coordinate wrapped as CLAMP says, as the software GS's Wrap.
+int Wrap(int i, int size, uint mode, uint lo, uint hi) {
+    if (mode == 0u) return i & (size - 1);
+    if (mode == 1u) return clamp(i, 0, size - 1);
+    if (mode == 2u) return clamp(i, int(lo), int(hi));
+    return (i & int(lo)) | int(hi);
+}
+
+vec4 Texel(int u, int v) {
+    ivec2 size = textureSize(texture_image, 0);
+    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu), Wrap(v, size.y, p.wmt, p.minv, p.maxv));
+    return floor(texelFetch(texture_image, at & 2047, 0) * 255.0 + 0.5);
+}
+
+// The texel at (u, v) in texels: the nearest, or the four around (u - 0.5,
+// v - 0.5) mixed and rounded per channel.
+vec4 Sample(vec2 uv) {
+    if (p.bilinear == 0u) return Texel(int(floor(uv.x)), int(floor(uv.y)));
+    vec2 xy = uv - 0.5;
+    ivec2 i0 = ivec2(floor(xy));
+    vec2 f = xy - vec2(i0);
+    // In the software GS's order of operations, so the two round alike.
+    vec4 c00 = Texel(i0.x, i0.y), c10 = Texel(i0.x + 1, i0.y);
+    vec4 c01 = Texel(i0.x, i0.y + 1), c11 = Texel(i0.x + 1, i0.y + 1);
+    vec4 top = c00 + (c10 - c00) * f.x, bottom = c01 + (c11 - c01) * f.x;
+    return floor(top + (bottom - top) * f.y + 0.5);
+}
 
 #ifdef SINGLE_OUTPUT
 layout(location = 0) out vec4 colour;
@@ -37,7 +68,7 @@ void main() {
     vec4 v = round(shade * 255.0);
     vec4 c = v;
     if (p.textured != 0u) {
-        vec4 t = round(texture(texture_image, coordinate.xy / coordinate.z) * 255.0);
+        vec4 t = Sample(coordinate.xy / coordinate.z * vec2(textureSize(texture_image, 0)));
         vec3 product = floor(t.rgb * v.rgb / 128.0);
         if (p.tfx == 0u) {
             c.rgb = product;

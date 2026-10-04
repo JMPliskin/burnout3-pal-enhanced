@@ -98,7 +98,7 @@ void Textured(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x20);
     state.textured = true;
     state.texture = 7;
-    state.repeat_s = state.repeat_t = false;
+    state.wms = state.wmt = 1;                     // CLAMP
 
     Rect(renderer, state, 0, 0, 32, 32, Rgba(0x80, 0x80, 0x80, 0x80));
     Check(Pixel(renderer, 0x20, 4, 4) == Rgba(0xFF, 0, 0, 0x80), "MODULATE by 0x80 is the texel");
@@ -270,6 +270,34 @@ void DestinationAlphaTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x7C, 36, 36) == Rgba(0, 0xFF, 0, 0x80), "...and draws where it is 0");
 }
 
+void Addressed(ps2gpu::GsRenderer& renderer) {
+    // 4x1: texels 0..3 with red 10, 20, 30, 40.
+    const std::uint32_t texels[4] = {Rgba(10, 0, 0, 0x80), Rgba(20, 0, 0, 0x80), Rgba(30, 0, 0, 0x80),
+                                     Rgba(40, 0, 0, 0x80)};
+    renderer.UploadTexture(9, texels, 4, 1);
+    ps2gpu::GsDrawState state = Target(0x7F);
+    state.textured = true;
+    state.texture = 9;
+    state.tfx = ps2gpu::TextureFunction::Decal;
+    // REGION_CLAMP to texels 1..2: the left quarter of the rectangle clamps up to 1.
+    state.wms = 2;
+    state.minu = 1;
+    state.maxu = 2;
+    Rect(renderer, state, 0, 0, 64, 8, 0);
+    Check(Pixel(renderer, 0x7F, 4, 4) == Rgba(20, 0, 0, 0x80), "REGION_CLAMP raises texel 0 to MINU");
+    Check(Pixel(renderer, 0x7F, 60, 4) == Rgba(30, 0, 0, 0x80), "...and lowers texel 3 to MAXU");
+    // REGION_REPEAT: (u & MINU) | MAXU - MINU 1, MAXU 2 maps 0, 1, 2, 3 to 2, 3, 2, 3.
+    state.wms = 3;
+    Rect(renderer, state, 0, 8, 64, 16, 0);
+    Check(Pixel(renderer, 0x7F, 4, 12) == Rgba(30, 0, 0, 0x80), "REGION_REPEAT: texel 0 reads texel 2");
+    Check(Pixel(renderer, 0x7F, 20, 12) == Rgba(40, 0, 0, 0x80), "REGION_REPEAT: texel 1 reads texel 3");
+    // Bilinear, clamped: between texels 1 and 2 at u = 2.0 the mix is half way, 25.
+    state.wms = 1;
+    state.bilinear = true;
+    Rect(renderer, state, 0, 16, 64, 24, 0);
+    Check(Pixel(renderer, 0x7F, 32, 20) == Rgba(25, 0, 0, 0x80), "bilinear mixes the two texels around u - 0.5");
+}
+
 void PerPixelBlending(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x7E);
     Rect(renderer, state, 0, 0, 64, 64, Rgba(0xFF, 0xFF, 0xFF, 0x80));
@@ -332,6 +360,7 @@ int main() {
     AlphaFailWrites(*renderer);
     DestinationAlphaTested(*renderer);
     PerPixelBlending(*renderer);
+    Addressed(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

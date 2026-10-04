@@ -42,6 +42,7 @@ struct PackedVertex {
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
 struct FragmentParams {
     std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol, pabe;
+    std::uint32_t bilinear, wms, wmt, minu, maxu, minv, maxv;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -141,7 +142,8 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
     return x.fbp == y.fbp && x.fbw == y.fbw && x.psm == y.psm && x.scissor_x0 == y.scissor_x0 &&
            x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
-           x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
+           x.tcc == y.tcc && x.bilinear == y.bilinear && x.wms == y.wms && x.wmt == y.wmt && x.minu == y.minu &&
+           x.maxu == y.maxu && x.minv == y.minv && x.maxv == y.maxv)) &&
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
            PipelineKey(x) == PipelineKey(y) && (!x.blend || (x.fix == y.fix && x.pabe == y.pabe)) && x.depth == y.depth &&
            (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
@@ -647,7 +649,8 @@ void VulkanGsRenderer::Flush() {
         auto found = textures_.find(state_.texture);
         if (found != textures_.end()) texture = &found->second;
     }
-    const int sampler = (state_.bilinear ? 4 : 0) | (state_.repeat_s ? 0 : 2) | (state_.repeat_t ? 0 : 1);
+    // The shader addresses and filters texels itself (texelFetch), as the GS does.
+    const int sampler = 3;
     const VkDescriptorSet set = SetFor(*texture, sampler);
     FragmentParams params{};
     params.textured = state_.textured && texture != &blank_;
@@ -683,6 +686,13 @@ void VulkanGsRenderer::Flush() {
     params.fogcol = state_.fogcol;
     params.fix_factor = state_.c == BlendAlpha::Fix;
     params.fix = state_.fix;
+    params.bilinear = state_.bilinear;
+    params.wms = state_.wms;
+    params.wmt = state_.wmt;
+    params.minu = state_.minu;
+    params.maxu = state_.maxu;
+    params.minv = state_.minv;
+    params.maxv = state_.maxv;
     const std::uint32_t count = std::uint32_t(pending_.size());
     static int complaints = 0;
     if ((!pipeline || !set) && complaints < 5) {
