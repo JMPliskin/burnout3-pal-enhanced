@@ -155,9 +155,11 @@ so a new game gets them as soon as its routines are named.
 5. **Graphics** (begun): a software GS (`gs.cpp`, `gs_draw.cpp`,
    `gs_memory.cpp`) takes GIF packets from all three paths. It keeps local
    memory in the GS's own swizzled layouts and rasterises sprites, triangles
-   and lines with texturing, alpha, depth and destination alpha tests,
-   blending and FBMSK. The displayed picture goes to the window (`--window`)
-   or BMP files (`--frames`). VU1 runs microprograms in an interpreter
+   and lines with texturing, fog, alpha, depth and destination alpha tests,
+   blending and FBMSK, primitives queued and drawn in parallel bands of rows
+   (each pixel still sees them in order). PATH3 waits while VIF1 masks it and
+   goes one EOP-ended group per unmask, as the GIF lets it. The displayed
+   picture goes to the window (`--window`) or BMP files (`--frames`). VU1 runs microprograms in an interpreter
    (`vu.cpp`). Its upper half goes through the runtime's verified VU0
    arithmetic; the pipeline timing microcode can see (stalls, Q/P latency,
    flags 4 cycles late, LOI's I read by the next bundle) is modelled, and
