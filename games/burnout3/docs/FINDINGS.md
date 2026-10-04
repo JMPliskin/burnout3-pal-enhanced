@@ -1445,11 +1445,69 @@ New Profile; the name entry (BURNOUT) -> Done; save the profile? -> No;
 autosave disabled? -> Yes; the main menu, "SELECT OPTION", with its ticker
 ("RACE AND CRASH AROUND THE WORLD"). VU1 has still run nothing.
 
-Open there: the main menu's options and the name-entry keyboard's letters are
-drawn - textured triangle strips from the frontend font at 0x3B60 - with
-vertex colour and alpha 0, so they do not show. The ticker, the same font and
-primitive type, has colour 0x16242D80. Most likely a fade that does not
-advance; what its value waits on is the next question.
+Open there, then: the main menu's options were drawn - textured triangle
+strips from the frontend font at 0x3B60 - with alpha 0, so they did not show.
+Not a fade that did not advance: vf0 (next section).
+
+## The main menu's labels: vf0 is (0, 0, 0, 1)
+
+Followed back from the GS: the glyphs' RGBAQ comes from a REGLIST packet
+built by 0x001F3080 (a generic packet copier) for 0x0021A4F0, which flushes
+what the glyph drawer 0x00218D00 staged. That computes a glyph's colour as
+the caller's float colour times the `w` of a global scale at 0x004B9BB0
+(255, 255, 255, 128). The caller, the frontend's node renderer (0x001D75C0,
+calling through 0x001D78B0), passes each node's world colour, which is its
+own local colour times its parent's (0x001D4780 walks the tree). The labels'
+parent, a panel node at 0x01E94400, had local alpha 0, rewritten every frame
+by the menu animator 0x0031FF80:
+
+    qmtc2     a0, vf2           # a0: the panel's alpha, as float bits
+    vmulx.w   vf1, vf0, vf2     # vf1.w = vf0.w * vf2.x
+    sqc2      vf1, 0x10(v1)     # the panel's local colour
+
+vf0 is hardwired to (0, 0, 0, 1); the compiler uses vf0w as a free 1.0. The
+host started every thread's context all zero, so the product was 0. Contexts
+now start with vf0w = 1 (`NewContext`, engine/host/include/ps2host/run.h),
+and the main menu reads WORLD TOUR, SINGLE EVENT, MULTIPLAYER, ONLINE,
+DRIVER DETAILS.
+
+`--watch-write` printing the four callers above the writer, and
+`--gs-trace-frame N` tracing six frames from N (the game draws a picture
+across several vblanks), were what made this a few runs' work.
+
+## VU1: the timing its microcode sees
+
+Past the main menu (World Tour -> region -> Silver Lake -> event) the car
+select draws its 3D scene through VU1. It came out as huge white and purple
+polygons converging on the screen's centre: vertices that should have been
+culled, perspective from the wrong Q.
+
+Burnout 3's VU1 microcode is hand-pipelined and depends on the pipeline's
+timing, which the interpreter had made instant. `engine/tools/vuhazards.py`
+(on a dump of VU1's instruction memory, written beside `--frames` pictures)
+lists where a program reads a result before its latency; over the game's
+173 microprograms:
+
+* the clip and cull tests read the clip and MAC flags one bundle after the
+  CLIP or FMAC operation that sets them (147 `fcand`/`fcor`/`fmand` reads),
+  so they test the flags of the vertex before - the flags reach the lower
+  instructions 4 cycles later;
+* perspective divides read Q one to six bundles after DIV, getting the
+  previous vertex's 1/w;
+* constants are loaded with LOI one bundle before the upper instruction that
+  uses them: the upper beside a LOI reads the old I. (Proof from the code:
+  `loi 19.72` followed by `msubai ..., I / loi 64.88` - with the new I read,
+  19.72 would be dead.)
+
+The interpreter now keeps a cycle count: a pair reading a vector field still
+in the FMAC pipeline stalls until it lands (4 cycles); Q arrives 7 cycles
+after DIV and SQRT, 13 after RSQRT, P after the EFU operation's latency, and
+WAITQ, WAITP and a busy unit stall; the flags go through a 4-cycle queue. The
+car select's scene - a garage, barriers - now draws whole.
+
+The disassembler's lower opcode table was wrong in the same session (see "A
+VU disassembler" above); with it fixed, the hazard scan reads all of the
+game's microcode.
 
 ## Memory cards: libmc2
 

@@ -48,10 +48,11 @@ Options for finding out why boot stops, passed after `run --`:
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
 | `--window` | the picture, live, in a window (close it to end the run): SDL3 + Vulkan (`engine/gpu`), or GDI when built without `PS2HOST_VULKAN` or without a Vulkan device |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
+| `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
 | `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
-| `--watch-write ADDR` | every store to a guest address, with the function making it |
+| `--watch-write ADDR` | every store to a guest address, with the function making it and four of its callers |
 | `--iop-trace` | every IOP library call the game's own modules make |
 | `--timeout S` | the time limit (30 s); `--budget N` makes a run deterministic |
 
@@ -154,7 +155,10 @@ so a new game gets them as soon as its routines are named.
    blending and FBMSK. The displayed picture goes to the window (`--window`)
    or BMP files (`--frames`). VU1 runs microprograms in an interpreter
    (`vu.cpp`). Its upper half goes through the runtime's verified VU0
-   arithmetic. VIF1 (`vif.cpp`) loads it with MPG and UNPACK and starts it with
+   arithmetic; the pipeline timing microcode can see (stalls, Q/P latency,
+   flags 4 cycles late, LOI's I read by the next bundle) is modelled, and
+   `engine/tools/vuhazards.py` lists where a program depends on it. VIF1
+   (`vif.cpp`) loads it with MPG and UNPACK and starts it with
    MSCAL, and its XGKICKs are PATH1; VU0 micro mode runs `vcallms`. The
    GPU renderer is under way: engine/docs/GPU.md.
 6. **Audio** (begun): the SPU2 (`spu2.cpp`) decodes, envelopes and mixes its
