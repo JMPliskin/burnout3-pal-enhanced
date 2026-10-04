@@ -201,6 +201,9 @@ void VifStream::Word(std::uint32_t word) {
             pending_ = (immediate ? immediate : 0x10000) * 4;
             data_ = Data::Direct;
             break;
+        case 0x13:                                          // FLUSHA: nothing waits here either
+            if (on_trace) on_trace("FLUSHA");
+            break;
         default: break;                                     // NOP, MARK, FLUSH*: nothing waits
     }
 }

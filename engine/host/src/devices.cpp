@@ -222,6 +222,8 @@ void InstallDevices() {
                           ch.name, unsigned(value), unsigned(memory.Read(madr, 4)),
                           unsigned(memory.Read(qwc, 4)), unsigned(memory.Read(ch.base + kTadr, 4)));
             std::string note = text;
+            if (gs::TheGs().trace && (ch.base == 0x10009000u || ch.base == 0x1000A000u))
+                std::fprintf(stderr, "[dma] %s\n", text);
             if (ch.walked) note += ": " + Walk(ch, u32(value));
             Note(std::string("dma ") + ch.name, note);
             *Register(chcr) &= ~0x100u;                         // done
@@ -234,6 +236,8 @@ void InstallDevices() {
         SetDStat((d_stat & ~(written & 0xFFFFu)) ^ (written & 0xFFFF0000u));
     });
     Vif1().on_mask_path3 = [](bool masked) {
+        if (gs::TheGs().trace)
+            std::fprintf(stderr, "[vif1] MSKPATH3 %d, %zu PATH3 words held\n", int(masked), g_path3_held.size());
         u32* stat = reinterpret_cast<u32*>(GuestMemory().Translate(kGifStat, 4));
         // Unmasking lets PATH3 take its turn, which drains what the FIFO held.
         *stat = masked ? (*stat | kGifStatM3P) : (*stat & ~(kGifStatM3P | kGifStatFqc));
@@ -245,6 +249,9 @@ void InstallDevices() {
         }
     };
     Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
+    Vif1().on_trace = [](const char* what) {
+        if (gs::TheGs().trace) std::fprintf(stderr, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
+    };
     // VU1 behind VIF1; its XGKICKs are GIF PATH1.
     Vif1().vu = &Vu1();
     Vif1().double_buffered = true;

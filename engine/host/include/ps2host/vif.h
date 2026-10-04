@@ -34,6 +34,8 @@ public:
     std::function<void(bool masked)> on_mask_path3;
     /* Each word of DIRECT/DIRECTHL data: GIF data on PATH2. */
     std::function<void(std::uint32_t word)> on_direct;
+    /* Commands worth seeing in a trace (FLUSHA), when set. */
+    std::function<void(const char* what)> on_trace;
 
     /* The next 32-bit word of the stream, from the FIFO or a DMA transfer. */
     void Word(std::uint32_t word);
