@@ -701,13 +701,20 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     // write-back and a reload - for every one of their draws.
     if (state.depth && state.ztst == 1 && !state.depth_write) state.depth = false;
     // ZTST ALWAYS into a depth buffer over the colour target's own memory:
-    // colour and Z would fight over the same words. The race's glow passes
-    // draw their strips this way, ZBUF left at the target's address; their
-    // colour is what is meant.
+    // the GS writes each pixel's colour and its Z into the same memory, the Z
+    // in its own layout - other words of it. As a depth buffer that is no
+    // use; as memory it is: the race's glow passes lay their threshold grey
+    // down this way, as colour and again as Z (the Z = the grey). So the Z
+    // is drawn as colour into a view of that memory in the Z format, which
+    // GPU memory reconciles with the colour like any two views.
+    bool z_as_colour = false;
     if (s.primary && state.depth && state.ztst == 1) {
         const auto colour = Blocks(state.fbp, state.fbw, state.psm, rows);
         const auto z = Blocks(state.zbp, state.fbw, zpsm, rows);
-        if (colour.first < z.second && z.first < colour.second) state.depth = false;
+        if (colour.first < z.second && z.first < colour.second) {
+            state.depth = false;
+            z_as_colour = state.depth_write;
+        }
     }
     Owned* depth = nullptr;
     if (state.depth) {
@@ -735,6 +742,37 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         const u32 stored = state.psm == gs::PSMCT24 ? 0xFFFFFFu : Is16(state.psm) ? 0x80F8F8F8u : 0xFFFFFFFFu;
         if ((state.fbmsk & stored) != stored) Drew(s, *target, x1, y1);
         if (depth && state.depth_write) Drew(s, *depth, x1, y1);
+        if (z_as_colour) {
+            // The Z, as the bytes the Z format stores, into the Z-format view.
+            ps2gpu::GsDrawState zs;
+            zs.fbp = state.zbp;
+            zs.fbw = state.fbw;
+            zs.psm = zpsm;
+            zs.width = state.width;
+            zs.height = state.height;
+            zs.scissor_x0 = state.scissor_x0;
+            zs.scissor_y0 = state.scissor_y0;
+            zs.scissor_x1 = state.scissor_x1;
+            zs.scissor_y1 = state.scissor_y1;
+            zs.gouraud = state.gouraud;
+            if (zpsm == gs::PSMZ24) zs.fbmsk = 0xFF000000u;
+            ps2gpu::GsVertex zv[6];
+            for (std::size_t i = 0; i < n; ++i) {
+                zv[i] = v[i];
+                const u32 z = v[i].z;
+                const u32 c = Is16(zpsm) ? From16(z & 0xFFFF) : z;
+                zv[i].r = u8(c);
+                zv[i].g = u8(c >> 8);
+                zv[i].b = u8(c >> 16);
+                zv[i].a = u8(c >> 24);
+            }
+            Owned& view = Use(s, zs.fbp, zs.fbw, zs.psm, false, zs.width, zs.height, rows);
+            {
+                Timed drawing(Section::GpuRender);
+                s.renderer->DrawTriangles(zs, zv, n);
+            }
+            Drew(s, view, x1, y1);
+        }
         return;
     }
     Extent& e = s.drawn[std::make_tuple(state.fbp, state.fbw, state.psm)];
