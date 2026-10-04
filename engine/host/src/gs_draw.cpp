@@ -125,6 +125,7 @@ u32 Gs::FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const {
 void Gs::Draw() {
     Timed timed(Section::GsDraw);
     ++primitives_;
+    Prepare();
     if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_});
     if (trace) {
         const Context& c = Ctx();
@@ -184,8 +185,11 @@ void Gs::DrawSprite(const Vertex& a, const Vertex& b) {
     const float du = x1 > x0 ? (ub - ua) / (b.x - a.x) : 0, dv = y1 > y0 ? (vb - va) / (b.y - a.y) : 0;
     (void)flip_x;
     (void)flip_y;
-    for (int y = iy0; y < iy1; ++y)
-        for (int x = ix0; x < ix1; ++x) {
+    // Only what the scissor lets through (Plot would drop the rest).
+    const int cx0 = std::max({ix0, setup_.sx0, 0}), cx1 = std::min(ix1, setup_.sx1 + 1);
+    const int cy0 = std::max({iy0, setup_.sy0, 0}), cy1 = std::min(iy1, setup_.sy1 + 1);
+    for (int y = cy0; y < cy1; ++y)
+        for (int x = cx0; x < cx1; ++x) {
             const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
             Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme);
         }
@@ -256,16 +260,64 @@ void Gs::DrawLine(const Vertex& a, const Vertex& b) {
 
 // ---------------------------------------------------------------- pixels
 
+// The registers a primitive's pixels use, decoded once.
+void Gs::Prepare() {
+    const Context& c = Ctx();
+    const u64 prim = Prim(), test = c.test;
+    Setup& s = setup_;
+    s.sx0 = int(Bits(c.scissor, 0, 11));
+    s.sx1 = int(Bits(c.scissor, 16, 11));
+    s.sy0 = int(Bits(c.scissor, 32, 11));
+    s.sy1 = int(Bits(c.scissor, 48, 11));
+    s.tfx = Bits(c.tex0, 35, 2);
+    s.tcc = Bits(c.tex0, 34, 1) != 0;
+    const int k = int(s32(Bits(c.tex1, 32, 12) << 20) >> 20);
+    const u32 mmin = Bits(c.tex1, 6, 3);
+    s.linear = k <= 0 ? Bits(c.tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
+    s.tbp = Bits(c.tex0, 0, 14);
+    s.tbw = Bits(c.tex0, 14, 6);
+    s.tpsm = Bits(c.tex0, 20, 6);
+    s.tw = 1u << std::min(Bits(c.tex0, 26, 4), 10u);
+    s.th = 1u << std::min(Bits(c.tex0, 30, 4), 10u);
+    s.csa = Bits(c.tex0, 56, 5);
+    s.wms = Bits(c.clamp, 0, 2);
+    s.wmt = Bits(c.clamp, 2, 2);
+    s.minu = Bits(c.clamp, 4, 10);
+    s.maxu = Bits(c.clamp, 14, 10);
+    s.minv = Bits(c.clamp, 24, 10);
+    s.maxv = Bits(c.clamp, 34, 10);
+    s.ate = Bits(test, 0, 1) != 0;
+    s.atst = Bits(test, 1, 3);
+    s.aref = Bits(test, 4, 8);
+    s.afail = Bits(test, 12, 2);
+    s.date = Bits(test, 14, 1) != 0;
+    s.datm = Bits(test, 15, 1);
+    s.zte = Bits(test, 16, 1) != 0;
+    s.ztst = Bits(test, 17, 2);
+    s.zbp = Bits(c.zbuf, 0, 9) * 32;
+    s.zpsm = Bits(c.zbuf, 24, 4) | 0x30;
+    s.zmsk = Bits(c.zbuf, 32, 1) != 0;
+    s.fbp = Bits(c.frame, 0, 9) * 32;
+    s.fbw = Bits(c.frame, 16, 6);
+    s.fpsm = Bits(c.frame, 24, 6);
+    s.fbmsk = u32(c.frame >> 32);
+    s.abe = Bits(prim, 6, 1) != 0;
+    s.pabe = Bits(pabe_, 0, 1) != 0;
+    s.colclamp = Bits(colclamp_, 0, 1) != 0;
+    s.fba = Bits(c.fba, 0, 1) != 0;
+    s.a = Bits(c.alpha, 0, 2);
+    s.b = Bits(c.alpha, 2, 2);
+    s.c = Bits(c.alpha, 4, 2);
+    s.d = Bits(c.alpha, 6, 2);
+    s.fix = Bits(c.alpha, 32, 8);
+}
+
 // TEX1: MMAG (bit 5) filters magnification, MMIN (6-8) minification, chosen by
 // the level of detail - K (bits 32-43, 4 fractional bits) here; LOD from Q is
 // not modelled yet. Linear filtering samples the four texels around
 // (u - 0.5, v - 0.5), as the GS does.
 u32 Gs::Texel(float fu, float fv) const {
-    const u64 tex1 = Ctx().tex1;
-    const int k = int(s32(Bits(tex1, 32, 12) << 20) >> 20);
-    const u32 mmin = Bits(tex1, 6, 3);
-    const bool linear = k <= 0 ? Bits(tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
-    if (!linear) return TexelAt(int(std::floor(fu)), int(std::floor(fv)));
+    if (!setup_.linear) return TexelAt(int(std::floor(fu)), int(std::floor(fv)));
     const float x = fu - 0.5f, y = fv - 0.5f;
     const int u0 = int(std::floor(x)), v0 = int(std::floor(y));
     const float a = x - float(u0), b = y - float(v0);
@@ -282,14 +334,11 @@ u32 Gs::Texel(float fu, float fv) const {
 }
 
 u32 Gs::TexelAt(int iu, int iv) const {
-    const Context& c = Ctx();
-    const u64 tex0 = c.tex0, clamp = c.clamp;
-    const u32 tbp = Bits(tex0, 0, 14), tbw = Bits(tex0, 14, 6), psm = Bits(tex0, 20, 6);
-    const u32 tw = 1u << std::min(Bits(tex0, 26, 4), 10u), th = 1u << std::min(Bits(tex0, 30, 4), 10u);
-    const int u = Wrap(iu, tw, Bits(clamp, 0, 2), Bits(clamp, 4, 10), Bits(clamp, 14, 10));
-    const int v = Wrap(iv, th, Bits(clamp, 2, 2), Bits(clamp, 24, 10), Bits(clamp, 34, 10));
-    const u32 raw = memory.Read(tbp, tbw, u32(u) & 2047, u32(v) & 2047, psm);
-    switch (psm) {
+    const Setup& s = setup_;
+    const int u = Wrap(iu, s.tw, s.wms, s.minu, s.maxu);
+    const int v = Wrap(iv, s.th, s.wmt, s.minv, s.maxv);
+    const u32 raw = memory.Read(s.tbp, s.tbw, u32(u) & 2047, u32(v) & 2047, s.tpsm);
+    switch (s.tpsm) {
         case PSMCT32: return raw;
         case PSMCT24: {
             const u32 rgb = raw & 0xFFFFFF;
@@ -298,7 +347,7 @@ u32 Gs::TexelAt(int iu, int iv) const {
         }
         case PSMCT16: case PSMCT16S: return From16(raw, texa_);
         case PSMT8: case PSMT8H: return clut_[raw & 0xFF];
-        case PSMT4: case PSMT4HL: case PSMT4HH: return clut_[(Bits(tex0, 56, 5) * 16 + (raw & 15)) & 0xFF];
+        case PSMT4: case PSMT4HL: case PSMT4HH: return clut_[(s.csa * 16 + (raw & 15)) & 0xFF];
         default: return raw;
     }
 }
@@ -306,18 +355,15 @@ u32 Gs::TexelAt(int iu, int iv) const {
 void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
               float u, float v, bool textured) {
     (void)s; (void)t; (void)q;
-    const Context& c = Ctx();
-    const u64 prim = Prim();
+    const Setup& st = setup_;
     // Scissor.
-    if (x < int(Bits(c.scissor, 0, 11)) || x > int(Bits(c.scissor, 16, 11)) ||
-        y < int(Bits(c.scissor, 32, 11)) || y > int(Bits(c.scissor, 48, 11)) || x < 0 || y < 0)
-        return;
+    if (x < st.sx0 || x > st.sx1 || y < st.sy0 || y > st.sy1 || x < 0 || y < 0) return;
     u32 cr = r, cg = g, cb = b, ca = a;
     if (textured) {
         const u32 texel = Texel(u, v);
         const u32 tr = texel & 0xFF, tg = (texel >> 8) & 0xFF, tb = (texel >> 16) & 0xFF, ta = texel >> 24;
-        const bool tcc = Bits(c.tex0, 34, 1);
-        switch (Bits(c.tex0, 35, 2)) {
+        const bool tcc = st.tcc;
+        switch (st.tfx) {
             case 0:                                    // MODULATE
                 cr = std::min(255u, tr * r >> 7); cg = std::min(255u, tg * g >> 7); cb = std::min(255u, tb * b >> 7);
                 ca = tcc ? std::min(255u, ta * a >> 7) : a;
@@ -337,11 +383,10 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
     }
     // Alpha test.
     bool write_rgb = true, write_alpha = true, write_z = true;
-    const u64 test = c.test;
-    if (Bits(test, 0, 1)) {
-        const u32 ref = Bits(test, 4, 8);
+    if (st.ate) {
+        const u32 ref = st.aref;
         bool pass = true;
-        switch (Bits(test, 1, 3)) {
+        switch (st.atst) {
             case 0: pass = false; break;
             case 1: pass = true; break;
             case 2: pass = ca < ref; break;
@@ -352,7 +397,7 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
             default: pass = ca != ref; break;
         }
         if (!pass) {
-            switch (Bits(test, 12, 2)) {
+            switch (st.afail) {
                 case 0: return;                                         // KEEP
                 case 1: write_z = false; break;                         // FB_ONLY
                 case 2: write_rgb = write_alpha = false; break;         // ZB_ONLY
@@ -360,25 +405,21 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
             }
         }
     }
+    const u32 fbp = st.fbp, fbw = st.fbw, fpsm = st.fpsm;
     // Destination alpha test: the frame's alpha bit (31 for 32-bit, 15 for 16-bit
     // formats; 24-bit frames have none) must equal DATM - a stencil games draw
     // into alpha first.
-    if (Bits(test, 14, 1)) {
-        const u32 fpsm = Bits(c.frame, 24, 6);
-        if (fpsm != PSMCT24) {
-            const u32 here = memory.Read(Bits(c.frame, 0, 9) * 32, Bits(c.frame, 16, 6), u32(x), u32(y), fpsm);
-            const u32 bit = (fpsm == PSMCT16 || fpsm == PSMCT16S) ? (here >> 15) & 1 : here >> 31;
-            if (bit != Bits(test, 15, 1)) return;
-        }
+    if (st.date && fpsm != PSMCT24) {
+        const u32 here = memory.Read(fbp, fbw, u32(x), u32(y), fpsm);
+        const u32 bit = (fpsm == PSMCT16 || fpsm == PSMCT16S) ? (here >> 15) & 1 : here >> 31;
+        if (bit != st.datm) return;
     }
     // Depth test.
-    const u64 zbuf = c.zbuf;
-    const u32 zbp = Bits(zbuf, 0, 9) * 32, zpsm = Bits(zbuf, 24, 4) | 0x30;
-    const u32 fbw = Bits(c.frame, 16, 6);
-    if (Bits(test, 16, 1)) {
+    const u32 zbp = st.zbp, zpsm = st.zpsm;
+    if (st.zte) {
         const u32 old = memory.Read(zbp, fbw, u32(x), u32(y), zpsm);
         bool pass = true;
-        switch (Bits(test, 17, 2)) {
+        switch (st.ztst) {
             case 0: pass = false; break;
             case 1: pass = true; break;
             case 2: pass = z >= old; break;
@@ -388,31 +429,27 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
     } else {
         write_z = false;
     }
-    if (Bits(zbuf, 32, 1)) write_z = false;
+    if (st.zmsk) write_z = false;
     // Blending.
-    const u32 fbp = Bits(c.frame, 0, 9) * 32, fpsm = Bits(c.frame, 24, 6);
     u32 dest = memory.Read(fbp, fbw, u32(x), u32(y), fpsm);
     if (fpsm == PSMCT16 || fpsm == PSMCT16S) dest = From16(dest, 0x80ull << 32);
     if (fpsm == PSMCT24) dest |= 0x80u << 24;
-    const bool blend = Bits(prim, 6, 1) && !(Bits(pabe_, 0, 1) && !(ca & 0x80));
+    const bool blend = st.abe && !(st.pabe && !(ca & 0x80));
     if (blend) {
-        const u64 al = c.alpha;
         const u32 dr = dest & 0xFF, dg = (dest >> 8) & 0xFF, db = (dest >> 16) & 0xFF, da = dest >> 24;
-        const u32 sel_c = Bits(al, 4, 2);
-        const int factor = sel_c == 0 ? int(ca) : sel_c == 1 ? int(da) : int(Bits(al, 32, 8));
+        const int factor = st.c == 0 ? int(ca) : st.c == 1 ? int(da) : int(st.fix);
         auto pick = [&](u32 sel, u32 src, u32 dst) { return sel == 0 ? int(src) : sel == 1 ? int(dst) : 0; };
         auto mix = [&](u32 src, u32 dst) {
-            int value = ((pick(Bits(al, 0, 2), src, dst) - pick(Bits(al, 2, 2), src, dst)) * factor >> 7) +
-                        pick(Bits(al, 6, 2), src, dst);
-            return Bits(colclamp_, 0, 1) ? u32(std::clamp(value, 0, 255)) : u32(value) & 0xFF;
+            int value = ((pick(st.a, src, dst) - pick(st.b, src, dst)) * factor >> 7) + pick(st.d, src, dst);
+            return st.colclamp ? u32(std::clamp(value, 0, 255)) : u32(value) & 0xFF;
         };
         cr = mix(cr, dr);
         cg = mix(cg, dg);
         cb = mix(cb, db);
     }
-    if (Bits(c.fba, 0, 1)) ca |= 0x80;
+    if (st.fba) ca |= 0x80;
     u32 out = Rgba(cr, cg, cb, ca);
-    u32 mask = u32(c.frame >> 32);
+    u32 mask = st.fbmsk;
     if (!write_rgb) mask |= 0x00FFFFFF;
     if (!write_alpha) mask |= 0xFF000000;
     out = (out & ~mask) | (dest & mask);

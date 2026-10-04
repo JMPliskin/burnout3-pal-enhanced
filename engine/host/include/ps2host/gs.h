@@ -128,6 +128,22 @@ private:
         u32 pending_count = 0;
     };
     Path paths_[4];
+    /* The drawing state a primitive's pixels all use, decoded from the
+       registers once per primitive (Prepare) rather than once per pixel. */
+    struct Setup {
+        int sx0, sx1, sy0, sy1;                     // SCISSOR, inclusive
+        u32 tfx;
+        bool tcc, linear;
+        u32 tbp, tbw, tpsm, tw, th, csa;            // TEX0
+        u32 wms, wmt, minu, maxu, minv, maxv;       // CLAMP
+        bool ate, date, zte, zmsk, abe, colclamp, fba, pabe;
+        u32 atst, aref, afail, datm;                // TEST
+        u32 ztst, zbp, zpsm;                        // TEST, ZBUF
+        u32 fbp, fbw, fpsm, fbmsk;                  // FRAME
+        u32 a, b, c, d, fix;                        // ALPHA
+    };
+    Setup setup_{};
+    void Prepare();
     void Packed(u32 descriptor, u64 low, u64 high);
     void Kick(bool draw);
     void Draw();
