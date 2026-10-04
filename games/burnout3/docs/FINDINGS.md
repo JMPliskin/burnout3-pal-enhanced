@@ -1557,6 +1557,42 @@ Air") - the physics and crash code running in the port
 (the IPU), an IOP server 0x8000131B the host answers with zeros (libdbc's, see "Memory cards"), and the speed
 - the race's 3D in the software GS runs at a fraction of a frame a second.
 
+## The race on the GPU, and what it does with local memory
+
+Under `--gpu` the race first showed white. Traced pass by pass (engine/docs/
+GPU.md), its frame turned out to be built with every trick the GS's single
+local memory allows:
+
+* the reflection and environment maps (FBP 0x16B-0x1A7) are drawn under
+  several widths over the same pages;
+* a depth-of-field/fog pass copies the depth buffer's top bits into the
+  frame's alpha: sprites sample the depth buffer (ZBP 0xD2) as a PSMZ16
+  texture and write it through a 16-bit view of the 32-bit frame with FBMSK
+  0x3FFF - two bits of each half-word;
+* the fog then reads the frame's alpha back as a PSMT8H texture through a
+  CLUT at 0x2D3C, which a one-pixel draw into FBP 0x169 has just written;
+* the glow is a bright-pass over 64-pixel strips in the depth buffer's
+  memory (D2/D3, one page apart), downsampled into EE (320x224) and 15E
+  (160x112) and added to the frame. Its threshold - 0xBFBFBF - is laid down
+  by one draw as colour over 32 columns and, ZBUF being left at the same
+  address with Z written and the Z set to the same grey, as Z over the 32
+  next to them.
+
+The software GS, which does what the GS does pixel by pixel, rendered all
+of this from the start; the GPU path now keeps each of these rules, and the
+race's pictures are 98.7-99.9% the software GS's.
+
+The comparison also turned up two bugs that both renderers shared: the
+software GS drew triangles' right and bottom edges (the GS fills top-left)
+and read Z-format textures raw; and the VU, given a DIV whose quotient
+equalled the Q before, set Q to 0 - which had collapsed the CRASH NAV
+globe's vertices into streaks.
+
+RenderWare's wait for its DMA buffers to flip (0x001F2408, the loop at
+0x001F24E0, calling a callback each turn) took a third of the race's time
+under `--virtual-time`, spinning until the frame's interrupt; the port now
+names it as an idle loop.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,

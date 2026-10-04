@@ -55,6 +55,8 @@ Options for finding out why boot stops, passed after `run --`:
 | `--gpu-shadow-rtt` | the same, a texture that is a GPU target sampled from the target (render to texture), as the GPU renderer will on its own |
 | `--gpu-show` | `--gpu-shadow-rtt`, and the window (`--window`) shows the GPU renderer's picture instead of the software GS's |
 | `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
+| `--gs-dump-frame N` | GS local memory, all 4 MB, written to `gsmem_N.bin` (in the `--frames` directory) when frame N is done - under `--gpu`, as the GPU has it. `engine/tools/gsmem.py` shows a buffer from a dump, or compares two runs' dumps buffer by buffer |
+| `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name - the port builds with symbols for it |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
 | `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
@@ -78,6 +80,43 @@ implement. A run that goes on longer than `--timeout` seconds (30 by default)
 stops at its next loop head and reports where it was. If the host process
 itself outlives that by 90 seconds, port.py kills it and says so: that is a
 host bug, not the game's.
+
+### Under `--gpu`, for finding what the GPU renderer gets wrong
+
+* `PS2HOST_GPU_LOG=1`: every 100 frames, each GPU image (target, depth buffer,
+  view) with how often it was reloaded and why, and what came back to the CPU;
+* `PS2HOST_GPU_DUMP_FRAME=N` (and `PS2HOST_GPU_DUMP_DIR`): during frame N, each
+  target as drawing leaves it, as a BMP, and a line per pass on stderr with
+  FRAME, PRIM, TEX0, ALPHA, TEST and ZBUF - to find the pass where a picture
+  goes wrong.
+
+The way in, as for the race (GPU.md): run the same scripted input under both
+renderers and compare the pictures (`framediff.py`); find the frame; dump its
+passes to find the pass; dump GS memory from both renderers after that frame
+to see which buffer differs, and from it which rule of the GS the GPU path
+does not keep.
+
+## Speed
+
+Where the time goes: the report's `time:` line (sections, timed with the
+timestamp counter) and `--sample` (by function). What it showed, and what was
+done about it:
+
+* guest memory: the derived code reaches main RAM inline (`generated.h`,
+  `ram_base`); registers, the scratchpad and watched writes go to the port;
+* calls: `Dispatch` keeps a direct-mapped cache of address -> function and
+  call counter;
+* wait loops: under `--virtual-time` a loop spinning until an interrupt spends
+  slice after slice; a port names such loops (`ps2host::AddIdleLoop`, the
+  loop head) and time goes straight to the next event there. Burnout 3's is
+  RenderWare's wait for its DMA buffers to flip (0x001F24E0);
+* VU1: each instruction pair is decoded once for its stalls; the integer unit
+  runs directly;
+* DMA reads plain memory through a pointer.
+
+Burnout 3's scripted runs under `--gpu`: the car select from 3m55s to about
+1m15s; the race script from 8m28s to about 5m (the software GS: an hour).
+VU1 (an interpreter, with its timing model) is now the largest part.
 
 ## Code that exists only at run time
 
