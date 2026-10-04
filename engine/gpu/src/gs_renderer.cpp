@@ -34,11 +34,12 @@ struct PackedVertex {
     std::uint8_t r, g, b, a;
     float s, t, q;
     std::uint32_t z;
+    std::uint8_t fog, pad[3];
 };
 
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
 struct FragmentParams {
-    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail;
+    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -128,7 +129,8 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
            PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix) && x.depth == y.depth &&
-           (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write));
+           (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
+           x.fog == y.fog && (!x.fog || x.fogcol == y.fogcol);
 }
 
 class VulkanGsRenderer final : public GsRenderer {
@@ -303,15 +305,16 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     stages[1].module = frag_;
     stages[1].pName = "main";
     VkVertexInputBindingDescription binding{0, sizeof(PackedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[4] = {
+    VkVertexInputAttributeDescription attributes[5] = {
         {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PackedVertex, x)},
         {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(PackedVertex, r)},
         {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PackedVertex, s)},
-        {3, 0, VK_FORMAT_R32_UINT, offsetof(PackedVertex, z)}};
+        {3, 0, VK_FORMAT_R32_UINT, offsetof(PackedVertex, z)},
+        {4, 0, VK_FORMAT_R8_UNORM, offsetof(PackedVertex, fog)}};
     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 4;
+    input.vertexAttributeDescriptionCount = 5;
     input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -484,7 +487,7 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
             // Flat shading takes the colour of the triangle's last vertex.
             const GsVertex& c = state.gouraud ? v[i + k] : v[i + 2];
             const GsVertex& p = v[i + k];
-            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q, p.z});
+            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q, p.z, p.fog, {0, 0, 0}});
         }
     }
 }
@@ -519,6 +522,8 @@ void VulkanGsRenderer::Flush() {
     params.atst = state_.alpha_test ? state_.atst : 1;
     params.aref = state_.aref;
     params.afail = state_.alpha_test ? state_.afail : 0;
+    params.fge = state_.fog;
+    params.fogcol = state_.fogcol;
     params.fix_factor = state_.c == BlendAlpha::Fix;
     params.fix = state_.fix;
     const std::uint32_t count = std::uint32_t(pending_.size());

@@ -47,6 +47,7 @@ struct GsVertex {
     std::uint32_t z;
     std::uint8_t r, g, b, a;
     float s, t, q;
+    std::uint8_t fog = 0xFF;            /* F: 255 keeps the colour, 0 is all FOGCOL */
 };
 
 /* TEX0.TFX: how the texel and the vertex colour combine. */
@@ -83,6 +84,10 @@ struct GsDrawState {
     BlendColour a = BlendColour::Source, b = BlendColour::Dest, d = BlendColour::Dest;
     BlendAlpha c = BlendAlpha::Source;
     std::uint32_t fix = 0x80;
+
+    /* Fog (PRIM.FGE): C = (F * C + (255 - F) * FOGCOL) / 256, colour only. */
+    bool fog = false;
+    std::uint32_t fogcol = 0;                            /* FOGCOL: R, G, B in bytes 0-2 */
 
     /* Depth (ZBUF, TEST.ZTE/ZTST): a depth buffer named by ZBP, as large as
        the target. ZTST 0 NEVER, 1 ALWAYS, 2 GEQUAL, 3 GREATER - the GS keeps

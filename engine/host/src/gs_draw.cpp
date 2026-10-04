@@ -133,7 +133,7 @@ void Gs::Draw() {
     Timed timed(Section::GsDraw);
     ++primitives_;
     Prepare();
-    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_});
+    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_});
     if (trace) {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];
@@ -313,7 +313,7 @@ void Gs::DrawSprite(const Vertex& a, const Vertex& b) {
         for (int y = r0; y < r1; ++y)
             for (int x = cx0; x < cx1; ++x) {
                 const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
-                Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme);
+                Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme, b.fog);
             }
     });
 }
@@ -349,17 +349,18 @@ void Gs::DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c) {
                     bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
                     al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
                 }
+                const u8 fog = u8(w0 * a.fog + w1 * b.fog + w2 * c.fog);
                 // Depth in double, from the first vertex: 24 and 32-bit depths do not
                 // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
                 const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
                                              double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
                 if (fst) {
-                    Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme);
+                    Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme, fog);
                 } else {
                     const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
                     const float q = w0 * a.q + w1 * b.q + w2 * c.q;
                     const float qq = q != 0.0f ? q : 1.0f;
-                    Plot(x, y, z, r, g, bl, al, s, t, q, s / qq * float(tw), t / qq * float(th), tme);
+                    Plot(x, y, z, r, g, bl, al, s, t, q, s / qq * float(tw), t / qq * float(th), tme, fog);
                 }
             }
     });
@@ -380,7 +381,7 @@ void Gs::DrawLine(const Vertex& a, const Vertex& b) {
         const u8 r = iip ? u8(mix(a.r, b.r)) : b.r, g = iip ? u8(mix(a.g, b.g)) : b.g;
         const u8 bl = iip ? u8(mix(a.b, b.b)) : b.b, al = iip ? u8(mix(a.a, b.a)) : b.a;
         Plot(int(std::lround(mix(a.x, b.x))), int(std::lround(mix(a.y, b.y))), u32(double(a.z) + (double(b.z) - double(a.z)) * double(f)),
-             r, g, bl, al, 0, 0, 1, mix(ua, ub), mix(va, vb), tme);
+             r, g, bl, al, 0, 0, 1, mix(ua, ub), mix(va, vb), tme, u8(mix(a.fog, b.fog)));
     }
 }
 
@@ -436,6 +437,10 @@ void Gs::Prepare() {
     s.c = Bits(c.alpha, 4, 2);
     s.d = Bits(c.alpha, 6, 2);
     s.fix = Bits(c.alpha, 32, 8);
+    s.fge = Bits(prim, 5, 1) != 0;
+    s.fcr = Bits(fogcol_, 0, 8);
+    s.fcg = Bits(fogcol_, 8, 8);
+    s.fcb = Bits(fogcol_, 16, 8);
 }
 
 // TEX1: MMAG (bit 5) filters magnification, MMIN (6-8) minification, chosen by
@@ -479,7 +484,7 @@ u32 Gs::TexelAt(int iu, int iv) const {
 }
 
 void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
-              float u, float v, bool textured) {
+              float u, float v, bool textured, u8 fog) {
     (void)s; (void)t; (void)q;
     const Setup& st = setup_;
     // Scissor.
@@ -506,6 +511,12 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
                 cb = std::min(255u, (tb * b >> 7) + a); ca = tcc ? ta : a;
                 break;
         }
+    }
+    // Fog (PRIM.FGE): towards FOGCOL as F falls, colour only.
+    if (st.fge) {
+        cr = (fog * cr + (255 - fog) * st.fcr) >> 8;
+        cg = (fog * cg + (255 - fog) * st.fcg) >> 8;
+        cb = (fog * cb + (255 - fog) * st.fcb) >> 8;
     }
     // Alpha test.
     bool write_rgb = true, write_alpha = true, write_z = true;

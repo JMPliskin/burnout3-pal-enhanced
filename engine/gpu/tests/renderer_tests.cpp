@@ -224,6 +224,18 @@ void DepthTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x51, 10, 10) == 0, "an uploaded depth buffer hides what is behind it");
 }
 
+void Fogged(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x70);
+    state.fog = true;
+    state.fogcol = 0x0000FF;                        // red
+    ps2gpu::GsVertex v[6];
+    const float corners[6][2] = {{0, 0}, {32, 0}, {0, 32}, {32, 0}, {32, 32}, {0, 32}};
+    for (int i = 0; i < 6; ++i) v[i] = {corners[i][0], corners[i][1], 0, 0xFF, 0xFF, 0xFF, 0x80, 0, 0, 1, 0x80};
+    renderer.DrawTriangles(state, v, 6);
+    Check(Pixel(renderer, 0x70, 4, 4) == Rgba(0xFE, 0x7F, 0x7F, 0x80),
+          "fog F 0x80: (128 * C + 127 * FOGCOL) >> 8, as the software GS");
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +255,7 @@ int main() {
     Blended(*renderer);
     AlphaTested(*renderer);
     DepthTested(*renderer);
+    Fogged(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

@@ -154,7 +154,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
             v.x = (float(Bits(value, 0, 16)) - float(Bits(c.xyoffset, 0, 16))) / 16.0f;
             v.y = (float(Bits(value, 16, 16)) - float(Bits(c.xyoffset, 32, 16))) / 16.0f;
             v.z = f ? Bits(value, 32, 24) : u32(value >> 32);
-            if (f) v.fog = u8(value >> 56);
+            v.fog = f ? u8(value >> 56) : fog_;
             v.r = u8(rgbaq_); v.g = u8(rgbaq_ >> 8); v.b = u8(rgbaq_ >> 16); v.a = u8(rgbaq_ >> 24);
             v.q = AsFloat(u32(rgbaq_ >> 32));
             v.s = AsFloat(u32(st_));
@@ -190,6 +190,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
         case 0x1C: texclut_ = value; break;
         case 0x3B: texa_ = value; break;
         case 0x3D: fogcol_ = value; break;
+        case 0x0A: fog_ = u8(value >> 56); break;
         case 0x40: case 0x41: ctx_[address - 0x40].scissor = value; break;
         case 0x42: case 0x43: ctx_[address - 0x42].alpha = value; break;
         case 0x45: dthe_ = value; break;

@@ -8,6 +8,7 @@
 
 layout(location = 0) in vec4 shade;
 layout(location = 1) noperspective in vec3 coordinate;
+layout(location = 2) noperspective in float fog;
 
 layout(set = 0, binding = 0) uniform sampler2D texture_image;
 
@@ -20,6 +21,8 @@ layout(push_constant) uniform Params {
     uint fix_factor;    // blend with FIX rather than the source alpha
     uint fix;
     uint afail;         // a failing pixel: 0 KEEP, 1 FB_ONLY, 2 ZB_ONLY, 3 RGB_ONLY
+    uint fge;           // fog
+    uint fogcol;        // FOGCOL, R G B in bytes 0-2
 } p;
 
 #ifdef SINGLE_OUTPUT
@@ -49,6 +52,13 @@ void main() {
             c.a = p.tcc != 0u ? t.a : v.a;
         }
         c = min(c, vec4(255.0));
+    }
+
+    if (p.fge != 0u) {
+        // Towards FOGCOL as F falls, colour only.
+        float f = round(fog * 255.0);
+        vec3 fc = vec3(float(p.fogcol & 0xFFu), float((p.fogcol >> 8) & 0xFFu), float((p.fogcol >> 16) & 0xFFu));
+        c.rgb = floor((f * c.rgb + (255.0 - f) * fc) / 256.0);
     }
 
     uint a = uint(c.a);

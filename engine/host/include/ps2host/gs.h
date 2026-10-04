@@ -101,6 +101,7 @@ public:
         u64 texa;
         const Vertex* vertices;
         u32 count;
+        u64 fogcol;
     };
     std::function<void(const DrawCall&)> on_draw;
     /* The texture the primitive being drawn samples, decoded as the software
@@ -137,7 +138,8 @@ private:
         bool tcc, linear;
         u32 tbp, tbw, tpsm, tw, th, csa;            // TEX0
         u32 wms, wmt, minu, maxu, minv, maxv;       // CLAMP
-        bool ate, date, zte, zmsk, abe, colclamp, fba, pabe;
+        bool ate, date, zte, zmsk, abe, colclamp, fba, pabe, fge;
+        u32 fcr, fcg, fcb;                          // FOGCOL
         u32 atst, aref, afail, datm;                // TEST
         u32 ztst, zbp, zpsm;                        // TEST, ZBUF
         u32 fbp, fbw, fpsm, fbmsk;                  // FRAME
@@ -156,7 +158,7 @@ private:
     void DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c);
     void DrawLine(const Vertex& a, const Vertex& b);
     void Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, float q,
-              float u, float v, bool textured);
+              float u, float v, bool textured, u8 fog = 0);
     u32 Texel(float u, float v) const;          /* filtered as TEX1 says */
     u32 TexelAt(int u, int v) const;            /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
@@ -164,6 +166,7 @@ private:
 
     Context ctx_[2];
     u64 prim_ = 0, prmode_ = 0, prmodecont_ = 1, rgbaq_ = 0, st_ = 0, uv_ = 0;
+    u8 fog_ = 0;                                // FOG: F for XYZ2/XYZ3 vertices
     u64 texclut_ = 0, texa_ = 0, fogcol_ = 0, dthe_ = 0, colclamp_ = 1, pabe_ = 0;
     u64 bitbltbuf_ = 0, trxpos_ = 0, trxreg_ = 0, trxdir_ = 3;
     float q_ = 1;

@@ -237,6 +237,25 @@ void GsDrawsASprite() {
     Check(gs.primitives() == 1 && gs.pixels_drawn() == 8, "one sprite of 4x2 pixels");
 }
 
+// Fog (PRIM.FGE): C = (F * C + (255 - F) * FOGCOL) >> 8, F from XYZF2 or the
+// FOG register for XYZ2.
+void GsFogsTowardsFogcol() {
+    using namespace ps2host::gs;
+    Gs gs;
+    gs.WriteRegister(0x4C, (u64(0) << 0) | (u64(1) << 16) | (u64(PSMCT32) << 24));   // FRAME: fbp 0, 64 wide
+    gs.WriteRegister(0x40, u64(63) << 16 | u64(63) << 48);                          // SCISSOR 0..63
+    gs.WriteRegister(0x3D, 0x0000FFull);                                            // FOGCOL: red
+    gs.WriteRegister(0x00, 6 | 1 << 5);                                             // PRIM: sprite, FGE
+    gs.WriteRegister(0x01, 0x80FFFFFFull);                                          // RGBAQ: white
+    gs.WriteRegister(0x04, (u64(0) << 4) | (u64(0) << 4) << 16 | u64(0x80) << 56);  // XYZF2 (0,0) F 0x80
+    gs.WriteRegister(0x04, (u64(4) << 4) | (u64(4) << 4) << 16 | u64(0x80) << 56);  // XYZF2 (4,4)
+    Check(gs.memory.Read(0, 1, 1, 1, PSMCT32) == 0x807F7FFEu, "fog halfway to red: (128 * 255 + 127 * FOGCOL) >> 8");
+    gs.WriteRegister(0x0A, u64(0) << 56);                                           // FOG: F 0 for XYZ2
+    gs.WriteRegister(0x05, (u64(8) << 4) | (u64(0) << 4) << 16);                    // XYZ2 (8,0)
+    gs.WriteRegister(0x05, (u64(12) << 4) | (u64(4) << 4) << 16);                   // XYZ2 (12,4)
+    Check(gs.memory.Read(0, 1, 9, 1, PSMCT32) == 0x800000FEu, "F 0 from the FOG register: FOGCOL (* 255 / 256)");
+}
+
 // A flat depth stays exact across a triangle: Burnout 3's loading bar is drawn at
 // z 0xFFFFFF with GEQUAL over a buffer cleared to 0xFFFFFF, and float
 // interpolation once lost the last bit and carved it into stripes.
@@ -442,6 +461,7 @@ int main() {
     DmaChainsAreWalked();
     GsLayoutsArePermutations();
     GsDrawsASprite();
+    GsFogsTowardsFogcol();
     GsKeepsAFlatDepthExact();
     VifRunsMicroprogramsOnAVu();
     VuTimingIsVisible();

@@ -89,6 +89,7 @@ ps2gpu::GsVertex Convert(const gs::Vertex& v, bool fst, u32 tw, u32 th) {
     out.g = v.g;
     out.b = v.b;
     out.a = v.a;
+    out.fog = v.fog;
     if (fst) {
         out.s = float(v.u) / 16.0f / float(tw);
         out.t = float(v.v) / 16.0f / float(th);
@@ -156,6 +157,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.c = ps2gpu::BlendAlpha(std::min(2u, Bits(c.alpha, 4, 2)));
     state.d = ps2gpu::BlendColour(std::min(2u, Bits(c.alpha, 6, 2)));
     state.fix = Bits(c.alpha, 32, 8);
+    state.fog = (call.prim >> 5) & 1;
+    state.fogcol = u32(call.fogcol & 0xFFFFFF);
     // Depth: ZTE with ZBUF. Each depth buffer starts the frame as local memory
     // has it, so the GPU tests against what the software GS drew.
     const u32 zpsm = 0x30 | Bits(c.zbuf, 24, 4);
@@ -181,7 +184,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         ps2gpu::GsVertex ab = b, ba = b;
         ab.x = b.x; ab.y = a.y; ab.t = a.t;
         ba.x = a.x; ba.y = b.y; ba.s = a.s;
-        a.r = b.r; a.g = b.g; a.b = b.b; a.a = b.a;
+        a.r = b.r; a.g = b.g; a.b = b.b; a.a = b.a; a.fog = b.fog;
         v[0] = a; v[1] = ab; v[2] = ba; v[3] = ab; v[4] = b; v[5] = ba;
         n = 6;
         state.gouraud = true;
