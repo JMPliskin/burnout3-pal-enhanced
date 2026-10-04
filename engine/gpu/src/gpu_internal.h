@@ -5,7 +5,10 @@
 
 #include <volk.h>
 
+#include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "ps2gpu/gs_renderer.h"
 
@@ -22,9 +25,21 @@ public:
     std::string Describe() const override { return describe_; }
 
     std::uint32_t FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const;
+    /* Records into the open command buffer (opening one if none is), to run
+       at the next Submit: a frame's work goes to the GPU in one submission. */
+    template <typename F>
+    void Record(F&& record);
+    /* Runs what has been recorded and waits for it; then what was waiting for
+       that (AfterSubmit: freeing staging buffers, say) runs. */
+    bool Submit();
+    void AfterSubmit(std::function<void()> done) { after_submit_.push_back(std::move(done)); }
+    bool recording() const { return open_; }
     /* Records with `record`, submits, and waits for it to finish. */
     template <typename F>
-    bool Run(F&& record);
+    bool Run(F&& record) {
+        Record(std::forward<F>(record));
+        return Submit();
+    }
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
@@ -39,22 +54,38 @@ public:
 
 private:
     std::string describe_;
+    bool open_ = false;
+    std::vector<std::function<void()>> after_submit_;
 };
 
 template <typename F>
-bool VulkanGpu::Run(F&& record) {
-    vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &begin);
+void VulkanGpu::Record(F&& record) {
+    if (!open_) {
+        vkResetCommandBuffer(cmd, 0);
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &begin);
+        open_ = true;
+    }
     record(cmd);
-    vkEndCommandBuffer(cmd);
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &cmd;
-    vkResetFences(device, 1, &fence);
-    if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) return false;
-    return vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+}
+
+inline bool VulkanGpu::Submit() {
+    bool ok = true;
+    if (open_) {
+        open_ = false;
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        vkResetFences(device, 1, &fence);
+        ok = vkQueueSubmit(queue, 1, &submit, fence) == VK_SUCCESS &&
+             vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    }
+    std::vector<std::function<void()>> done;
+    done.swap(after_submit_);
+    for (auto& f : done) f();
+    return ok;
 }
 
 }  // namespace ps2gpu

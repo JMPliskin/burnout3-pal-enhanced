@@ -205,11 +205,61 @@ private:
     Texture blank_;                 /* bound when nothing is textured */
     GsDrawState state_;
     std::vector<PackedVertex> pending_;
-    VkBuffer vertices_ = VK_NULL_HANDLE;
-    VkDeviceMemory vertex_memory_ = VK_NULL_HANDLE;
-    void* vertex_map_ = nullptr;
-    VkDeviceSize vertex_capacity_ = 0;
+    /* Vertex data for what is recorded: appended to chunks of host-visible
+       memory, all reusable once the submission that reads them has run. */
+    struct VertexChunk {
+        VkBuffer buffer;
+        VkDeviceMemory memory;
+        void* mapped;
+        VkDeviceSize size;
+    };
+    std::vector<VertexChunk> vertex_chunks_;
+    std::size_t vertex_chunk_ = 0;
+    VkDeviceSize vertex_used_ = 0;
+    bool vertex_reset_pending_ = false;
+    void* Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset);
+    /* A staging buffer, freed once the submission that reads it has run. */
+    void FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory);
 };
+
+void* VulkanGsRenderer::Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset) {
+    if (!vertex_reset_pending_) {
+        vertex_reset_pending_ = true;
+        g_.AfterSubmit([this] {
+            vertex_chunk_ = 0;
+            vertex_used_ = 0;
+            vertex_reset_pending_ = false;
+        });
+    }
+    const VkDeviceSize aligned = (bytes + 255) & ~VkDeviceSize(255);
+    while (vertex_chunk_ < vertex_chunks_.size() && vertex_used_ + aligned > vertex_chunks_[vertex_chunk_].size) {
+        ++vertex_chunk_;
+        vertex_used_ = 0;
+    }
+    if (vertex_chunk_ == vertex_chunks_.size()) {
+        VertexChunk chunk{};
+        chunk.size = std::max<VkDeviceSize>(VkDeviceSize(8) << 20, aligned);
+        if (!Buffer(chunk.size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &chunk.buffer, &chunk.memory, &chunk.mapped))
+            return nullptr;
+        vertex_chunks_.push_back(chunk);
+        vertex_used_ = 0;
+    }
+    VertexChunk& chunk = vertex_chunks_[vertex_chunk_];
+    *buffer = chunk.buffer;
+    *offset = vertex_used_;
+    void* at = static_cast<std::uint8_t*>(chunk.mapped) + vertex_used_;
+    vertex_used_ += aligned;
+    return at;
+}
+
+void VulkanGsRenderer::FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory) {
+    VkDevice device = g_.device;
+    g_.AfterSubmit([device, buffer, memory] {
+        vkUnmapMemory(device, memory);
+        vkDestroyBuffer(device, buffer, nullptr);
+        vkFreeMemory(device, memory, nullptr);
+    });
+}
 
 bool VulkanGsRenderer::Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer,
                               VkDeviceMemory* memory, void** mapped) {
@@ -540,7 +590,7 @@ void VulkanGsRenderer::Fill(Texture& texture, const std::uint32_t* pixels) {
     void* mapped = nullptr;
     if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
     std::memcpy(mapped, pixels, bytes);
-    g_.Run([&](VkCommandBuffer cmd) {
+    g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
@@ -550,9 +600,7 @@ void VulkanGsRenderer::Fill(Texture& texture, const std::uint32_t* pixels) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     });
-    vkUnmapMemory(g_.device, memory);
-    vkDestroyBuffer(g_.device, buffer, nullptr);
-    vkFreeMemory(g_.device, memory, nullptr);
+    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
@@ -560,6 +608,7 @@ void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pix
     Flush();                        // what is pending may sample the old contents
     Texture& texture = textures_[key];
     if (texture.image.width != width || texture.image.height != height) {
+        if (texture.image.image) g_.Submit();   // recorded draws may still sample it
         for (VkDescriptorSet& set : texture.sets)
             if (set) {
                 vkFreeDescriptorSets(g_.device, pool_, 1, &set);
@@ -579,7 +628,7 @@ Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     // Local memory starts as zeros.
-    g_.Run([&](VkCommandBuffer cmd) {
+    g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         const VkClearColorValue zero{};
@@ -595,7 +644,7 @@ Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::u
     MakeImage(d, width, height, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
               kDepthFormat);
     // Local memory starts as zeros: the farthest Z.
-    g_.Run([&](VkCommandBuffer cmd) {
+    g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         const VkClearDepthStencilValue zero{0.0f, 0};
@@ -616,7 +665,7 @@ void VulkanGsRenderer::UploadDepth(std::uint32_t zbp, std::uint32_t width, std::
     if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
     float* out = static_cast<float*>(mapped);
     for (std::size_t i = 0; i < std::size_t(width) * height; ++i) out[i] = float(double(z[i]) / 4294967296.0);
-    g_.Run([&](VkCommandBuffer cmd) {
+    g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, *d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
@@ -624,9 +673,7 @@ void VulkanGsRenderer::UploadDepth(std::uint32_t zbp, std::uint32_t width, std::
         copy.imageExtent = {width, height, 1};
         vkCmdCopyBufferToImage(cmd, buffer, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     });
-    vkUnmapMemory(g_.device, memory);
-    vkDestroyBuffer(g_.device, buffer, nullptr);
-    vkFreeMemory(g_.device, memory, nullptr);
+    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v, std::size_t count) {
@@ -645,15 +692,14 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
 void VulkanGsRenderer::Flush() {
     if (pending_.empty()) return;
     const VkDeviceSize bytes = pending_.size() * sizeof(PackedVertex);
-    if (bytes > vertex_capacity_) {
-        if (vertices_) {
-            vkDestroyBuffer(g_.device, vertices_, nullptr);
-            vkFreeMemory(g_.device, vertex_memory_, nullptr);
-        }
-        vertex_capacity_ = bytes * 2;
-        Buffer(vertex_capacity_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertices_, &vertex_memory_, &vertex_map_);
+    VkBuffer vertex_buffer = VK_NULL_HANDLE;
+    VkDeviceSize vertex_offset = 0;
+    void* vertex_data = Vertices(bytes, &vertex_buffer, &vertex_offset);
+    if (!vertex_data) {
+        pending_.clear();
+        return;
     }
-    std::memcpy(vertex_map_, pending_.data(), bytes);
+    std::memcpy(vertex_data, pending_.data(), bytes);
     Image* t = TargetFor(state_);
     // A target's own depth buffer is keyed past any ZBP (which has 9 bits).
     Image* depth = DepthFor(state_.depth ? state_.zbp : 0x10000u + state_.fbp, t->width, t->height);
@@ -675,7 +721,9 @@ void VulkanGsRenderer::Flush() {
             source = &found->second;
             if (source == t) {
                 if (feedback_.width != t->width || feedback_.height != t->height) {
-                    vkDeviceWaitIdle(g_.device);
+                    g_.Submit();                        // what is recorded may still use the old copy
+                    if (feedback_.sampled) vkFreeDescriptorSets(g_.device, pool_, 1, &feedback_.sampled);
+                    feedback_.sampled = VK_NULL_HANDLE;
                     DestroyImage(feedback_);
                     MakeImage(feedback_, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
                 }
@@ -740,7 +788,7 @@ void VulkanGsRenderer::Flush() {
         std::fprintf(stderr, "[ps2gpu] a batch was dropped: %s\n", pipeline ? "no descriptor set" : "no pipeline");
     }
     if (pipeline && set) {
-        g_.Run([&](VkCommandBuffer cmd) {
+        g_.Record([&](VkCommandBuffer cmd) {
             if (state_.date) DateSetup(cmd, *t, *depth, state_.datm);
             if (copy_first) {
                 Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
@@ -799,8 +847,7 @@ void VulkanGsRenderer::Flush() {
             vkCmdSetScissor(cmd, 0, 1, &sc);
             const float size[2] = {float(t->width), float(t->height)};
             vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
-            const VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_, &offset);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
             // PABE splits each pass again: blended where As >= 0x80 (the shader's
             // pabe 1), not blended below (pabe 2, the pipeline without blending).
             const bool split = state_.blend && state_.pabe;
@@ -855,15 +902,16 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
 }
 
 VulkanGsRenderer::~VulkanGsRenderer() {
+    g_.Submit();
     vkDeviceWaitIdle(g_.device);
     for (auto& [key, t] : targets_) DestroyImage(t);
     for (auto& [key, d] : depths_) DestroyImage(d);
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     DestroyImage(feedback_);
-    if (vertices_) {
-        vkDestroyBuffer(g_.device, vertices_, nullptr);
-        vkFreeMemory(g_.device, vertex_memory_, nullptr);
+    for (VertexChunk& chunk : vertex_chunks_) {
+        vkDestroyBuffer(g_.device, chunk.buffer, nullptr);
+        vkFreeMemory(g_.device, chunk.memory, nullptr);
     }
     for (auto& [key, pipeline] : pipelines_) vkDestroyPipeline(g_.device, pipeline, nullptr);
     if (date_pipeline_) vkDestroyPipeline(g_.device, date_pipeline_, nullptr);
