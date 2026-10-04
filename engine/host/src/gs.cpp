@@ -244,14 +244,11 @@ void Gs::Transfer(u64 low, u64 high) {
     u8 bytes[16];
     std::memcpy(bytes, &low, 8);
     std::memcpy(bytes + 8, &high, 8);
-    auto next = [&]() {
-        if (++trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
-    };
-    auto put = [&](u32 value) {
-        if (!trx_active_) return;
-        memory.Write(dbp, dbw, (dx + trx_x_) % 2048, (dy + trx_y_) % 2048, psm, value);
-        next();
-    };
+    // The quadword's pixels, then written a row's run at a time (WriteRun:
+    // one call, not one a pixel).
+    u32 pixels[32];
+    u32 n = 0;
+    auto put = [&](u32 value) { pixels[n++] = value; };
     switch (psm) {
         case PSMCT32: case PSMZ32:
             for (int i = 0; i < 16; i += 4) put(u32(bytes[i]) | u32(bytes[i + 1]) << 8 | u32(bytes[i + 2]) << 16 | u32(bytes[i + 3]) << 24);
@@ -275,6 +272,14 @@ void Gs::Transfer(u64 low, u64 high) {
         default:
             trx_active_ = false;
             break;
+    }
+    for (u32 i = 0; i < n && trx_active_;) {
+        const u32 x = (dx + trx_x_) % 2048, y = (dy + trx_y_) % 2048;
+        const u32 run = std::min({n - i, w - trx_x_, 2048 - x});
+        memory.WriteRun(dbp, dbw, x, y, psm, pixels + i, run);
+        i += run;
+        trx_x_ += run;
+        if (trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
     }
 }
 

@@ -48,6 +48,8 @@ public:
     Memory() : bytes_(4u << 20) {}
     u32 Read(u32 bp, u32 bw, u32 x, u32 y, u32 psm) const;
     void Write(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32 value);
+    /* `count` pixels of row y from x on (no wrap past 2047), as Write each. */
+    void WriteRun(u32 bp, u32 bw, u32 x, u32 y, u32 psm, const u32* values, u32 count);
     u8* data() { return bytes_.data(); }
     const u8* data() const { return bytes_.data(); }
 

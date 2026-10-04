@@ -3,9 +3,11 @@
  * by engine/tools/port.py before the port itself.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -241,6 +243,20 @@ void GsLayoutsArePermutations() {
                 ++wrong;
         }
     Check(wrong == 0, "GS addresses from precomputed pages match the step-by-step layout");
+    // A row's run (image transfers) stores what one pixel at a time stores.
+    auto one = std::make_unique<Memory>(), run = std::make_unique<Memory>();
+    for (u32 psm : psms)
+        for (int i = 0; i < 300; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const u32 bp = seed >> 18, bw = 1 + ((seed >> 8) & 15);
+            seed = seed * 1664525u + 1013904223u;
+            const u32 x = (seed >> 5) & 2047, y = (seed >> 17) & 2047, count = std::min(1 + (seed & 255), 2048 - x);
+            std::vector<u32> values(count);
+            for (u32& v : values) v = seed = seed * 1664525u + 1013904223u;
+            for (u32 k = 0; k < count; ++k) one->Write(bp, bw, x + k, y, psm, values[k]);
+            run->WriteRun(bp, bw, x, y, psm, values.data(), count);
+        }
+    Check(std::memcmp(one->data(), run->data(), 4u << 20) == 0, "GS row runs store as single pixels do");
 }
 
 void GsDrawsASprite() {

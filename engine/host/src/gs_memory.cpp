@@ -18,6 +18,7 @@
 
 #include "ps2host/gs.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -207,6 +208,73 @@ u32 Memory::Read(u32 bp, u32 bw, u32 x, u32 y, u32 psm) const {
         case PSMT4HL: return p[3] & 15;
         case PSMT4HH: return p[3] >> 4;
         default: return 0;
+    }
+}
+
+namespace {
+
+// One pixel's store at byte `a` (and nibble), as Memory::Write.
+template <u32 Psm>
+inline void Store(u8* bytes, u32 within, u32 page, u32 value) {
+    if constexpr (Psm == PSMT4) {
+        u8* p = &bytes[(page * 256 + within / 2) & kMask];
+        *p = (within & 1) ? u8((*p & 0x0F) | (value << 4)) : u8((*p & 0xF0) | (value & 15));
+    } else {
+        u8* p = &bytes[(page * 256 + within) & kMask];
+        if constexpr (Psm == PSMCT32 || Psm == PSMZ32) {
+            p[0] = u8(value); p[1] = u8(value >> 8); p[2] = u8(value >> 16); p[3] = u8(value >> 24);
+        } else if constexpr (Psm == PSMCT24 || Psm == PSMZ24) {
+            p[0] = u8(value); p[1] = u8(value >> 8); p[2] = u8(value >> 16);
+        } else if constexpr (Psm == PSMT8) {
+            p[0] = u8(value);
+        } else if constexpr (Psm == PSMT8H) {
+            p[3] = u8(value);
+        } else if constexpr (Psm == PSMT4HL) {
+            p[3] = u8((p[3] & 0xF0) | (value & 15));
+        } else if constexpr (Psm == PSMT4HH) {
+            p[3] = u8((p[3] & 0x0F) | (value << 4));
+        } else {  // the 16-bit formats
+            p[0] = u8(value); p[1] = u8(value >> 8);
+        }
+    }
+}
+
+// A row's run: the page and the row of offsets within it found once a page,
+// not once a pixel.
+template <u32 Psm>
+void StoreRun(u8* bytes, const PageTable& t, u32 bp, u32 bw, u32 x, u32 y, const u32* values, u32 count) {
+    const u32 page_bw = t.half_width ? bw / 2 : bw;
+    const std::uint16_t* row = &t.offset[std::size_t(y % t.height) * t.width];
+    const u32 page_y = y / t.height;
+    for (u32 i = 0; i < count;) {
+        const u32 px = x + i;
+        const u32 page = Page(bp, page_bw, px / t.width, page_y);
+        const u32 in_page = std::min(count - i, t.width - px % t.width);
+        for (u32 k = 0, wx = px % t.width; k < in_page; ++k, ++wx)
+            Store<Psm>(bytes, row[wx], page, values[i + k]);
+        i += in_page;
+    }
+}
+
+}  // namespace
+
+void Memory::WriteRun(u32 bp, u32 bw, u32 x, u32 y, u32 psm, const u32* values, u32 count) {
+    const PageTable* t = TableFor(psm);
+    u8* b = bytes_.data();
+    switch (t ? psm : ~0u) {
+        case PSMCT32: StoreRun<PSMCT32>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMZ32: StoreRun<PSMZ32>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMCT24: StoreRun<PSMCT24>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMZ24: StoreRun<PSMZ24>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S:
+            StoreRun<PSMCT16>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMT8: StoreRun<PSMT8>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMT4: StoreRun<PSMT4>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMT8H: StoreRun<PSMT8H>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMT4HL: StoreRun<PSMT4HL>(b, *t, bp, bw, x, y, values, count); return;
+        case PSMT4HH: StoreRun<PSMT4HH>(b, *t, bp, bw, x, y, values, count); return;
+        default:
+            for (u32 i = 0; i < count; ++i) Write(bp, bw, x + i, y, psm, values[i]);
     }
 }
 
