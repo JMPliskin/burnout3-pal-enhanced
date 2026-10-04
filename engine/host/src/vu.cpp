@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include "ps2host/memory.h"
 #include "ps2host/profile.h"
@@ -114,6 +115,33 @@ bool IsWait(Vu::u32 word, Vu::u32 which) {             // 0x3B WAITQ, 0x7B WAITP
 }
 
 constexpr int kFmacLatency = 4;
+
+// A pair, decoded for its stalls once: what it reads and whether it waits on
+// the divider or the EFU. Kept per address and checked against the words
+// there (an MPG may have replaced them).
+struct DecodedPair {
+    Vu::u32 lower = 0, upper = 0;
+    bool valid = false;
+    bool immediate = false, q_waits = false, p_waits = false;
+    Reads reads;
+};
+
+DecodedPair& Decoded(std::vector<DecodedPair>& cache, Vu::u32 pc, Vu::u32 lower, Vu::u32 upper) {
+    DecodedPair& d = cache[pc / 8];
+    if (d.valid && d.lower == lower && d.upper == upper) return d;
+    d = DecodedPair{};
+    d.lower = lower;
+    d.upper = upper;
+    d.valid = true;
+    d.immediate = (upper & 0x80000000u) != 0;          // I bit: the lower is I's value
+    UpperReads(upper, d.reads);
+    if (!d.immediate) {
+        LowerReads(lower, d.reads);
+        d.q_waits = IsDivide(lower) || IsWait(lower, 0x3B);
+        d.p_waits = IsEfu(lower) || IsWait(lower, 0x7B);
+    }
+    return d;
+}
 
 }  // namespace
 
@@ -390,6 +418,7 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
 }
 
 void Vu::Land() {
+    if (!q_busy_ && !p_busy_ && !flag_count_) return;
     if (q_busy_ && q_ready_ <= cycle_) { regs.vc[kRegQ] = q_next_; q_busy_ = false; }
     if (p_busy_ && p_ready_ <= cycle_) { p = p_next_; p_busy_ = false; }
     int kept = 0;
@@ -417,22 +446,25 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
     bool stopping = false;
     pc &= u32(micro.size() - 1) & ~7u;
     ++starts_[pc];
+    // One cache a unit size; an entry stands only while its words are there.
+    static std::vector<DecodedPair> caches[2];
+    std::vector<DecodedPair>& decoded_ = caches[data_mask_ == 0x3FF ? 1 : 0];
+    if (decoded_.size() != micro.size() / 8) decoded_.assign(micro.size() / 8, DecodedPair{});
     while (count < limit) {
         u32 lower, upper;
         std::memcpy(&lower, micro.data() + pc, 4);
         std::memcpy(&upper, micro.data() + pc + 4, 4);
-        const bool immediate = (upper & 0x80000000u) != 0;     // I bit: the lower is I's value
+        const DecodedPair& d = Decoded(decoded_, pc, lower, upper);
+        const bool immediate = d.immediate;
 
         // Stalls: operands still in the pipeline, a busy divider or EFU, the waits.
-        Reads reads;
-        UpperReads(upper, reads);
-        if (!immediate) LowerReads(lower, reads);
+        const Reads& reads = d.reads;
         u64 issue = cycle_;
         for (int i = 0; i < reads.n; ++i)
             for (int lane = 0; lane < 4; ++lane)
                 if (reads.lanes[i] & (8u >> lane)) issue = std::max(issue, vf_ready_[reads.reg[i]][lane]);
-        if (!immediate && q_busy_ && (IsDivide(lower) || IsWait(lower, 0x3B))) issue = std::max(issue, q_ready_);
-        if (!immediate && p_busy_ && (IsEfu(lower) || IsWait(lower, 0x7B))) issue = std::max(issue, p_ready_);
+        if (q_busy_ && d.q_waits) issue = std::max(issue, q_ready_);
+        if (p_busy_ && d.p_waits) issue = std::max(issue, p_ready_);
         cycle_ = issue;
         Land();
 
