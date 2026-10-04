@@ -122,14 +122,25 @@ their arithmetic is chosen once an instruction rather than once a lane;
 image transfers into GS memory write a row's run of pixels at a time
 (the page and its offsets found once a page, not once a pixel).
 
+Further still: DMA hands VIF0, VIF1 and PATH3 a run of words at a time;
+the scratchpad channels copy through pointers when no store is watched;
+`gs::TheGs()` is inline.
+
 Burnout 3's scripted runs under `--gpu`: the car select from 3m55s to about
-46s; the race script from 8m28s to about 4m (the software GS: 46 minutes).
-Each frame's GPU work now runs while the next frame is made (GPU.md,
-*submission*). VU1 (an interpreter, with its timing model) and DMA/VIF are
-now the largest parts; then the GPU's hand-offs between views of the same
-memory. The sampler (`--sample`) shows where: run with it before choosing
-what to speed up next. Wall-clock times on a laptop vary by half again over
-a day (throttling): compare builds back to back.
+43s; the race script from 8m28s to about 3m30s (the software GS: 46
+minutes). Each frame's GPU work now runs while the next frame is made
+(GPU.md, *submission*). VU1 (an interpreter, with its timing model) and
+DMA/VIF are now the largest parts; then the GPU's hand-offs between views of
+the same memory. The sampler (`--sample`) shows where: run with it before
+choosing what to speed up next. Wall-clock times on a laptop vary by half
+again over a day (throttling): compare builds back to back.
+
+Where the car select's time goes now (the sampler, own time): the VU
+interpreter's loop, Upper and Lower about 18%; FMAC arithmetic about 11%;
+image transfers into GS memory about 10% (one call a quadword from the GIF:
+taking an IMAGE packet's quadwords at once is the next step there); VIF
+commands and UNPACK about 7%. The scalable step past the interpreter is
+recompiling VU1 microprograms ahead of time, as the EE's code is.
 
 Each of these was checked by running the scripted runs and comparing the
 pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
