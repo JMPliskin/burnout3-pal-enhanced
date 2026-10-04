@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <list>
 #include <map>
 #include <memory>
@@ -127,6 +128,8 @@ struct Cached {
     u32 begin = 0, end = 0;
     bool valid = false;
     u64 decoded_serial = 0;         // Bridge::serial when decoded
+    u64 content = 0;                // a hash of its blocks when decoded
+    bool decoded = false;
     std::list<u64>::iterator lru;
 };
 
@@ -161,6 +164,7 @@ struct Bridge {
     u64 next_texture = 1;
     u64 serial = 0;                 // counts GPU draws, so a texture knows if one went over it
     u64 write_backs = 0, reloads = 0, decodes = 0;
+    u64 unchanged = 0;              // textures invalidated whose texels proved the same
 };
 
 Bridge* g_bridge = nullptr;
@@ -269,6 +273,18 @@ void Drew(Bridge& b, Owned& o, u32 x1, u32 y1) {
     }
 }
 
+/* A 64-bit hash of `size` bytes (a multiple of 8). */
+u64 Hash(const unsigned char* data, std::size_t size) {
+    u64 h = 0x9E3779B97F4A7C15ull ^ size;
+    for (std::size_t i = 0; i + 8 <= size; i += 8) {
+        u64 word;
+        std::memcpy(&word, data + i, 8);
+        h = (h ^ word) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 29;
+    }
+    return h;
+}
+
 /* The CLUT a palettized texture is read through, as a hash. */
 u64 ClutHash(u32 psm) {
     if (psm != gs::PSMT8 && psm != gs::PSMT4 && psm != gs::PSMT8H && psm != gs::PSMT4HL && psm != gs::PSMT4HH)
@@ -296,7 +312,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         b.texture_lru.push_front(key);
         t.lru = b.texture_lru.begin();
         t.begin = tbp;
-        t.end = tbp + std::max(1u, tbw * 64 * th * PixelBits(psm) / 8 / 256 + 32);
+        t.end = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(psm) / 8 / 256 + 32));
     } else {
         b.texture_lru.splice(b.texture_lru.begin(), b.texture_lru, t.lru);
     }
@@ -307,13 +323,24 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     if (!t.valid) {
         Timed timed(Section::GpuSync);
         Sync(b, t.begin, t.end, false);
-        std::vector<u32> pixels;
-        u32 w = 0, h = 0;
-        gs::TheGs().DecodeTexture(&pixels, &w, &h);
-        b.renderer->UploadTexture(t.renderer_key, pixels.data(), w, h);
+        // Games send the same texels again and again (Burnout 3 its textures
+        // every frame, through PATH3): decoded again only if its blocks hold
+        // something else than when it was last decoded.
+        const u64 content = Hash(gs::TheGs().memory.data() + std::size_t(t.begin) * 256,
+                                 std::size_t(t.end - t.begin) * 256);
+        if (!t.decoded || content != t.content) {
+            std::vector<u32> pixels;
+            u32 w = 0, h = 0;
+            gs::TheGs().DecodeTexture(&pixels, &w, &h);
+            b.renderer->UploadTexture(t.renderer_key, pixels.data(), w, h);
+            t.content = content;
+            ++b.decodes;
+        } else {
+            ++b.unchanged;
+        }
         t.valid = true;
+        t.decoded = true;
         t.decoded_serial = b.serial;
-        ++b.decodes;
     }
     const u64 renderer_key = t.renderer_key;
     // Keep the cache bounded: the least recently used go.
@@ -454,6 +481,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         const float bottom = float(std::min(state.scissor_y1, int(state.height) - 1));
         if (std::floor(hi_x) < left || std::ceil(lo_x) > right || std::floor(hi_y) < top || std::ceil(lo_y) > bottom)
             return;
+        if (Bits(c.test, 16, 1) && Bits(c.test, 17, 2) == 0) return;    // ZTST NEVER: every pixel fails
     }
     const u32 rows = std::max(1u, y1);
     Owned* target = nullptr;
@@ -545,6 +573,11 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.ztst = Bits(c.test, 17, 2);
     state.zbp = Bits(c.zbuf, 0, 9);
     state.depth_write = Bits(c.zbuf, 32, 1) == 0;
+    // ZTST ALWAYS with ZMSK: the depth buffer plays no part. Burnout 3's race
+    // blurs into scratch targets at its depth buffer's address with ZBUF left
+    // there; treating that as a depth buffer would bring it up to date - a
+    // write-back and a reload - for every one of their draws.
+    if (state.depth && state.ztst == 1 && !state.depth_write) state.depth = false;
     Owned* depth = nullptr;
     if (state.depth) {
         if (s.primary) {
@@ -734,12 +767,15 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
 
 std::string GpuShadowSummary() {
     if (!g_bridge) return "";
-    char text[192];
+    char text[256];
     if (g_bridge->primary) {
-        std::snprintf(text, sizeof text, "gpu: %llu write-backs to local memory, %llu reloads from it, %llu textures decoded",
+        std::snprintf(text, sizeof text,
+                      "gpu: %llu write-backs to local memory, %llu reloads from it, %llu textures decoded"
+                      " (%llu more found unchanged)",
                       static_cast<unsigned long long>(g_bridge->write_backs),
                       static_cast<unsigned long long>(g_bridge->reloads),
-                      static_cast<unsigned long long>(g_bridge->decodes));
+                      static_cast<unsigned long long>(g_bridge->decodes),
+                      static_cast<unsigned long long>(g_bridge->unchanged));
         return text;
     }
     if (!g_bridge->frames) return "";

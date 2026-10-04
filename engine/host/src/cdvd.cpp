@@ -75,9 +75,18 @@ u8 Bcd(int value) { return u8(((value / 10) << 4) | (value % 10)); }
 std::vector<u8> SCommand(u32 procedure, const std::vector<u8>& /*data*/) {
     switch (procedure) {
         case 0x01: {                                    // sceCdReadClock: result, sceCdCLOCK
-            std::time_t now = std::time(nullptr);
+            // With --virtual-time the clock starts at a fixed date and follows
+            // the virtual clock: games seed their random choices from it
+            // (Burnout 3 its EA Trax playlist), and a scripted run must repeat.
             std::tm local{};
-            localtime_s(&local, &now);
+            if (VirtualClock()) {
+                const std::time_t start = 1094558400;   // 2004-09-07 12:00:00 UTC, Burnout 3's release
+                const std::time_t now = start + std::time_t(ClockNs() / 1000000000ull);
+                gmtime_s(&local, &now);
+            } else {
+                const std::time_t now = std::time(nullptr);
+                localtime_s(&local, &now);
+            }
             std::vector<u8> reply = Word(1);
             // sceCdCLOCK { stat, second, minute, hour, pad, day, month, year }, BCD
             const u8 clock[8] = {0, Bcd(local.tm_sec), Bcd(local.tm_min), Bcd(local.tm_hour), 0,

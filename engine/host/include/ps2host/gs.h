@@ -49,6 +49,7 @@ public:
     u32 Read(u32 bp, u32 bw, u32 x, u32 y, u32 psm) const;
     void Write(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32 value);
     u8* data() { return bytes_.data(); }
+    const u8* data() const { return bytes_.data(); }
 
     /* The byte address of a pixel (for 4-bit formats, of its byte; *nibble
        says which half). Exposed for tests. */
