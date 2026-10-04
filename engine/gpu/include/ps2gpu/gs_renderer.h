@@ -138,6 +138,26 @@ public:
     virtual void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) = 0;
     /* Runs what has been drawn. */
     virtual void Flush() = 0;
+    /* GS local memory on the GPU: 4 MB, as the GS lays it out, which targets
+       and depth buffers are swizzled into and out of without the CPU. Blocks
+       are 256 bytes; [begin, end) in blocks. Nothing waits but MemoryRead. */
+    /* The CPU's copy of blocks, into the GPU's. */
+    virtual void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) = 0;
+    /* The GPU's copy of blocks, into `bytes` (runs what is recorded, waits). */
+    virtual void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) = 0;
+    /* A target's first `rows` rows, `cols` wide, into GPU memory at FBP as
+       its PSM lays them out (CT32, CT24, CT16, CT16S); false if there is none. */
+    virtual bool TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
+                                std::uint32_t rows) = 0;
+    /* A target, made at this size if there is none, loaded from GPU memory. */
+    virtual void TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
+                                  std::uint32_t height) = 0;
+    /* The same for the depth buffer at ZBP of this size, laid out by ZPSM
+       (Z32, Z24, Z16, Z16S) FBW pages wide. */
+    virtual bool DepthToMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
+                               std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) = 0;
+    virtual void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
+                                 std::uint32_t zpsm) = 0;
     /* A depth buffer's Z (the GS's, unsigned), rows top-down; false if there
        is none of that size. */
     virtual bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,

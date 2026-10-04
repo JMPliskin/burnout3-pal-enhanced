@@ -20,6 +20,10 @@
 #include "ps2host/vu.h"
 #include "ps2rt/generated.h"
 
+#if PS2HOST_VULKAN
+#include "ps2gpu/gs_renderer.h"
+#endif
+
 namespace {
 
 int g_failures = 0;
@@ -347,6 +351,89 @@ void GsFillsTopLeft() {
     Check(outside == 0, "the right and bottom edges, on whole pixels, not drawn");
 }
 
+#if PS2HOST_VULKAN
+// GS local memory on the GPU (--gpu): targets and depth buffers swizzled into it
+// and out of it by a compute shader must land where the GS model puts them,
+// byte for byte, in every format a target or depth buffer takes.
+void GpuMemorySwizzlesAsTheGs() {
+    using namespace ps2host::gs;
+    std::string error;
+    auto gpu = ps2gpu::CreateGpu(&error);
+    if (!gpu) {
+        std::printf("  (no Vulkan device, GPU local memory unchecked: %s)\n", error.c_str());
+        return;
+    }
+    auto renderer = ps2gpu::CreateGsRenderer(*gpu, &error);
+    Check(renderer != nullptr, "the GPU renderer starts");
+    if (!renderer) return;
+    const u32 w = 128, h = 64, fbw = 2;
+    u32 seed = 12345;
+    auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed; };
+    auto to16 = [](u32 c) {
+        return ((c >> 3) & 31) | (((c >> 11) & 31) << 5) | (((c >> 19) & 31) << 10) | ((c >> 31) << 15);
+    };
+    auto from16 = [](u32 c) {
+        return ((c & 31) << 3) | (((c >> 5) & 31) << 11) | (((c >> 10) & 31) << 19) | ((c & 0x8000) ? 0x80000000u : 0);
+    };
+    Memory reference;                               // what the GPU's copy must hold, all along
+    std::vector<u8> gpu_bytes(4u << 20);
+    auto same_memory = [&] {
+        renderer->MemoryRead(0, 16384, gpu_bytes.data());
+        return std::memcmp(gpu_bytes.data(), reference.data(), gpu_bytes.size()) == 0;
+    };
+    struct Format { u32 psm; bool depth; const char* name; };
+    const Format formats[] = {{PSMCT32, false, "CT32"}, {PSMCT24, false, "CT24"}, {PSMCT16, false, "CT16"},
+                              {PSMCT16S, false, "CT16S"}, {PSMZ32, true, "Z32"}, {PSMZ24, true, "Z24"},
+                              {PSMZ16, true, "Z16"}, {PSMZ16S, true, "Z16S"}};
+    u32 base = 0x40;                                // FBP, in 2048-word units; a new place each time
+    for (const Format& f : formats) {
+        const bool sixteen = f.psm == PSMCT16 || f.psm == PSMCT16S || f.psm == PSMZ16 || f.psm == PSMZ16S;
+        // Image to memory.
+        std::vector<u32> pixels(w * h);
+        for (u32& p : pixels) p = f.depth ? next() & (sixteen ? 0xFFFFu : 0xFFFFFFu) : next();
+        if (f.depth) {
+            renderer->UploadDepth(base, w, h, pixels.data());
+            Check(renderer->DepthToMemory(base, w, h, fbw, f.psm, w, h), "a depth buffer goes to GPU memory");
+        } else {
+            renderer->UploadTarget(base, fbw, f.psm, pixels.data(), w, h);
+            Check(renderer->TargetToMemory(base, fbw, f.psm, w, h), "a target goes to GPU memory");
+        }
+        for (u32 y = 0; y < h; ++y)
+            for (u32 x = 0; x < w; ++x) {
+                const u32 c = pixels[y * w + x];
+                reference.Write(base * 32, fbw, x, y, f.psm, !f.depth && sixteen ? to16(c) : c);
+            }
+        std::string what = std::string(f.name) + ": an image swizzled on the GPU as the GS lays it out";
+        Check(same_memory(), what.c_str());
+        // Memory to image: other bytes there, from the CPU.
+        const u32 blocks = fbw * (sixteen ? 1 : 2) * 32;   // the 64 rows' pages
+        for (u32 i = base * 32 * 256; i < (base * 32 + blocks) * 256; ++i) reference.data()[i] = u8(next() >> 24);
+        renderer->MemoryWrite(base * 32, base * 32 + blocks, reference.data() + base * 32 * 256);
+        std::vector<u32> back;
+        u32 bw_ = 0, bh = 0;
+        if (f.depth) {
+            renderer->DepthFromMemory(base, w, h, fbw, f.psm);
+            Check(renderer->ReadDepth(base, w, h, &back), "a depth buffer reads back");
+        } else {
+            renderer->TargetFromMemory(base, fbw, f.psm, w, h);
+            Check(renderer->ReadTarget(base, fbw, f.psm, &back, &bw_, &bh) && bw_ == w, "a target reads back");
+        }
+        u32 wrong = 0;
+        for (u32 y = 0; y < h && back.size() == w * h; ++y)
+            for (u32 x = 0; x < w; ++x) {
+                const u32 raw = reference.Read(base * 32, fbw, x, y, f.psm);
+                // Depth goes through a float (Z / 2^32): exact up to 24 bits.
+                const u32 want = f.depth ? (raw >= 0xFFFFFF80u ? 0xFFFFFFFFu : u32(float(raw)))
+                                         : sixteen ? from16(raw) : raw;
+                if (back[y * w + x] != want) ++wrong;
+            }
+        what = std::string(f.name) + ": memory unswizzled on the GPU as the GS reads it";
+        Check(back.size() == w * h && wrong == 0, what.c_str());
+        base += 8;
+    }
+}
+#endif
+
 // VIF1 into a VU: a microprogram loaded with MPG and run with MSCAL, UNPACK's
 // formats, mask and skipping writes, and XGKICK.
 void VifRunsMicroprogramsOnAVu() {
@@ -531,6 +618,9 @@ int main() {
     Path3GoesOneGroupPerWindow();
     GsKeepsAFlatDepthExact();
     GsFillsTopLeft();
+#if PS2HOST_VULKAN
+    GpuMemorySwizzlesAsTheGs();
+#endif
     VifRunsMicroprogramsOnAVu();
     VuTimingIsVisible();
     IopInstructionsMatchTheR5900();

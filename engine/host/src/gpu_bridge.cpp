@@ -12,16 +12,22 @@
  *
  * --gpu: instead of the software GS. The GS model still takes every GIF packet,
  * register and image transfer, but draws nothing (Gs::rasterize false); the GPU
- * draws, and its images stand for regions of local memory. The two are kept in
- * step: each GPU image (a target or depth buffer, with the blocks it covers)
- * knows whether the GPU has drawn what memory lacks (gpu_newer) or memory has
- * changed under it (stale). Before local memory is read or written other than
- * by drawing - a transfer, a local copy, a CLUT load, a texture decoded, the
- * picture shown - the GPU images over it are written back into it; after it is
- * written, they are stale, and reload from memory before the GPU next uses
- * them. A target drawn under another width or format than one it overlaps
- * (Burnout 3's reflection buffers), or a depth buffer that is drawn into as
- * colour, is reconciled the same way, through memory. An image stands for the
+ * draws, and its images stand for regions of local memory.
+ *
+ * Local memory is kept twice: the GS model's, which the CPU reads and writes,
+ * and a copy on the GPU (GsRenderer::Memory*), which images are swizzled into
+ * and out of by a compute shader; per 256-byte block the bridge knows which
+ * copy is current. Each GPU image (a target or depth buffer, with the blocks
+ * it covers) knows whether the GPU has drawn what memory lacks (gpu_newer) or
+ * memory has changed under it (stale). Before the CPU reads or writes local
+ * memory - a transfer, a local copy, a CLUT load, a texture decoded, the
+ * picture shown - the GPU images over it are swizzled into the GPU's copy and
+ * the blocks the CPU lacks come back to it; after it is written, the images
+ * there are stale and reload, from the GPU's copy once the CPU's writes have
+ * gone over. A target drawn under another width or format than one it
+ * overlaps (Burnout 3's reflection buffers, the race's blur passes in its
+ * depth buffer's memory), or a depth buffer drawn into as colour, is
+ * reconciled the same way - all of it on the GPU, waiting for nothing. An image stands for the
  * rows drawn into so far, not all the scissor allows: Burnout 3's depth buffer
  * starts where its frame buffer's 448 rows end, and a 512-row reach would have
  * each depth write make the frame stale. A texture that is a target is sampled
@@ -163,6 +169,12 @@ struct Bridge {
     std::list<u64> texture_lru;     // most recent first
     u64 next_texture = 1;
     u64 serial = 0;                 // counts GPU draws, so a texture knows if one went over it
+    // Local memory is kept twice: the GS model's (the CPU's) and the
+    // renderer's (the GPU's), which images are swizzled into and out of. Per
+    // 256-byte block, which copy is current.
+    enum : u8 { kSame = 0, kCpuNewer = 1, kGpuNewer = 2 };
+    std::vector<u8> blocks = std::vector<u8>(16384, kSame);
+    u64 downloads = 0, uploads = 0;  // blocks copied GPU -> CPU, CPU -> GPU
     u64 write_backs = 0, reloads = 0, decodes = 0;
     u64 unchanged = 0;              // textures invalidated whose texels proved the same
 };
@@ -171,31 +183,57 @@ Bridge* g_bridge = nullptr;
 
 // ------------------------------------------------------------------ --gpu
 
-/* Writes a GPU image back into local memory. */
+/* Blocks [begin, end) whose copy on one side is behind the other's brought up
+   to date, in runs: `to_gpu` the GPU's from the CPU's, else the CPU's from the
+   GPU's (which waits for the GPU). */
+void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
+    end = std::min(end, 16384u);
+    const u8 behind = to_gpu ? Bridge::kCpuNewer : Bridge::kGpuNewer;
+    u8* bytes = gs::TheGs().memory.data();
+    for (u32 i = begin; i < end;) {
+        if (b.blocks[i] != behind) {
+            ++i;
+            continue;
+        }
+        u32 j = i;
+        while (j < end && b.blocks[j] == behind) b.blocks[j++] = Bridge::kSame;
+        if (to_gpu) {
+            b.renderer->MemoryWrite(i, j, bytes + std::size_t(i) * 256);
+            b.uploads += j - i;
+        } else {
+            b.renderer->MemoryRead(i, j, bytes + std::size_t(i) * 256);
+            b.downloads += j - i;
+        }
+        i = j;
+    }
+}
+
+/* What the GPU drew into an image, swizzled into the GPU's local memory - on
+   the GPU, nothing waiting. */
 void WriteBack(Bridge& b, Owned& o) {
     Timed timed(Section::GpuSync);
     o.gpu_newer = false;
-    std::vector<u32> pixels;
-    u32 w = o.width, h = o.height;
-    if (o.depth ? !b.renderer->ReadDepth(o.fbp, w, h, &pixels)
-                : !b.renderer->ReadTarget(o.fbp, o.fbw, o.psm, &pixels, &w, &h))
-        return;
+    // Blocks the CPU wrote go over first: the image covers them only in part.
+    Coherent(b, o.begin, o.drawn_end, true);
+    const bool done = o.depth ? b.renderer->DepthToMemory(o.fbp, o.width, o.height, o.fbw, o.psm, o.x1, o.y1)
+                              : b.renderer->TargetToMemory(o.fbp, o.fbw, o.psm, o.x1, o.y1);
+    if (!done) return;
     ++b.write_backs;
-    gs::Memory& memory = gs::TheGs().memory;
-    const u32 x1 = std::min(o.x1, w), y1 = std::min(o.y1, h);
-    for (u32 y = 0; y < y1; ++y)
-        for (u32 x = 0; x < x1; ++x) {
-            const u32 c = pixels[std::size_t(y) * w + x];
-            memory.Write(o.fbp * 32, o.fbw, x, y, o.psm, !o.depth && Is16(o.psm) ? To16(c) : c);
-        }
+    std::fill(b.blocks.begin() + o.begin, b.blocks.begin() + std::min(o.drawn_end, 16384u), Bridge::kGpuNewer);
 }
 
-/* Before local memory [begin, end) is read or written: what the GPU drew there
-   goes back into it; written, the GPU images there must reload. */
+/* Before the CPU reads or writes local memory [begin, end): what the GPU drew
+   there comes back to it; written, the GPU images there must reload. */
 void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullptr) {
+    for (auto& [key, o] : b.owned)
+        if (&o != except && o.gpu_newer && o.begin < end && begin < o.drawn_end) WriteBack(b, o);
+    {
+        Timed timed(Section::GpuSync);
+        Coherent(b, begin, end, false);
+    }
+    if (write) std::fill(b.blocks.begin() + begin, b.blocks.begin() + std::min(end, 16384u), Bridge::kCpuNewer);
     for (auto& [key, o] : b.owned) {
         if (&o == except) continue;
-        if (o.gpu_newer && o.begin < end && begin < o.drawn_end) WriteBack(b, o);
         if (!write || end <= o.begin || o.full_end <= begin) continue;
         if (begin < o.end) {
             if (!o.stale) { o.stale = true; o.why = 1; }
@@ -236,18 +274,12 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
             if (!o.stale) { o.stale = true; o.why = 3; }
         }
     if (o.stale) {
+        // Loaded from the GPU's local memory, the CPU's writes there first.
         Timed timed(Section::GpuSync);
         ++b.reloads;
-        const gs::Gs& g = gs::TheGs();
-        std::vector<u32> pixels(std::size_t(o.width) * o.height);
-        for (u32 y = 0; y < o.height; ++y)
-            for (u32 x = 0; x < o.width; ++x) {
-                const u32 raw = g.memory.Read(o.fbp * 32, o.fbw, x, y, o.psm);
-                pixels[std::size_t(y) * o.width + x] =
-                    depth ? raw : Is16(o.psm) ? From16(raw) : o.psm == gs::PSMCT24 ? (raw & 0xFFFFFF) : raw;
-            }
-        if (depth) b.renderer->UploadDepth(o.fbp, o.width, o.height, pixels.data());
-        else b.renderer->UploadTarget(o.fbp, o.fbw, o.psm, pixels.data(), o.width, o.height);
+        Coherent(b, o.begin, o.full_end, true);
+        if (depth) b.renderer->DepthFromMemory(o.fbp, o.width, o.height, o.fbw, o.psm);
+        else b.renderer->TargetFromMemory(o.fbp, o.fbw, o.psm, o.width, o.height);
         ++o.reloads[o.why];
         o.stale = o.stale_beyond = false;
     }
@@ -767,13 +799,15 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
 
 std::string GpuShadowSummary() {
     if (!g_bridge) return "";
-    char text[256];
+    char text[320];
     if (g_bridge->primary) {
         std::snprintf(text, sizeof text,
-                      "gpu: %llu write-backs to local memory, %llu reloads from it, %llu textures decoded"
-                      " (%llu more found unchanged)",
+                      "gpu: %llu images into GPU local memory, %llu out of it; %llu KB to the CPU, %llu KB"
+                      " from it; %llu textures decoded (%llu more found unchanged)",
                       static_cast<unsigned long long>(g_bridge->write_backs),
                       static_cast<unsigned long long>(g_bridge->reloads),
+                      static_cast<unsigned long long>(g_bridge->downloads / 4),
+                      static_cast<unsigned long long>(g_bridge->uploads / 4),
                       static_cast<unsigned long long>(g_bridge->decodes),
                       static_cast<unsigned long long>(g_bridge->unchanged));
         return text;
