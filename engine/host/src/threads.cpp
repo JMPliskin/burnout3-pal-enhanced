@@ -39,12 +39,14 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ps2host/host.h"
 #include "ps2host/iop_vm.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
+#include "ps2host/profile.h"
 
 namespace ps2host {
 
@@ -258,7 +260,10 @@ s64 NanosToNextAlarm() {
 bool DeliverFrame() {
     Scheduler& s = S();
     ++s.frames;
-    iop::Run();                             // the IOP's timers and sound interrupts
+    {
+        Timed timed(Section::Iop);
+        iop::Run();                         // the IOP's timers and sound interrupts
+    }
     FrameDone(s.frames);
     bool ran = false;
     for (u32 cause : {kVblankStart, kVblankEnd})
@@ -323,15 +328,32 @@ bool VblankReached() {
     return true;
 }
 
+// AddIdleLoop: the loop heads a port names, and their short slice.
+std::unordered_set<u32>& IdleLoops() {
+    static std::unordered_set<u32> loops;
+    return loops;
+}
+constexpr s64 kIdleSliceIterations = 256;
+
 // lifted::loop_head_hook: a spent budget is either this host's request to
 // deliver interrupts, or the end of the run.
 void LoopHead(lifted::Context& c, u32 address) {
     Scheduler& s = S();
     if (StopRequested() || s.in_interrupt || !s.current || &c != &s.current->context)
         throw lifted::Abort{address, 2};
+    const bool idle = s.virtual_time && IdleLoops().count(address) != 0;
     if (s.virtual_time && !s.delivery_requested) {
-        // A slice ran: its time passes; what that time brings is delivered.
-        AdvanceClock(u64(kSliceIterations) * kNsPerIteration);
+        // A slice ran: its time passes; what that time brings is delivered. In
+        // an idle loop, the time to the next event passes at once.
+        u64 step = u64(kSliceIterations) * kNsPerIteration;
+        if (idle) {
+            u64 wait = s.next_vblank_ns > ClockNs() ? s.next_vblank_ns - ClockNs() : 0;
+            const s64 timer = NanosToNextTimerEvent(), alarm = NanosToNextAlarm();
+            if (timer >= 0) wait = std::min(wait, u64(timer));
+            if (alarm >= 0) wait = std::min(wait, u64(alarm));
+            step = std::max<u64>(wait, u64(kIdleSliceIterations) * kNsPerIteration);
+        }
+        AdvanceClock(step);
         if (VblankReached()) s.vblank_due = true;
         s.timer_due = true;                 // DeliverTimers raises only what is due
     }
@@ -342,7 +364,8 @@ void LoopHead(lifted::Context& c, u32 address) {
     // already took; without one, a spent budget that nobody asked for is the end.
     if (!frame && !timers && !requested && !s.realtime && !s.virtual_time) throw lifted::Abort{address, 2};
     s.delivery_requested = false;
-    c.budget = requested ? s.saved_budget : s.virtual_time ? kSliceIterations : s.loop_budget;
+    c.budget = requested ? s.saved_budget
+             : s.virtual_time ? (idle ? kIdleSliceIterations : kSliceIterations) : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
     if (frame) DeliverFrame();
     if (timers) {
@@ -361,6 +384,8 @@ void LoopHead(lifted::Context& c, u32 address) {
 }
 
 }  // namespace
+
+void AddIdleLoop(u32 address) { IdleLoops().insert(address); }
 
 std::atomic<bool>& StopRequested() {
     static std::atomic<bool> stop{false};

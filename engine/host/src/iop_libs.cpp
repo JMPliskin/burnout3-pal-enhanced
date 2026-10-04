@@ -33,6 +33,7 @@
 #include "ps2host/disc.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
+#include "ps2host/profile.h"
 
 namespace ps2host {
 namespace iop {
@@ -954,6 +955,7 @@ void SoundInterrupts(Vm& vm) {
     for (u32 ch : due)
         if (s.transfer[ch].function) vm.Call(s.transfer[ch].function, {ch, s.transfer[ch].arg});
     // The SPU2's own interrupt: playback (or a transfer) reached IRQA.
+    Timed timed(Section::Spu2);
     s.spu.Advance(now, [&](u32 core) {
         if (s.spu2.function) vm.Call(s.spu2.function, {1u << core, s.spu2.arg});
     });

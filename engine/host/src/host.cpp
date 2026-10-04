@@ -35,6 +35,17 @@ bool g_all_notes = false;
 std::vector<u32> g_watch;
 std::set<std::string> g_noted;
 
+// Calls already made, by address: the function and its call count, so a call
+// costs a lookup in a small table rather than a map's (a frame makes hundreds
+// of thousands). Cleared when an override replaces a function.
+struct CachedCall {
+    u32 address = 0;
+    const FunctionEntry* entry = nullptr;
+    u64* count = nullptr;
+};
+constexpr std::size_t kCallCache = 1u << 14;
+CachedCall g_call_cache[kCallCache];
+
 const FunctionEntry* Find(u32 address) {
     auto found = g_overrides.find(address);
     if (found != g_overrides.end()) return &found->second;
@@ -127,6 +138,7 @@ void RegisterFunctions(const FunctionEntry* table, std::size_t count) {
 
 void Override(u32 address, GuestFunction function, const char* name) {
     g_overrides[address] = FunctionEntry{address, function, name, 0};
+    for (CachedCall& line : g_call_cache) line = CachedCall{};
 }
 
 const char* FunctionName(u32 address) {
@@ -151,7 +163,24 @@ void Note(const std::string& key, const std::string& text) {
 }
 
 void Dispatch(lifted::Context& c, u32 address) {
+    CachedCall& line = g_call_cache[(address >> 2) & (kCallCache - 1)];
+    if (line.address == address && line.entry && g_watch.empty()) {
+        ++*line.count;
+        if (g_trace) std::fprintf(stderr, "[call] %s\n", Describe(address).c_str());
+        Frame frame(address);
+        try {
+            line.entry->function(c);
+        } catch (...) {
+            if (RunStats().stopped_in.empty()) {
+                RunStats().stopped_in = CurrentCalls();
+                RunStats().interrupted_in = InterruptedCalls();
+            }
+            throw;
+        }
+        return;
+    }
     const FunctionEntry* entry = Find(address);
+    const bool cacheable = entry && entry->function;     // the program's own, or an override
     if (!entry || !entry->function) {
         if (const FunctionEntry* copy = FindCopy(address)) entry = copy;
     }
@@ -168,6 +197,7 @@ void Dispatch(lifted::Context& c, u32 address) {
     u64& count = RunStats().calls[address];
     if (++count == 1 || g_trace)
         std::fprintf(stderr, "[call] %s\n", Describe(address).c_str());
+    if (cacheable) line = CachedCall{address, entry, &count};
     if (std::find(g_watch.begin(), g_watch.end(), address) != g_watch.end()) {
         std::fprintf(stderr, "[watch] %s a0=%016llX a1=%016llX a2=%016llX a3=%016llX "
                      "f12=%08X f13=%08X ra=%08X s0=%08X s1=%08X sp=%08X gp=%08X t0=%08X\n",
@@ -266,6 +296,8 @@ void Report(const Options& options, const std::string& outcome) {
                 static_cast<unsigned long long>(gs::TheGs().pixels_drawn()));
     std::printf("%s\n", gs::TheGs().Summary().c_str());
     std::printf("%s\n", ProfileSummary().c_str());
+    const std::string samples = SampleReport();
+    if (!samples.empty()) std::printf("%s", samples.c_str());
     if (!GpuShadowSummary().empty()) std::printf("%s\n", GpuShadowSummary().c_str());
     std::printf("kernel services used:\n");
     for (const auto& [service, count] : stats.syscalls)
@@ -353,6 +385,7 @@ int Run(const Options& options) {
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
     SetGsDumpFrame(options.gs_dump_frame);
+    if (options.sample) StartSampler();
     SetUntilFrame(options.until_frame);
     if (options.gpu || options.gpu_shadow) {
         std::string error;
@@ -431,6 +464,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
+        else if (arg == "--sample") options.sample = true;
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
         else if (arg == "--press" && i + 1 < argc) {

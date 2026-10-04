@@ -34,6 +34,7 @@
 #include "ps2host/run.h"
 #include "ps2host/vif.h"
 #include "ps2host/vu.h"
+#include "ps2host/profile.h"
 
 namespace ps2host {
 
@@ -148,6 +149,7 @@ std::string Walk(const Channel& ch, u32 chcr) {
     if (ch.base == 0x1000A000u) sink = [](u32 word) { Path3(word); };
     char text[160];
     try {
+        Timed timed(Section::Dma);      // (VU1 and the GS, which it drives, timed apart)
         const DmaOutcome outcome = SendDma(state, sink);
         std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
                       static_cast<unsigned long long>(outcome.quadwords), outcome.tags,

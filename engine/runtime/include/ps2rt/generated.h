@@ -18,13 +18,15 @@
 #ifndef PS2RT_GENERATED_H
 #define PS2RT_GENERATED_H
 
+#include <cstring>
+
 #include "ps2rt/types.h"
 
 namespace generated {
 
 /*
- * Reads from the game's address space. A port supplies these; on the console they
- * are plain loads.
+ * Reads from the game's address space (ReadS8 ... ReadU64 below); on the console
+ * they are plain loads.
  *
  * The signed variants matter: the original uses `lb`/`lh`/`lw` (sign-extending)
  * in some places and `lbu`/`lhu` (zero-extending) in others, and the derived code
@@ -35,13 +37,54 @@ namespace generated {
  * Returning the narrow type instead lets C++'s promotion rules decide the width
  * of the arithmetic, and those make `ReadU8(p) << 24` a signed `int` shift.
  */
-u64 ReadS8(u32 address);
-u64 ReadU8(u32 address);
-u64 ReadS16(u32 address);
-u64 ReadU16(u32 address);
-u64 ReadS32(u32 address);
-u64 ReadU32(u32 address);
-u64 ReadU64(u32 address);
+/*
+ * Main RAM, which almost every access reaches, can be given to the derived code
+ * directly: a port that sets `ram_base` to its 32 MB lets the reads and writes
+ * below load and store there inline - at 0x00000000, its uncached mirrors
+ * 0x20000000 and 0x30000000, and kseg0/kseg1 - and sends everything else (the
+ * device registers, the scratchpad, an access running off the end) through the
+ * port's functions above. `ram_watched` sends writes through them too, for a
+ * port watching addresses.
+ */
+extern u8* ram_base;
+extern bool ram_watched;
+
+inline u8* RamPointer(u32 address, u32 size) {
+    if (address - 0x80000000u < 0x40000000u) address &= 0x1FFFFFFFu;
+    const u32 window = address >> 28;
+    if (!ram_base || (window != 0 && window != 2 && window != 3)) return nullptr;
+    const u32 offset = address & 0x0FFFFFFFu;
+    return offset + size <= (32u << 20) ? ram_base + offset : nullptr;
+}
+
+template <typename T>
+inline bool RamLoad(u32 address, T* value) {
+    const u8* p = RamPointer(address, sizeof(T));
+    if (!p) return false;
+    std::memcpy(value, p, sizeof(T));
+    return true;
+}
+
+template <typename T>
+inline bool RamStore(u32 address, T value) {
+    if (ram_watched) return false;
+    u8* p = RamPointer(address, sizeof(T));
+    if (!p) return false;
+    std::memcpy(p, &value, sizeof(T));
+    return true;
+}
+
+/* The port's own, for what is not main RAM. */
+u64 PortRead(u32 address, u32 size, bool is_signed);
+void PortWrite(u32 address, u64 value, u32 size);
+
+inline u64 ReadS8(u32 a) { s8 v; return RamLoad(a, &v) ? u64(s64(v)) : PortRead(a, 1, true); }
+inline u64 ReadU8(u32 a) { u8 v; return RamLoad(a, &v) ? u64(v) : PortRead(a, 1, false); }
+inline u64 ReadS16(u32 a) { s16 v; return RamLoad(a, &v) ? u64(s64(v)) : PortRead(a, 2, true); }
+inline u64 ReadU16(u32 a) { u16 v; return RamLoad(a, &v) ? u64(v) : PortRead(a, 2, false); }
+inline u64 ReadS32(u32 a) { s32 v; return RamLoad(a, &v) ? u64(s64(v)) : PortRead(a, 4, true); }
+inline u64 ReadU32(u32 a) { u32 v; return RamLoad(a, &v) ? u64(v) : PortRead(a, 4, false); }
+inline u64 ReadU64(u32 a) { u64 v; return RamLoad(a, &v) ? v : PortRead(a, 8, false); }
 
 /*
  * Guest stack, for a derived function whose frame a callee can see - one that
@@ -66,10 +109,10 @@ u64 CallPointer(u32 address, u64 arg0 = 0, u64 arg1 = 0, u64 arg2 = 0, u64 arg3 
                 u64 farg4 = 0, u64 farg5 = 0, u64 farg6 = 0, u64 farg7 = 0);
 
 /* Writes, for the derived functions that have memory effects. */
-void Write8(u32 address, u32 value);
-void Write16(u32 address, u32 value);
-void Write32(u32 address, u32 value);
-void Write64(u32 address, u64 value);
+inline void Write8(u32 a, u32 v) { if (!RamStore(a, u8(v))) PortWrite(a, v, 1); }
+inline void Write16(u32 a, u32 v) { if (!RamStore(a, u16(v))) PortWrite(a, v, 2); }
+inline void Write32(u32 a, u32 v) { if (!RamStore(a, u32(v))) PortWrite(a, v, 4); }
+inline void Write64(u32 a, u64 v) { if (!RamStore(a, v)) PortWrite(a, v, 8); }
 
 /*
  * Single-precision arithmetic over raw bit patterns.

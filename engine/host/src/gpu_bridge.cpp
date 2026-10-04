@@ -126,6 +126,7 @@ struct Owned {
     int why = 0;                    // what made it stale: 0 new, 1 memory written, 2 a draw over it, 3 another's write-back
     u64 reloads[4] = {};            // reloads, by why
     u64 drawn_serial = 0;           // when the GPU last drew into it (Bridge::serial)
+    u64 checked = 0;                // Bridge::newer_epoch when Use last looked at the others
 };
 
 /* A texture decoded into the renderer (--gpu). */
@@ -169,6 +170,10 @@ struct Bridge {
     std::list<u64> texture_lru;     // most recent first
     u64 next_texture = 1;
     u64 serial = 0;                 // counts GPU draws, so a texture knows if one went over it
+    // Bumped when an image starts holding drawing memory lacks, or reaches
+    // further: until then, an image Use has checked against the others needs
+    // no second look (tens of thousands of draws a frame go to one target).
+    u64 newer_epoch = 1;
     // Local memory is kept twice: the GS model's (the CPU's) and the
     // renderer's (the GPU's), which images are swizzled into and out of. Per
     // 256-byte block, which copy is current.
@@ -279,15 +284,18 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         const u32 end = Blocks(fbp, fbw, psm, rows).second;
         if (end > o.end) {
             o.end = end;
+            o.checked = 0;
             if (o.stale_beyond && !o.stale) { o.stale = true; o.why = 1; }
         }
     }
+    if (!o.stale && o.checked == b.newer_epoch) return o;
     // Another image's drawing over these blocks reaches this one through memory.
     for (auto& [key, other] : b.owned)
         if (&other != &o && other.gpu_newer && other.begin < o.end && o.begin < other.drawn_end) {
             WriteBack(b, other);
             if (!o.stale) { o.stale = true; o.why = 3; }
         }
+    o.checked = b.newer_epoch;
     if (o.stale) {
         // Loaded from the GPU's local memory, the CPU's writes there first.
         Timed timed(Section::GpuSync);
@@ -304,12 +312,18 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
 /* After the GPU drew into `o`, rows up to `rows`: memory and the other images
    over those blocks are behind. */
 void Drew(Bridge& b, Owned& o, u32 x1, u32 y1) {
+    const bool was_newer = o.gpu_newer;
+    const u32 was_end = o.drawn_end;
     o.gpu_newer = true;
     o.x1 = std::max(o.x1, std::min(x1, o.width));
     o.y1 = std::max(o.y1, std::min(y1, o.height));
     o.drawn_end = std::max(o.drawn_end, Blocks(o.fbp, o.fbw, o.psm, o.y1).second);
     o.end = std::max(o.end, o.drawn_end);
     o.drawn_serial = ++b.serial;    // textures over it decoded before this are out of date
+    // Still newer than memory, over no more blocks: the others over them were
+    // made stale when it began (any reloaded since wrote it back first).
+    if (was_newer && o.drawn_end == was_end) return;
+    ++b.newer_epoch;
     for (auto& [key, other] : b.owned) {
         if (&other == &o || o.drawn_end <= other.begin || other.full_end <= o.begin) continue;
         if (o.begin < other.end) {

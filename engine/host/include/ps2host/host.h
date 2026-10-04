@@ -46,6 +46,13 @@ void RegisterFunctions(const FunctionEntry* table, std::size_t count);
    Overrides take precedence over translated functions; registering twice
    replaces the earlier one. */
 void Override(u32 address, GuestFunction function, const char* name);
+/* A loop the game waits in until an interrupt ends it (a port's, from what
+   it found the time going to): under --virtual-time, when its slice runs out
+   the clock goes straight to the next event - vertical blank, timer, alarm -
+   as when every thread waits, rather than a slice's worth at a time; and it
+   gets short slices, so a wait that is over ends soon after. `address` is the
+   loop's head, the target of its backward branch. */
+void AddIdleLoop(u32 address);
 
 /* The name of the function at `address`, or null. */
 const char* FunctionName(u32 address);
@@ -78,6 +85,7 @@ struct Options {
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
     long long gs_trace_frame = -1; /* ... during this frame only */
     long long gs_dump_frame = -1;  /* write GS local memory when this frame is done */
+    bool sample = false;           /* --sample: where the time goes, by function (profile.h) */
     bool gpu = false;              /* draw on the GPU instead of the software GS (gpu_bridge.cpp) */
     bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_bridge.cpp) */
     bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */

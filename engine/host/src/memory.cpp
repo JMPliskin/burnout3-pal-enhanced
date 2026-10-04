@@ -81,6 +81,11 @@ u64 Memory::Read(u32 address, u32 size) {
     return value;
 }
 
+void Memory::WatchWrites(const std::vector<u32>& addresses) {
+    watched_ = addresses;
+    generated::ram_watched = !addresses.empty();     // writes come here to be seen
+}
+
 void Memory::Watched(u32 address, u64 value, u32 size) {
     const std::vector<u32>& calls = CurrentCalls();
     const u32 in = calls.empty() ? 0 : calls.back();
@@ -126,14 +131,21 @@ Memory& GuestMemory() {
     return memory;
 }
 
+// Main RAM for the derived code's inline loads and stores (generated.h).
+namespace {
+const bool g_ram_given = (generated::ram_base = GuestMemory().rdram(), true);
+}  // namespace
+
 }  // namespace ps2host
 
-// The hooks generated and lifted code read and write guest memory through.
+// What generated and lifted code reads and writes outside main RAM (main RAM
+// itself it reaches inline, generated.h), through the devices' hooks.
 namespace generated {
 
-namespace {
+u8* ram_base = nullptr;
+bool ram_watched = false;
 
-u64 Load(u32 address, u32 size, bool is_signed) {
+u64 PortRead(u32 address, u32 size, bool is_signed) {
     u64 value = ps2host::GuestMemory().Read(address, size);
     if (is_signed && size < 8) {
         const int shift = 64 - 8 * int(size);
@@ -142,18 +154,6 @@ u64 Load(u32 address, u32 size, bool is_signed) {
     return value;
 }
 
-}  // namespace
-
-u64 ReadS8(u32 a) { return Load(a, 1, true); }
-u64 ReadU8(u32 a) { return Load(a, 1, false); }
-u64 ReadS16(u32 a) { return Load(a, 2, true); }
-u64 ReadU16(u32 a) { return Load(a, 2, false); }
-u64 ReadS32(u32 a) { return Load(a, 4, true); }
-u64 ReadU32(u32 a) { return Load(a, 4, false); }
-u64 ReadU64(u32 a) { return Load(a, 8, false); }
-void Write8(u32 a, u32 v) { ps2host::GuestMemory().Write(a, v, 1); }
-void Write16(u32 a, u32 v) { ps2host::GuestMemory().Write(a, v, 2); }
-void Write32(u32 a, u32 v) { ps2host::GuestMemory().Write(a, v, 4); }
-void Write64(u32 a, u64 v) { ps2host::GuestMemory().Write(a, v, 8); }
+void PortWrite(u32 address, u64 value, u32 size) { ps2host::GuestMemory().Write(address, value, size); }
 
 }  // namespace generated

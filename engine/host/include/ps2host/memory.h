@@ -63,7 +63,7 @@ public:
 
     /* Log every store that touches one of these guest addresses (--watch-write),
        with the value and the function storing it. */
-    void WatchWrites(const std::vector<u32>& addresses) { watched_ = addresses; }
+    void WatchWrites(const std::vector<u32>& addresses);
 
 private:
     std::vector<u8> rdram_, scratchpad_, ee_registers_, vu_memory_, gs_registers_, iop_ram_, bios_;

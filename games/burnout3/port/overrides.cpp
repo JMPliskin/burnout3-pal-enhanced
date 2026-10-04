@@ -58,6 +58,11 @@ void RegisterGameIopServers();     // iop_servers.cpp
 
 void RegisterGameOverrides() {
     RegisterGameIopServers();
+    // RenderWare's wait for its DMA packet buffers to flip (0x001F2408, the
+    // loop at 0x001F24E0: two globals the DMA-end interrupt updates, and a
+    // callback each turn): a third of the race's time under --virtual-time
+    // went to spinning there (--sample).
+    ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x00109F00u, MpegGetPicture, "sceMpegGetPicture: blank movies (no IPU yet)");

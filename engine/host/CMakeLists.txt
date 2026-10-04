@@ -59,6 +59,9 @@ if(MSVC)
     # Translated code throws lifted::Abort; its chunks are large.
     target_compile_options(ps2rt PUBLIC /EHsc /bigobj /W3 /wd4100 /wd4189)
     target_compile_definitions(ps2rt PUBLIC _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(ps2host PRIVATE /Z7)     # symbols for --sample, as the ports'
+    target_compile_options(ps2rt PRIVATE /Z7)
+    target_link_libraries(ps2host PRIVATE dbghelp winmm)  # ...which resolves them; 1 ms sleeps
 endif()
 
 # The host's own tests, which need no game.
@@ -85,4 +88,11 @@ function(ps2_add_port target)
         ${translated}
         ${PORT_SOURCES})
     target_link_libraries(${target} PRIVATE ps2host)
+    if(MSVC)
+        # Symbols in the optimised build too, for --sample (profile.cpp): /Z7
+        # keeps them in the objects (no PDB contention in parallel builds),
+        # /DEBUG gathers them; /OPT keeps what it does without symbols.
+        target_compile_options(${target} PRIVATE /Z7)
+        target_link_options(${target} PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    endif()
 endfunction()
