@@ -352,6 +352,7 @@ int Run(const Options& options) {
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
+    SetUntilFrame(options.until_frame);
     if (options.gpu_shadow) {
         std::string error;
         if (!StartGpuShadow(&error, options.gpu_shadow_rtt)) std::fprintf(stderr, "--gpu-shadow: %s\n", error.c_str());
@@ -403,6 +404,8 @@ int Run(const Options& options) {
         outcome = std::string("stopped: ") + reason + " at " + Hex(abort.address);
         if (abort.reason == 2 && watchdog.fired && abort.address == 0)
             outcome = "stopped: the time limit, between threads (no thread was in a loop)";
+        if (abort.reason == 2 && UntilFrameReached())
+            outcome = "stopped: frame " + std::to_string(options.until_frame) + " reached (--until-frame)";
     }
     Report(options, outcome);
     return code;
@@ -420,6 +423,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--gpu-shadow") options.gpu_shadow = true;
         else if (arg == "--gpu-shadow-rtt") options.gpu_shadow = options.gpu_shadow_rtt = true;
         else if (arg == "--virtual-time") options.virtual_time = true;
+        else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];

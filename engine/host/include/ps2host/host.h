@@ -80,6 +80,7 @@ struct Options {
     bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_shadow.cpp) */
     bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */
     bool virtual_time = false;     /* the scheduler keeps time: runs repeat exactly (run.h) */
+    unsigned long long until_frame = 0;    /* stop when this frame is done (0: never) */
     bool audio = false;            /* play the SPU2's output on the sound device */
     std::string audio_wav;         /* record the SPU2's output to this WAV file */
     std::vector<std::pair<std::string, u64>> presses;   /* --press BUTTON@FRAME */

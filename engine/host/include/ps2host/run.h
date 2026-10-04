@@ -121,6 +121,10 @@ void SetFrameDumps(const std::string& dir, int every, int limit);
 bool StartGpuShadow(std::string* error, bool targets_as_textures);
 void GpuShadowFrame(u64 frame, const std::string& dump_dir);
 std::string GpuShadowSummary();
+/* --until-frame: stop the run when frame N is done (with --virtual-time, the
+   same point every time). */
+void SetUntilFrame(u64 frame);
+bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);
 void FrameDone(u64 frame);

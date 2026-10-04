@@ -171,7 +171,20 @@ long long g_trace_frame = -1;
 
 void SetGsTraceFrame(long long frame) { g_trace_frame = frame; }
 
+namespace {
+u64 g_until_frame = 0;
+bool g_until_reached = false;
+}  // namespace
+
+void SetUntilFrame(u64 frame) { g_until_frame = frame; }
+bool UntilFrameReached() { return g_until_reached; }
+
 void FrameDone(u64 frame) {
+    if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
+        g_until_reached = true;
+        StopRequested() = true;
+        ForEachContext([](lifted::Context& each) { each.budget = -1; });
+    }
     if (g_trace_frame >= 0) {
         // From the end of the frame before to the end of six frames on: the
         // game draws a picture across several.

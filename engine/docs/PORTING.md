@@ -48,6 +48,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
 | `--window` | the picture, live, in a window (close it to end the run): SDL3 + Vulkan (`engine/gpu`), or GDI when built without `PS2HOST_VULKAN` or without a Vulkan device |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
+| `--until-frame N` | stop when frame N is done - with `--virtual-time`, the same point of the game every time |
 | `--virtual-time` | the scheduler keeps the clock (each loop slice is 1 ms, waiting skips to the next event): the EE timers, alarms, the IOP and the vblanks follow it, so a scripted run (`--press`) is the same run on any machine under any load; frame-identical across runs |
 | `--gpu-shadow` | the GPU renderer draws every primitive too; each frame its targets are compared with the software GS's (and written beside `--frames` pictures as gpu_/soft_ BMPs) |
 | `--gpu-shadow-rtt` | the same, a texture that is a GPU target sampled from the target (render to texture), as the GPU renderer will on its own |
