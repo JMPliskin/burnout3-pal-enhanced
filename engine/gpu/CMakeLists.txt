@@ -64,6 +64,15 @@ foreach(shader gs.vert gs.frag)
         COMMENT "glslang ${shader}")
     list(APPEND PS2GPU_SHADER_HEADERS ${out})
 endforeach()
+# The fragment shader without its second output, for devices without
+# dual-source blending.
+set(out ${PS2GPU_SHADER_DIR}/gs_frag_single.h)
+add_custom_command(OUTPUT ${out}
+    COMMAND glslang-standalone -V --target-env vulkan1.3 -DSINGLE_OUTPUT --vn spirv_gs_frag_single
+            -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag glslang-standalone
+    COMMENT "glslang gs.frag (single output)")
+list(APPEND PS2GPU_SHADER_HEADERS ${out})
 add_custom_target(ps2gpu_shaders DEPENDS ${PS2GPU_SHADER_HEADERS})
 
 add_library(ps2gpu STATIC

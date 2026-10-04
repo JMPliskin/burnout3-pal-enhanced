@@ -67,8 +67,16 @@ bool VulkanGpu::Init(std::string* error) {
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.dynamicRendering = VK_TRUE;
     v13.synchronization2 = VK_TRUE;
+    // Dual-source blending: the GS's blend factor (source alpha or FIX, where
+    // 0x80 is 1.0) is a second fragment output, not the alpha written.
+    VkPhysicalDeviceFeatures supported;
+    vkGetPhysicalDeviceFeatures(gpu, &supported);
+    dual_source = supported.dualSrcBlend == VK_TRUE;
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    features.features.dualSrcBlend = supported.dualSrcBlend;
+    features.pNext = &v13;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    dci.pNext = &v13;
+    dci.pNext = &features;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     if ((r = vkCreateDevice(gpu, &dci, nullptr, &device)) != VK_SUCCESS) return fail("vkCreateDevice", r);

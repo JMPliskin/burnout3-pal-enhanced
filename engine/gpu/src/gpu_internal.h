@@ -30,6 +30,7 @@ public:
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    bool dual_source = false;       /* dualSrcBlend: the GS's blending */
 
 private:
     std::string describe_;

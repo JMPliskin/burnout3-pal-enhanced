@@ -72,6 +72,22 @@ proved itself in PCSX2's hardware renderers, made smaller:
 * Burnout 3's frontend - the LOADING screen, menus, the title - are the first
   test scenes, then VU1's 3D.
 
+## Progress
+
+* `GsRenderer` draws triangles - flat or Gouraud, scissored - into R8G8B8A8
+  targets keyed by (FBP, FBW, PSM), and reads them back.
+* Textures arrive decoded (`UploadTexture`, RGBA with the GS's alpha, under
+  a key the host chooses); the fragment shader applies the four texture
+  functions with TCC, sampling nearest or bilinear, repeating or clamped.
+* The alpha test (ATST, AREF; AFAIL KEEP).
+* Blending: `Cv = (A - B) * C + D` maps onto the fixed-function blender as a
+  source and destination factor and an operation; C (source alpha or FIX
+  over 128) is the fragment's second output by dual-source blending, so the
+  alpha written stays the source alpha. One pipeline per ALPHA setting, made
+  on first use. Coefficients the blender cannot reach (1 + C, factors over
+  1.0, the destination alpha over 128) are approximated.
+* `ps2gpu_tests` checks each of these by reading pixels back.
+
 ## Order of work
 
 1. The renderer interface in the host, with the software GS as one backend.

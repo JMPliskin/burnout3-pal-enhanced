@@ -2,17 +2,26 @@
  * GsRenderer on Vulkan (gs_renderer.h): triangles batched by state and drawn
  * with dynamic rendering into R8G8B8A8 targets, one per (FBP, FBW, PSM).
  *
+ * One vertex and one fragment shader (shaders/gs.vert, gs.frag) do the GS's
+ * per-pixel work: the texture function, the alpha test. Blending is the
+ * fixed-function blender's, with the GS's factor - source alpha or FIX, where
+ * 0x80 is 1.0 - as the fragment's second output (dual-source blending): the
+ * GS's Cv = (A - B) * C + D becomes a source and a destination factor and an
+ * operation, one pipeline per ALPHA setting, made when first used.
+ *
  * Everything is synchronous for now - a flush records, submits and waits - which
  * keeps the first steps simple to check; batching across frames and keeping the
  * GPU busy come once the output matches the software GS.
  */
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <tuple>
 
 #include "gpu_internal.h"
 #include "gs_frag.h"
+#include "gs_frag_single.h"
 #include "gs_vert.h"
 
 namespace ps2gpu {
@@ -22,9 +31,16 @@ namespace {
 struct PackedVertex {
     float x, y;
     std::uint8_t r, g, b, a;
+    float s, t, q;
 };
 
-struct Target {
+/* What the fragment shader is told, after the vertex shader's 16 bytes. */
+struct FragmentParams {
+    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix;
+};
+constexpr std::uint32_t kFragmentOffset = 16;
+
+struct Image {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -32,7 +48,12 @@ struct Target {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-void Transition(VkCommandBuffer cmd, Target& t, VkImageLayout to, VkAccessFlags dst_access,
+struct Texture {
+    Image image;
+    VkDescriptorSet sets[8] = {};       /* by sampler */
+};
+
+void Transition(VkCommandBuffer cmd, Image& t, VkImageLayout to, VkAccessFlags dst_access,
                 VkPipelineStageFlags dst_stage) {
     if (t.layout == to) return;
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -47,11 +68,70 @@ void Transition(VkCommandBuffer cmd, Target& t, VkImageLayout to, VkAccessFlags 
     t.layout = to;
 }
 
+/* The pipeline a state needs: blending and its operands. */
+std::uint32_t PipelineKey(const GsDrawState& s) {
+    if (!s.blend) return 0;
+    return 1u | std::uint32_t(s.a) << 1 | std::uint32_t(s.b) << 3 | std::uint32_t(s.c) << 5 |
+           std::uint32_t(s.d) << 7;
+}
+
+/* Cv = (A - B) * C + D as the blender's src * sf (op) dst * df. Each of Cs and
+   Cd ends up with a coefficient (A is it) - (B is it), times C, plus (D is it):
+   0, 1, C, -C, 1 - C, or 1 + C (more than the blender's factors reach; taken
+   as 1). */
+VkPipelineColorBlendAttachmentState Blending(std::uint32_t key, bool dual_source) {
+    VkPipelineColorBlendAttachmentState b{};
+    b.colorWriteMask = 0xF;
+    if (!key) return b;
+    const auto a = BlendColour((key >> 1) & 3), bb = BlendColour((key >> 3) & 3), d = BlendColour((key >> 7) & 3);
+    const auto c = BlendAlpha((key >> 5) & 3);
+    const bool dest_alpha = c == BlendAlpha::Dest;
+    const VkBlendFactor kC = dest_alpha ? VK_BLEND_FACTOR_DST_ALPHA
+                             : dual_source ? VK_BLEND_FACTOR_SRC1_ALPHA : VK_BLEND_FACTOR_SRC_ALPHA;
+    const VkBlendFactor kOneMinusC = dest_alpha ? VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+                                     : dual_source ? VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA
+                                                   : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    auto coefficient = [&](BlendColour who, bool* negative) {
+        const int m = int(a == who) - int(bb == who);
+        const bool plus_one = d == who;
+        *negative = false;
+        if (m == 0) return plus_one ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+        if (m == 1) return plus_one ? VK_BLEND_FACTOR_ONE : kC;
+        if (plus_one) return kOneMinusC;
+        *negative = true;
+        return kC;
+    };
+    bool src_negative, dst_negative;
+    b.srcColorBlendFactor = coefficient(BlendColour::Source, &src_negative);
+    b.dstColorBlendFactor = coefficient(BlendColour::Dest, &dst_negative);
+    b.colorBlendOp = VK_BLEND_OP_ADD;
+    if (!src_negative && dst_negative) b.colorBlendOp = VK_BLEND_OP_SUBTRACT;
+    else if (src_negative && !dst_negative) b.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    else if (src_negative && dst_negative) b.srcColorBlendFactor = b.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    // The GS writes the source alpha as it is; blending is for colour only.
+    b.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    b.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    b.alphaBlendOp = VK_BLEND_OP_ADD;
+    b.blendEnable = VK_TRUE;
+    return b;
+}
+
+bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
+    return x.fbp == y.fbp && x.fbw == y.fbw && x.psm == y.psm && x.scissor_x0 == y.scissor_x0 &&
+           x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
+           x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
+           x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
+           x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref)) &&
+           PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix);
+}
+
 class VulkanGsRenderer final : public GsRenderer {
 public:
     explicit VulkanGsRenderer(VulkanGpu& gpu) : g_(gpu) {}
     ~VulkanGsRenderer() override;
     bool Init(std::string* error);
+    void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
+                       std::uint32_t height) override;
     void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) override;
     void Flush() override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
@@ -59,13 +139,24 @@ public:
 
 private:
     using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
-    Target* TargetFor(const GsDrawState& state);
+    Image* TargetFor(const GsDrawState& state);
+    bool MakeImage(Image& image, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage);
+    void DestroyImage(Image& image);
+    void Fill(Texture& texture, const std::uint32_t* pixels);
+    VkPipeline PipelineFor(std::uint32_t key);
+    VkDescriptorSet SetFor(Texture& texture, int sampler);
     bool Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory, void** mapped);
 
     VulkanGpu& g_;
+    VkShaderModule vert_ = VK_NULL_HANDLE, frag_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    VkSampler samplers_[8] = {};    /* bilinear << 2 | clamp_s << 1 | clamp_t */
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
-    std::map<Key, Target> targets_;
+    std::map<std::uint32_t, VkPipeline> pipelines_;
+    std::map<Key, Image> targets_;
+    std::map<std::uint64_t, Texture> textures_;
+    Texture blank_;                 /* bound when nothing is textured */
     GsDrawState state_;
     std::vector<PackedVertex> pending_;
     VkBuffer vertices_ = VK_NULL_HANDLE;
@@ -91,6 +182,41 @@ bool VulkanGsRenderer::Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBu
     return vkMapMemory(g_.device, *memory, 0, bytes, 0, mapped) == VK_SUCCESS;
 }
 
+bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage) {
+    t.width = width;
+    t.height = height;
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent = {width, height, 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = usage;
+    if (vkCreateImage(g_.device, &ici, nullptr, &t.image) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(g_.device, t.image, &req);
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = g_.FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(g_.device, &mai, nullptr, &t.memory) != VK_SUCCESS) return false;
+    vkBindImageMemory(g_.device, t.image, t.memory, 0);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = t.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    return vkCreateImageView(g_.device, &vci, nullptr, &t.view) == VK_SUCCESS;
+}
+
+void VulkanGsRenderer::DestroyImage(Image& t) {
+    if (t.view) vkDestroyImageView(g_.device, t.view, nullptr);
+    if (t.image) vkDestroyImage(g_.device, t.image, nullptr);
+    if (t.memory) vkFreeMemory(g_.device, t.memory, nullptr);
+    t = Image{};
+}
+
 bool VulkanGsRenderer::Init(std::string* error) {
     auto module = [&](const std::uint32_t* code, std::size_t bytes) {
         VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -100,34 +226,77 @@ bool VulkanGsRenderer::Init(std::string* error) {
         vkCreateShaderModule(g_.device, &ci, nullptr, &m);
         return m;
     };
-    VkShaderModule vert = module(spirv_gs_vert, sizeof spirv_gs_vert);
-    VkShaderModule frag = module(spirv_gs_frag, sizeof spirv_gs_frag);
-    if (!vert || !frag) {
+    vert_ = module(spirv_gs_vert, sizeof spirv_gs_vert);
+    frag_ = g_.dual_source ? module(spirv_gs_frag, sizeof spirv_gs_frag)
+                           : module(spirv_gs_frag_single, sizeof spirv_gs_frag_single);
+    if (!vert_ || !frag_) {
         if (error) *error = "the GS shaders did not load";
         return false;
     }
-    VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
+    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dli.bindingCount = 1;
+    dli.pBindings = &binding;
+    vkCreateDescriptorSetLayout(g_.device, &dli, nullptr, &set_layout_);
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192};
+    VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    dpi.maxSets = 8192;
+    dpi.poolSizeCount = 1;
+    dpi.pPoolSizes = &size;
+    vkCreateDescriptorPool(g_.device, &dpi, nullptr, &pool_);
+    for (int i = 0; i < 8; ++i) {
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = sci.minFilter = (i & 4) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = (i & 2) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = (i & 1) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = 0.0f;
+        vkCreateSampler(g_.device, &sci, nullptr, &samplers_[i]);
+    }
+    VkPushConstantRange push[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 8},
+                                   {VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof(FragmentParams)}};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    lci.pushConstantRangeCount = 1;
-    lci.pPushConstantRanges = &push;
+    lci.setLayoutCount = 1;
+    lci.pSetLayouts = &set_layout_;
+    lci.pushConstantRangeCount = 2;
+    lci.pPushConstantRanges = push;
     vkCreatePipelineLayout(g_.device, &lci, nullptr, &layout_);
+    if (!PipelineFor(0)) {
+        if (error) *error = "vkCreateGraphicsPipelines failed";
+        return false;
+    }
+    const std::uint32_t white = 0xFFFFFFFFu;
+    if (!MakeImage(blank_.image, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        if (error) *error = "no image for the blank texture";
+        return false;
+    }
+    Fill(blank_, &white);
+    return true;
+}
 
+VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
+    auto found = pipelines_.find(key);
+    if (found != pipelines_.end()) return found->second;
     VkPipelineShaderStageCreateInfo stages[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                                  {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
+    stages[0].module = vert_;
     stages[0].pName = "main";
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
+    stages[1].module = frag_;
     stages[1].pName = "main";
     VkVertexInputBindingDescription binding{0, sizeof(PackedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[2] = {
+    VkVertexInputAttributeDescription attributes[3] = {
         {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PackedVertex, x)},
-        {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(PackedVertex, r)}};
+        {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(PackedVertex, r)},
+        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PackedVertex, s)}};
     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 2;
+    input.vertexAttributeDescriptionCount = 3;
     input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -140,8 +309,7 @@ bool VulkanGsRenderer::Init(std::string* error) {
     raster.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineColorBlendAttachmentState blend{};
-    blend.colorWriteMask = 0xF;
+    const VkPipelineColorBlendAttachmentState blend = Blending(key, g_.dual_source);
     VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blending.attachmentCount = 1;
     blending.pAttachments = &blend;
@@ -165,45 +333,77 @@ bool VulkanGsRenderer::Init(std::string* error) {
     pci.pColorBlendState = &blending;
     pci.pDynamicState = &dynamic;
     pci.layout = layout_;
-    const VkResult r = vkCreateGraphicsPipelines(g_.device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline_);
-    vkDestroyShaderModule(g_.device, vert, nullptr);
-    vkDestroyShaderModule(g_.device, frag, nullptr);
-    if (r != VK_SUCCESS) {
-        if (error) *error = "vkCreateGraphicsPipelines failed";
-        return false;
-    }
-    return true;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_.device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    pipelines_[key] = pipeline;
+    return pipeline;
 }
 
-Target* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
-    Target& t = targets_[Key{state.fbp, state.fbw, state.psm}];
+VkDescriptorSet VulkanGsRenderer::SetFor(Texture& texture, int sampler) {
+    VkDescriptorSet& set = texture.sets[sampler];
+    if (set) return set;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &set_layout_;
+    if (vkAllocateDescriptorSets(g_.device, &ai, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkDescriptorImageInfo info{samplers_[sampler], texture.image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
+    return set;
+}
+
+void VulkanGsRenderer::Fill(Texture& texture, const std::uint32_t* pixels) {
+    Image& t = texture.image;
+    const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    std::memcpy(mapped, pixels, bytes);
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {t.width, t.height, 1};
+        vkCmdCopyBufferToImage(cmd, buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    });
+    vkUnmapMemory(g_.device, memory);
+    vkDestroyBuffer(g_.device, buffer, nullptr);
+    vkFreeMemory(g_.device, memory, nullptr);
+}
+
+void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
+                                     std::uint32_t height) {
+    Flush();                        // what is pending may sample the old contents
+    Texture& texture = textures_[key];
+    if (texture.image.width != width || texture.image.height != height) {
+        for (VkDescriptorSet& set : texture.sets)
+            if (set) {
+                vkFreeDescriptorSets(g_.device, pool_, 1, &set);
+                set = VK_NULL_HANDLE;
+            }
+        DestroyImage(texture.image);
+        if (!MakeImage(texture.image, width, height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+            return;
+    }
+    Fill(texture, pixels);
+}
+
+Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
+    Image& t = targets_[Key{state.fbp, state.fbw, state.psm}];
     if (t.image) return &t;
-    t.width = state.width;
-    t.height = state.height;
-    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ici.imageType = VK_IMAGE_TYPE_2D;
-    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent = {t.width, t.height, 1};
-    ici.mipLevels = 1;
-    ici.arrayLayers = 1;
-    ici.samples = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    vkCreateImage(g_.device, &ici, nullptr, &t.image);
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(g_.device, t.image, &req);
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size;
-    mai.memoryTypeIndex = g_.FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(g_.device, &mai, nullptr, &t.memory);
-    vkBindImageMemory(g_.device, t.image, t.memory, 0);
-    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vci.image = t.image;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCreateImageView(g_.device, &vci, nullptr, &t.view);
+    MakeImage(t, state.width, state.height,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     // Local memory starts as zeros.
     g_.Run([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -216,16 +416,14 @@ Target* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
 }
 
 void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v, std::size_t count) {
-    const bool same = state.fbp == state_.fbp && state.fbw == state_.fbw && state.psm == state_.psm &&
-                      state.scissor_x0 == state_.scissor_x0 && state.scissor_y0 == state_.scissor_y0 &&
-                      state.scissor_x1 == state_.scissor_x1 && state.scissor_y1 == state_.scissor_y1;
-    if (!same) Flush();
+    if (!SameBatch(state, state_)) Flush();
     state_ = state;
     for (std::size_t i = 0; i + 2 < count; i += 3) {
         for (int k = 0; k < 3; ++k) {
             // Flat shading takes the colour of the triangle's last vertex.
             const GsVertex& c = state.gouraud ? v[i + k] : v[i + 2];
-            pending_.push_back({v[i + k].x, v[i + k].y, c.r, c.g, c.b, c.a});
+            const GsVertex& p = v[i + k];
+            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q});
         }
     }
 }
@@ -242,37 +440,58 @@ void VulkanGsRenderer::Flush() {
         Buffer(vertex_capacity_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertices_, &vertex_memory_, &vertex_map_);
     }
     std::memcpy(vertex_map_, pending_.data(), bytes);
-    Target* t = TargetFor(state_);
+    Image* t = TargetFor(state_);
+    const VkPipeline pipeline = PipelineFor(PipelineKey(state_));
+    Texture* texture = &blank_;
+    if (state_.textured) {
+        auto found = textures_.find(state_.texture);
+        if (found != textures_.end()) texture = &found->second;
+    }
+    const int sampler = (state_.bilinear ? 4 : 0) | (state_.repeat_s ? 0 : 2) | (state_.repeat_t ? 0 : 1);
+    const VkDescriptorSet set = SetFor(*texture, sampler);
+    FragmentParams params{};
+    params.textured = state_.textured && texture != &blank_;
+    params.tfx = std::uint32_t(state_.tfx);
+    params.tcc = state_.tcc;
+    params.atst = state_.alpha_test ? state_.atst : 1;
+    params.aref = state_.aref;
+    params.fix_factor = state_.c == BlendAlpha::Fix;
+    params.fix = state_.fix;
     const std::uint32_t count = std::uint32_t(pending_.size());
-    g_.Run([&](VkCommandBuffer cmd) {
-        Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        VkRenderingAttachmentInfo colour{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        colour.imageView = t->view;
-        colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        ri.renderArea = {{0, 0}, {t->width, t->height}};
-        ri.layerCount = 1;
-        ri.colorAttachmentCount = 1;
-        ri.pColorAttachments = &colour;
-        vkCmdBeginRendering(cmd, &ri);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
-        const std::int32_t x1 = std::min(std::int32_t(t->width) - 1, state_.scissor_x1);
-        const std::int32_t y1 = std::min(std::int32_t(t->height) - 1, state_.scissor_y1);
-        VkRect2D sc{{x0, y0}, {std::uint32_t(std::max(0, x1 - x0 + 1)), std::uint32_t(std::max(0, y1 - y0 + 1))}};
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-        const float size[2] = {float(t->width), float(t->height)};
-        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
-        const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_, &offset);
-        vkCmdDraw(cmd, count, 1, 0, 0);
-        vkCmdEndRendering(cmd);
-    });
+    if (pipeline && set) {
+        g_.Run([&](VkCommandBuffer cmd) {
+            Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            VkRenderingAttachmentInfo colour{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            colour.imageView = t->view;
+            colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            ri.renderArea = {{0, 0}, {t->width, t->height}};
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 1;
+            ri.pColorAttachments = &colour;
+            vkCmdBeginRendering(cmd, &ri);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
+            VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
+            const std::int32_t x1 = std::min(std::int32_t(t->width) - 1, state_.scissor_x1);
+            const std::int32_t y1 = std::min(std::int32_t(t->height) - 1, state_.scissor_y1);
+            VkRect2D sc{{x0, y0}, {std::uint32_t(std::max(0, x1 - x0 + 1)), std::uint32_t(std::max(0, y1 - y0 + 1))}};
+            vkCmdSetScissor(cmd, 0, 1, &sc);
+            const float size[2] = {float(t->width), float(t->height)};
+            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
+            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params, &params);
+            const VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_, &offset);
+            vkCmdDraw(cmd, count, 1, 0, 0);
+            vkCmdEndRendering(cmd);
+        });
+    }
     pending_.clear();
 }
 
@@ -281,7 +500,7 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
     Flush();
     auto found = targets_.find(Key{fbp, fbw, psm});
     if (found == targets_.end()) return false;
-    Target& t = found->second;
+    Image& t = found->second;
     const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -307,17 +526,21 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
 
 VulkanGsRenderer::~VulkanGsRenderer() {
     vkDeviceWaitIdle(g_.device);
-    for (auto& [key, t] : targets_) {
-        vkDestroyImageView(g_.device, t.view, nullptr);
-        vkDestroyImage(g_.device, t.image, nullptr);
-        vkFreeMemory(g_.device, t.memory, nullptr);
-    }
+    for (auto& [key, t] : targets_) DestroyImage(t);
+    for (auto& [key, texture] : textures_) DestroyImage(texture.image);
+    DestroyImage(blank_.image);
     if (vertices_) {
         vkDestroyBuffer(g_.device, vertices_, nullptr);
         vkFreeMemory(g_.device, vertex_memory_, nullptr);
     }
-    if (pipeline_) vkDestroyPipeline(g_.device, pipeline_, nullptr);
+    for (auto& [key, pipeline] : pipelines_) vkDestroyPipeline(g_.device, pipeline, nullptr);
+    for (VkSampler s : samplers_)
+        if (s) vkDestroySampler(g_.device, s, nullptr);
+    if (pool_) vkDestroyDescriptorPool(g_.device, pool_, nullptr);
+    if (set_layout_) vkDestroyDescriptorSetLayout(g_.device, set_layout_, nullptr);
     if (layout_) vkDestroyPipelineLayout(g_.device, layout_, nullptr);
+    if (vert_) vkDestroyShaderModule(g_.device, vert_, nullptr);
+    if (frag_) vkDestroyShaderModule(g_.device, frag_, nullptr);
 }
 
 }  // namespace
