@@ -232,7 +232,16 @@ private:
     const Context& Ctx() const { return ctx_[(Prim() >> 9) & 1]; }
 };
 
-Gs& TheGs();
+/* The one GS. Inline, through a pointer set when it is made: it is asked
+   for once a word of every GIF transfer. */
+namespace detail {
+extern Gs* g_the_gs;
+Gs& MakeGs();
+}  // namespace detail
+inline Gs& TheGs() {
+    Gs* gs = detail::g_the_gs;
+    return gs ? *gs : detail::MakeGs();
+}
 
 }  // namespace gs
 }  // namespace ps2host

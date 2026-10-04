@@ -49,10 +49,14 @@ std::string Gs::Summary() const {
     return out;
 }
 
-Gs& TheGs() {
+namespace detail {
+Gs* g_the_gs = nullptr;
+Gs& MakeGs() {
     static Gs gs;
+    g_the_gs = &gs;
     return gs;
 }
+}  // namespace detail
 
 // ---------------------------------------------------------------- GIF
 
