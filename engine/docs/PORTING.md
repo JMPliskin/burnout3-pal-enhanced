@@ -114,9 +114,18 @@ done about it:
   runs directly;
 * DMA reads plain memory through a pointer.
 
-Burnout 3's scripted runs under `--gpu`: the car select from 3m55s to about
-1m15s; the race script from 8m28s to about 5m (the software GS: an hour).
-VU1 (an interpreter, with its timing model) is now the largest part.
+Further: GS memory addresses come from precomputed pages; the GPU bridge
+hands images off by the blocks drawn since their last write-back and writes
+back only those rows; batches into the same target share a rendering pass;
+COP2's FMAC operations are decoded once (VU and macro mode alike).
+
+Burnout 3's scripted runs under `--gpu`: the car select from 3m55s to 57s;
+the race script from 8m28s to about 6m (the software GS: 46 minutes). VU1
+(an interpreter, with its timing model) and DMA/VIF are now the largest
+parts; then the GPU's hand-offs between views of the same memory.
+
+Each of these was checked by running the scripted runs and comparing the
+pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
 
 ## Code that exists only at run time
 

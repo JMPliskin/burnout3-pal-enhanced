@@ -32,3 +32,22 @@ python engine/tools/framediff.py soft/ gpu/ --diff-dir diff/
 
 `--gs-dump-frame N` adds GS local memory after frame N, to compare buffer by
 buffer with `engine/tools/gsmem.py`.
+
+## Regression checks
+
+`engine/tools/regress.py` runs one of these and compares its pictures with
+the CRCs recorded beside it (`<run>.gpu.crc`, `<run>.soft.crc`; the pictures
+themselves are never committed):
+
+```sh
+python engine/tools/regress.py --game games/burnout3 car_select --gpu          # about a minute
+python engine/tools/regress.py --game games/burnout3 race_training --gpu --every 250
+python engine/tools/regress.py --game games/burnout3 car_select                # the software GS
+```
+
+A change meant to alter the pictures - or the game's timing, which moves
+them - records them anew with `--update`; the commit says why. A change that
+should not, and does, is a regression: a speed-up to the GPU bridge that lost
+an image's own drawing showed as the race's crash replay going wrong, found
+by `framediff.py` against the software run and `--gs-dump-frame` from both
+builds.
