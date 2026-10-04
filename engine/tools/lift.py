@@ -65,6 +65,20 @@ def _annotated(text: str, names: dict) -> str:
     return _CALL.sub(name, text)
 
 
+def _remove(path: str) -> None:
+    """os.remove, waiting out a moment's lock: on Windows a scanner or a compiler
+    just finishing can hold a file the run is about to replace (a 40-minute
+    lift once died on that)."""
+    for attempt in range(20):
+        try:
+            os.remove(path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
+
+
 def write_chunks(lifted: dict, directory: str, prefix: str, unverified=None,
                  names=None) -> list:
     """Write functions in files of CHUNK. A function in `unverified` is preceded by
@@ -73,7 +87,7 @@ def write_chunks(lifted: dict, directory: str, prefix: str, unverified=None,
     os.makedirs(directory, exist_ok=True)
     for stale in os.listdir(directory):
         if stale.startswith(prefix) and stale.endswith(".cpp"):
-            os.remove(os.path.join(directory, stale))
+            _remove(os.path.join(directory, stale))
     addresses = sorted(lifted)
     paths = []
     for index in range(0, len(addresses), CHUNK):
