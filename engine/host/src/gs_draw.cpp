@@ -370,14 +370,29 @@ void Gs::DrawTriangle(const Job& job, int band, int bands) {
     const int maxy = std::min(int(std::ceil(std::max({a.y, b.y, c.y}))), st.sy1);
     float ua = 0, va = 0, ub = 0, vb = 0, uc = 0, vc = 0;
     if (fst) { Coords(a, true, tw, th, &ua, &va); Coords(b, true, tw, th, &ub, &vb); Coords(c, true, tw, th, &uc, &vc); }
+    // Edge functions in double: positions are 12.4 fixed point, so their
+    // products are exact there and a pixel on an edge gives exactly 0. Such a
+    // pixel is drawn only on a top or left edge (the GS's fill convention, as
+    // its sprites' [ceil x0, ceil x1)): one where stepping right - or down, on
+    // a horizontal edge - goes inside.
+    const double ax = a.x, ay = a.y, bx = b.x, by = b.y, cx = c.x, cy = c.y;
+    const double sign = area > 0 ? 1.0 : -1.0;
+    const auto top_left = [&](double x0, double y0, double x1, double y1) {
+        const double gx = (y0 - y1) * sign, gy = (x1 - x0) * sign;    // the inside's direction
+        return gx > 0 || (gx == 0 && gy > 0);
+    };
+    const bool tl0 = top_left(bx, by, cx, cy), tl1 = top_left(cx, cy, ax, ay), tl2 = top_left(ax, ay, bx, by);
     for (int y = miny; y <= maxy; ++y) {
         if (!Owned(y, band, bands)) continue;
         for (int x = minx; x <= maxx; ++x) {
-            const float px = float(x), py = float(y);
-            float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
-            float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
-            float w2 = 1.0f - w0 - w1;
-            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            const double px = x, py = y;
+            const double e0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) * sign;
+            const double e1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) * sign;
+            const double e2 = ((ax - px) * (by - py) - (ay - py) * (bx - px)) * sign;
+            if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+            if ((e0 == 0 && !tl0) || (e1 == 0 && !tl1) || (e2 == 0 && !tl2)) continue;
+            const float w0 = float(e0 * sign / area), w1 = float(e1 * sign / area);
+            const float w2 = 1.0f - w0 - w1;
             const Vertex& last = c;
             u8 r = last.r, g = last.g, bl = last.b, al = last.a;
             if (iip) {

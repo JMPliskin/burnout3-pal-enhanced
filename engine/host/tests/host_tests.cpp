@@ -312,6 +312,41 @@ void GsKeepsAFlatDepthExact() {
     Check(missing == 0, "a flat depth passes GEQUAL against itself everywhere");
 }
 
+// Triangles fill top-left: a pixel on an edge is drawn only when the edge is a
+// left or top one, so two triangles sharing an edge draw it once, and a right
+// or bottom edge on a pixel leaves it alone. Burnout 3's text-entry keys are
+// cells whose right edge lies on a whole pixel, translucent: drawn on both
+// sides they doubled a column.
+void GsFillsTopLeft() {
+    using namespace ps2host::gs;
+    Gs gs;
+    gs.WriteRegister(0x4C, (u64(0) << 0) | (u64(1) << 16) | (u64(PSMCT32) << 24));   // FRAME: fbp 0, 64 wide
+    gs.WriteRegister(0x40, u64(63) << 16 | u64(63) << 48);                          // SCISSOR 0..63
+    gs.WriteRegister(0x42, 0ull | 2ull << 2 | 2ull << 4 | 1ull << 6 | 0x80ull << 32); // ALPHA: Cs * FIX 1.0 + Cd
+    gs.WriteRegister(0x00, 3 | 1 << 6);                                             // PRIM: triangle, ABE
+    gs.WriteRegister(0x01, 0x80101010ull);
+    const auto xy = [](u32 x, u32 y) { return (u64(x) << 4) | (u64(y) << 4) << 16; };
+    gs.WriteRegister(0x05, xy(2, 2));                                               // the square (2,2)-(10,10)
+    gs.WriteRegister(0x05, xy(10, 2));                                              // in two halves on its diagonal
+    gs.WriteRegister(0x05, xy(10, 10));
+    gs.WriteRegister(0x05, xy(2, 2));
+    gs.WriteRegister(0x05, xy(10, 10));
+    gs.WriteRegister(0x05, xy(2, 10));
+    gs.Finish();
+    u32 once = 0, twice = 0, outside = 0;
+    for (u32 y = 0; y < 12; ++y)
+        for (u32 x = 0; x < 12; ++x) {
+            const u32 rgb = gs.memory.Read(0, 1, x, y, PSMCT32) & 0xFFFFFF;
+            const bool inside = x >= 2 && x < 10 && y >= 2 && y < 10;
+            if (inside && rgb == 0x101010) ++once;
+            if (rgb == 0x202020) ++twice;
+            if (!inside && rgb != 0) ++outside;
+        }
+    Check(once == 64, "every pixel of the square drawn once");
+    Check(twice == 0, "the shared diagonal drawn once, not by both halves");
+    Check(outside == 0, "the right and bottom edges, on whole pixels, not drawn");
+}
+
 // VIF1 into a VU: a microprogram loaded with MPG and run with MSCAL, UNPACK's
 // formats, mask and skipping writes, and XGKICK.
 void VifRunsMicroprogramsOnAVu() {
@@ -495,6 +530,7 @@ int main() {
     GsFogsTowardsFogcol();
     Path3GoesOneGroupPerWindow();
     GsKeepsAFlatDepthExact();
+    GsFillsTopLeft();
     VifRunsMicroprogramsOnAVu();
     VuTimingIsVisible();
     IopInstructionsMatchTheR5900();
