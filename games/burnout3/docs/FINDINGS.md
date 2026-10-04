@@ -1424,7 +1424,7 @@ one missing piece of the machine:
   (right X, Y, left X, Y), then twelve pressures; the sticks were reported at
   0, pushed fully up-left, and the menu never saw a press. `--press
   BUTTON@FRAME` answers menus in a scripted run.
-* **The memory card.** libmc2 opens its slot (port 2) through dbcman, like a
+* **The memory card** (now `--memcard DIR`: see "Memory cards"). libmc2 opens its slot (port 2) through dbcman, like a
   pad; dbcman now opens a socket on any port and reports what is plugged in -
   nothing but the pad. The game says no memory card is inserted and offers to
   start without saving.
@@ -1616,28 +1616,65 @@ DBCMAN's 0x80001300 (its other calls: 0x80001318, 0x80001319, 0x8000131A
 sceDbcReceiveData). Emulating a card means answering 0x8000131C's requests
 for the socket on port 2 over a directory standing for the card.
 
-The game's own memory-card code (0x0030A174-0x0030A948) calls twelve libmc2
-functions. Each asynchronous one checks that the library is up (0x0049B6E8)
-and idle (the request's command word, 0x01D810C4, zero), fills the one
-request at 0x01D810C0 - +0 the socket, +4 the command, then its arguments,
-a name copied to +0x41C - and wakes the worker (0x002496A0); the worker
-stores the handler's result at +8 and signals; 0x00242E00 (waiting) and
-0x00242E28 (polling) hand back the command and result, as
-sceMc2CheckAsync does.
+The game's own memory-card code (0x0030A174-0x0030A948) calls libmc2's
+asynchronous API. Each call checks that the library is up (0x0049B6E8, else
+0x81018001), that the socket is valid (0x00248750: socket < 2 and the word
+at 0x01D93488 + socket * 0x1C set, else 0x81018002) and that the library is
+idle (the request's command word, 0x01D810C4, zero, else 0x81010010); it
+refuses a name of 0x80 bytes or more (0x8101005B), fills the one request at
+0x01D810C0 - +0 the socket, +4 the command, then its arguments, the name
+copied to +0x41C - and wakes the worker (0x002496A0). The worker (case
+table at 0x00242AA0) dispatches through 0x004BB320 indexed by the command
+**less 2**, stores the handler's result at +8 and signals; 0x00242E00
+(waiting) and 0x00242E28 (polling: -1 idle, 0 busy, 1 done) hand back the
+command and result.
 
-    API         command  arguments (request offsets)          handler
-    0x00242098    2      +0xC info                            0x00244218
-    0x00241F98    3      socket only                          0x002445D0
-    0x00242268    5      name, +0xC, +0x10, +0x14             0x00246588 (read)
-    0x00242348    6      name, +0xC, +0x10, +0x14             0x00246788 (write)
-    0x00242428    7      name, +0xC
-    0x00242598   10      name, +0xC, +0x10, +0x14, +0x18      (a directory listing)
-    0x00242688   11      name, +0xC
-    0x00242128   14      name, +0xC
+    cmd  handler (arguments after the socket)                    call
+      2  0x00244218 (+0xC info)                                   GetInfo
+      3  0x002445D0 ()                                            Format
+      5  0x00246588 (name, +0xC buffer, +0x10 offset, +0x14 size)   ReadFile
+      6  0x00246788 (the same)                                    WriteFile
+      7  0x00245FC0 (name, +0xC mode, 0x8417)                       CreateFile
+     10  0x002470D8 (name, offset, maxent, dirp, count*)            GetDir
+     11  0x00245FC0 (name, 0x8427)                                  Mkdir
+     14  inline at 0x00242C50: the lookup 0x00245398, its raw       SearchFile
+         entry converted into the DirParam at +0xC
 
-A card on the host can stand in at the handlers (each takes the request's
-fields and returns the result word), leaving libmc2's queue and threads as
-they are.
+The game issues only these; libmc2's others (4 Unformat, 8 Delete, 9
+Rename, 12 Chdir, 13 Chmod, 15 GetEntSpace, 16/17) are reached only from its
+own synchronous wrappers. Results are 0 (or a byte count) or 0x81010000 |
+errno: 0x02 ENOENT, 0x0D EACCES, 0x11 EEXIST (also the lookup's "found"),
+0x13 no card, 0x14 ENOTDIR, 0x16 EINVAL, 0x17 directory full, 0x1C ENOSPC,
+0x2F unformatted, 0x6F card failure; libmc2's own at 0x81019xxx (0x9003 a
+new card, which the game retries; 0x9FFF an intermediate directory missing,
+which the worker makes ENOENT for SearchFile). Handlers: GetInfo writes
+{type 2, formatted 1, free 1 KB clusters}; ReadFile with size 0 reads to the
+end, an offset past the end is EINVAL; WriteFile needs the file to exist,
+never truncates and sets mode 0x80; Create answers EEXIST for an existing
+name; GetDir lists from the directory's (offset + 2)-th entry (skipping "."
+and "..") the entries matching the name's last component (0x8000 set,
+hidden 0x2000 clear), up to maxent 0x38-byte DirParams {created, modified
+(sceMc2StDateTime: reserved, second, minute, hour, day, month, u16 year, in
+binary), size +0x10, mode +0x14, name +0x18}, and no match is no error. The
+lookup's raw entry: mode +0, size +4, created +8, modified +0x18, name
++0x40.
+
+The game keeps a profile in `BASLUS-21050/` - `icon.sys` (0x3C4 bytes),
+`view.ico` (0x3B82) and `BASLUS-21050` (0xF14C, the profile) - and checks
+that each file's size is exactly that before it trusts a save (0x00422AFC).
+A new save is Mkdir, then Create and Write for each file; loading opens the
+profile with GetDir (a "stat": count 1) and reads it whole. GetInfo is
+issued whenever the card is otherwise idle, which is how the game notices a
+card come and go.
+
+**The host's card** (`--memcard DIR`, engine/host/src/mc2.cpp, bound in
+port/overrides.cpp) answers those eight handlers over a directory - libmc2's
+queue, worker and polling run as they are, and DBCMAN, MC2_S1 and MagicGate
+are never asked. Without `--memcard` the game's own handlers run and find no
+card, as before. Checked: a new profile saved from the front end (the three
+files, at the sizes above; "Save successful"), and loaded on the next boot
+("Load successful", its name, date and unlocked events shown); the scripted
+run memcard_save checks the saved files' CRCs with its pictures.
 
 (The server 0x80001101 bound at 0x00249A0C is not libmc2's: the code
 around it, 0x002499D0-0x0024AB10, is netcnfif's - "SceNetcnfifCallbackThread",

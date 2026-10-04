@@ -12,6 +12,16 @@
 #include <string>
 
 #include "ps2host/host.h"
+#include "ps2host/mc2.h"
+
+// libmc2's handlers as the game has them, for when no card is given.
+void F_00244218(lifted::Context& c);
+void F_002445D0(lifted::Context& c);
+void F_00246588(lifted::Context& c);
+void F_00246788(lifted::Context& c);
+void F_00245FC0(lifted::Context& c);
+void F_002470D8(lifted::Context& c);
+void F_00245398(lifted::Context& c);
 
 namespace {
 
@@ -52,12 +62,33 @@ void MpegGetPicture(lifted::Context& c) {
     c.r[2] = 0;
 }
 
+/* libmc2's command handlers (FINDINGS: "Memory cards"): with --memcard the
+   host's card answers them (ps2host/mc2.h); without one the game's own run,
+   and find no card, as a console with an empty slot. The worker dispatches
+   commands through 0x004BB320 (indexed by the command less 2); the game
+   issues 2 GetInfo, 3 Format, 5 ReadFile, 6 WriteFile, 7 and 11 (Create, for
+   files and directories), 10 GetDir and 14 SearchFile, which the worker
+   makes of the lookup 0x00245398 itself. */
+template <void (*Host)(lifted::Context&), void (*Game)(lifted::Context&)>
+void CardOr(lifted::Context& c) {
+    if (ps2host::mc2::CardDirectory().empty()) Game(c);
+    else Host(c);
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
 
 void RegisterGameOverrides() {
     RegisterGameIopServers();
+    using namespace ps2host::mc2;
+    ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
+    ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");
+    ps2host::Override(0x00246588, CardOr<ReadFile, F_00246588>, "libmc2 ReadFile (host card)");
+    ps2host::Override(0x00246788, CardOr<WriteFile, F_00246788>, "libmc2 WriteFile (host card)");
+    ps2host::Override(0x00245FC0, CardOr<Create, F_00245FC0>, "libmc2 Create/Mkdir (host card)");
+    ps2host::Override(0x002470D8, CardOr<GetDir, F_002470D8>, "libmc2 GetDir (host card)");
+    ps2host::Override(0x00245398, CardOr<Lookup, F_00245398>, "libmc2 lookup (host card)");
     // RenderWare's wait for its DMA packet buffers to flip (0x001F2408, the
     // loop at 0x001F24E0: two globals the DMA-end interrupt updates, and a
     // callback each turn): a third of the race's time under --virtual-time

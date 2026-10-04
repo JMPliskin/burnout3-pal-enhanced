@@ -96,6 +96,7 @@ struct Options {
     unsigned long long until_frame = 0;    /* stop when this frame is done (0: never) */
     bool audio = false;            /* play the SPU2's output on the sound device */
     std::string audio_wav;         /* record the SPU2's output to this WAV file */
+    std::string memcard;           /* --memcard DIR: a memory card in slot 1, kept as this directory (mc2.h) */
     std::vector<std::pair<std::string, u64>> presses;   /* --press BUTTON@FRAME */
 };
 

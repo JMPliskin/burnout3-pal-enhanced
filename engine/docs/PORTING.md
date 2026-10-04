@@ -59,6 +59,8 @@ Options for finding out why boot stops, passed after `run --`:
 | `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name - the port builds with symbols for it |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
+| `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
+| `--vu-record FILE`, `--vu-interpret` | record the VU microprograms a run starts, for compiling ahead of time; run them interpreted (see below) |
 | `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
 | `--watch-write ADDR` | every store to a guest address, with the function making it and four of its callers |
 | `--iop-trace` | every IOP library call the game's own modules make |

@@ -18,6 +18,7 @@
 #include "ps2host/iop_vm.h"
 #include "ps2host/vif.h"
 #include "ps2host/vu.h"
+#include "ps2host/mc2.h"
 #include "ps2host/memory.h"
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
@@ -387,6 +388,7 @@ int Run(const Options& options) {
     SetGsDumpFrame(options.gs_dump_frame);
     if (options.sample) StartSampler();
     if (!options.vu_record.empty()) Vu::RecordPrograms(options.vu_record);
+    if (!options.memcard.empty()) mc2::SetCardDirectory(options.memcard);
     if (options.vu_interpret) Vu1().use_compiled = Vu0().use_compiled = false;
     SetUntilFrame(options.until_frame);
     if (options.gpu || options.gpu_shadow) {
@@ -469,6 +471,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--sample") options.sample = true;
         else if (arg == "--vu-record" && i + 1 < argc) options.vu_record = argv[++i];
         else if (arg == "--vu-interpret") options.vu_interpret = true;
+        else if (arg == "--memcard" && i + 1 < argc) options.memcard = argv[++i];
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
         else if (arg == "--press" && i + 1 < argc) {

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "ps2host/gs.h"
 #include "iop_vm_internal.h"
 #include "spu2.h"
+#include "ps2host/mc2.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
 #include "ps2host/path3.h"
@@ -681,6 +683,70 @@ void VuLanesAreTheModel() {
     Check(wrong == 0, what);
 }
 
+// libmc2's handlers over a directory (mc2.h): a save made and read back, the
+// listing the game's "open" reads sizes from, the answers it maps to errors.
+void MemoryCardKeepsSaves() {
+    namespace mc2 = ps2host::mc2;
+    namespace fs = std::filesystem;
+    const fs::path card = fs::temp_directory_path() / "ps2host_tests_memcard";
+    std::error_code error;
+    fs::remove_all(card, error);
+    mc2::SetCardDirectory(card.u8string());
+    auto context = std::make_unique<lifted::Context>();
+    lifted::Context& c = *context;
+    constexpr u32 kName = 0x00100100, kBuffer = 0x00100200, kEntries = 0x00100400, kCount = 0x00100300;
+    auto name = [&](const char* text) {
+        for (u32 i = 0;; ++i) {
+            generated::Write8(kName + i, u8(text[i]));
+            if (!text[i]) break;
+        }
+        c.r[5] = kName;
+    };
+    auto call = [&](void (*handler)(lifted::Context&)) { handler(c); return u32(c.r[2]); };
+    c.r[4] = 0;
+    name("SAVE");
+    c.r[6] = 0x8427;
+    Check(call(mc2::Create) == 0, "memory card: a directory made");
+    Check(call(mc2::Create) == 0x81010011, "memory card: making it again is EEXIST");
+    name("SAVE/data");
+    c.r[6] = 0x8417;
+    Check(call(mc2::Create) == 0, "memory card: a file made");
+    for (u32 i = 0; i < 1500; ++i) generated::Write8(kBuffer + i, u8(i * 7));
+    c.r[6] = kBuffer; c.r[7] = 0; c.r[8] = 1500;
+    Check(call(mc2::WriteFile) == 1500, "memory card: written");
+    for (u32 i = 0; i < 1500; ++i) generated::Write8(kBuffer + i, 0);
+    c.r[6] = kBuffer; c.r[7] = 100; c.r[8] = 0;
+    bool same = call(mc2::ReadFile) == 1400;
+    for (u32 i = 0; i < 1400 && same; ++i) same = generated::ReadU8(kBuffer + i) == u8((i + 100) * 7);
+    Check(same, "memory card: read back from an offset to the end");
+    name("SAVE/data");
+    c.r[6] = 0; c.r[7] = 1; c.r[8] = kEntries; c.r[9] = kCount;
+    Check(call(mc2::GetDir) == 0 && generated::ReadU32(kCount) == 1 && generated::ReadU32(kEntries + 0x10) == 1500 &&
+              (generated::ReadU32(kEntries + 0x14) & 0xFFFF) == 0x8497,
+          "memory card: the listing gives the size and a written file's mode");
+    name("SAVE/missing");
+    Check(call(mc2::GetDir) == 0 && generated::ReadU32(kCount) == 0, "memory card: listing nothing is no error");
+    name("NONE/data");
+    Check(call(mc2::GetDir) == 0x81010002, "memory card: listing in no directory is ENOENT");
+    name("SAVE/missing");
+    c.r[6] = kBuffer; c.r[7] = 0; c.r[8] = 0;
+    Check(call(mc2::ReadFile) == 0x81010002, "memory card: reading what is not there is ENOENT");
+    name("../outside");
+    c.r[6] = 0x8417;
+    Check(call(mc2::Create) == 0x81010016 && !fs::exists(card.parent_path() / "outside"),
+          "memory card: a path out of the card is refused");
+    name("SAVE");
+    c.r[6] = kEntries;
+    Check(call(mc2::Lookup) == 0x81010011 && (generated::ReadU32(kEntries) & 0x20) != 0,
+          "memory card: the lookup finds a directory");
+    c.r[5] = kBuffer;
+    Check(call(mc2::GetInfo) == 0 && generated::ReadU32(kBuffer) == 2 && generated::ReadU32(kBuffer + 4) == 1 &&
+              generated::ReadU32(kBuffer + 8) < 8000,
+          "memory card: a formatted PS2 card, its free space less the save");
+    mc2::SetCardDirectory("");
+    fs::remove_all(card, error);
+}
+
 // Random microprograms (vu_corpus.cpp, from engine/tools/vurecomp.py
 // --corpus), compiled ahead of time, run as the interpreter runs them: from
 // random registers and memory, every register, flag, pipeline, cycle and
@@ -885,6 +951,7 @@ int main() {
     GpuDecodesTexturesAsTheGs();
 #endif
     VifRunsMicroprogramsOnAVu();
+    MemoryCardKeepsSaves();
     VuLanesAreTheModel();
     VuCompiledIsTheInterpreter();
     VuTimingIsVisible();

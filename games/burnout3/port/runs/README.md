@@ -51,3 +51,11 @@ should not, and does, is a regression: a speed-up to the GPU bridge that lost
 an image's own drawing showed as the race's crash replay going wrong, found
 by `framediff.py` against the software run and `--gs-dump-frame` from both
 builds.
+
+## Memory card
+
+`memcard_save.args` boots with an empty memory card (`{memcard}`: regress.py
+gives each run a fresh directory), creates a profile from the front end and
+saves it; the CRCs cover the pictures and the three files the game wrote
+(`memcard/BASLUS-21050/...`). The other runs have no card, as they were
+recorded.

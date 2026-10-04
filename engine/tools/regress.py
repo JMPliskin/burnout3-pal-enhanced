@@ -14,6 +14,10 @@ for a change meant to alter them (say what changed in the commit).
 
 The run's own report (its time line) is printed too, so a run is also a
 timing check.
+
+A run's arguments may name `{memcard}`: the run then gets an empty memory
+card (--memcard, a fresh directory), and what the game left on it is checked
+with the pictures, file by file (memcard/<path> in the CRC list).
 """
 
 from __future__ import annotations
@@ -61,6 +65,10 @@ def main(argv=None) -> int:
     renderer = "gpu" if args.gpu else "soft"
     pictures = args.keep or tempfile.mkdtemp(prefix="regress_")
     os.makedirs(pictures, exist_ok=True)
+    card = None
+    if any("{memcard}" in arg for arg in run_args):
+        card = tempfile.mkdtemp(prefix="regress_card_")
+        run_args = [arg.replace("{memcard}", card) for arg in run_args]
     command = [executable, elf] + (["--disc", disc] if disc and os.path.exists(disc) else []) + run_args + [
         "--timeout", "14400", "--frames", pictures, "--frames-every", str(args.every)]
     if args.gpu:
@@ -74,6 +82,14 @@ def main(argv=None) -> int:
     print("run: %.0f s" % elapsed)
 
     found = crcs(pictures)
+    if card:
+        for root, _, files in os.walk(card):
+            for name in sorted(files):
+                path = os.path.join(root, name)
+                with open(path, "rb") as handle:
+                    key = "memcard/" + os.path.relpath(path, card).replace(os.sep, "/")
+                    found[key] = "%08X" % (zlib.crc32(handle.read()) & 0xFFFFFFFF)
+        shutil.rmtree(card, ignore_errors=True)
     expected_path = os.path.join(runs, "%s.%s.crc" % (args.run, renderer))
     if args.update or not os.path.exists(expected_path):
         with open(expected_path, "w", encoding="utf-8", newline="\n") as handle:

@@ -29,6 +29,7 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/dma.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/loadfile.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/dbc.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/mc2.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/iop_vm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/iop_libs.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/iopheap.cpp
