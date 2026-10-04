@@ -92,7 +92,9 @@ _TRAPS = {"teq": ("==", "u64"), "tne": ("!=", "u64"), "tge": (">=", "s64"),
           "tgeu": (">=", "u64"), "tlt": ("<", "s64"), "tltu": ("<", "u64")}
 _NOTHING = {"nop", "sync", "cache", "pref", "ei", "di"}
 _LANES = {"pmaxw": "kPmaxw", "pminw": "kPminw", "psubw": "kPsubw", "padduw": "kPadduw",
-          "paddub": "kPaddub", "pabsw": "kPabsw", "paddw": "kPaddw", "paddh": "kPaddh"}
+          "paddub": "kPaddub", "pabsw": "kPabsw", "paddw": "kPaddw", "paddh": "kPaddh",
+          "pcgtb": "kPcgtb", "pcgth": "kPcgth", "pcgtw": "kPcgtw", "pceqb": "kPceqb",
+          "pceqh": "kPceqh", "pceqw": "kPceqw", "pmaxh": "kPmaxh", "pminh": "kPminh"}
 _LANE_SHIFTS = {"psllh": (16, 0), "psrah": (16, 2), "psllw": (32, 0), "psrlw": (32, 1),
                 "psraw": (32, 2)}
 _UNALIGNED_LOADS = {"lwl": "LoadWordLeft", "lwr": "LoadWordRight",
@@ -287,10 +289,11 @@ def statement(ins) -> str:
             return ""
         return "lifted::PackBytes(c.r[%d], c.rh[%d], %s, c.rh[%d], %s, c.rh[%d]);" % (
             rd, rd, a, rs, b, rt)
-    if m == "pextub":
+    if m in ("pextub", "pextuh", "pextuw"):
         if rd == 0:
             return ""
-        return "lifted::Interleave(c.r[%d], c.rh[%d], c.rh[%d], c.rh[%d], 8);" % (rd, rd, rs, rt)
+        return "lifted::Interleave(c.r[%d], c.rh[%d], c.rh[%d], c.rh[%d], %d);" % (
+            rd, rd, rs, rt, {"pextub": 8, "pextuh": 16, "pextuw": 32}[m])
     if m == "ppach":
         if rd == 0:
             return ""

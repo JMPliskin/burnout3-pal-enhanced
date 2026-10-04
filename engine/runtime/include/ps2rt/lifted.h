@@ -95,7 +95,9 @@ u32 FloatMulAdd(u32 acc, u32 a, u32 b, bool subtract);
 void AddBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, bool subtract);
 
 /* Lane-wise 128-bit MMI operations: each lane of rs (a) and rt (b). */
-enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw, kPaddw, kPaddh };
+enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw, kPaddw, kPaddh,
+              /* all ones where rs > rt (signed) or rs == rt; signed halfword max/min */
+              kPcgtb, kPcgth, kPcgtw, kPceqb, kPceqh, kPceqw, kPmaxh, kPminh };
 void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
 void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount);   /* psrlh */
 

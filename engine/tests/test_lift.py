@@ -185,6 +185,15 @@ def programs():
         r_type(0x36, 0, T8, T6, 5, op=0x1C),                        # psrlh $t6, $t8, 5
         JR_RA, r_type(0x08, A0, T8, T7, 0x12, op=0x1C),             # pextlw $t7, $a0, $t8
     ])
+    add("mmi_compare", [
+        r_type(0x09, A0, A1, T8, 0x0E, op=0x1C),                    # pcpyld $t8, $a0, $a1
+        r_type(0x09, A2, A3, T9, 0x0E, op=0x1C),                    # pcpyld $t9, $a2, $a3
+        mmi_word("pcgtb", T0, T8, T9), mmi_word("pcgth", T1, T8, T9), mmi_word("pcgtw", T2, T9, T8),
+        mmi_word("pceqb", T3, T8, T9), mmi_word("pceqh", T4, T8, T8), mmi_word("pceqw", T5, T9, T8),
+        mmi_word("pmaxh", T6, T8, T9), mmi_word("pminh", T7, T8, T9),
+        mmi_word("pextuh", V0, T8, T9),
+        JR_RA, mmi_word("pextuw", V1, T9, T8),
+    ])
     add("trap", [r_type(0x0D), JR_RA, NOP])                          # break
     add("mmi_more", [
         r_type(0x09, A0, A1, T8, 0x0E, op=0x1C),                    # pcpyld $t8, $a0, $a1
@@ -325,6 +334,9 @@ class TestLift(unittest.TestCase):
 
     def test_more_mmi_and_rsqrt(self):
         self.check("mmi_more")
+
+    def test_mmi_comparisons_and_upper_interleaves(self):
+        self.check("mmi_compare")
 
     def test_vu0_macro_mode(self):
         self.check("vu0")

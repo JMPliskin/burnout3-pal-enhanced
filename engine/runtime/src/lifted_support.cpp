@@ -99,8 +99,33 @@ u32 Lane32(int op, u32 a, u32 b) {
     return 0;
 }
 
+/* Comparisons and halfword max/min, lane by lane at `width` bits. */
+u64 NarrowLanes(int op, u64 a, u64 b, u32 width) {
+    const u64 mask = width == 64 ? ~0ull : (1ull << width) - 1, sign = 1ull << (width - 1);
+    u64 out = 0;
+    for (u32 shift = 0; shift < 64; shift += width) {
+        const u64 x = (a >> shift) & mask, y = (b >> shift) & mask;
+        const s64 sx = (s64)(x ^ sign) - (s64)sign, sy = (s64)(y ^ sign) - (s64)sign;
+        u64 lane = 0;
+        switch (op) {
+            case kPcgtb: case kPcgth: case kPcgtw: lane = sx > sy ? mask : 0; break;
+            case kPceqb: case kPceqh: case kPceqw: lane = x == y ? mask : 0; break;
+            case kPmaxh: lane = sx >= sy ? x : y; break;
+            case kPminh: lane = sx <= sy ? x : y; break;
+        }
+        out |= lane << shift;
+    }
+    return out;
+}
+
 u64 LanesOf(int op, u64 a, u64 b) {
     u64 out = 0;
+    switch (op) {
+        case kPcgtb: case kPceqb: return NarrowLanes(op, a, b, 8);
+        case kPcgth: case kPceqh: case kPmaxh: case kPminh: return NarrowLanes(op, a, b, 16);
+        case kPcgtw: case kPceqw: return NarrowLanes(op, a, b, 32);
+        default: break;
+    }
     if (op == kPaddh) {
         for (int shift = 0; shift < 64; shift += 16)
             out |= ((((a >> shift) & 0xFFFF) + ((b >> shift) & 0xFFFF)) & 0xFFFF) << shift;

@@ -1037,6 +1037,33 @@ def _s32(value: int) -> int:
     return value - (1 << 32) if value & 0x80000000 else value
 
 
+def _signed(width: int):
+    """A lane, read as a signed `width`-bit number."""
+    top = 1 << (width - 1)
+    return lambda value: value - (top << 1) if value & top else value
+
+
+def _q_compare(width: int, greater: bool):
+    """pcgt*/pceq*: all ones in a lane where rs > rt (signed), or rs == rt."""
+    signed, ones = _signed(width), (1 << width) - 1
+    if greater:
+        return _q_lanes(width, lambda a, b: ones if signed(a) > signed(b) else 0)
+    return _q_lanes(width, lambda a, b: ones if a == b else 0)
+
+
+def _q_upper_interleave(width: int):
+    """pextuh/pextuw: the upper doubleword's lanes of rt and rs, alternated."""
+    mask = (1 << width) - 1
+
+    def run(m: Machine, ins) -> None:
+        a, b, out = _q_get(m, ins.rs) >> 64, _q_get(m, ins.rt) >> 64, 0
+        for i in range(64 // width):
+            out |= ((b >> (i * width)) & mask) << (2 * i * width)
+            out |= ((a >> (i * width)) & mask) << ((2 * i + 1) * width)
+        _q_set(m, ins.rd, out)
+    return run
+
+
 def _op_psrlh(m: Machine, ins) -> None:
     value, out, amount = _q_get(m, ins.rt), 0, ins.imm & 0xF
     for shift in range(0, 128, 16):
@@ -1224,6 +1251,11 @@ _HANDLERS = {
     "ppach": _op_ppach, "qfsrv": _op_qfsrv, "mtsab": _op_mtsab, "mtsah": _op_mtsah,
     "rsqrt.s": _op_rsqrt_s,
     "pextlw": _op_pextlw,
+    "pcgtb": _q_compare(8, True), "pcgth": _q_compare(16, True), "pcgtw": _q_compare(32, True),
+    "pceqb": _q_compare(8, False), "pceqh": _q_compare(16, False), "pceqw": _q_compare(32, False),
+    "pmaxh": _q_lanes(16, lambda a, b: a if _signed(16)(a) >= _signed(16)(b) else b),
+    "pminh": _q_lanes(16, lambda a, b: a if _signed(16)(a) <= _signed(16)(b) else b),
+    "pextuh": _q_upper_interleave(16), "pextuw": _q_upper_interleave(32),
     # Unaligned loads and stores
     "lwl": _op_lwl, "lwr": _op_lwr, "ldl": _op_ldl, "ldr": _op_ldr,
     "swl": _store_left(4), "swr": _store_right(4),
