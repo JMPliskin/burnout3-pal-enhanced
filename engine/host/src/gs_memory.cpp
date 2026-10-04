@@ -18,6 +18,9 @@
 
 #include "ps2host/gs.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace ps2host {
 namespace gs {
 
@@ -95,7 +98,7 @@ u32 Page(u32 bp, u32 pages_per_row, u32 page_x, u32 page_y) {
 
 }  // namespace
 
-u32 Memory::Address(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble) {
+u32 Memory::AddressReference(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble) {
     *nibble = 0;
     switch (psm) {
         case PSMCT32: case PSMCT24: case PSMT8H: case PSMT4HL: case PSMT4HH: {
@@ -127,6 +130,62 @@ u32 Memory::Address(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble) {
         default:
             return (bp * 256 + (y * bw * 64 + x) * 4) & kMask;
     }
+}
+
+namespace {
+
+// A layout's pages, precomputed: for each pixel of a page, its byte within
+// the page (times two, plus the nibble, for PSMT4). Every access to GS memory
+// - transfers, CLUT loads, texture decoding, the software rasteriser - goes
+// through Address, and the tables took most of its time.
+struct PageTable {
+    u32 width, height;                  // the page, in pixels
+    bool half_width;                    // pages per row are BW / 2 (PSMT8, PSMT4)
+    std::vector<std::uint16_t> offset;
+};
+
+PageTable Build(u32 psm, u32 width, u32 height, bool half_width) {
+    PageTable t{width, height, half_width, std::vector<std::uint16_t>(std::size_t(width) * height)};
+    for (u32 y = 0; y < height; ++y)
+        for (u32 x = 0; x < width; ++x) {
+            u32 nibble = 0;
+            const u32 a = Memory::AddressReference(0, half_width ? 2 : 1, x, y, psm, &nibble);
+            t.offset[std::size_t(y) * width + x] = std::uint16_t(psm == PSMT4 ? a * 2 + nibble : a);
+        }
+    return t;
+}
+
+const PageTable* TableFor(u32 psm) {
+    static const PageTable ct32 = Build(PSMCT32, 64, 32, false), z32 = Build(PSMZ32, 64, 32, false);
+    static const PageTable ct16 = Build(PSMCT16, 64, 64, false), ct16s = Build(PSMCT16S, 64, 64, false);
+    static const PageTable z16 = Build(PSMZ16, 64, 64, false), z16s = Build(PSMZ16S, 64, 64, false);
+    static const PageTable t8 = Build(PSMT8, 128, 64, true), t4 = Build(PSMT4, 128, 128, true);
+    switch (psm) {
+        case PSMCT32: case PSMCT24: case PSMT8H: case PSMT4HL: case PSMT4HH: return &ct32;
+        case PSMZ32: case PSMZ24: return &z32;
+        case PSMCT16: return &ct16;
+        case PSMCT16S: return &ct16s;
+        case PSMZ16: return &z16;
+        case PSMZ16S: return &z16s;
+        case PSMT8: return &t8;
+        case PSMT4: return &t4;
+        default: return nullptr;
+    }
+}
+
+}  // namespace
+
+u32 Memory::Address(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble) {
+    const PageTable* t = TableFor(psm);
+    if (!t) return AddressReference(bp, bw, x, y, psm, nibble);
+    const u32 page = Page(bp, t->half_width ? bw / 2 : bw, x / t->width, y / t->height);
+    const u32 within = t->offset[std::size_t(y % t->height) * t->width + x % t->width];
+    if (psm == PSMT4) {
+        *nibble = within & 1;
+        return (page * 256 + within / 2) & kMask;
+    }
+    *nibble = 0;
+    return (page * 256 + within) & kMask;
 }
 
 u32 Memory::Read(u32 bp, u32 bw, u32 x, u32 y, u32 psm) const {

@@ -54,6 +54,9 @@ public:
     /* The byte address of a pixel (for 4-bit formats, of its byte; *nibble
        says which half). Exposed for tests. */
     static u32 Address(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble);
+    /* The same from the manual's block and column tables, step by step:
+       Address is it precomputed a page at a time (tests compare the two). */
+    static u32 AddressReference(u32 bp, u32 bw, u32 x, u32 y, u32 psm, u32* nibble);
 
 private:
     std::vector<u8> bytes_;

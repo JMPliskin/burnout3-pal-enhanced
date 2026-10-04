@@ -225,6 +225,22 @@ void GsLayoutsArePermutations() {
         std::snprintf(what, sizeof what, "GS layout 0x%02X covers one page exactly", unsigned(c.psm));
         Check(ok, what);
     }
+    // The precomputed pages give what the manual's tables give, anywhere.
+    const u32 psms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH,
+                        PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
+    u32 seed = 99, wrong = 0;
+    for (u32 psm : psms)
+        for (int i = 0; i < 20000; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const u32 bp = seed >> 18, bw = 1 + ((seed >> 8) & 15);
+            seed = seed * 1664525u + 1013904223u;
+            const u32 x = (seed >> 5) & 2047, y = (seed >> 17) & 2047;
+            u32 n1 = 0, n2 = 0;
+            if (Memory::Address(bp, bw, x, y, psm, &n1) != Memory::AddressReference(bp, bw, x, y, psm, &n2) ||
+                n1 != n2)
+                ++wrong;
+        }
+    Check(wrong == 0, "GS addresses from precomputed pages match the step-by-step layout");
 }
 
 void GsDrawsASprite() {
