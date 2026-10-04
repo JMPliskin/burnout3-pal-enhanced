@@ -482,7 +482,7 @@ std::size_t Triangles(const gs::Gs::DrawCall& call, bool fst, u32 tw, u32 th, ps
         ps2gpu::GsVertex ab = b, ba = b;
         ab.x = b.x; ab.y = a.y; ab.t = a.t;
         ba.x = a.x; ba.y = b.y; ba.s = a.s;
-        a.r = b.r; a.g = b.g; a.b = b.b; a.a = b.a; a.fog = b.fog;
+        a.r = b.r; a.g = b.g; a.b = b.b; a.a = b.a; a.fog = b.fog; a.z = b.z;   // flat: the second vertex's, Z too
         v[0] = a; v[1] = ab; v[2] = ba; v[3] = ab; v[4] = b; v[5] = ba;
         *gouraud = true;
         return std::size_t(6);
@@ -713,7 +713,10 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         const auto z = Blocks(state.zbp, state.fbw, zpsm, rows);
         if (colour.first < z.second && z.first < colour.second) {
             state.depth = false;
-            z_as_colour = state.depth_write;
+            // An alpha test that fails every pixel writes Z only for AFAIL
+            // ZB_ONLY (the race's glow passes: ATST NEVER, FB_ONLY - no Z).
+            const bool none_pass = state.alpha_test && state.atst == 0;
+            z_as_colour = state.depth_write && (!none_pass || state.afail == 2);
         }
     }
     Owned* depth = nullptr;
