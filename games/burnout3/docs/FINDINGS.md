@@ -1509,6 +1509,27 @@ The disassembler's lower opcode table was wrong in the same session (see "A
 VU disassembler" above); with it fixed, the hazard scan reads all of the
 game's microcode.
 
+## The car select's textures: PATH3 one group at a time
+
+With the geometry right, the garage came out wearing the frontend's font. A
+trace of one picture (a `--virtual-time` run stopped with `--until-frame`,
+VIF1's MSKPATH3/FLUSHA and the DMA kicks now in the GS trace) showed how the
+game feeds textures:
+
+* At the start of a picture it masks PATH3 and kicks one GIF DMA chain with
+  all of the picture's texture uploads - 141 image transfers, mip levels and
+  CLUTs included, 161,280 words - in five groups, each ended by a packet with
+  EOP. Six texture slots are uploaded twice in the picture.
+* VIF1's display list then opens five windows - FLUSHA, MSKPATH3 0, MSKPATH3
+  1 - each before the draws that use the next group.
+
+A mask takes effect only at the end of the packet PATH3 is in, so a window
+that opens and closes at once lets exactly one EOP-ended group through. The
+host released everything at the first window, so every slot held its last
+upload before any draw - the font, in the garage's. With PATH3 released one
+group per window (`engine/host/include/ps2host/path3.h`) the car select draws
+its cars.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
