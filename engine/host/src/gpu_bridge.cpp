@@ -934,6 +934,9 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
     if (s.primary) {
         if ((long long)s.frame == s.dump_frame && std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
         s.frame = frame + 1;
+        // The frame's drawing to the GPU now, to run while the next is made,
+        // rather than when something next waits on the GPU.
+        s.renderer->Kick();
         if (frame % 100 == 0)
             std::fprintf(stderr, "[gpu] frame %llu: %llu draws, %llu write-backs, %llu reloads, %llu decodes, %zu images, %zu textures\n",
                          static_cast<unsigned long long>(frame), static_cast<unsigned long long>(s.serial),

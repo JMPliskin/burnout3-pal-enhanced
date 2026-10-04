@@ -149,6 +149,10 @@ public:
     virtual void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) = 0;
     /* Runs what has been drawn. */
     virtual void Flush() = 0;
+    /* Hands what has been recorded to the GPU without waiting for it (once a
+       frame, say), so that the GPU draws while the CPU goes on rather than
+       all at once when something next waits. */
+    virtual void Kick() {}
     /* GS local memory on the GPU: 4 MB, as the GS lays it out, which targets
        and depth buffers are swizzled into and out of without the CPU. Blocks
        are 256 bytes; [begin, end) in blocks. Nothing waits but MemoryRead. */

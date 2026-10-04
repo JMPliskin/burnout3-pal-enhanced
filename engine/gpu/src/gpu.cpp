@@ -97,11 +97,13 @@ bool VulkanGpu::Init(std::string* error) {
     VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    if ((r = vkAllocateCommandBuffers(device, &cai, &cmd)) != VK_SUCCESS)
+    cai.commandBufferCount = kSlots;
+    if ((r = vkAllocateCommandBuffers(device, &cai, cmds)) != VK_SUCCESS)
         return fail("vkAllocateCommandBuffers", r);
+    cmd = cmds[0];
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if ((r = vkCreateFence(device, &fci, nullptr, &fence)) != VK_SUCCESS) return fail("vkCreateFence", r);
+    for (VkFence& f : fences)
+        if ((r = vkCreateFence(device, &fci, nullptr, &f)) != VK_SUCCESS) return fail("vkCreateFence", r);
     return true;
 }
 
@@ -130,11 +132,14 @@ bool VulkanGpu::InitShared(VkInstance shared_instance, VkPhysicalDevice shared_g
     }
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device, &cai, &cmd) != VK_SUCCESS || vkCreateFence(device, &fci, nullptr, &fence) != VK_SUCCESS) {
+    cai.commandBufferCount = kSlots;
+    bool made = vkAllocateCommandBuffers(device, &cai, cmds) == VK_SUCCESS;
+    for (VkFence& f : fences) made = made && vkCreateFence(device, &fci, nullptr, &f) == VK_SUCCESS;
+    if (!made) {
         if (error) *error = "no command buffer or fence";
         return false;
     }
+    cmd = cmds[0];
     return true;
 }
 
@@ -149,7 +154,8 @@ std::uint32_t VulkanGpu::FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wa
 VulkanGpu::~VulkanGpu() {
     if (device) {
         vkDeviceWaitIdle(device);
-        if (fence) vkDestroyFence(device, fence, nullptr);
+        for (VkFence f : fences)
+            if (f) vkDestroyFence(device, f, nullptr);
         if (pool) vkDestroyCommandPool(device, pool, nullptr);
         if (owns_device) vkDestroyDevice(device, nullptr);
     }

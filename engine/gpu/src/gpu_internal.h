@@ -24,7 +24,7 @@ public:
     ~VulkanGpu() override;
     bool Init(std::string* error);
     /* On a device someone else made and keeps (a Display's): only the command
-       pool and fence are this one's own. */
+       pool, command buffers and fences are this one's own. */
     bool InitShared(VkInstance instance, VkPhysicalDevice gpu, VkDevice device, std::uint32_t family, VkQueue queue,
                     bool dual_source, const std::string& describe, std::string* error);
     std::string Describe() const override { return describe_; }
@@ -40,11 +40,20 @@ public:
     template <typename F>
     void RecordInPass(F&& record);
     std::function<void(VkCommandBuffer)> end_pass;
-    /* Runs what has been recorded and waits for it; then what was waiting for
-       that (AfterSubmit: freeing staging buffers, say) runs. */
+    /* Runs what has been recorded and waits for it, and for everything
+       Flush handed over before; then what was waiting for that (AfterSubmit:
+       freeing staging buffers, say) runs. */
     bool Submit();
+    /* Hands what has been recorded to the GPU without waiting for it, so that
+       the GPU works while the CPU goes on: the next recording goes into the
+       next of kSlots command buffers (waiting only if that one is still
+       running). What waited on the work handed over runs once it has run. */
+    bool Flush();
     void AfterSubmit(std::function<void()> done) { after_submit_.push_back(std::move(done)); }
     bool recording() const { return open_; }
+    static constexpr int kSlots = 3;
+    /* The command buffer recording goes into (or will). */
+    int slot() const { return current_; }
     /* Records with `record`, submits, and waits for it to finish. */
     template <typename F>
     bool Run(F&& record) {
@@ -58,8 +67,9 @@ public:
     std::uint32_t family = 0;
     VkQueue queue = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;           /* the current slot's */
+    VkCommandBuffer cmds[kSlots] = {};
+    VkFence fences[kSlots] = {};
     bool dual_source = false;       /* dualSrcBlend: the GS's blending */
     bool logic_op = false;          /* logicOp: FBMSK's partly masked channels */
     bool owns_device = true;
@@ -68,6 +78,11 @@ private:
     std::string describe_;
     bool open_ = false;
     std::vector<std::function<void()>> after_submit_;
+    int current_ = 0;
+    bool in_flight_[kSlots] = {};
+    std::vector<std::function<void()>> slot_done_[kSlots];
+    /* Waits for a slot's work, if handed over, and runs what waited on it. */
+    bool Retire(int slot);
 };
 
 template <typename F>
@@ -90,23 +105,45 @@ void VulkanGpu::Record(F&& record) {
     });
 }
 
-inline bool VulkanGpu::Submit() {
-    bool ok = true;
-    if (open_) {
-        if (end_pass) end_pass(cmd);
-        open_ = false;
-        vkEndCommandBuffer(cmd);
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &cmd;
-        vkResetFences(device, 1, &fence);
-        const auto start = std::chrono::steady_clock::now();
-        ok = vkQueueSubmit(queue, 1, &submit, fence) == VK_SUCCESS &&
-             vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
-        ++g_submits;
-        g_wait_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    }
+inline bool VulkanGpu::Retire(int slot) {
+    if (!in_flight_[slot]) return true;
+    const auto start = std::chrono::steady_clock::now();
+    const bool ok = vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    g_wait_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    in_flight_[slot] = false;
     std::vector<std::function<void()>> done;
+    done.swap(slot_done_[slot]);
+    for (auto& f : done) f();
+    return ok;
+}
+
+inline bool VulkanGpu::Flush() {
+    if (!open_) return true;
+    if (end_pass) end_pass(cmd);
+    open_ = false;
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    vkResetFences(device, 1, &fences[current_]);
+    const bool ok = vkQueueSubmit(queue, 1, &submit, fences[current_]) == VK_SUCCESS;
+    ++g_submits;
+    in_flight_[current_] = ok;
+    slot_done_[current_].swap(after_submit_);
+    if (!ok) {                                      // nothing will run: nothing to wait for
+        for (auto& f : slot_done_[current_]) f();
+        slot_done_[current_].clear();
+    }
+    current_ = (current_ + 1) % kSlots;
+    cmd = cmds[current_];
+    return Retire(current_) && ok;
+}
+
+inline bool VulkanGpu::Submit() {
+    bool ok = Flush();
+    // Oldest first: current_ is free, the one after it was handed over first.
+    for (int i = 1; i <= kSlots; ++i) ok = Retire((current_ + i) % kSlots) && ok;
+    std::vector<std::function<void()>> done;        // waited on nothing recorded
     done.swap(after_submit_);
     for (auto& f : done) f();
     return ok;

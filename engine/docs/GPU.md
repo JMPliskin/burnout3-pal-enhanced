@@ -158,6 +158,12 @@ proved itself in PCSX2's hardware renderers, made smaller:
      and glow passes in its depth buffer's memory at 0xD2) is swizzled into
      the GPU's copy and the other unswizzled from it - on the GPU, waiting
      for nothing;
+   * *submission*: each frame's recorded work is handed to the GPU at the
+     frame's end without waiting (`GsRenderer::Kick`, `VulkanGpu::Flush`,
+     three command buffers in turn, each with its own fence and vertex
+     ring), so the GPU draws one frame while the CPU makes the next; a
+     read-back still waits, but for little. The race script waited 32-50 s
+     of its ~4 min for the GPU before;
    * *targets as textures*: a TEX0 whose TBP and format match a target's
      samples the target's image;
    * *other textures*: decoded into a cache keyed by TBP/TBW/PSM/TW/TH,

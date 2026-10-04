@@ -218,6 +218,10 @@ public:
     }
     void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) override;
     void Flush() override;
+    void Kick() override {
+        Flush();
+        g_.Flush();
+    }
     bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t>* z) override;
     void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) override;
     void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) override;
@@ -290,10 +294,15 @@ private:
         void* mapped;
         VkDeviceSize size;
     };
-    std::vector<VertexChunk> vertex_chunks_;
-    std::size_t vertex_chunk_ = 0;
-    VkDeviceSize vertex_used_ = 0;
-    bool vertex_reset_pending_ = false;
+    // One ring a command buffer slot: a slot's vertices are free again once
+    // its submission has run, whatever the others are doing.
+    struct VertexRing {
+        std::vector<VertexChunk> chunks;
+        std::size_t chunk = 0;
+        VkDeviceSize used = 0;
+        bool reset_pending = false;
+    };
+    VertexRing vertex_rings_[VulkanGpu::kSlots];
     void* Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset);
     /* A staging buffer, freed once the submission that reads it has run. */
     void FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory);
@@ -322,32 +331,34 @@ private:
 };
 
 void* VulkanGsRenderer::Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset) {
-    if (!vertex_reset_pending_) {
-        vertex_reset_pending_ = true;
-        g_.AfterSubmit([this] {
-            vertex_chunk_ = 0;
-            vertex_used_ = 0;
-            vertex_reset_pending_ = false;
+    // The slot the draws using these are recorded into.
+    VertexRing& ring = vertex_rings_[g_.slot()];
+    if (!ring.reset_pending) {
+        ring.reset_pending = true;
+        g_.AfterSubmit([&ring] {
+            ring.chunk = 0;
+            ring.used = 0;
+            ring.reset_pending = false;
         });
     }
     const VkDeviceSize aligned = (bytes + 255) & ~VkDeviceSize(255);
-    while (vertex_chunk_ < vertex_chunks_.size() && vertex_used_ + aligned > vertex_chunks_[vertex_chunk_].size) {
-        ++vertex_chunk_;
-        vertex_used_ = 0;
+    while (ring.chunk < ring.chunks.size() && ring.used + aligned > ring.chunks[ring.chunk].size) {
+        ++ring.chunk;
+        ring.used = 0;
     }
-    if (vertex_chunk_ == vertex_chunks_.size()) {
+    if (ring.chunk == ring.chunks.size()) {
         VertexChunk chunk{};
         chunk.size = std::max<VkDeviceSize>(VkDeviceSize(8) << 20, aligned);
         if (!Buffer(chunk.size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &chunk.buffer, &chunk.memory, &chunk.mapped))
             return nullptr;
-        vertex_chunks_.push_back(chunk);
-        vertex_used_ = 0;
+        ring.chunks.push_back(chunk);
+        ring.used = 0;
     }
-    VertexChunk& chunk = vertex_chunks_[vertex_chunk_];
+    VertexChunk& chunk = ring.chunks[ring.chunk];
     *buffer = chunk.buffer;
-    *offset = vertex_used_;
-    void* at = static_cast<std::uint8_t*>(chunk.mapped) + vertex_used_;
-    vertex_used_ += aligned;
+    *offset = ring.used;
+    void* at = static_cast<std::uint8_t*>(chunk.mapped) + ring.used;
+    ring.used += aligned;
     return at;
 }
 
@@ -1425,10 +1436,11 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     DestroyImage(feedback_);
-    for (VertexChunk& chunk : vertex_chunks_) {
-        vkDestroyBuffer(g_.device, chunk.buffer, nullptr);
-        vkFreeMemory(g_.device, chunk.memory, nullptr);
-    }
+    for (VertexRing& ring : vertex_rings_)
+        for (VertexChunk& chunk : ring.chunks) {
+            vkDestroyBuffer(g_.device, chunk.buffer, nullptr);
+            vkFreeMemory(g_.device, chunk.memory, nullptr);
+        }
     for (auto& [key, pipeline] : pipelines_) vkDestroyPipeline(g_.device, pipeline, nullptr);
     if (date_pipeline_) vkDestroyPipeline(g_.device, date_pipeline_, nullptr);
     for (VkSampler s : samplers_)
