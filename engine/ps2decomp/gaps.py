@@ -34,7 +34,7 @@ MAX_FUNCTION = 0x4000
 
 def function_extent(code: bytes, base: int, start: int, limit: int = None) -> int:
     """Where a function starting at `start` ends: after the first return - or tail
-    jump, a `j` out of it - that no branch inside it jumps past. Code compiled from
+    jump, a `j` out of it, or a switch's `jr` - that no branch inside it jumps past. Code compiled from
     C keeps its body between its entry and that exit. `limit` is where the next
     known function starts; nothing reaches past it. Raises ValueError when there
     is no such exit before it."""
@@ -48,7 +48,11 @@ def function_extent(code: bytes, base: int, start: int, limit: int = None) -> in
         if (ins.is_branch or (ins.is_jump and not ins.is_call)) and within:
             furthest = max(furthest, ins.target)
         tail_jump = ins.mnemonic == "j" and ins.target is not None and not within
-        if (ins.is_return or tail_jump) and at >= furthest:
+        # A switch's `jr` ends the body too when its cases lie past it (Burnout
+        # 3's 0x002A6B80, a leaf that is all switch, was refused for want of a
+        # `jr $ra`); they are its own (analysis.closure).
+        switch = ins.mnemonic == "jr" and ins.rs != 31
+        if (ins.is_return or tail_jump or switch) and at >= furthest:
             return at + 8 - start
     raise ValueError("no return found after 0x%08X" % start)
 

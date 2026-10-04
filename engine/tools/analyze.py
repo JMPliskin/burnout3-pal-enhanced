@@ -154,8 +154,9 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
     labels = set()
     candidates = {f["addr"] for f in functions
                   if f["confidence"] not in ("called", "entry") and not f["callers"]}
+    sources = ("called", "entry", "recovered: built", "recovered: call")
     for f in functions:
-        if f["confidence"] in ("called", "entry"):
+        if f["confidence"] in sources:
             reached = analyzer.closure(f["addr"], entries) or set()
             labels |= (reached & candidates) - {f["addr"]}
     if labels:

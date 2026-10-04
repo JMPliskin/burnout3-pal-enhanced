@@ -360,9 +360,18 @@ class ImageAnalyzer:
         A function entry is normally preceded by the previous function's final
         delay slot, so the terminating `jr`/`j` sits two words back.
         """
-        if not self.contains(addr - 8):
-            return False
-        return DISASM.decode(self.word_at(addr - 8), addr - 8).ends_block
+        # Alignment padding (a few `nop`s) may come between: Burnout 3's
+        # 0x002A6B80, a leaf reached only through a pointer, follows two, and was
+        # missed - its switch's cases taken for functions instead.
+        for padding in range(0, self.MAX_PADDING_WORDS + 1):
+            terminator = addr - 8 - 4 * padding
+            if not self.contains(terminator):
+                return False
+            if padding and self.word_at(addr - 4 * padding) != 0:
+                return False                    # not padding: something else is there
+            if DISASM.decode(self.word_at(terminator), terminator).ends_block:
+                return True
+        return False
 
     def harvest_pointer_targets(self) -> list:
         """Find function entries referenced only by pointer tables.
