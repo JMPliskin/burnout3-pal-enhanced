@@ -1,38 +1,38 @@
 # Decompilation progress
 
-_Generated 2026-10-03 09:01 from `SLUS_210.50`._
+_Generated 2026-10-04 03:31 from `SLUS_210.50`._
 
 ## Headline number
 
-**15.7141%** of the executable's code bytes are verified - reconstructed source that was differential-tested against the original machine code and agreed.
+**15.4193%** of the executable's code bytes are verified - reconstructed source that was differential-tested against the original machine code and agreed.
 
 This is the only number that means anything on its own. The tiers below track work in progress, but until a function reaches `verified` there is no evidence the source is right.
 
-**69.6345%** is machine-checked: verified, or `lifted` - translated instruction by instruction and differential-tested, so correct and complete enough to run, but not yet readable source.
+**70.7432%** is machine-checked: verified, or `lifted` - translated instruction by instruction and differential-tested, so correct and complete enough to run, but not yet readable source.
 
 ## Static analysis
 
 | metric | value |
 | --- | ---: |
 | image size | 4,073,088 bytes |
-| proven code | 3,519,772 bytes (86.4%) |
-| non-code (rodata/data/padding) | 553,316 bytes |
-| functions discovered | 11,247 |
+| proven code | 3,524,820 bytes (86.5%) |
+| non-code (rodata/data/padding) | 548,268 bytes |
+| functions discovered | 9,221 |
 | - found via direct calls | 6,100 |
 | - found via prologue scan | 945 |
-| functions using VU0 macro mode | 812 |
+| functions using VU0 macro mode | 725 |
 | strings recovered | 5,556 |
-| address cross-references | 9,239 |
-| pointer tables (vtables/jump tables) | 408 |
+| address cross-references | 9,439 |
+| pointer tables (vtables/jump tables) | 140 |
 
 ## Progress by tier
 
 | tier | functions | share | code bytes | share |
 | --- | ---: | ---: | ---: | ---: |
-| `undecompiled` | 31 | 0.28% | 23,488 | 0.67% |
+| `undecompiled` | 4 | 0.04% | 1,152 | 0.03% |
 | `analyzed` | 0 | 0.00% | 0 | 0.00% |
-| `reconstructed` | 2,171 | 19.30% | 1,041,768 | 29.70% |
-| `lifted` | 5,177 | 46.03% | 1,891,584 | 53.92% |
-| `verified` | 3,868 | 34.39% | 551,268 | 15.71% |
+| `reconstructed` | 1,692 | 18.35% | 1,031,252 | 29.22% |
+| `lifted` | 3,800 | 41.21% | 1,952,252 | 55.32% |
+| `verified` | 3,725 | 40.40% | 544,112 | 15.42% |
 
 Tier meanings are defined in [METHODOLOGY.md](../../../engine/docs/METHODOLOGY.md).
