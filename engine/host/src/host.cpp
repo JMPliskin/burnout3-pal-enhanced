@@ -264,6 +264,7 @@ void Report(const Options& options, const std::string& outcome) {
                 static_cast<unsigned long long>(gs::TheGs().primitives()),
                 static_cast<unsigned long long>(gs::TheGs().pixels_drawn()));
     std::printf("%s\n", gs::TheGs().Summary().c_str());
+    if (!GpuShadowSummary().empty()) std::printf("%s\n", GpuShadowSummary().c_str());
     std::printf("kernel services used:\n");
     for (const auto& [service, count] : stats.syscalls)
         std::printf("  %4d  %-24s x%llu\n", service, SyscallName(service),
@@ -348,6 +349,10 @@ int Run(const Options& options) {
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
+    if (options.gpu_shadow) {
+        std::string error;
+        if (!StartGpuShadow(&error)) std::fprintf(stderr, "--gpu-shadow: %s\n", error.c_str());
+    }
     bool sound = false;
     if (options.audio) {
         sound = OpenAudio();
@@ -409,6 +414,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--iop-trace") options.iop_trace = true;
         else if (arg == "--window") options.window = true;
         else if (arg == "--gs-trace") options.gs_trace = true;
+        else if (arg == "--gpu-shadow") options.gpu_shadow = true;
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];

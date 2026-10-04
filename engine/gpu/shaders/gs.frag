@@ -19,6 +19,7 @@ layout(push_constant) uniform Params {
     uint aref;
     uint fix_factor;    // blend with FIX rather than the source alpha
     uint fix;
+    uint afail;         // a failing pixel: 0 KEEP, 1 FB_ONLY, 2 ZB_ONLY, 3 RGB_ONLY
 } p;
 
 #ifdef SINGLE_OUTPUT
@@ -62,7 +63,8 @@ void main() {
         case 7u: pass = a != p.aref; break;
         default: break;
     }
-    if (!pass) discard;
+    // Without depth on the GPU yet, FB_ONLY and RGB_ONLY write the colour.
+    if (!pass && (p.afail == 0u || p.afail == 2u)) discard;
 
     colour = c / 255.0;
 #ifndef SINGLE_OUTPUT

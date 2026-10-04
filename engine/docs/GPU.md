@@ -86,7 +86,20 @@ proved itself in PCSX2's hardware renderers, made smaller:
   alpha written stays the source alpha. One pipeline per ALPHA setting, made
   on first use. Coefficients the blender cannot reach (1 + C, factors over
   1.0, the destination alpha over 128) are approximated.
+* The alpha test's AFAIL: FB_ONLY and RGB_ONLY write colour (without depth
+  on the GPU yet they are the same), KEEP and ZB_ONLY discard.
 * `ps2gpu_tests` checks each of these by reading pixels back.
+* **The host drives it**: `--gpu-shadow` (engine/host/src/gpu_shadow.cpp)
+  hands every primitive the software GS draws to the renderer as well - its
+  FRAME, SCISSOR, TEX0/TEX1/CLAMP, TEST and ALPHA, sprites as two triangles -
+  with textures decoded from the software GS's local memory (decoded again
+  when their registers change, an upload or local copy happens, or a draw
+  goes into their blocks). Each frame, every target drawn into is read back
+  and compared with local memory. Burnout 3's frontend, boot to title screen
+  and menus, 3,855 frames: 100.0% of pixels agree (within 2 per channel, 8 for
+  16-bit formats). The game's frame copy - sprites textured from the frame
+  at 0x8C0 into the CT16S display buffer, drawn with ATST NEVER and AFAIL
+  FB_ONLY - is what found AFAIL.
 
 ## Order of work
 

@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,29 @@ public:
     bool Picture(std::vector<u32>* pixels, u32* width, u32* height) const;
     bool WriteBmp(const std::string& path) const;
 
+    /* Every primitive as it is drawn, for a second renderer (the GPU's, which
+       --gpu-shadow checks against this one): PRIM, the context it draws
+       with, TEXA, and its vertices (3 for a triangle, 2 for a sprite). */
+    struct DrawCall {
+        u64 prim;
+        const Context* context;
+        u64 texa;
+        const Vertex* vertices;
+        u32 count;
+    };
+    std::function<void(const DrawCall&)> on_draw;
+    /* The texture the primitive being drawn samples, decoded as the software
+       rasteriser reads it (CLUT, TEXA): RGBA in memory, rows top-down. */
+    void DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const;
+    /* Which frame buffer is displayed: FBP (as FRAME has it), FBW, PSM. */
+    bool Displayed(u32* fbp, u32* fbw, u32* psm) const;
+    /* A pixel of a frame buffer as RGBA, whatever its format (alpha 0x80 for
+       24-bit formats). */
+    u32 FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const;
+
+    /* Changes whenever an image transfer or a local copy writes local memory. */
+    u64 uploads() const { return uploads_; }
+
     u64 primitives() const { return primitives_; }
     u64 pixels_drawn() const { return pixels_; }
     /* For the report: GIF tags per path, register writes, image data. */
@@ -133,7 +157,7 @@ private:
     u32 cbp0_ = 0, cbp1_ = 0;                       // CLUT bases CLD compares with
     // Privileged.
     u64 pmode_ = 0, dispfb_[2] = {}, display_[2] = {}, bgcolor_ = 0;
-    u64 primitives_ = 0, pixels_ = 0;
+    u64 primitives_ = 0, pixels_ = 0, uploads_ = 0;
     u64 tags_[4] = {}, image_qwords_ = 0;
     std::array<u64, 256> register_writes_{};
     // CLUT, loaded per TEX0's CLD.

@@ -115,6 +115,12 @@ void InstallDevices();
 /* Each vertical blank: write the displayed picture to `dir` every `every`
    frames, at most `limit` of them (--frames). */
 void SetFrameDumps(const std::string& dir, int every, int limit);
+/* --gpu-shadow (gpu_shadow.cpp): the GPU renderer draws beside the software
+   GS; each frame its targets are compared with local memory (and written as
+   BMP files into `dump_dir` when that is not empty). */
+bool StartGpuShadow(std::string* error);
+void GpuShadowFrame(u64 frame, const std::string& dump_dir);
+std::string GpuShadowSummary();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);
 void FrameDone(u64 frame);

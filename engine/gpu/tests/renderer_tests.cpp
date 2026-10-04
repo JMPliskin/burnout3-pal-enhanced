@@ -166,6 +166,14 @@ void AlphaTested(ps2gpu::GsRenderer& renderer) {
     Rect(renderer, state, 32, 0, 64, 32, Rgba(0, 0xFF, 0, 0x80));
     Check(Pixel(renderer, 0x40, 4, 4) == 0, "alpha 0x40 fails GEQUAL 0x80: nothing is written");
     Check(Pixel(renderer, 0x40, 36, 4) == Rgba(0, 0xFF, 0, 0x80), "alpha 0x80 passes GEQUAL 0x80");
+
+    // NEVER with AFAIL FB_ONLY: the frame buffer is written all the same
+    // (Burnout 3 copies its frame this way, leaving depth alone).
+    ps2gpu::GsDrawState never = state;
+    never.atst = 0;
+    never.afail = 1;
+    Rect(renderer, never, 0, 32, 32, 64, Rgba(0, 0, 0xFF, 0x80));
+    Check(Pixel(renderer, 0x40, 4, 36) == Rgba(0, 0, 0xFF, 0x80), "a failed test with AFAIL FB_ONLY writes colour");
 }
 
 }  // namespace

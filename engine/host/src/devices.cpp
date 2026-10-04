@@ -182,7 +182,9 @@ void FrameDone(u64 frame) {
     DbcFrame();
     PresentFrame();
     if (WindowClosed()) throw GuestExit{0};             // the user closed the window
-    if (g_frames_dir.empty() || g_frames_written >= g_frames_limit || frame % u64(g_frames_every)) return;
+    const bool dump = !g_frames_dir.empty() && g_frames_written < g_frames_limit && frame % u64(g_frames_every) == 0;
+    GpuShadowFrame(frame, dump ? g_frames_dir : std::string());
+    if (!dump) return;
     char name[64];
     std::snprintf(name, sizeof name, "/frame_%06llu.bmp", static_cast<unsigned long long>(frame));
     if (gs::TheGs().WriteBmp(g_frames_dir + name)) ++g_frames_written;

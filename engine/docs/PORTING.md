@@ -48,6 +48,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--peek ADDR` | 64 bytes of guest memory at ADDR, in the report |
 | `--window` | the picture, live, in a window (close it to end the run): SDL3 + Vulkan (`engine/gpu`), or GDI when built without `PS2HOST_VULKAN` or without a Vulkan device |
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
+| `--gpu-shadow` | the GPU renderer draws every primitive too; each frame its targets are compared with the software GS's (and written beside `--frames` pictures as gpu_/soft_ BMPs) |
 | `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |

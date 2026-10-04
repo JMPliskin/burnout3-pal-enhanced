@@ -91,8 +91,39 @@ void Gs::Kick(bool draw) {
     }
 }
 
+void Gs::DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const {
+    const u64 tex0 = Ctx().tex0;
+    const u32 tw = 1u << std::min(Bits(tex0, 26, 4), 10u), th = 1u << std::min(Bits(tex0, 30, 4), 10u);
+    pixels->resize(std::size_t(tw) * th);
+    for (u32 v = 0; v < th; ++v)
+        for (u32 u = 0; u < tw; ++u) (*pixels)[std::size_t(v) * tw + u] = TexelAt(int(u), int(v));
+    *width = tw;
+    *height = th;
+}
+
+bool Gs::Displayed(u32* fbp, u32* fbw, u32* psm) const {
+    int circuit = Bits(pmode_, 1, 1) ? 1 : Bits(pmode_, 0, 1) ? 0 : -1;
+    if (circuit < 0) {
+        if (!dispfb_[1] && !dispfb_[0]) return false;
+        circuit = dispfb_[1] ? 1 : 0;
+    }
+    const u64 fb = dispfb_[circuit];
+    *fbp = Bits(fb, 0, 9);
+    *fbw = Bits(fb, 9, 6);
+    *psm = Bits(fb, 15, 5);
+    return *fbw != 0;
+}
+
+u32 Gs::FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const {
+    const u32 c = memory.Read(fbp * 32, fbw, x, y, psm);
+    if (psm == PSMCT16 || psm == PSMCT16S) return From16(c, 0x80ull << 32);
+    if (psm == PSMCT24) return (c & 0xFFFFFF) | 0x80000000u;
+    return c;
+}
+
 void Gs::Draw() {
     ++primitives_;
+    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_});
     if (trace) {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];

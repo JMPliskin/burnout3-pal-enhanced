@@ -223,6 +223,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
 
 void Gs::Transfer(u64 low, u64 high) {
     if (!trx_active_) return;
+    ++uploads_;
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
     const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
     const u32 w = Bits(trxreg_, 0, 12), h = Bits(trxreg_, 32, 12);
@@ -265,6 +266,7 @@ void Gs::Transfer(u64 low, u64 high) {
 }
 
 void Gs::LocalToLocal() {
+    ++uploads_;
     const u32 sbp = Bits(bitbltbuf_, 0, 14), sbw = Bits(bitbltbuf_, 16, 6), spsm = Bits(bitbltbuf_, 24, 6);
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), dpsm = Bits(bitbltbuf_, 56, 6);
     const u32 sx = Bits(trxpos_, 0, 11), sy = Bits(trxpos_, 16, 11);

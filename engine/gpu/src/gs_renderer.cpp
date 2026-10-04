@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <tuple>
@@ -36,7 +37,7 @@ struct PackedVertex {
 
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
 struct FragmentParams {
-    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix;
+    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -121,7 +122,7 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
-           x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref)) &&
+           x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
            PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix);
 }
 
@@ -455,9 +456,15 @@ void VulkanGsRenderer::Flush() {
     params.tcc = state_.tcc;
     params.atst = state_.alpha_test ? state_.atst : 1;
     params.aref = state_.aref;
+    params.afail = state_.alpha_test ? state_.afail : 0;
     params.fix_factor = state_.c == BlendAlpha::Fix;
     params.fix = state_.fix;
     const std::uint32_t count = std::uint32_t(pending_.size());
+    static int complaints = 0;
+    if ((!pipeline || !set) && complaints < 5) {
+        ++complaints;
+        std::fprintf(stderr, "[ps2gpu] a batch was dropped: %s\n", pipeline ? "no descriptor set" : "no pipeline");
+    }
     if (pipeline && set) {
         g_.Run([&](VkCommandBuffer cmd) {
             Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
