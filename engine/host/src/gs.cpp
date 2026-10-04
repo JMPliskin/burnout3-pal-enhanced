@@ -11,6 +11,7 @@
  */
 
 #include "ps2host/gs.h"
+#include "ps2host/profile.h"
 #include "ps2host/dma.h"
 
 #include <cstdio>
@@ -223,6 +224,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
 
 void Gs::Transfer(u64 low, u64 high) {
     if (!trx_active_) return;
+    Timed timed(Section::GsUpload);
     ++uploads_;
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
     const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
@@ -266,6 +268,7 @@ void Gs::Transfer(u64 low, u64 high) {
 }
 
 void Gs::LocalToLocal() {
+    Timed timed(Section::GsUpload);
     ++uploads_;
     const u32 sbp = Bits(bitbltbuf_, 0, 14), sbw = Bits(bitbltbuf_, 16, 6), spsm = Bits(bitbltbuf_, 24, 6);
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), dpsm = Bits(bitbltbuf_, 56, 6);

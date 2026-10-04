@@ -148,9 +148,8 @@ u32 Vm::LargestFree() const {
 }
 
 u64 Vm::NowUs() const {
-    static const auto start = std::chrono::steady_clock::now();
-    return u64(std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::steady_clock::now() - start).count());
+    static const u64 start = ClockNs();
+    return (ClockNs() - start) / 1000;
 }
 
 Vm& TheVm() {

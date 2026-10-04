@@ -15,6 +15,7 @@
 #include <cmath>
 
 #include "ps2host/gs.h"
+#include "ps2host/profile.h"
 
 namespace ps2host {
 namespace gs {
@@ -122,6 +123,7 @@ u32 Gs::FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const {
 }
 
 void Gs::Draw() {
+    Timed timed(Section::GsDraw);
     ++primitives_;
     if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_});
     if (trace) {

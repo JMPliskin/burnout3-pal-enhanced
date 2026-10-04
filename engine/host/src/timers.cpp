@@ -19,6 +19,7 @@
  * 0x10000000 (T0), 0x10000800 (T1), 0x10001000 (T2), 0x10001800 (T3).
  */
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 
@@ -26,6 +27,26 @@
 #include "ps2host/run.h"
 
 namespace ps2host {
+
+namespace {
+std::atomic<bool> g_virtual_clock{false};
+std::atomic<u64> g_clock_ns{0};
+}  // namespace
+
+u64 ClockNs() {
+    if (g_virtual_clock) return g_clock_ns;
+    using namespace std::chrono;
+    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+void SetVirtualClock(bool on) {
+    g_clock_ns = 1000000000ull;             // a second in: no event is due at zero
+    g_virtual_clock = on;
+}
+
+bool VirtualClock() { return g_virtual_clock; }
+
+void AdvanceClock(u64 ns) { g_clock_ns += ns; }
 
 namespace {
 
@@ -51,10 +72,7 @@ Timers& T() {
     return timers;
 }
 
-u64 NowNs() {
-    using namespace std::chrono;
-    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
-}
+u64 NowNs() { return ClockNs(); }
 
 double Rate(u32 mode) {
     switch (mode & 3) {

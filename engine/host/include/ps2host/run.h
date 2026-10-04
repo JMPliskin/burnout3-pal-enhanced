@@ -142,6 +142,15 @@ bool ScriptPress(const std::string& button, u64 frame);
 void InstallTimers();
 s64 NanosToNextTimerEvent();
 void DeliverTimers();
+/* The host's clock, in nanoseconds (timers.cpp), which the EE timers, alarms
+   and the IOP's time follow. Real time by default. With --virtual-time it is
+   the scheduler's: each spent loop budget advances it by a fixed slice and
+   waiting skips it to the next event, so a scripted run is the same run on any
+   machine, under any load. Chosen before anything reads it. */
+u64 ClockNs();
+void SetVirtualClock(bool on);
+bool VirtualClock();
+void AdvanceClock(u64 ns);
 /* Run the INTC handlers for `cause`, if it is enabled (threads.cpp). */
 void RaiseIntc(u32 cause);
 /* Sound (audio.cpp): opened with --audio; the SPU2 hands it 16-bit stereo

@@ -19,6 +19,7 @@
 #include "ps2host/vif.h"
 #include "ps2host/vu.h"
 #include "ps2host/memory.h"
+#include "ps2host/profile.h"
 #include "ps2host/run.h"
 
 namespace ps2host {
@@ -264,6 +265,7 @@ void Report(const Options& options, const std::string& outcome) {
                 static_cast<unsigned long long>(gs::TheGs().primitives()),
                 static_cast<unsigned long long>(gs::TheGs().pixels_drawn()));
     std::printf("%s\n", gs::TheGs().Summary().c_str());
+    std::printf("%s\n", ProfileSummary().c_str());
     if (!GpuShadowSummary().empty()) std::printf("%s\n", GpuShadowSummary().c_str());
     std::printf("kernel services used:\n");
     for (const auto& [service, count] : stats.syscalls)
@@ -342,6 +344,7 @@ private:
 }  // namespace
 
 int Run(const Options& options) {
+    SetVirtualClock(options.virtual_time);  // before anything reads the clock
     g_trace = options.trace_calls;
     g_all_notes = options.all_notes;
     GuestMemory().WatchWrites(options.watch_writes);
@@ -415,6 +418,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--window") options.window = true;
         else if (arg == "--gs-trace") options.gs_trace = true;
         else if (arg == "--gpu-shadow") options.gpu_shadow = true;
+        else if (arg == "--virtual-time") options.virtual_time = true;
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];

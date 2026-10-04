@@ -110,6 +110,10 @@ struct Scheduler {
     lifted::Context interrupt_context = NewContext();
     u32 pending_dmac = 0;                   // channels whose interrupt waits
     bool realtime = false;                  // a vblank timer runs (unlimited budget)
+    // --virtual-time: the scheduler keeps the clock. A thread runs a slice of
+    // loop iterations at a time; each slice is a fixed span of time.
+    bool virtual_time = false;
+    u64 next_vblank_ns = 0;
     std::atomic<bool> vblank_due{false};    // set by the timer, taken by LoopHead
     std::atomic<bool> timer_due{false};     // an EE timer's interrupt time has come
     std::atomic<lifted::Context*> running{nullptr};     // the thread on the processor
@@ -203,10 +207,7 @@ bool RunHandlers(const std::map<u32, Handler>& handlers, u32 cause) {
 
 // Alarms whose time has come: each callback(id, time, common), in interrupt
 // context, once.
-u64 NowNs() {
-    using namespace std::chrono;
-    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
-}
+u64 NowNs() { return ClockNs(); }
 
 bool DeliverAlarms() {
     Scheduler& s = S();
@@ -305,20 +306,43 @@ void VblankTimer() {
     }
 }
 
+// --virtual-time: loop iterations a thread runs before the scheduler looks
+// again, and the time they stand for (an iteration is some tens of
+// instructions; the EE runs about 300 million a second).
+constexpr s64 kSliceIterations = 20000;
+constexpr u64 kNsPerIteration = 50;
+constexpr u64 kFrameNs = 16683333;          // NTSC, 59.94 Hz
+
+// Virtual time: whether the clock has reached the next vertical blank.
+bool VblankReached() {
+    Scheduler& s = S();
+    const u64 now = ClockNs();
+    if (now < s.next_vblank_ns) return false;
+    s.next_vblank_ns += kFrameNs;
+    if (s.next_vblank_ns <= now) s.next_vblank_ns = now + kFrameNs;
+    return true;
+}
+
 // lifted::loop_head_hook: a spent budget is either this host's request to
 // deliver interrupts, or the end of the run.
 void LoopHead(lifted::Context& c, u32 address) {
     Scheduler& s = S();
     if (StopRequested() || s.in_interrupt || !s.current || &c != &s.current->context)
         throw lifted::Abort{address, 2};
+    if (s.virtual_time && !s.delivery_requested) {
+        // A slice ran: its time passes; what that time brings is delivered.
+        AdvanceClock(u64(kSliceIterations) * kNsPerIteration);
+        if (VblankReached()) s.vblank_due = true;
+        s.timer_due = true;                 // DeliverTimers raises only what is due
+    }
     const bool frame = s.vblank_due.exchange(false);
     const bool timers = s.timer_due.exchange(false);
     const bool requested = s.delivery_requested;
     // With a real-time timer a budget can be spent for a frame another loop head
     // already took; without one, a spent budget that nobody asked for is the end.
-    if (!frame && !timers && !requested && !s.realtime) throw lifted::Abort{address, 2};
+    if (!frame && !timers && !requested && !s.realtime && !s.virtual_time) throw lifted::Abort{address, 2};
     s.delivery_requested = false;
-    c.budget = requested ? s.saved_budget : s.loop_budget;
+    c.budget = requested ? s.saved_budget : s.virtual_time ? kSliceIterations : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
     if (frame) DeliverFrame();
     if (timers) {
@@ -396,14 +420,16 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     Scheduler& s = S();
     s.loop_budget = loop_budget;
     lifted::loop_head_hook = LoopHead;
-    s.realtime = loop_budget == INT64_MAX;
+    s.virtual_time = VirtualClock();
+    s.realtime = loop_budget == INT64_MAX && !s.virtual_time;
     if (s.realtime) std::thread(VblankTimer).detach();
+    s.next_vblank_ns = ClockNs() + kFrameNs;
     s.host_fiber = ConvertThreadToFiber(nullptr);
     auto main = std::make_unique<Thread>();
     main->id = s.next_thread++;
     main->entry = entry;
     main->context = initial;
-    main->context.budget = loop_budget;
+    main->context.budget = s.virtual_time ? kSliceIterations : loop_budget;
     main->fiber = CreateFiber(1 << 20, ThreadMain, main.get());
     Thread& first = *main;
     s.threads[first.id] = std::move(main);
@@ -420,7 +446,18 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         if (!next) {
             if (first.state == State::Dormant)
                 throw GuestExit{0};                 // the program's first thread returned
-            if (s.realtime) {
+            if (s.virtual_time) {
+                // Every thread waits: time skips to the next vertical blank or
+                // timer or alarm interrupt, whichever comes first.
+                u64 wait = s.next_vblank_ns > ClockNs() ? s.next_vblank_ns - ClockNs() : 0;
+                const s64 timer = NanosToNextTimerEvent(), alarm = NanosToNextAlarm();
+                if (timer >= 0) wait = std::min(wait, u64(timer));
+                if (alarm >= 0) wait = std::min(wait, u64(alarm));
+                AdvanceClock(wait);
+                DeliverTimers();
+                DeliverAlarms();
+                if (!VblankReached()) continue;
+            } else if (s.realtime) {
                 // Every thread waits: so does the host, for the next vertical
                 // blank or timer interrupt - the game runs at its own pace.
                 while (!s.vblank_due && !s.timer_due && !StopRequested())
@@ -532,7 +569,7 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
             t->context.r[4] = a1;
             t->context.r[28] = t->gp;
             t->context.r[29] = t->stack + t->stack_size - 0x2A0;
-            t->context.budget = s.loop_budget;
+            t->context.budget = s.virtual_time ? kSliceIterations : s.loop_budget;
             t->calls.clear();
             if (t->fiber) DeleteFiber(t->fiber);
             t->fiber = CreateFiber(1 << 20, ThreadMain, t);

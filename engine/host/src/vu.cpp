@@ -14,6 +14,7 @@
 #include <cstring>
 
 #include "ps2host/memory.h"
+#include "ps2host/profile.h"
 #include "ps2rt/generated.h"
 
 namespace lifted {
@@ -397,6 +398,7 @@ void Vu::LandAll() {
 }
 
 Vu::u64 Vu::Run(u32 pc, u64 limit) {
+    Timed timed(data_mask_ == 0x3FF ? Section::Vu1 : Section::Vu0);
     u64 count = 0;
     u32 delayed = kNone;
     bool stopping = false;
