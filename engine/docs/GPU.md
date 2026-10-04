@@ -93,8 +93,12 @@ proved itself in PCSX2's hardware renderers, made smaller:
   Z / 2^32 - exact for Z24 and Z16, rounded past 24 bits for Z32. ZTST NEVER,
   ALWAYS, GEQUAL, GREATER and ZMSK are dynamic state (Vulkan 1.3), not
   pipelines. `UploadDepth` loads a buffer from local memory's Z; the shadow
-  mode does so for each buffer at its first use in a frame. Not yet: AFAIL
-  FB_ONLY's "colour but not depth" per pixel.
+  mode does so for each buffer at its first use in a frame.
+* AFAIL exactly: a batch whose alpha test can fail draws twice - the passing
+  pixels with everything, then the failing ones with what AFAIL keeps
+  (FB_ONLY colour, ZB_ONLY depth, RGB_ONLY colour without alpha), the shader
+  told which pixels each pass keeps.
+* FBMSK as the colour write mask, per byte; fog (FGE, FOGCOL) in the shader.
 * `ps2gpu_tests` checks each of these by reading pixels back.
 * **The host drives it**: `--gpu-shadow` (engine/host/src/gpu_shadow.cpp)
   hands every primitive the software GS draws to the renderer as well - its

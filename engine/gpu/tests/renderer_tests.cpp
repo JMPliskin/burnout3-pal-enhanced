@@ -224,6 +224,36 @@ void DepthTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x51, 10, 10) == 0, "an uploaded depth buffer hides what is behind it");
 }
 
+void AlphaFailWrites(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x7A);
+    state.depth = true;
+    state.zbp = 0x7B;
+    state.ztst = 2;                                 // GEQUAL
+    ps2gpu::GsDrawState failing = state;
+    failing.alpha_test = true;
+    failing.atst = 5;                               // GEQUAL 0x80: alpha 0x40 fails
+    failing.aref = 0x80;
+    // FB_ONLY: the colour is written, the depth is not - a farther draw still lands.
+    failing.afail = 1;
+    DepthRect(renderer, failing, 0, 0, 16, 16, 0x500000, Rgba(0xFF, 0, 0, 0x40));
+    Check(Pixel(renderer, 0x7A, 4, 4) == Rgba(0xFF, 0, 0, 0x40), "FB_ONLY: a failing pixel's colour is written");
+    DepthRect(renderer, state, 0, 0, 16, 16, 0x100000, Rgba(0, 0xFF, 0, 0x80));
+    Check(Pixel(renderer, 0x7A, 4, 4) == Rgba(0, 0xFF, 0, 0x80), "FB_ONLY: ...and its depth is not");
+    // ZB_ONLY: the depth is written, the colour is not.
+    failing.afail = 2;
+    DepthRect(renderer, failing, 16, 0, 32, 16, 0x500000, Rgba(0xFF, 0, 0, 0x40));
+    Check(Pixel(renderer, 0x7A, 20, 4) == 0, "ZB_ONLY: a failing pixel's colour is not written");
+    DepthRect(renderer, state, 16, 0, 32, 16, 0x100000, Rgba(0, 0xFF, 0, 0x80));
+    Check(Pixel(renderer, 0x7A, 20, 4) == 0, "ZB_ONLY: ...but its depth is, and hides a farther draw");
+    // RGB_ONLY: colour without alpha (and no depth).
+    DepthRect(renderer, state, 32, 0, 48, 16, 0x100000, Rgba(0, 0, 0xFF, 0x22));
+    failing.afail = 3;
+    DepthRect(renderer, failing, 32, 0, 48, 16, 0x500000, Rgba(0xFF, 0xFF, 0, 0x40));
+    Check(Pixel(renderer, 0x7A, 36, 4) == Rgba(0xFF, 0xFF, 0, 0x22), "RGB_ONLY: colour written, alpha kept");
+    DepthRect(renderer, state, 32, 0, 48, 16, 0x200000, Rgba(0, 0xFF, 0xFF, 0x80));
+    Check(Pixel(renderer, 0x7A, 36, 4) == Rgba(0, 0xFF, 0xFF, 0x80), "RGB_ONLY: ...and no depth");
+}
+
 void Masked(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x78);
     Rect(renderer, state, 0, 0, 32, 32, Rgba(0x10, 0x20, 0x30, 0x40));
@@ -269,6 +299,7 @@ int main() {
     DepthTested(*renderer);
     Fogged(*renderer);
     Masked(*renderer);
+    AlphaFailWrites(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

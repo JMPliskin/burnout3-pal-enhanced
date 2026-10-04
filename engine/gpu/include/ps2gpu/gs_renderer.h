@@ -75,8 +75,8 @@ struct GsDrawState {
 
     /* The alpha test (TEST.ATE, ATST, AREF, AFAIL). What a failing pixel
        writes: AFAIL 0 KEEP nothing, 1 FB_ONLY its colour (not depth), 2
-       ZB_ONLY no colour, 3 RGB_ONLY its colour without alpha (taken as
-       FB_ONLY for now). */
+       ZB_ONLY its depth (not colour), 3 RGB_ONLY its colour without alpha
+       (not depth) - drawn as a second pass over the failing pixels. */
     bool alpha_test = false;
     std::uint32_t atst = 1, aref = 0, afail = 0;         /* ATST 1 is ALWAYS */
 

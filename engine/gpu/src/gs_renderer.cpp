@@ -532,7 +532,30 @@ void VulkanGsRenderer::Flush() {
     params.tcc = state_.tcc;
     params.atst = state_.alpha_test ? state_.atst : 1;
     params.aref = state_.aref;
-    params.afail = state_.alpha_test ? state_.afail : 0;
+    // AFAIL: what a pixel failing the alpha test still writes. Drawn as up to
+    // two passes - the passing pixels with everything, then the failing ones
+    // with what AFAIL keeps (the shader's mode 0 drops failing pixels, 1
+    // passing ones, 2 none).
+    struct Pass { std::uint32_t mode; bool depth_write; std::uint32_t write_mask; };
+    const bool depth_write = state_.depth && state_.depth_write;
+    const std::uint32_t mask = WriteMask(state_.fbmsk);
+    std::vector<Pass> passes;
+    if (!state_.alpha_test || state_.atst == 1) {
+        passes = {{2, depth_write, mask}};
+    } else {
+        switch (state_.afail) {
+            case 0: passes = {{0, depth_write, mask}}; break;                                   // KEEP
+            case 1:                                                                              // FB_ONLY
+                if (depth_write) passes = {{0, true, mask}, {1, false, mask}};
+                else passes = {{2, false, mask}};
+                break;
+            case 2:                                                                              // ZB_ONLY
+                passes = {{0, depth_write, mask}};
+                if (depth_write) passes.push_back({1, true, 0});
+                break;
+            default: passes = {{0, depth_write, mask}, {1, false, mask & 0x7u}}; break;          // RGB_ONLY
+        }
+    }
     params.fge = state_.fog;
     params.fogcol = state_.fogcol;
     params.fix_factor = state_.c == BlendAlpha::Fix;
@@ -568,12 +591,10 @@ void VulkanGsRenderer::Flush() {
             ri.pColorAttachments = &colour;
             ri.pDepthAttachment = &z;
             vkCmdBeginRendering(cmd, &ri);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             // ZTST: NEVER, ALWAYS, GEQUAL, GREATER - the larger Z is nearer.
             static const VkCompareOp kCompare[4] = {VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS,
                                                     VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
             vkCmdSetDepthTestEnable(cmd, state_.depth ? VK_TRUE : VK_FALSE);
-            vkCmdSetDepthWriteEnable(cmd, state_.depth && state_.depth_write ? VK_TRUE : VK_FALSE);
             vkCmdSetDepthCompareOp(cmd, kCompare[state_.ztst & 3]);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
             VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
@@ -585,10 +606,18 @@ void VulkanGsRenderer::Flush() {
             vkCmdSetScissor(cmd, 0, 1, &sc);
             const float size[2] = {float(t->width), float(t->height)};
             vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
-            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params, &params);
             const VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_, &offset);
-            vkCmdDraw(cmd, count, 1, 0, 0);
+            for (const Pass& pass : passes) {
+                const std::uint32_t key = (PipelineKey(state_) & ~(0xFu << 9)) | ((~pass.write_mask & 0xFu) << 9);
+                const VkPipeline chosen = key == PipelineKey(state_) ? pipeline : PipelineFor(key);
+                if (!chosen) continue;
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
+                vkCmdSetDepthWriteEnable(cmd, pass.depth_write ? VK_TRUE : VK_FALSE);
+                params.afail = pass.mode;
+                vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params, &params);
+                vkCmdDraw(cmd, count, 1, 0, 0);
+            }
             vkCmdEndRendering(cmd);
         });
     }
