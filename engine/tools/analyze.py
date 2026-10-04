@@ -146,6 +146,21 @@ def build_database(elf_path: str, verbose: bool = True) -> dict:
     # Each function's out-of-line pieces (analysis.py `chunks`): translated with
     # it, so a branch to one stays inside the function.
     entries = {f["addr"] for f in functions if f["confidence"] in ("called", "entry")}
+    # A "function" found by a pointer-shaped word or in a gap, that nothing
+    # calls, and that a called function reaches by its own branches or by
+    # falling through, is a label of that function: Burnout 3's 0x00186850, a
+    # 54 KB state machine, had three of its cases taken for functions and was
+    # cut at the first, its cases left out of every translation.
+    labels = set()
+    candidates = {f["addr"] for f in functions
+                  if f["confidence"] not in ("called", "entry") and not f["callers"]}
+    for f in functions:
+        if f["confidence"] in ("called", "entry"):
+            reached = analyzer.closure(f["addr"], entries) or set()
+            labels |= (reached & candidates) - {f["addr"]}
+    if labels:
+        functions = [f for f in functions if f["addr"] not in labels]
+        log("  %d labels of other functions were taken for functions; dropped" % len(labels))
     for f in functions:
         f["chunks"] = [list(c) for c in analyzer.chunks(f["addr"], f["end"], entries)]
     log("  %d functions have out-of-line pieces (%s bytes)"

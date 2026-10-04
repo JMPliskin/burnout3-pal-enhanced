@@ -295,8 +295,9 @@ class ImageAnalyzer:
         return targets
 
     # A function's pieces outside its range add up to no more than this; more is
-    # a closure that leaked into other code.
-    MAX_CHUNK_BYTES = 0x8000
+    # a closure that leaked into other code. Burnout 3's largest, 0x00186850,
+    # has 54 KB of them (a state machine's cases).
+    MAX_CHUNK_BYTES = 0x10000
 
     def chunks(self, start: int, end: int, entries) -> list:
         """The function's out-of-line pieces: [(start, end)] outside [start, end).
@@ -308,6 +309,22 @@ class ImageAnalyzer:
         functions - gives every block that is its own. Those outside its range
         are its chunks, each ending in a transfer.
         """
+        seen = self.closure(start, entries)
+        if seen is None:
+            return []                           # not code after all: claim nothing
+        runs = []
+        for a in sorted(x for x in seen if not (start <= x < end)):
+            if runs and a == runs[-1][1]:
+                runs[-1][1] = a + 4
+            else:
+                runs.append([a, a + 4])
+        if sum(e - s for s, e in runs) > self.MAX_CHUNK_BYTES:
+            return []
+        return [(s, e) for s, e in runs]
+
+    def closure(self, start: int, entries):
+        """Every instruction a function reaches by its own branches (as
+        `chunks` follows them), or None when that runs into what is not code."""
         seen = set()
         queue = [start]
         while queue:
@@ -317,7 +334,7 @@ class ImageAnalyzer:
                     break
                 ins = DISASM.decode(self.word_at(addr), addr)
                 if not ins.is_valid:
-                    return []                   # not code after all: claim nothing
+                    return None
                 seen.add(addr)
                 if ins.has_delay_slot:
                     seen.add(addr + 4)
@@ -328,15 +345,7 @@ class ImageAnalyzer:
                 if ins.is_return or ins.ends_block:
                     break
                 addr += 8 if ins.has_delay_slot else 4
-        runs = []
-        for a in sorted(x for x in seen if not (start <= x < end)):
-            if runs and a == runs[-1][1]:
-                runs[-1][1] = a + 4
-            else:
-                runs.append([a, a + 4])
-        if sum(e - s for s, e in runs) > self.MAX_CHUNK_BYTES:
-            return []
-        return [(s, e) for s, e in runs]
+        return seen
 
     # -- stage 2b: pointer-table targets -------------------------------
 
