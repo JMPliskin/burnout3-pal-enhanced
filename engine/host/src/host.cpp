@@ -386,6 +386,8 @@ int Run(const Options& options) {
     SetGsTraceFrame(options.gs_trace_frame);
     SetGsDumpFrame(options.gs_dump_frame);
     if (options.sample) StartSampler();
+    if (!options.vu_record.empty()) Vu::RecordPrograms(options.vu_record);
+    if (options.vu_interpret) Vu1().use_compiled = Vu0().use_compiled = false;
     SetUntilFrame(options.until_frame);
     if (options.gpu || options.gpu_shadow) {
         std::string error;
@@ -465,6 +467,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--sample") options.sample = true;
+        else if (arg == "--vu-record" && i + 1 < argc) options.vu_record = argv[++i];
+        else if (arg == "--vu-interpret") options.vu_interpret = true;
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
         else if (arg == "--press" && i + 1 < argc) {

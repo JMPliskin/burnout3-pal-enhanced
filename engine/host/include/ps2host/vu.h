@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "ps2rt/lifted.h"
@@ -38,6 +39,8 @@
 namespace lifted { struct FmacOp; }
 
 namespace ps2host {
+
+struct VuRunState;
 
 class Vu {
 public:
@@ -73,7 +76,22 @@ public:
     u64 Run(u32 pc, u64 limit = u64(1) << 24);
 
     u64 pairs() const { return pairs_; }
+    /* Of those, the pairs run compiled ahead of time (vu_core.h). */
+    u64 compiled_pairs() const { return compiled_pairs_; }
+    /* Compiled programs entered, found with other code in memory than they
+       were compiled from, and the bytes compared to tell. */
+    u64 compiled_entries() const { return compiled_entries_; }
+    u64 compiled_stale() const { return compiled_stale_; }
+    u64 compiled_checked() const { return compiled_checked_; }
     u64 kicks() const { return kicks_; }
+    /* Whether Run takes compiled programs where it has them (the tests run
+       the interpreter alone to compare). */
+    bool use_compiled = true;
+    /* For tests: everything a run can change, the same in both. */
+    bool SameState(const Vu& other) const;
+    /* --vu-record: each program a run starts, and the code reachable from
+       where it starts, to `path` (engine/tools/vurecomp.py compiles them). */
+    static void RecordPrograms(const std::string& path);
     /* How often each program address was started, for reports. */
     const std::map<u32, u64>& starts() const { return starts_; }
 
@@ -81,9 +99,11 @@ public:
     u32* Quad(u32 address);
 
 private:
+    friend struct VuCore;
     std::vector<std::uint8_t> own_micro_, own_data_;
     u32 data_mask_;                 /* in quadwords */
-    u64 pairs_ = 0, kicks_ = 0;
+    u64 pairs_ = 0, kicks_ = 0, compiled_pairs_ = 0, compiled_entries_ = 0, compiled_stale_ = 0,
+        compiled_checked_ = 0;
     std::map<u32, u64> starts_;
 
     /* Timing, in cycles (one per pair issued, plus stalls). */
@@ -96,12 +116,24 @@ private:
        produced so far, and what is still on its way to the lower's view. */
     u32 mac_latest_ = 0, status_latest_ = 0, clip_latest_ = 0;
     struct FlagWrite { u64 ready; u32 mac, status, clip; bool sets_mac, sets_clip; };
+    /* In the order they were set, which is the order they land in (each
+       lands 4 cycles after it was set, and time only goes forward): a ring,
+       flag_head_ the oldest. */
     FlagWrite flag_queue_[8] = {};
-    int flag_count_ = 0;
-    void Land();                    /* results whose time has come */
+    int flag_head_ = 0, flag_count_ = 0;
+    void PushFlags(const FlagWrite& write) {
+        if (flag_count_ < 8) flag_queue_[(flag_head_ + flag_count_++) & 7] = write;
+    }
+    void Land();                    /* results whose time has come (a look, inline) */
+    void LandNow();                 /* ...landing them */
     void LandAll();
 
     struct Pending;
+    /* The interpreter, from where `state` stands. */
+    void Interpret(VuRunState& state, u64 limit);
+    /* Compiled programs from where `state` stands, as far as they go
+       (vu_core.h); whether any ran. */
+    bool RunCompiled(VuRunState& state, u64 limit);
     void Lower(u32 word, u32 pc, Pending& out, u32* branch);
     void Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags,
                const lifted::FmacOp* fmac = nullptr);

@@ -121,50 +121,6 @@ bool DecodeFmac(u32 word, FmacOp* out) {
 namespace {
 
 #if PS2RT_VU_SSE
-/*
- * All four lanes at once in single precision. The model computes in double
- * and narrows (BinaryOf); that is the same number: the operands are clean -
- * no infinities, NaNs or denormals - and double's 53 bits are at least
- * 2 x 24 + 2, so rounding an add, a subtract or a multiply first to double
- * and then to single gives the single-precision result rounded once (and an
- * overflow the infinity Result saturates). Result is Clean's transform of
- * the bits. RunFmacScalar is the model; VuLanesAreTheModel (host tests)
- * compares the two.
- */
-inline __m128i CleanLanes(__m128i v) {
-    const __m128i exponent = _mm_and_si128(v, _mm_set1_epi32(0x7F800000));
-    const __m128i sign = _mm_and_si128(v, _mm_set1_epi32(int(kSign)));
-    const __m128i zero = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
-    const __m128i huge = _mm_cmpeq_epi32(exponent, _mm_set1_epi32(0x7F800000));
-    const __m128i saturated = _mm_or_si128(sign, _mm_set1_epi32(int(kMax)));
-    v = _mm_or_si128(_mm_andnot_si128(zero, v), _mm_and_si128(zero, sign));
-    return _mm_or_si128(_mm_andnot_si128(huge, v), _mm_and_si128(huge, saturated));
-}
-
-inline __m128 AsFloats(__m128i v) { return _mm_castsi128_ps(v); }
-inline __m128i AsBits(__m128 v) { return _mm_castps_si128(v); }
-
-template <int Op>
-__m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
-    a = CleanLanes(a);
-    b = CleanLanes(b);
-    if constexpr (Op == kAdd) return CleanLanes(AsBits(_mm_add_ps(AsFloats(a), AsFloats(b))));
-    else if constexpr (Op == kSub) return CleanLanes(AsBits(_mm_sub_ps(AsFloats(a), AsFloats(b))));
-    else if constexpr (Op == kMul) return CleanLanes(AsBits(_mm_mul_ps(AsFloats(a), AsFloats(b))));
-    else if constexpr (Op == kMadd || Op == kMsub) {
-        const __m128i product = CleanLanes(AsBits(_mm_mul_ps(AsFloats(a), AsFloats(b))));
-        const __m128 total = AsFloats(CleanLanes(acc));
-        return CleanLanes(AsBits(Op == kMadd ? _mm_add_ps(total, AsFloats(product))
-                                             : _mm_sub_ps(total, AsFloats(product))));
-    } else {
-        // MAX takes b where a < b, MINI where b < a; otherwise a.
-        const __m128 less = Op == kMax_ ? _mm_cmplt_ps(AsFloats(a), AsFloats(b))
-                                        : _mm_cmplt_ps(AsFloats(b), AsFloats(a));
-        const __m128i take_b = _mm_castps_si128(less);
-        return _mm_or_si128(_mm_andnot_si128(take_b, a), _mm_and_si128(take_b, b));
-    }
-}
-
 template <int Op>
 void Lanes(const Context& c, const FmacOp& f, u32 out[4]) {
     const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[f.fs]));

@@ -11,11 +11,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ps2host/memory.h"
 #include "ps2host/profile.h"
+#include "ps2host/vu_core.h"
 #include "ps2rt/generated.h"
 #include "ps2rt/vu_math.h"
 
@@ -141,18 +146,148 @@ DecodedPair& Decoded(std::vector<DecodedPair>& cache, Vu::u32 pc, Vu::u32 lower,
     return d;
 }
 
+// ---------------------------------------------------------------- compiled programs
+
+std::unordered_map<std::uint64_t, std::vector<const VuCompiled*>>& Compiled() {
+    static std::unordered_map<std::uint64_t, std::vector<const VuCompiled*>> programs;
+    return programs;
+}
+
+// A program's blocks by pair address (null where none starts), made once.
+const std::vector<VuBlock>& BlockTable(const VuCompiled* program, std::size_t pairs) {
+    static std::unordered_map<const VuCompiled*, std::vector<VuBlock>> tables;
+    std::vector<VuBlock>& table = tables[program];
+    if (table.empty()) {
+        table.assign(pairs, nullptr);
+        for (std::uint32_t i = 0; i < program->block_count; ++i)
+            if (program->starts[i] / 8 < pairs) table[program->starts[i] / 8] = program->blocks[i];
+    }
+    return table;
+}
+
+// Whether instruction memory still holds the code a program was compiled from.
+bool Holds(const Vu::Span& micro, const Vu::u32* code) {
+    const Vu::u32 runs = *code++;
+    for (Vu::u32 i = 0; i < runs; ++i) {
+        const Vu::u32 base = code[0], words = code[1];
+        if (base + 4 * words > micro.size() || std::memcmp(micro.data() + base, code + 2, 4 * words) != 0)
+            return false;
+        code += 2 + words;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- recording (--vu-record)
+
+std::FILE* g_record = nullptr;
+
+std::unordered_set<std::size_t>& Recorded() {
+    static std::unordered_set<std::size_t> seen;
+    return seen;
+}
+
+bool IsBranch(Vu::u32 lower, bool* conditional, bool* known) {
+    const Vu::u32 op = lower >> 25;
+    *conditional = op == 0x28 || op == 0x29 || (op >= 0x2C && op <= 0x2F);
+    *known = op == 0x20 || op == 0x21 || *conditional;
+    return *known || op == 0x24 || op == 0x25;
+}
+
+// The pairs a run started at `entry` can reach: on from each, both ways at a
+// branch (its delay slot run first), as far as the pair after an E bit; a
+// jump to a register's address is followed no further (the run leaves what
+// was compiled there, and the interpreter goes on).
+std::vector<Vu::u32> Reachable(const Vu::Span& micro, Vu::u32 entry) {
+    const Vu::u32 mask = Vu::u32(micro.size() - 1);
+    std::vector<std::uint8_t> seen(micro.size() / 8, 0);     // 1: followed on, 2: included only
+    std::vector<std::pair<Vu::u32, bool>> work{{entry, true}};
+    auto words = [&](Vu::u32 pc, Vu::u32* lower, Vu::u32* upper) {
+        std::memcpy(lower, micro.data() + pc, 4);
+        std::memcpy(upper, micro.data() + pc + 4, 4);
+    };
+    while (!work.empty()) {
+        const auto [pc, follow] = work.back();
+        work.pop_back();
+        std::uint8_t& mark = seen[pc / 8];
+        if (mark & 1 || (!follow && mark)) continue;
+        mark |= follow ? 1 : 2;
+        if (!follow) continue;
+        Vu::u32 lower, upper;
+        words(pc, &lower, &upper);
+        const Vu::u32 next = (pc + 8) & mask;
+        bool conditional = false, known = false;
+        if (upper & 0x40000000u) {
+            work.push_back({next, false});
+        } else if (!(upper & 0x80000000u) && IsBranch(lower, &conditional, &known)) {
+            work.push_back({next, false});
+            if (known) work.push_back({(pc + 8 + Vu::u32(Imm11(lower) * 8)) & mask, true});
+            if (conditional) work.push_back({(pc + 16) & mask, true});
+        } else {
+            work.push_back({next, true});
+        }
+    }
+    std::vector<Vu::u32> pcs;
+    for (Vu::u32 i = 0; i < seen.size(); ++i)
+        if (seen[i]) pcs.push_back(i * 8);
+    return pcs;
+}
+
+void RecordProgram(const Vu::Span& micro, int unit, Vu::u32 entry) {
+    const std::vector<Vu::u32> pcs = Reachable(micro, entry);
+    std::string line = "vu" + std::to_string(unit);
+    char text[32];
+    std::snprintf(text, sizeof text, " %X ", unsigned(entry));
+    line += text;
+    for (std::size_t i = 0; i < pcs.size(); ++i) {
+        const bool starts = i == 0 || pcs[i - 1] + 8 != pcs[i];
+        if (starts) {
+            std::snprintf(text, sizeof text, "%s%X:", i ? ";" : "", unsigned(pcs[i]));
+            line += text;
+        }
+        Vu::u32 lower, upper;
+        std::memcpy(&lower, micro.data() + pcs[i], 4);
+        std::memcpy(&upper, micro.data() + pcs[i] + 4, 4);
+        std::snprintf(text, sizeof text, "%s%X,%X", starts ? "" : ",", unsigned(lower), unsigned(upper));
+        line += text;
+    }
+    if (!Recorded().insert(std::hash<std::string>{}(line)).second) return;
+    std::fprintf(g_record, "%s\n", line.c_str());
+    std::fflush(g_record);
+}
+
 }  // namespace
 
-struct Vu::Pending {
-    int vf = -1;                    // a vector register the lower writes
-    u32 lanes = 0, value[4] = {};
-    bool vc = false;                // the lower changed control registers
-    u32 vc_after[32];               // ...to these (only when vc: a pair is not worth zeroing 128 bytes)
-    bool p = false;
-    u32 p_value = 0;
-    int p_latency = 0;              // the EFU op's, in cycles
-    int q_latency = 0;              // DIV, SQRT, RSQRT's
-};
+void RegisterVuProgram(const VuCompiled* program) {
+    Compiled()[std::uint64_t(program->unit) << 32 | program->entry].push_back(program);
+}
+
+void Vu::RecordPrograms(const std::string& path) {
+    g_record = std::fopen(path.c_str(), "a");
+    if (!g_record) std::fprintf(stderr, "vu: cannot write %s\n", path.c_str());
+}
+
+bool Vu::SameState(const Vu& o) const {
+    auto same = [](const void* a, const void* b, std::size_t n) { return std::memcmp(a, b, n) == 0; };
+    if (!same(regs.vf, o.regs.vf, sizeof regs.vf) || !same(regs.vc, o.regs.vc, sizeof regs.vc) ||
+        !same(regs.vacc, o.regs.vacc, sizeof regs.vacc))
+        return false;
+    if (mac != o.mac || status != o.status || clip != o.clip || p != o.p || resume != o.resume)
+        return false;
+    if (cycle_ != o.cycle_ || !same(vf_ready_, o.vf_ready_, sizeof vf_ready_) || q_next_ != o.q_next_ ||
+        p_next_ != o.p_next_ || q_ready_ != o.q_ready_ || p_ready_ != o.p_ready_ || q_busy_ != o.q_busy_ ||
+        p_busy_ != o.p_busy_)
+        return false;
+    if (mac_latest_ != o.mac_latest_ || status_latest_ != o.status_latest_ || clip_latest_ != o.clip_latest_ ||
+        flag_count_ != o.flag_count_)
+        return false;
+    for (int i = 0; i < flag_count_; ++i) {
+        const FlagWrite &a = flag_queue_[(flag_head_ + i) & 7], &b = o.flag_queue_[(o.flag_head_ + i) & 7];
+        if (a.ready != b.ready || a.mac != b.mac || a.status != b.status || a.clip != b.clip ||
+            a.sets_mac != b.sets_mac || a.sets_clip != b.sets_clip)
+            return false;
+    }
+    return data.size() == o.data.size() && same(data.data(), o.data.data(), data.size()) && kicks_ == o.kicks_;
+}
 
 Vu::Vu(int index)
     : own_micro_(index ? 16384 : 4096), own_data_(index ? 16384 : 4096), data_mask_(index ? 0x3FF : 0xFF) {
@@ -416,23 +551,6 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
     }
 }
 
-void Vu::Land() {
-    if (!q_busy_ && !p_busy_ && !flag_count_) return;
-    if (q_busy_ && q_ready_ <= cycle_) { regs.vc[kRegQ] = q_next_; q_busy_ = false; }
-    if (p_busy_ && p_ready_ <= cycle_) { p = p_next_; p_busy_ = false; }
-    int kept = 0;
-    for (int i = 0; i < flag_count_; ++i) {
-        const FlagWrite& f = flag_queue_[i];
-        if (f.ready <= cycle_) {
-            if (f.sets_mac) { mac = f.mac; status = (status & ~0x3u) | (f.status & 0x3u); status |= f.status & 0xC0u; }
-            if (f.sets_clip) clip = f.clip;
-        } else {
-            flag_queue_[kept++] = f;
-        }
-    }
-    flag_count_ = kept;
-}
-
 void Vu::LandAll() {
     cycle_ += 64;                   // time passes after the program: what was in flight lands
     Land();
@@ -440,11 +558,64 @@ void Vu::LandAll() {
 
 Vu::u64 Vu::Run(u32 pc, u64 limit) {
     Timed timed(data_mask_ == 0x3FF ? Section::Vu1 : Section::Vu0);
-    u64 count = 0;
-    u32 delayed = kNone;
-    bool stopping = false;
+    const int unit = data_mask_ == 0x3FF ? 1 : 0;
     pc &= u32(micro.size() - 1) & ~7u;
     ++starts_[pc];
+    if (g_record) RecordProgram(micro, unit, pc);
+    VuRunState state;
+    state.pc = pc;
+    RunCompiled(state, limit);
+    if (!state.done) Interpret(state, limit);
+    LandAll();
+    resume = state.pc;
+    pairs_ += state.count;
+    return state.count;
+}
+
+bool Vu::RunCompiled(VuRunState& state, u64 limit) {
+    if (!use_compiled || Compiled().empty()) return false;
+    const int unit = data_mask_ == 0x3FF ? 1 : 0;
+    bool ran = false;
+    // From program to program (a jump to a register's address may go to
+    // another), as long as one starts here and its code is in memory.
+    while (!state.done && state.count < limit && state.delayed == kNone && !state.stopping) {
+        const auto found = Compiled().find(std::uint64_t(unit) << 32 | state.pc);
+        if (found == Compiled().end()) {
+            if (g_record && ran) RecordProgram(micro, unit, state.pc);
+            break;
+        }
+        const VuCompiled* program = nullptr;
+        for (const VuCompiled* candidate : found->second) {
+            compiled_checked_ += 4 * (candidate->code[2] + 2);
+            if (Holds(micro, candidate->code)) { program = candidate; break; }
+        }
+        if (!program) {
+            ++compiled_stale_;
+            break;
+        }
+        ++compiled_entries_;
+        const std::vector<VuBlock>& table = BlockTable(program, micro.size() / 8);
+        const u64 before = state.count;
+        const u32 started = state.pc;
+        while (!state.done && state.count < limit) {
+            const VuBlock block = table[(state.pc & u32(micro.size() - 1)) / 8];
+            if (!block) break;
+            block(*this, state, limit);
+        }
+        compiled_pairs_ += state.count - before;
+        ran = true;
+        if (state.pc == started && state.count == before) break;     // nothing taken
+    }
+    return ran;
+}
+
+void Vu::Interpret(VuRunState& state, u64 limit) {
+    u64 count = state.count;
+    u32 delayed = state.delayed;
+    bool stopping = state.stopping;
+    u32 pc = state.pc;
+    bool delayed_by_register = false;   // the branch delayed is JR's or JALR's
+    const int unit = data_mask_ == 0x3FF ? 1 : 0;
     // One cache a unit size; an entry stands only while its words are there.
     static std::vector<DecodedPair> caches[2];
     std::vector<DecodedPair>& decoded_ = caches[data_mask_ == 0x3FF ? 1 : 0];
@@ -488,9 +659,9 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
         if (written > 0)
             for (int lane = 0; lane < 4; ++lane)
                 if (lanes & (8u >> lane)) vf_ready_[written][lane] = cycle_ + kFmacLatency;
-        if (set_flags && flag_count_ < 8)
-            flag_queue_[flag_count_++] = {cycle_ + kFmacLatency, mac_latest_, status_latest_, clip_latest_,
-                                          (upper & 0x7FF) != 0x1FF, (upper & 0x7FF) == 0x1FF};
+        if (set_flags)
+            PushFlags({cycle_ + kFmacLatency, mac_latest_, status_latest_, clip_latest_, (upper & 0x7FF) != 0x1FF,
+                       (upper & 0x7FF) == 0x1FF});
         if (pending.q_latency) {
             // (A quotient equal to the Q before changes no register: it is that Q.)
             q_next_ = pending.vc ? pending.vc_after[kRegQ] : regs.vc[kRegQ];
@@ -509,17 +680,38 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
         ++count;
         if (stopping) {                      // the pair after an E bit runs, then the program ends
             pc = (pc + 8) & u32(micro.size() - 1);
+            state.done = true;
             break;
         }
         if (upper & 0x40000000u) stopping = true;
-        const u32 next = delayed != kNone ? delayed : (pc + 8) & u32(micro.size() - 1);
+        const bool jumped = delayed != kNone, by_register = delayed_by_register;
+        const u32 next = jumped ? delayed : (pc + 8) & u32(micro.size() - 1);
         delayed = branch;
+        delayed_by_register = branch != kNone && ((lower >> 25) == 0x24 || (lower >> 25) == 0x25);
         pc = next;
+        if (jumped && delayed == kNone && !stopping) {
+            // Where a jump to a register's address goes is a program of its own
+            // (one recorded, and compiled, from there); compiled code, if any
+            // starts here, goes on.
+            if (g_record && by_register) RecordProgram(micro, unit, pc);
+            state.pc = pc;
+            state.count = count;
+            state.delayed = delayed;
+            state.stopping = stopping;
+            if (RunCompiled(state, limit)) {
+                if (state.done) return;
+                pc = state.pc;
+                count = state.count;
+                delayed = state.delayed;
+                stopping = state.stopping;
+                delayed_by_register = false;
+            }
+        }
     }
-    LandAll();
-    resume = pc;
-    pairs_ += count;
-    return count;
+    state.pc = pc;
+    state.count = count;
+    state.delayed = delayed;
+    state.stopping = stopping;
 }
 
 Vu& Vu1() {

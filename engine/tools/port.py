@@ -39,6 +39,7 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 from ps2decomp import cppcheck, gaps, lift, naming  # noqa: E402
 from ps2decomp import game as game_config  # noqa: E402
+import vurecomp  # noqa: E402
 
 _FUNCTION = re.compile(r"^void F_([0-9A-F]{8})\(lifted::Context& c\) \{$", re.M)
 
@@ -132,7 +133,14 @@ def generate(game) -> str:
     _write_if_changed(path, text)
     print("dispatch table: %d translated functions, %d found at run time, %d without a "
           "translation" % (len(addresses), len(discovered), len(untranslated)))
+    # The microprograms runs recorded (--vu-record), compiled ahead of time.
+    vurecomp.main(["--manifest", vu_manifest_path(game), "--out-dir", out])
     return out
+
+
+def vu_manifest_path(game) -> str:
+    """Where runs record the microprograms they start (--vu-record): game-derived, in build/."""
+    return game.path(os.path.join(game.build, "vu_programs.txt"))
 
 
 def _write_if_changed(path: str, text: str) -> None:

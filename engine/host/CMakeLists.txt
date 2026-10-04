@@ -65,7 +65,17 @@ if(MSVC)
 endif()
 
 # The host's own tests, which need no game.
-add_executable(ps2host_tests ${CMAKE_CURRENT_LIST_DIR}/tests/host_tests.cpp)
+# vu_corpus.cpp: random microprograms, compiled by engine/tools/vurecomp.py
+# --corpus as the build goes, which VuCompiledIsTheInterpreter runs both ways.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(PS2HOST_VURECOMP ${CMAKE_CURRENT_LIST_DIR}/../tools/vurecomp.py)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/vu_corpus.cpp
+    COMMAND ${Python3_EXECUTABLE} ${PS2HOST_VURECOMP} --corpus --count 120 --seed 1
+            --out ${CMAKE_CURRENT_BINARY_DIR}/vu_corpus.cpp
+    DEPENDS ${PS2HOST_VURECOMP}
+    COMMENT "vurecomp: the VU test corpus")
+add_executable(ps2host_tests ${CMAKE_CURRENT_LIST_DIR}/tests/host_tests.cpp
+                             ${CMAKE_CURRENT_BINARY_DIR}/vu_corpus.cpp)
 target_link_libraries(ps2host_tests PRIVATE ps2host)
 if(PS2HOST_VULKAN)
     target_compile_definitions(ps2host_tests PRIVATE PS2HOST_VULKAN=1)

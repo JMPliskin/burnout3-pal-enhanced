@@ -135,15 +135,52 @@ the same memory. The sampler (`--sample`) shows where: run with it before
 choosing what to speed up next. Wall-clock times on a laptop vary by half
 again over a day (throttling): compare builds back to back.
 
-Where the car select's time goes now (the sampler, own time): the VU
-interpreter's loop, Upper and Lower about 18%; FMAC arithmetic about 11%;
-image transfers into GS memory about 10% (one call a quadword from the GIF:
-taking an IMAGE packet's quadwords at once is the next step there); VIF
-commands and UNPACK about 7%. The scalable step past the interpreter is
-recompiling VU1 microprograms ahead of time, as the EE's code is.
+Since: an IMAGE packet's quadwords go to the transfer together (Gs::Words);
+the FMAC computes four lanes at once in single precision (SSE; the
+equivalence with the double-precision model is argued in vu_math.h and
+checked by VuLanesAreTheModel); and VU microprograms are compiled ahead of
+time (below). The car select under `--gpu` now takes about 27 s.
 
 Each of these was checked by running the scripted runs and comparing the
 pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
+
+## VU microprograms compiled ahead of time
+
+The vector units run microprograms the game uploads at run time (MPG), so
+the analysis never sees them as code. A run records them instead:
+
+```sh
+burnout3.exe <elf> <run args> --vu-interpret --vu-record games/burnout3/build/vu_programs.txt
+python engine/tools/port.py --game games/burnout3 build    # compiles what was recorded
+```
+
+`--vu-record` writes each program a run starts - the unit, the address and
+the instruction pairs reachable from there - and the targets of jumps to a
+register's address (JR, JALR), as programs of their own; runs add to the
+file, and `--vu-interpret` makes sure every jump is seen by the interpreter.
+The file holds the game's microcode: it stays in build/.
+
+`port.py` hands it to `engine/tools/vurecomp.py`, which writes C++ into the
+port's generated sources: each program as blocks of straight-line code (from
+a branch target to the next delay slot), each instruction pair's registers,
+fields and operation constants. What a pair does is the interpreter's own
+steps (`ps2host::VuCore`, vu_core.h) - the stalls, the FMAC's and the
+divider's latencies, the flags reaching the lower instructions four cycles
+late, all of it - so a compiled program ends in the state the interpreter
+would, to the cycle. `Vu::Run` takes a program compiled from the code now in
+instruction memory (checked word for word: an MPG may have replaced it) and
+the interpreter otherwise, and goes back to compiled code wherever a branch
+lands on a block.
+
+The interpreter stays the reference. `VuCompiledIsTheInterpreter` (host
+tests) compiles 120 random programs as the build goes and runs each from six
+random states both ways, comparing every register, flag, pipeline, cycle and
+byte of data memory; delaying one result by a cycle fails it in 397 of 720
+runs. The report's VU line says how many pairs ran compiled, how many
+programs were entered and how many were found stale.
+
+Burnout 3's car select: 28 programs, 5,646 pairs; every pair of the run's
+428 million compiled; 33 s to 27 s (`--vu-interpret` for the comparison).
 
 ## Code that exists only at run time
 

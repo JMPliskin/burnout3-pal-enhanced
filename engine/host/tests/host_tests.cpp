@@ -20,11 +20,15 @@
 #include "ps2host/vif.h"
 #include "ps2host/path3.h"
 #include "ps2host/vu.h"
+#include "ps2host/vu_core.h"
 #include "ps2rt/generated.h"
 
 #if PS2HOST_VULKAN
 #include "ps2gpu/gs_renderer.h"
 #endif
+
+/* vu_corpus.cpp (vurecomp.py --corpus, as the build goes): the random programs, compiled. */
+const ps2host::VuCompiled* VuGeneratedPrograms(std::size_t* count);
 
 namespace {
 
@@ -677,6 +681,80 @@ void VuLanesAreTheModel() {
     Check(wrong == 0, what);
 }
 
+// Random microprograms (vu_corpus.cpp, from engine/tools/vurecomp.py
+// --corpus), compiled ahead of time, run as the interpreter runs them: from
+// random registers and memory, every register, flag, pipeline, cycle and
+// byte of data memory the same at the end - and the pairs counted.
+void VuCompiledIsTheInterpreter() {
+    std::size_t count = 0;
+    const ps2host::VuCompiled* programs = VuGeneratedPrograms(&count);
+    u32 seed = 77;
+    auto next = [&] { return seed = seed * 1664525u + 1013904223u; };
+    auto number = [&]() -> u32 {
+        const u32 r = next();
+        switch (r % 6) {
+            case 0: return 0;
+            case 1: return 0x3F800000u ^ (r & 0x80000000u);                    // +-1
+            case 2: return (r & 0x807FFFFFu) | 0x3F000000u;                     // about one
+            case 3: return (r & 0x807FFFFFu) | 0x43000000u;                     // about 128-256
+            default: return next();
+        }
+    };
+    u32 wrong = 0, runs = 0, entered = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const ps2host::VuCompiled& program = programs[i];
+        if (!program.block_count) continue;
+        for (int trial = 0; trial < 6; ++trial) {
+            auto interpreted = std::make_unique<ps2host::Vu>(program.unit);
+            auto ahead = std::make_unique<ps2host::Vu>(program.unit);
+            for (ps2host::Vu* vu : {interpreted.get(), ahead.get()}) {
+                for (std::size_t at = 0; at < vu->micro.size(); at += 8) {     // NOPs around the program
+                    const u32 nop[2] = {0x8000033Cu, 0x000002FFu};
+                    std::memcpy(vu->micro.data() + at, nop, 8);
+                }
+                const u32* code = program.code;
+                const u32 runs_in = *code++;
+                for (u32 r = 0; r < runs_in; ++r) {
+                    std::memcpy(vu->micro.data() + code[0], code + 2, 4 * code[1]);
+                    code += 2 + code[1];
+                }
+            }
+            const u32 start = seed;
+            for (ps2host::Vu* vu : {interpreted.get(), ahead.get()}) {
+                seed = start;
+                for (int r = 1; r < 32; ++r)
+                    for (u32& lane : vu->regs.vf[r]) lane = number();
+                for (u32& lane : vu->regs.vacc) lane = number();
+                for (int r = 1; r < 16; ++r) vu->regs.vc[r] = next() % ((next() & 1) ? 16 : 0x10000);
+                vu->regs.vc[20] = 0x3F800000u | (next() & 0x7FFFFF);
+                vu->regs.vc[21] = number();
+                vu->regs.vc[22] = number();
+                for (std::size_t b = 0; b < vu->data.size(); b += 4) {
+                    const u32 value = number();
+                    std::memcpy(vu->data.data() + b, &value, 4);
+                }
+                vu->mac = next() & 0xFFFF;
+                vu->status = next() & 0xFFF;
+                vu->clip = next() & 0xFFFFFF;
+                vu->p = number();
+            }
+            interpreted->use_compiled = false;
+            const u64 limit = 3000;
+            const u64 a = interpreted->Run(program.entry, limit), b = ahead->Run(program.entry, limit);
+            ++runs;
+            if (ahead->compiled_pairs()) ++entered;
+            if (a != b || !interpreted->SameState(*ahead)) ++wrong;
+        }
+    }
+    char what[128];
+    std::snprintf(what, sizeof what, "VU programs compiled ahead run as interpreted (%u of %u runs differ)", wrong, runs);
+    Check(wrong == 0 && runs > 0, what);
+    // (A jump to a register's address mostly leaves for the NOPs around: the
+    // interpreter goes on there.)
+    std::snprintf(what, sizeof what, "VU compiled programs taken where they are (%u of %u runs)", entered, runs);
+    Check(entered == runs, what);
+}
+
 void VuTimingIsVisible() {
     ps2host::Vu vu(0);
     auto f = [](float x) { std::uint32_t u; std::memcpy(&u, &x, 4); return u; };
@@ -808,6 +886,7 @@ int main() {
 #endif
     VifRunsMicroprogramsOnAVu();
     VuLanesAreTheModel();
+    VuCompiledIsTheInterpreter();
     VuTimingIsVisible();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();

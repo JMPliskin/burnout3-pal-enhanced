@@ -237,8 +237,11 @@ std::string VifStream::Summary() const {
     for (const auto& [code, name] : kNames)
         if (by_command_[code]) out += std::string(" ") + name + " " + std::to_string(by_command_[code]);
     if (unpacks) out += " UNPACK " + std::to_string(unpacks);
-    if (vu) out += "; VU: " + std::to_string(vu->pairs()) + " instruction pairs, " +
-                   std::to_string(vu->kicks()) + " XGKICKs";
+    if (vu) out += "; VU: " + std::to_string(vu->pairs()) + " instruction pairs (" +
+                   std::to_string(vu->compiled_pairs()) + " compiled: " + std::to_string(vu->compiled_entries()) +
+                   " entered, " + std::to_string(vu->compiled_stale()) + " stale, " +
+                   std::to_string(vu->compiled_checked() >> 20) + " MB checked), " + std::to_string(vu->kicks()) +
+                   " XGKICKs";
     if (vu) {
         out += "; started at";
         for (const auto& [pc, n] : vu->starts()) {
