@@ -23,6 +23,7 @@ layout(push_constant) uniform Params {
     uint afail;         // which pixels this pass draws: 0 passing, 1 failing, 2 all
     uint fge;           // fog
     uint fogcol;        // FOGCOL, R G B in bytes 0-2
+    uint pabe;          // which pixels this pass draws: 0 all, 1 As >= 0x80, 2 As < 0x80
 } p;
 
 #ifdef SINGLE_OUTPUT
@@ -77,6 +78,8 @@ void main() {
     // failing ones (with only what AFAIL writes), 2 all of them.
     if (p.afail == 0u && !pass) discard;
     if (p.afail == 1u && pass) discard;
+    if (p.pabe == 1u && c.a < 128.0) discard;
+    if (p.pabe == 2u && c.a >= 128.0) discard;
 
     colour = c / 255.0;
 #ifndef SINGLE_OUTPUT

@@ -160,6 +160,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.c = ps2gpu::BlendAlpha(std::min(2u, Bits(c.alpha, 4, 2)));
     state.d = ps2gpu::BlendColour(std::min(2u, Bits(c.alpha, 6, 2)));
     state.fix = Bits(c.alpha, 32, 8);
+    state.pabe = call.pabe;
     state.fog = (call.prim >> 5) & 1;
     state.fogcol = u32(call.fogcol & 0xFFFFFF);
     // Depth: ZTE with ZBUF. Each depth buffer starts the frame as local memory

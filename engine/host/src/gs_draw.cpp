@@ -133,7 +133,7 @@ void Gs::Draw() {
     Timed timed(Section::GsDraw);
     ++primitives_;
     Prepare();
-    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_});
+    if (on_draw) on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_, (pabe_ & 1) != 0});
     if (trace) {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];

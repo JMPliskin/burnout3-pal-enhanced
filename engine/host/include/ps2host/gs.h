@@ -102,6 +102,7 @@ public:
         const Vertex* vertices;
         u32 count;
         u64 fogcol;
+        bool pabe;
     };
     std::function<void(const DrawCall&)> on_draw;
     /* The texture the primitive being drawn samples, decoded as the software

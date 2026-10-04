@@ -41,7 +41,7 @@ struct PackedVertex {
 
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
 struct FragmentParams {
-    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol;
+    std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol, pabe;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -143,7 +143,7 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.repeat_s == y.repeat_s && x.repeat_t == y.repeat_t)) &&
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
-           PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix) && x.depth == y.depth &&
+           PipelineKey(x) == PipelineKey(y) && (!x.blend || (x.fix == y.fix && x.pabe == y.pabe)) && x.depth == y.depth &&
            (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
            x.fog == y.fog && (!x.fog || x.fogcol == y.fogcol) && x.date == y.date && (!x.date || x.datm == y.datm);
 }
@@ -734,15 +734,23 @@ void VulkanGsRenderer::Flush() {
             vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
             const VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_, &offset);
+            // PABE splits each pass again: blended where As >= 0x80 (the shader's
+            // pabe 1), not blended below (pabe 2, the pipeline without blending).
+            const bool split = state_.blend && state_.pabe;
             for (const Pass& pass : passes) {
-                const std::uint32_t key = (PipelineKey(state_) & ~(0xFu << 9)) | ((~pass.write_mask & 0xFu) << 9);
-                const VkPipeline chosen = key == PipelineKey(state_) ? pipeline : PipelineFor(key);
-                if (!chosen) continue;
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
-                vkCmdSetDepthWriteEnable(cmd, pass.depth_write ? VK_TRUE : VK_FALSE);
-                params.afail = pass.mode;
-                vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params, &params);
-                vkCmdDraw(cmd, count, 1, 0, 0);
+                for (std::uint32_t half = split ? 1 : 0; half <= (split ? 2u : 0u); ++half) {
+                    std::uint32_t key = (PipelineKey(state_) & ~(0xFu << 9)) | ((~pass.write_mask & 0xFu) << 9);
+                    if (half == 2) key &= 0xFu << 9;                // blending off
+                    const VkPipeline chosen = key == PipelineKey(state_) ? pipeline : PipelineFor(key);
+                    if (!chosen) continue;
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
+                    vkCmdSetDepthWriteEnable(cmd, pass.depth_write ? VK_TRUE : VK_FALSE);
+                    params.afail = pass.mode;
+                    params.pabe = half;
+                    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params,
+                                       &params);
+                    vkCmdDraw(cmd, count, 1, 0, 0);
+                }
             }
             vkCmdEndRendering(cmd);
         });

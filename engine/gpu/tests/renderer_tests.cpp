@@ -270,6 +270,20 @@ void DestinationAlphaTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x7C, 36, 36) == Rgba(0, 0xFF, 0, 0x80), "...and draws where it is 0");
 }
 
+void PerPixelBlending(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x7E);
+    Rect(renderer, state, 0, 0, 64, 64, Rgba(0xFF, 0xFF, 0xFF, 0x80));
+    ps2gpu::GsDrawState pabe = state;
+    pabe.blend = true;                              // (Cs - Cd) * FIX + Cd, FIX half
+    pabe.c = ps2gpu::BlendAlpha::Fix;
+    pabe.fix = 0x40;
+    pabe.pabe = true;
+    Rect(renderer, pabe, 0, 0, 32, 32, Rgba(0, 0, 0, 0x80));
+    Rect(renderer, pabe, 32, 0, 64, 32, Rgba(0, 0, 0, 0x40));
+    Check(Near(Pixel(renderer, 0x7E, 4, 4), Rgba(0x80, 0x80, 0x80, 0x80)), "PABE: As 0x80 blends");
+    Check(Pixel(renderer, 0x7E, 36, 4) == Rgba(0, 0, 0, 0x40), "PABE: As below 0x80 does not");
+}
+
 void Masked(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x78);
     Rect(renderer, state, 0, 0, 32, 32, Rgba(0x10, 0x20, 0x30, 0x40));
@@ -317,6 +331,7 @@ int main() {
     Masked(*renderer);
     AlphaFailWrites(*renderer);
     DestinationAlphaTested(*renderer);
+    PerPixelBlending(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

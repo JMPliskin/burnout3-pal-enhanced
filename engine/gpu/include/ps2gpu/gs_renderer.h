@@ -90,6 +90,7 @@ struct GsDrawState {
     BlendColour a = BlendColour::Source, b = BlendColour::Dest, d = BlendColour::Dest;
     BlendAlpha c = BlendAlpha::Source;
     std::uint32_t fix = 0x80;
+    bool pabe = false;                                   /* PABE: blend only where As >= 0x80 */
 
     /* Fog (PRIM.FGE): C = (F * C + (255 - F) * FOGCOL) / 256, colour only. */
     bool fog = false;

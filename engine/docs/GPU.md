@@ -127,7 +127,7 @@ proved itself in PCSX2's hardware renderers, made smaller:
    come with step 6.
 4. ~~Blending, alpha and depth tests, fog, FBMSK~~; the destination alpha test
    ~~(DATE, through a stencil pass: the target's alpha bit copied into
-   stencil, then the draw tested against it)~~; PABE (a second pass) remains.
+   stencil, then the draw tested against it)~~, ~~PABE (a second pass)~~.
 5. Upscaling, widescreen (a wider projection where the game's matrices allow).
 6. **The GPU as the renderer** (`--gpu`), the software rasteriser off. What the
    shadow mode gets from local memory the GPU must then keep itself:
