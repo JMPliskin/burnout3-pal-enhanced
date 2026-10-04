@@ -35,6 +35,8 @@
 
 #include "ps2rt/lifted.h"
 
+namespace lifted { struct FmacOp; }
+
 namespace ps2host {
 
 class Vu {
@@ -101,7 +103,8 @@ private:
 
     struct Pending;
     void Lower(u32 word, u32 pc, Pending& out, u32* branch);
-    void Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags);
+    void Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags,
+               const lifted::FmacOp* fmac = nullptr);
     void Kick(u32 address);
 };
 

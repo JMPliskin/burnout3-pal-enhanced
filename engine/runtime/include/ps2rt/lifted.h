@@ -123,6 +123,18 @@ void StoreRight(u32 address, u64 value, u32 size);
 /* VU0 in macro mode (runtime/src/vu0.cpp, mirroring engine/ps2decomp/vu0.py):
    an arithmetic COP2 instruction, and the moves between it and the core. */
 void Cop2(Context& c, u32 word);
+/* COP2's FMAC operations (ADD, SUB, MUL, MADD, MSUB, MAX, MINI, with their
+   broadcast, Q, I and accumulator forms), decoded once and run as often as
+   needed - the VU interpreter keeps them per instruction. Cop2 runs them the
+   same way. */
+struct FmacOp {
+    int op = 0;                     /* the arithmetic (vu0.cpp's Op) */
+    int operand = 0;                /* the second operand: 0-3 a lane of ft, 4 Q, 5 I, 6 ft */
+    bool to_acc = false;            /* into ACC rather than fd */
+    u32 fd = 0, fs = 0, ft = 0, dest = 0;
+};
+bool DecodeFmac(u32 word, FmacOp* out);
+void RunFmac(Context& c, const FmacOp& op);
 void Cop2Move(Context& c, u32 word, u32 rt);
 /* vcallms / vcallmsr: VU0 runs the microprogram at `address` (bytes in its
    instruction memory) on the registers macro mode shares with it. Defined by

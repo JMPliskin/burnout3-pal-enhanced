@@ -31,9 +31,15 @@ public:
 
     std::uint32_t FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const;
     /* Records into the open command buffer (opening one if none is), to run
-       at the next Submit: a frame's work goes to the GPU in one submission. */
+       at the next Submit: a frame's work goes to the GPU in one submission.
+       A rendering pass left open (RecordInPass) is ended first. */
     template <typename F>
     void Record(F&& record);
+    /* The same, leaving a rendering pass a previous call left open: for draws
+       that continue it (end_pass says how to end one). */
+    template <typename F>
+    void RecordInPass(F&& record);
+    std::function<void(VkCommandBuffer)> end_pass;
     /* Runs what has been recorded and waits for it; then what was waiting for
        that (AfterSubmit: freeing staging buffers, say) runs. */
     bool Submit();
@@ -65,7 +71,7 @@ private:
 };
 
 template <typename F>
-void VulkanGpu::Record(F&& record) {
+void VulkanGpu::RecordInPass(F&& record) {
     if (!open_) {
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -76,9 +82,18 @@ void VulkanGpu::Record(F&& record) {
     record(cmd);
 }
 
+template <typename F>
+void VulkanGpu::Record(F&& record) {
+    RecordInPass([&](VkCommandBuffer c) {
+        if (end_pass) end_pass(c);
+        record(c);
+    });
+}
+
 inline bool VulkanGpu::Submit() {
     bool ok = true;
     if (open_) {
+        if (end_pass) end_pass(cmd);
         open_ = false;
         vkEndCommandBuffer(cmd);
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};

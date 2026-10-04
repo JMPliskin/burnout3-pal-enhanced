@@ -153,6 +153,40 @@ u32 VuRsqrt(u32 num, u32 den) {
 
 namespace lifted {
 
+bool DecodeFmac(u32 word, FmacOp* out) {
+    const u32 funct = word & 0x3F;
+    Fmac fmac;
+    const bool is_fmac = funct < 0x3C ? Special1(funct, &fmac)
+                                      : AccumulatorForm((word & 3) | ((word >> 4) & 0x7C), &fmac);
+    if (!is_fmac) return false;
+    out->op = fmac.op;
+    out->operand = fmac.operand;
+    out->to_acc = fmac.to_acc;
+    out->fd = (word >> 6) & 0x1F;
+    out->fs = (word >> 11) & 0x1F;
+    out->ft = (word >> 16) & 0x1F;
+    out->dest = (word >> 21) & 0xF;
+    return true;
+}
+
+void RunFmac(Context& c, const FmacOp& f) {
+    // Every lane is read before any is written (fd may be fs or ft); a lane
+    // dest leaves alone is not computed at all - the arithmetic has no other
+    // effect.
+    u32 out[4];
+    for (int lane = 0; lane < 4; ++lane) {
+        if (!(f.dest & (8u >> lane))) continue;
+        const u32 b = f.operand < 4 ? c.vf[f.ft][f.operand]
+                    : f.operand == 4 ? c.vc[kRegQ]
+                    : f.operand == 5 ? c.vc[kRegI] : c.vf[f.ft][lane];
+        out[lane] = Binary(f.op, c.vf[f.fs][lane], b, c.vacc[lane]);
+    }
+    u32* to = f.to_acc ? c.vacc : f.fd ? c.vf[f.fd] : nullptr;
+    if (!to) return;
+    for (int lane = 0; lane < 4; ++lane)
+        if (f.dest & (8u >> lane)) to[lane] = out[lane];
+}
+
 void Cop2(Context& c, u32 word) {
     const u32 fd = (word >> 6) & 0x1F, fs = (word >> 11) & 0x1F, ft = (word >> 16) & 0x1F;
     const u32 dest = (word >> 21) & 0xF;
@@ -164,31 +198,10 @@ void Cop2(Context& c, u32 word) {
     };
 
     const u32 funct = word & 0x3F;
-    Fmac fmac;
-    bool is_fmac = false;
-    u32 index = 0;
-    if (funct < 0x3C) {
-        is_fmac = Special1(funct, &fmac);
-    } else {
-        index = (word & 3) | ((word >> 4) & 0x7C);
-        is_fmac = AccumulatorForm(index, &fmac);
-    }
-    if (is_fmac) {
-        u32 b[4];
-        for (int lane = 0; lane < 4; ++lane) {
-            b[lane] = fmac.operand < 4 ? c.vf[ft][fmac.operand]
-                    : fmac.operand == 4 ? c.vc[kRegQ]
-                    : fmac.operand == 5 ? c.vc[kRegI] : c.vf[ft][lane];
-        }
-        u32 out[4];
-        for (int lane = 0; lane < 4; ++lane)
-            out[lane] = Binary(fmac.op, c.vf[fs][lane], b[lane], c.vacc[lane]);
-        if (fmac.to_acc) {
-            for (int lane = 0; lane < 4; ++lane)
-                if (lane_on[lane]) c.vacc[lane] = out[lane];
-        } else {
-            write(fd, out);
-        }
+    const u32 index = funct < 0x3C ? 0 : (word & 3) | ((word >> 4) & 0x7C);
+    FmacOp fmac;
+    if (DecodeFmac(word, &fmac)) {
+        RunFmac(c, fmac);
         return;
     }
 

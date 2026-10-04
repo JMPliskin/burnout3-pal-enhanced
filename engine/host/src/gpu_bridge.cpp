@@ -119,6 +119,11 @@ struct Owned {
     // of all it could hold; of those, the ones the GPU has drawn into.
     u32 begin = 0, end = 0, full_end = 0;
     u32 drawn_end = 0;
+    // The blocks drawn into since it last went to GPU memory: what another
+    // image over them must wait for (not all it was ever drawn over - the
+    // race's depth buffer is cleared to 512 rows once a frame, over the glow
+    // buffers after its 448, and drawn into below 448 ten thousand times).
+    u32 dirty_begin = ~0u, dirty_end = 0;
     u32 x1 = 0, y1 = 0;             // how much of it the GPU has drawn
     bool gpu_newer = false;         // drawn on the GPU, not yet in local memory
     bool stale = true;              // local memory changed since the image was loaded
@@ -240,13 +245,15 @@ void WriteBack(Bridge& b, Owned& o) {
     if (!done) return;
     ++b.write_backs;
     std::fill(b.blocks.begin() + o.begin, b.blocks.begin() + std::min(o.drawn_end, 16384u), Bridge::kGpuNewer);
+    o.dirty_begin = ~0u;
+    o.dirty_end = 0;
 }
 
 /* Before the CPU reads or writes local memory [begin, end): what the GPU drew
    there comes back to it; written, the GPU images there must reload. */
 void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullptr) {
     for (auto& [key, o] : b.owned)
-        if (&o != except && o.gpu_newer && o.begin < end && begin < o.drawn_end) WriteBack(b, o);
+        if (&o != except && o.gpu_newer && o.dirty_begin < end && begin < o.dirty_end) WriteBack(b, o);
     {
         Timed timed(Section::GpuSync);
         Coherent(b, begin, end, false);
@@ -291,7 +298,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
     if (!o.stale && o.checked == b.newer_epoch) return o;
     // Another image's drawing over these blocks reaches this one through memory.
     for (auto& [key, other] : b.owned)
-        if (&other != &o && other.gpu_newer && other.begin < o.end && o.begin < other.drawn_end) {
+        if (&other != &o && other.gpu_newer && other.dirty_begin < o.end && o.begin < other.dirty_end) {
             WriteBack(b, other);
             if (!o.stale) { o.stale = true; o.why = 3; }
         }
@@ -309,24 +316,30 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
     return o;
 }
 
-/* After the GPU drew into `o`, rows up to `rows`: memory and the other images
+/* After the GPU drew into `o`, rows [y0, y1): memory and the other images
    over those blocks are behind. */
-void Drew(Bridge& b, Owned& o, u32 x1, u32 y1) {
-    const bool was_newer = o.gpu_newer;
-    const u32 was_end = o.drawn_end;
+void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
+    const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
+    y1 = std::min(std::max(y1, y0 + 1), o.height);
+    y0 = std::min(y0, y1 - 1);
+    const u32 db = o.begin + (y0 / page_rows) * row_blocks;
+    const u32 de = o.begin + ((y1 + page_rows - 1) / page_rows) * row_blocks;
+    // Already newer than memory over these blocks: the others over them were
+    // made stale then (any reloaded since wrote this one back first).
+    const bool inside = o.gpu_newer && db >= o.dirty_begin && de <= o.dirty_end;
     o.gpu_newer = true;
     o.x1 = std::max(o.x1, std::min(x1, o.width));
-    o.y1 = std::max(o.y1, std::min(y1, o.height));
+    o.y1 = std::max(o.y1, y1);
     o.drawn_end = std::max(o.drawn_end, Blocks(o.fbp, o.fbw, o.psm, o.y1).second);
     o.end = std::max(o.end, o.drawn_end);
+    o.dirty_begin = std::min(o.dirty_begin, db);
+    o.dirty_end = std::max(o.dirty_end, de);
     o.drawn_serial = ++b.serial;    // textures over it decoded before this are out of date
-    // Still newer than memory, over no more blocks: the others over them were
-    // made stale when it began (any reloaded since wrote it back first).
-    if (was_newer && o.drawn_end == was_end) return;
+    if (inside) return;
     ++b.newer_epoch;
     for (auto& [key, other] : b.owned) {
-        if (&other == &o || o.drawn_end <= other.begin || other.full_end <= o.begin) continue;
-        if (o.begin < other.end) {
+        if (&other == &o || de <= other.begin || other.full_end <= db) continue;
+        if (db < other.end) {
             if (!other.stale) { other.stale = true; other.why = 2; }
         } else {
             other.stale_beyond = true;
@@ -366,7 +379,7 @@ u64 ClutHash(u32 psm) {
    over them and not yet swizzled into GPU memory, or GPU memory newer. */
 bool GpuHolds(const Bridge& b, u32 begin, u32 end) {
     for (const auto& [key, o] : b.owned)
-        if (o.gpu_newer && o.begin < end && begin < o.drawn_end) return true;
+        if (o.gpu_newer && o.dirty_begin < end && begin < o.dirty_end) return true;
     end = std::min(end, 16384u);
     for (u32 i = begin; i < end; ++i)
         if (b.blocks[i] == Bridge::kGpuNewer) return true;
@@ -404,7 +417,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     if (!t.valid && GpuHolds(b, t.begin, t.end)) {
         Timed timed(Section::GpuSync);
         for (auto& [okey, o] : b.owned)
-            if (o.gpu_newer && o.begin < t.end && t.begin < o.drawn_end) WriteBack(b, o);
+            if (o.gpu_newer && o.dirty_begin < t.end && t.begin < o.dirty_end) WriteBack(b, o);
         Coherent(b, t.begin, t.end, true);
         ps2gpu::GsTextureDecode d;
         d.tbp = tbp;
@@ -582,12 +595,14 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     const std::size_t n = Triangles(call, fst, tw, th, v, &gouraud);
     state.gouraud = gouraud;
     if (!n) return;
-    u32 x1 = 0, y1 = 0;
+    u32 x1 = 0, y1 = 0, y0 = state.height;
     for (std::size_t i = 0; i < n; ++i) {
         // Exclusive: the GS draws the pixels whose centres lie before the far edge.
         x1 = std::max(x1, u32(std::clamp(std::ceil(v[i].x), 0.0f, float(state.width))));
         y1 = std::max(y1, u32(std::clamp(std::ceil(v[i].y), 0.0f, float(state.height))));
+        y0 = std::min(y0, u32(std::clamp(std::floor(v[i].y), 0.0f, float(state.height))));
     }
+    y0 = std::max(y0, u32(std::max(state.scissor_y0, 0)));
     x1 = std::min(x1, u32(state.scissor_x1 + 1));
     y1 = std::min(y1, u32(state.scissor_y1 + 1));
     if (s.primary) {
@@ -761,8 +776,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     if (s.primary) {
         // FBMSK over every bit the format stores: the colour is not written.
         const u32 stored = state.psm == gs::PSMCT24 ? 0xFFFFFFu : Is16(state.psm) ? 0x80F8F8F8u : 0xFFFFFFFFu;
-        if ((state.fbmsk & stored) != stored) Drew(s, *target, x1, y1);
-        if (depth && state.depth_write) Drew(s, *depth, x1, y1);
+        if ((state.fbmsk & stored) != stored) Drew(s, *target, x1, y1, y0);
+        if (depth && state.depth_write) Drew(s, *depth, x1, y1, y0);
         if (z_as_colour) {
             // The Z, as the bytes the Z format stores, into the Z-format view.
             ps2gpu::GsDrawState zs;
@@ -792,7 +807,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
                 Timed drawing(Section::GpuRender);
                 s.renderer->DrawTriangles(zs, zv, n);
             }
-            Drew(s, view, x1, y1);
+            Drew(s, view, x1, y1, y0);
         }
         return;
     }

@@ -254,6 +254,17 @@ private:
     /* A target's descriptor for sampling it. */
     VkDescriptorSet SampledSet(Image& image);
     Image feedback_;                /* a copy of the target being drawn, when it is also the texture */
+    /* The rendering pass the last batch left open, so the next one into the
+       same target and depth buffer goes on in it (thousands of batches a
+       frame, each beginning and ending its own, cost the GPU most of its
+       time); anything else recorded ends it (VulkanGpu::end_pass). */
+    Image* open_target_ = nullptr;
+    Image* open_depth_ = nullptr;
+    void EndPass(VkCommandBuffer cmd) {
+        if (!open_target_) return;
+        vkCmdEndRendering(cmd);
+        open_target_ = open_depth_ = nullptr;
+    }
     VkPipeline date_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSet SetFor(Texture& texture, int sampler);
     bool Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory, void** mapped);
@@ -460,6 +471,7 @@ bool VulkanGsRenderer::Init(std::string* error) {
         return false;
     }
     Fill(blank_, &white);
+    g_.end_pass = [this](VkCommandBuffer cmd) { EndPass(cmd); };
     return InitMemory(error);
 }
 
@@ -1203,7 +1215,12 @@ void VulkanGsRenderer::Flush() {
         std::fprintf(stderr, "[ps2gpu] a batch was dropped: %s\n", pipeline ? "no descriptor set" : "no pipeline");
     }
     if (pipeline && set) {
-        g_.Record([&](VkCommandBuffer cmd) {
+        g_.RecordInPass([&](VkCommandBuffer cmd) {
+            // Barriers and copies cannot go inside a rendering pass: a batch
+            // needing one, or drawing elsewhere, ends the open pass first.
+            const bool outside = state_.date || copy_first ||
+                                 (source && source->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            if (outside || open_target_ != t || open_depth_ != depth) EndPass(cmd);
             if (state_.date) DateSetup(cmd, *t, *depth, state_.datm);
             if (copy_first) {
                 Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
@@ -1222,6 +1239,7 @@ void VulkanGsRenderer::Flush() {
                 Transition(cmd, *source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
             }
+            if (!open_target_) {
             Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -1246,6 +1264,9 @@ void VulkanGsRenderer::Flush() {
             ri.pDepthAttachment = &z;
             ri.pStencilAttachment = &z;
             vkCmdBeginRendering(cmd, &ri);
+            open_target_ = t;
+            open_depth_ = depth;
+            }
             // ZTST: NEVER, ALWAYS, GEQUAL, GREATER - the larger Z is nearer.
             static const VkCompareOp kCompare[4] = {VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS,
                                                     VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
@@ -1291,7 +1312,6 @@ void VulkanGsRenderer::Flush() {
                     }
                 }
             }
-            vkCmdEndRendering(cmd);
         });
     }
     pending_.clear();

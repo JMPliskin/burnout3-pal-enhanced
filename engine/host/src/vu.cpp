@@ -124,6 +124,8 @@ struct DecodedPair {
     bool valid = false;
     bool immediate = false, q_waits = false, p_waits = false;
     Reads reads;
+    bool has_fmac = false;          // the upper is an FMAC operation, decoded
+    lifted::FmacOp fmac;
 };
 
 DecodedPair& Decoded(std::vector<DecodedPair>& cache, Vu::u32 pc, Vu::u32 lower, Vu::u32 upper) {
@@ -135,6 +137,7 @@ DecodedPair& Decoded(std::vector<DecodedPair>& cache, Vu::u32 pc, Vu::u32 lower,
     d.valid = true;
     d.immediate = (upper & 0x80000000u) != 0;          // I bit: the lower is I's value
     UpperReads(upper, d.reads);
+    d.has_fmac = lifted::DecodeFmac(kCop2 | (upper & 0x01FFFFFF), &d.fmac);
     if (!d.immediate) {
         LowerReads(lower, d.reads);
         d.q_waits = IsDivide(lower) || IsWait(lower, 0x3B);
@@ -193,7 +196,7 @@ void Vu::Kick(u32 address) {
 
 // The upper instruction, run on the registers; says which vector register and
 // fields it wrote (if any), for the lower's writes to give way to.
-void Vu::Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags) {
+void Vu::Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags, const lifted::FmacOp* fmac) {
     *written_reg = -1;
     *written_lanes = 0;
     *set_flags = false;
@@ -226,7 +229,8 @@ void Vu::Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags) 
         if ((index >= 0x10 && index <= 0x17) || index == 0x1D) target = int(ft);   // ITOF, FTOI, ABS
         else flags = true;                                  // the accumulator forms
     }
-    lifted::Cop2(regs, kCop2 | (word & 0x01FFFFFF));
+    if (fmac) lifted::RunFmac(regs, *fmac);
+    else lifted::Cop2(regs, kCop2 | (word & 0x01FFFFFF));
     if (target > 0) {
         *written_reg = target;
         *written_lanes = dest;
@@ -474,7 +478,7 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
         int written = -1;
         u32 lanes = 0;
         bool set_flags = false;
-        Upper(upper, &written, &lanes, &set_flags);
+        Upper(upper, &written, &lanes, &set_flags, d.has_fmac ? &d.fmac : nullptr);
         // LOI: the upper beside it read the I from before.
         if (immediate) regs.vc[kRegI] = lower;
         if (pending.vf > 0) {
