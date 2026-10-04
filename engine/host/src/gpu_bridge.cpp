@@ -350,10 +350,14 @@ u64 Hash(const unsigned char* data, std::size_t size) {
 u64 ClutHash(u32 psm) {
     if (psm != gs::PSMT8 && psm != gs::PSMT4 && psm != gs::PSMT8H && psm != gs::PSMT4HL && psm != gs::PSMT4HH)
         return 0;
-    const auto& clut = gs::TheGs().Clut();
-    u64 h = 1469598103934665603ull;
-    for (u32 c : clut) h = (h ^ c) * 1099511628211ull;
-    return h;
+    // Hashed once a load: hundreds of thousands of palettized draws a frame.
+    static u64 loads = ~0ull, hash = 0;
+    if (gs::TheGs().clut_loads() != loads) {
+        loads = gs::TheGs().clut_loads();
+        hash = 1469598103934665603ull;
+        for (u32 c : gs::TheGs().Clut()) hash = (hash ^ c) * 1099511628211ull;
+    }
+    return hash;
 }
 
 /* The renderer's key for the texture the current primitive samples, decoded if

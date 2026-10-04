@@ -119,6 +119,8 @@ public:
     void DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const;
     /* The CLUT as the last TEX0 loaded it. */
     const std::array<u32, 256>& Clut() const { return *clut_; }
+    /* Changes whenever a CLUT is loaded. */
+    u64 clut_loads() const { return clut_loads_; }
     /* Which frame buffer is displayed: FBP (as FRAME has it), FBW, PSM. */
     bool Displayed(u32* fbp, u32* fbw, u32* psm) const;
     /* A pixel of a frame buffer as RGBA, whatever its format (alpha 0x80 for
@@ -219,6 +221,7 @@ private:
     // CLUT, loaded per TEX0's CLD; copied when it changes, so that queued
     // primitives keep the one they were drawn with.
     std::shared_ptr<std::array<u32, 256>> clut_ = std::make_shared<std::array<u32, 256>>();
+    u64 clut_loads_ = 0;
     void LoadClut(u64 tex0);
     u64 Prim() const { return (prmodecont_ & 1) ? prim_ : ((prim_ & 7) | (prmode_ & ~7ull)); }
     const Context& Ctx() const { return ctx_[(Prim() >> 9) & 1]; }

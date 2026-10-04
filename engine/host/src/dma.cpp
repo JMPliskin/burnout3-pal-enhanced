@@ -4,6 +4,8 @@
 
 #include "ps2host/dma.h"
 
+#include <cstring>
+
 #include "ps2host/memory.h"
 
 namespace ps2host {
@@ -23,9 +25,23 @@ std::uint32_t Address(std::uint64_t tag) {
 void Send(std::uint32_t from, std::uint32_t quadwords, DmaOutcome& outcome,
           const std::function<void(std::uint32_t)>& word) {
     Memory& m = GuestMemory();
-    for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
-        g_dma_source = from + 4 * i;
-        word(std::uint32_t(m.Read(from + 4 * i, 4)));
+    // Main RAM or the scratchpad, as DMA reads them: one pointer for the lot
+    // (a word at a time through Read cost a tenth of a frame). Anything with
+    // register hooks goes word by word.
+    const std::uint32_t physical = from & 0x1FFFFFFFu;
+    const bool plain = physical < 0x10000000u || (from >> 28) == 0x7;
+    if (const std::uint8_t* p = plain ? m.Translate(from, 16 * quadwords) : nullptr) {
+        for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
+            g_dma_source = from + 4 * i;
+            std::uint32_t value;
+            std::memcpy(&value, p + 4 * i, 4);
+            word(value);
+        }
+    } else {
+        for (std::uint32_t i = 0; i < 4 * quadwords; ++i) {
+            g_dma_source = from + 4 * i;
+            word(std::uint32_t(m.Read(from + 4 * i, 4)));
+        }
     }
     outcome.quadwords += quadwords;
 }

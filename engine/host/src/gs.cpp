@@ -236,7 +236,6 @@ void Gs::WriteRegister(u32 address, u64 value) {
 void Gs::Transfer(u64 low, u64 high) {
     if (!trx_active_) return;
     Finish();                                   // the draws before it land first
-    Timed timed(Section::GsUpload);
     ++uploads_;
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
     const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
@@ -319,6 +318,7 @@ void Gs::LoadClut(u64 tex0) {
     if (!load) return;
     Finish();                                   // the CLUT may have been drawn
     if (on_memory) on_memory(cbp, cbp + 8, false);
+    ++clut_loads_;
     auto clut = std::make_shared<std::array<u32, 256>>(*clut_);
     const bool eight = psm == PSMT8 || psm == PSMT8H;
     const u32 count = eight ? 256 : 16;
