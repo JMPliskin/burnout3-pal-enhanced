@@ -130,6 +130,10 @@ void SetUntilFrame(u64 frame);
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);
+/* --gs-dump-frame N: GS local memory, all 4 MB, written to
+   <frames dir or .>/gsmem_<N>.bin when frame N is done (with --gpu, as the
+   GPU has it) - to set beside another run's (engine/tools/gsmem.py). */
+void SetGsDumpFrame(long long frame);
 void FrameDone(u64 frame);
 /* The window (window.cpp): opened with --window, presented each frame. */
 bool OpenWindow(const wchar_t* title, int width, int height);

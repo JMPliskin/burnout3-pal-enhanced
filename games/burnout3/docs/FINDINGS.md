@@ -1580,6 +1580,29 @@ DBCMAN's 0x80001300 (its other calls: 0x80001318, 0x80001319, 0x8000131A
 sceDbcReceiveData). Emulating a card means answering 0x8000131C's requests
 for the socket on port 2 over a directory standing for the card.
 
+The game's own memory-card code (0x0030A174-0x0030A948) calls twelve libmc2
+functions. Each asynchronous one checks that the library is up (0x0049B6E8)
+and idle (the request's command word, 0x01D810C4, zero), fills the one
+request at 0x01D810C0 - +0 the socket, +4 the command, then its arguments,
+a name copied to +0x41C - and wakes the worker (0x002496A0); the worker
+stores the handler's result at +8 and signals; 0x00242E00 (waiting) and
+0x00242E28 (polling) hand back the command and result, as
+sceMc2CheckAsync does.
+
+    API         command  arguments (request offsets)          handler
+    0x00242098    2      +0xC info                            0x00244218
+    0x00241F98    3      socket only                          0x002445D0
+    0x00242268    5      name, +0xC, +0x10, +0x14             0x00246588 (read)
+    0x00242348    6      name, +0xC, +0x10, +0x14             0x00246788 (write)
+    0x00242428    7      name, +0xC
+    0x00242598   10      name, +0xC, +0x10, +0x14, +0x18      (a directory listing)
+    0x00242688   11      name, +0xC
+    0x00242128   14      name, +0xC
+
+A card on the host can stand in at the handlers (each takes the request's
+fields and returns the result word), leaving libmc2's queue and threads as
+they are.
+
 (The server 0x80001101 bound at 0x00249A0C is not libmc2's: the code
 around it, 0x002499D0-0x0024AB10, is netcnfif's - "SceNetcnfifCallbackThread",
 "[fatal error] c_sema in netcnfif" - the network configuration's interface.)

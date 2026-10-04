@@ -189,6 +189,12 @@ long long g_trace_frame = -1;
 void SetGsTraceFrame(long long frame) { g_trace_frame = frame; }
 
 namespace {
+long long g_dump_frame = -1;
+}  // namespace
+
+void SetGsDumpFrame(long long frame) { g_dump_frame = frame; }
+
+namespace {
 u64 g_until_frame = 0;
 bool g_until_reached = false;
 }  // namespace
@@ -199,6 +205,19 @@ bool UntilFrameReached() { return g_until_reached; }
 void FrameDone(u64 frame) {
     // Time passes: unmasked, PATH3 sends what it still holds.
     if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
+    if (g_dump_frame >= 0 && (long long)frame == g_dump_frame) {
+        gs::Gs& g = gs::TheGs();
+        g.Finish();
+        if (g.on_memory) g.on_memory(0, 16384, false);      // the GPU's drawing, back in memory
+        const std::string path = (g_frames_dir.empty() ? std::string(".") : g_frames_dir) + "/gsmem_" +
+                                 std::to_string(frame) + ".bin";
+        if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(g.memory.data(), 1, 4u << 20, f);
+            std::fclose(f);
+            std::fprintf(stderr, "[gs] local memory after frame %llu written to %s\n",
+                         static_cast<unsigned long long>(frame), path.c_str());
+        }
+    }
     if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
         g_until_reached = true;
         StopRequested() = true;

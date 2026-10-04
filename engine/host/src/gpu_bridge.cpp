@@ -700,6 +700,15 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     // there; treating that as a depth buffer would bring it up to date - a
     // write-back and a reload - for every one of their draws.
     if (state.depth && state.ztst == 1 && !state.depth_write) state.depth = false;
+    // ZTST ALWAYS into a depth buffer over the colour target's own memory:
+    // colour and Z would fight over the same words. The race's glow passes
+    // draw their strips this way, ZBUF left at the target's address; their
+    // colour is what is meant.
+    if (s.primary && state.depth && state.ztst == 1) {
+        const auto colour = Blocks(state.fbp, state.fbw, state.psm, rows);
+        const auto z = Blocks(state.zbp, state.fbw, zpsm, rows);
+        if (colour.first < z.second && z.first < colour.second) state.depth = false;
+    }
     Owned* depth = nullptr;
     if (state.depth) {
         if (s.primary) {

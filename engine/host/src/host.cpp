@@ -352,6 +352,7 @@ int Run(const Options& options) {
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
+    SetGsDumpFrame(options.gs_dump_frame);
     SetUntilFrame(options.until_frame);
     if (options.gpu || options.gpu_shadow) {
         std::string error;
@@ -429,6 +430,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--virtual-time") options.virtual_time = true;
         else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
+        else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
         else if (arg == "--press" && i + 1 < argc) {
