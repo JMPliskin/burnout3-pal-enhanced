@@ -1530,6 +1530,22 @@ upload before any draw - the font, in the garage's. With PATH3 released one
 group per window (`engine/host/include/ps2host/path3.h`) the car select draws
 its cars.
 
+## Past the car select: a state machine cut in four
+
+With the cars chosen, the game shows RACE TRAINING and then the race's
+loading screen (a hint: "WINNING CRASH"), and stopped on a call to 0x0018FF74,
+code no translated function covered. It is a case of 0x00186850, a 54 KB
+state machine whose cases lie past its hot code, reached by its own
+branches. Three of those cases (0x0018C140, 0x00191300, 0x00195880) had been
+accepted as functions - each sits just after a terminator, which the
+pointer harvest and the gap recovery take as an entry - so the function was
+cut at the first, and its cases, 54 KB of them, exceeded the out-of-line
+budget besides (0x8000 bytes): none of them was translated with it.
+
+The analysis now drops a "function" that nothing calls, found by a pointer or
+in a gap, when a called function reaches it by its own branches or by
+falling through: 30 such labels across the executable. The budget is 0x10000.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
