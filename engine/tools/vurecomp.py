@@ -262,9 +262,21 @@ def emit_lower(word: int, pc: int, mask: int):
                          0x7E: "std::exp(-%s)" % val(fsf)}[index]
             return ["{"] + ["    " + line for line in body] + [
                 "    C::Efu(pd, %s, %d);" % (value, latency), "}"], True, None
-        if index in (0x38, 0x39, 0x3A):                                 # DIV SQRT RSQRT
-            return ["C::ThroughCop2(v, pd, 0x%08Xu, %d, %du);" % (word, it, dest),
-                    "pd.q_latency = %d;" % (13 if index == 0x3A else 7)], True, None
+        ftf = field(word, 23, 2)
+        if index == 0x38:                                               # DIV
+            return ["C::Divide(pd, C::Div(v, %d, %d, %d, %d), 7);" % (is_, fsf, it, ftf)], True, None
+        if index == 0x39:                                               # SQRT
+            return ["C::Divide(pd, C::Sqrt(v, %d, %d), 7);" % (it, ftf)], True, None
+        if index == 0x3A:                                               # RSQRT
+            return ["C::Divide(pd, C::Rsqrt(v, %d, %d, %d, %d), 13);" % (is_, fsf, it, ftf)], True, None
+        if index == 0x30:                                               # MOVE
+            return ["C::Move(v, pd, %d, %d, %du);" % (it, is_, dest)], True, None
+        if index == 0x31:                                               # MR32
+            return ["C::Mr32(v, pd, %d, %d, %du);" % (it, is_, dest)], True, None
+        if index == 0x3D:                                               # MFIR
+            return ["C::Mfir(v, pd, %d, %d, %du);" % (it, is_, dest)], True, None
+        if index == 0x3C:                                               # MTIR
+            return (["C::Mtir(v, pd, %d, %d, %d);" % (it, is_, fsf)] if 0 < it < 16 else []), True, None
         if index in (0x3B, 0x7B):                                       # WAITQ WAITP: stalls
             return [], False, None
         return ["C::ThroughCop2(v, pd, 0x%08Xu, %d, %du);" % (word, it, dest)], True, None

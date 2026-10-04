@@ -40,6 +40,8 @@ struct Vu::Pending {
     u32 p_value = 0;
     int p_latency = 0;              // the EFU op's, in cycles
     int q_latency = 0;              // DIV, SQRT, RSQRT's
+    bool q_set = false;             // compiled code: Q's next value (q_value), not through vc_after
+    u32 q_value = 0;
 };
 
 inline void Vu::LandNow() {
@@ -168,6 +170,61 @@ struct VuCore {
             std::memcpy(v.regs.vc, before_vc, sizeof before_vc);
         }
     }
+    /* The lower operations macro mode shares, as ThroughCop2 would leave
+       them: a vector write held back only if it changes the register, a VI
+       write only if it changes the VI, Q's next value set. */
+    static PS2HOST_VU_INLINE void HoldVf(Vu& v, Vu::Pending& out, int it, u32 dest, const u32 value[4]) {
+        if (it == 0) return;
+        u32 after[4];
+        std::memcpy(after, v.regs.vf[it], 16);
+        for (int lane = 0; lane < 4; ++lane)
+            if (dest & (8u >> lane)) after[lane] = value[lane];
+        if (std::memcmp(after, v.regs.vf[it], 16) == 0) return;
+        out.vf = it;
+        out.lanes = dest;
+        std::memcpy(out.value, after, 16);
+    }
+    static PS2HOST_VU_INLINE void Move(Vu& v, Vu::Pending& out, int it, int fs, u32 dest) {
+        const u32 value[4] = {v.regs.vf[fs][0], v.regs.vf[fs][1], v.regs.vf[fs][2], v.regs.vf[fs][3]};
+        HoldVf(v, out, it, dest, value);
+    }
+    static PS2HOST_VU_INLINE void Mr32(Vu& v, Vu::Pending& out, int it, int fs, u32 dest) {
+        const u32* a = v.regs.vf[fs];
+        const u32 value[4] = {a[1], a[2], a[3], a[0]};
+        HoldVf(v, out, it, dest, value);
+    }
+    static PS2HOST_VU_INLINE void Mfir(Vu& v, Vu::Pending& out, int it, int is, u32 dest) {
+        u32 x = v.regs.vc[is] & 0xFFFF;
+        if (x & 0x8000) x |= 0xFFFF0000u;
+        const u32 value[4] = {x, x, x, x};
+        HoldVf(v, out, it, dest, value);
+    }
+    /* MTIR: VI1-VI15 only (the generator leaves out the others). */
+    static PS2HOST_VU_INLINE void Mtir(Vu& v, Vu::Pending& out, int it, int fs, int fsf) {
+        const u32 value = v.regs.vf[fs][fsf] & 0xFFFF;
+        if (value == v.regs.vc[it]) return;
+        out.vc = true;
+        std::memcpy(out.vc_after, v.regs.vc, sizeof out.vc_after);
+        out.vc_after[it] = value;
+    }
+    static PS2HOST_VU_INLINE void Divide(Vu::Pending& out, u32 q, int latency) {
+        out.q_set = true;
+        out.q_value = q;
+        out.q_latency = latency;
+    }
+    static PS2HOST_VU_INLINE u32 Div(const Vu& v, int fs, int fsf, int ft, int ftf) {
+        const u32 num = v.regs.vf[fs][fsf], den = v.regs.vf[ft][ftf];
+        return lifted::Value(den) == 0.0 ? ((num ^ den) & lifted::kSign) | lifted::kMax
+                                         : lifted::Result(lifted::Value(num) / lifted::Value(den));
+    }
+    static PS2HOST_VU_INLINE u32 Sqrt(const Vu& v, int ft, int ftf) {
+        return lifted::Result(std::sqrt(std::fabs(lifted::Value(v.regs.vf[ft][ftf]))));
+    }
+    static PS2HOST_VU_INLINE u32 Rsqrt(const Vu& v, int fs, int fsf, int ft, int ftf) {
+        const u32 num = v.regs.vf[fs][fsf];
+        const double root = std::sqrt(std::fabs(lifted::Value(v.regs.vf[ft][ftf])));
+        return root == 0.0 ? (num & lifted::kSign) | lifted::kMax : lifted::Result(lifted::Value(num) / root);
+    }
     static PS2HOST_VU_INLINE void Efu(Vu::Pending& out, double value, int latency) {
         out.p = true;
         out.p_value = lifted::Result(value);
@@ -270,7 +327,8 @@ struct VuCore {
         }
         FinishUpper(v, written, lanes, set_flags, sets_mac, sets_clip);
         if (pending.q_latency) {
-            v.q_next_ = pending.vc ? pending.vc_after[lifted::kRegQ] : v.regs.vc[lifted::kRegQ];
+            v.q_next_ = pending.q_set ? pending.q_value
+                      : pending.vc    ? pending.vc_after[lifted::kRegQ] : v.regs.vc[lifted::kRegQ];
             v.q_ready_ = v.cycle_ + u64(pending.q_latency);
             v.q_busy_ = true;
             if (pending.vc) pending.vc_after[lifted::kRegQ] = v.regs.vc[lifted::kRegQ];

@@ -20,6 +20,13 @@
 #define PS2RT_VU_SSE 0
 #endif
 
+/* The lane kernels, inlined into compiled microprograms (vu_core.h). */
+#if defined(_MSC_VER)
+#define PS2RT_VU_INLINE __forceinline
+#else
+#define PS2RT_VU_INLINE inline __attribute__((always_inline))
+#endif
+
 namespace lifted {
 
 inline constexpr u32 kSign = 0x80000000u;
@@ -91,7 +98,7 @@ inline u32 Binary(int op, u32 a, u32 b, u32 acc) {
  * the bits. RunFmacScalar is the model; VuLanesAreTheModel (host tests)
  * compares the two.
  */
-inline __m128i CleanLanes(__m128i v) {
+PS2RT_VU_INLINE __m128i CleanLanes(__m128i v) {
     const __m128i exponent = _mm_and_si128(v, _mm_set1_epi32(0x7F800000));
     const __m128i sign = _mm_and_si128(v, _mm_set1_epi32(int(kSign)));
     const __m128i zero = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
@@ -105,7 +112,7 @@ inline __m128 AsFloats(__m128i v) { return _mm_castsi128_ps(v); }
 inline __m128i AsBits(__m128 v) { return _mm_castps_si128(v); }
 
 template <int Op>
-inline __m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
+PS2RT_VU_INLINE __m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
     a = CleanLanes(a);
     b = CleanLanes(b);
     if constexpr (Op == kAdd) return CleanLanes(AsBits(_mm_add_ps(AsFloats(a), AsFloats(b))));
