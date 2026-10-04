@@ -181,7 +181,23 @@ proved itself in PCSX2's hardware renderers, made smaller:
      plots (the position rounded, both ends);
    * primitives wholly outside the scissor, and ZTST NEVER, are dropped
      before any of this; a draw with ZTST ALWAYS and ZMSK has no depth
-     buffer (the race's blur passes leave ZBUF at their own address).
+     buffer (the race's blur passes leave ZBUF at their own address);
+   * *Z over the target's own memory*: with ZTST ALWAYS and Z written, the
+     GS writes each pixel's colour and its Z into the same memory, the Z in
+     its own layout. The race's glow passes lay their threshold grey down
+     that way - as colour over 32 columns and, the Z being the grey, over 32
+     more. Such a draw has no depth buffer; its Z is drawn as colour into a
+     Z-format view of the memory (and only where the alpha test lets Z be
+     written: ATST NEVER with FB_ONLY writes none), and GPU memory reconciles
+     the two views.
+   The race (race_training.args) was traced this way: a pass-by-pass dump
+   (PS2HOST_GPU_DUMP_FRAME) showed the scene right until the glow was added;
+   GS memory dumps after frame 9,400 from both renderers (--gs-dump-frame,
+   engine/tools/gsmem.py) showed the glow's threshold buffer wrong. Now the
+   race's pictures are 98.7-99.9% the same as the software GS's (the rest is
+   HUD text blended with factors over 1, which the blender clamps), and its
+   glow buffers byte for byte or within 0.5%. The script runs in 8m17s
+   against the software GS's 59m36s.
    Checked by running the same scripted input (`--virtual-time`) under both
    renderers and comparing the pictures with `engine/tools/framediff.py`:
    `car_select.args`, 40 pictures from boot to the 3D garage: 35 identical,
