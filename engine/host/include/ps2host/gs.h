@@ -91,6 +91,11 @@ public:
     void Qword(int path, u64 low, u64 high);
     /* 32-bit words, gathered into quadwords. */
     void Word(int path, u32 word);
+    /* `count` words, as Word each - g_dma_source following them from guest
+       address `from` (kNoSource: left alone) - except that an IMAGE packet's
+       whole quadwords go to the transfer together. */
+    static constexpr u32 kNoSource = ~0u;
+    void Words(int path, const u32* words, u32 count, u32 from = kNoSource);
 
     /* Privileged registers (the 0x12000000 window): what is displayed. */
     void SetPrivileged(u32 address, u64 value);
@@ -198,6 +203,7 @@ private:
     u32 Texel(const Setup& st, float u, float v) const;      /* filtered as TEX1 says */
     u32 TexelAt(const Setup& st, int u, int v) const;        /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
+    void TransferBlock(const u8* data, u32 qwords);     // IMAGE data, quadwords of it
     /* Tells on_memory of a rectangle of a buffer about to be read or written. */
     void Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) const;
     void LocalToLocal();

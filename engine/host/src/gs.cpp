@@ -68,6 +68,22 @@ void Gs::Word(int path, u32 word) {
     Qword(path, u64(p.pending[0]) | u64(p.pending[1]) << 32, u64(p.pending[2]) | u64(p.pending[3]) << 32);
 }
 
+void Gs::Words(int path, const u32* words, u32 count, u32 from) {
+    Path& p = paths_[path];
+    for (u32 i = 0; i < count;) {
+        if (p.pending_count == 0 && p.loops && p.format >= 2 && count - i >= 4) {     // IMAGE
+            const u32 qwords = std::min(p.loops, (count - i) / 4);
+            image_qwords_ += qwords;
+            TransferBlock(reinterpret_cast<const u8*>(words + i), qwords);
+            p.loops -= qwords;
+            i += 4 * qwords;
+            continue;
+        }
+        if (from != kNoSource) g_dma_source = from + 4 * i;
+        Word(path, words[i++]);
+    }
+}
+
 void Gs::Qword(int path, u64 low, u64 high) {
     Path& p = paths_[path];
     if (!p.loops) {
@@ -238,52 +254,61 @@ void Gs::WriteRegister(u32 address, u64 value) {
 // ---------------------------------------------------------------- transfers
 
 void Gs::Transfer(u64 low, u64 high) {
+    u8 bytes[16];
+    std::memcpy(bytes, &low, 8);
+    std::memcpy(bytes + 8, &high, 8);
+    TransferBlock(bytes, 1);
+}
+
+void Gs::TransferBlock(const u8* data, u32 qwords) {
     if (!trx_active_) return;
     Finish();                                   // the draws before it land first
-    ++uploads_;
+    uploads_ += qwords;
     const u32 dbp = Bits(bitbltbuf_, 32, 14), dbw = Bits(bitbltbuf_, 48, 6), psm = Bits(bitbltbuf_, 56, 6);
     const u32 dx = Bits(trxpos_, 32, 11), dy = Bits(trxpos_, 48, 11);
     const u32 w = Bits(trxreg_, 0, 12), h = Bits(trxreg_, 32, 12);
     if (!w || !h) { trx_active_ = false; return; }
-    u8 bytes[16];
-    std::memcpy(bytes, &low, 8);
-    std::memcpy(bytes + 8, &high, 8);
-    // The quadword's pixels, then written a row's run at a time (WriteRun:
-    // one call, not one a pixel).
-    u32 pixels[32];
-    u32 n = 0;
-    auto put = [&](u32 value) { pixels[n++] = value; };
-    switch (psm) {
-        case PSMCT32: case PSMZ32:
-            for (int i = 0; i < 16; i += 4) put(u32(bytes[i]) | u32(bytes[i + 1]) << 8 | u32(bytes[i + 2]) << 16 | u32(bytes[i + 3]) << 24);
-            break;
-        case PSMCT24: case PSMZ24:
-            // 24-bit pixels run across quadwords: gather bytes.
-            for (int i = 0; i < 16; ++i) {
-                trx_partial_ |= u32(bytes[i]) << (8 * trx_partial_bytes_);
-                if (++trx_partial_bytes_ == 3) { put(trx_partial_); trx_partial_ = 0; trx_partial_bytes_ = 0; }
-            }
-            break;
-        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S:
-            for (int i = 0; i < 16; i += 2) put(u32(bytes[i]) | u32(bytes[i + 1]) << 8);
-            break;
-        case PSMT8: case PSMT8H:
-            for (int i = 0; i < 16; ++i) put(bytes[i]);
-            break;
-        case PSMT4: case PSMT4HL: case PSMT4HH:
-            for (int i = 0; i < 16; ++i) { put(bytes[i] & 15); put(bytes[i] >> 4); }
-            break;
-        default:
-            trx_active_ = false;
-            break;
-    }
-    for (u32 i = 0; i < n && trx_active_;) {
-        const u32 x = (dx + trx_x_) % 2048, y = (dy + trx_y_) % 2048;
-        const u32 run = std::min({n - i, w - trx_x_, 2048 - x});
-        memory.WriteRun(dbp, dbw, x, y, psm, pixels + i, run);
-        i += run;
-        trx_x_ += run;
-        if (trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
+    // Up to 16 quadwords' pixels at a time, then written a row's run at a
+    // time (WriteRun: one call, not one a pixel).
+    constexpr u32 kChunk = 16;
+    u32 pixels[32 * kChunk];
+    for (u32 q = 0; q < qwords && trx_active_; q += kChunk) {
+        const u8* bytes = data + 16 * std::size_t(q);
+        const u32 size = 16 * std::min(kChunk, qwords - q);
+        u32 n = 0;
+        switch (psm) {
+            case PSMCT32: case PSMZ32:
+                for (u32 i = 0; i < size; i += 4)
+                    pixels[n++] = u32(bytes[i]) | u32(bytes[i + 1]) << 8 | u32(bytes[i + 2]) << 16 | u32(bytes[i + 3]) << 24;
+                break;
+            case PSMCT24: case PSMZ24:
+                // 24-bit pixels run across quadwords: gather bytes.
+                for (u32 i = 0; i < size; ++i) {
+                    trx_partial_ |= u32(bytes[i]) << (8 * trx_partial_bytes_);
+                    if (++trx_partial_bytes_ == 3) { pixels[n++] = trx_partial_; trx_partial_ = 0; trx_partial_bytes_ = 0; }
+                }
+                break;
+            case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S:
+                for (u32 i = 0; i < size; i += 2) pixels[n++] = u32(bytes[i]) | u32(bytes[i + 1]) << 8;
+                break;
+            case PSMT8: case PSMT8H:
+                for (u32 i = 0; i < size; ++i) pixels[n++] = bytes[i];
+                break;
+            case PSMT4: case PSMT4HL: case PSMT4HH:
+                for (u32 i = 0; i < size; ++i) { pixels[n++] = bytes[i] & 15; pixels[n++] = bytes[i] >> 4; }
+                break;
+            default:
+                trx_active_ = false;
+                break;
+        }
+        for (u32 i = 0; i < n && trx_active_;) {
+            const u32 x = (dx + trx_x_) % 2048, y = (dy + trx_y_) % 2048;
+            const u32 run = std::min({n - i, w - trx_x_, 2048 - x});
+            memory.WriteRun(dbp, dbw, x, y, psm, pixels + i, run);
+            i += run;
+            trx_x_ += run;
+            if (trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
+        }
     }
 }
 

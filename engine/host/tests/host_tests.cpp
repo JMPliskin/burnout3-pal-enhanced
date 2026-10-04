@@ -351,6 +351,39 @@ void GsKeepsAFlatDepthExact() {
 // Triangles fill top-left: a pixel on an edge is drawn only when the edge is a
 // left or top one, so two triangles sharing an edge draw it once, and a right
 // or bottom edge on a pixel leaves it alone. Burnout 3's text-entry keys are
+// An IMAGE packet taken a run of words at a time (Gs::Words: its quadwords
+// to the transfer together) stores what it stores a word at a time, for
+// every format, 24-bit pixels across quadwords and a transfer that ends
+// inside the packet included.
+void GsTakesImagesInBlocks() {
+    using namespace ps2host::gs;
+    const u32 psms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH,
+                        PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
+    u32 seed = 7, wrong = 0;
+    for (u32 psm : psms) {
+        std::vector<u32> stream;
+        auto qword = [&](u64 low, u64 high) {
+            stream.insert(stream.end(), {u32(low), u32(low >> 32), u32(high), u32(high >> 32)});
+        };
+        const u32 w = 37, h = 9, qwords = 60;   // 60 quadwords: more than 37x9 pixels of most formats
+        qword(4 | u64(1) << 60, 0xE);           // A+D, four registers
+        qword(u64(0x40) << 32 | u64(2) << 48 | u64(psm) << 56, 0x50);  // BITBLTBUF: DBP 0x40, DBW 2
+        qword(u64(5) << 32 | u64(3) << 48, 0x51);                      // TRXPOS: 5, 3
+        qword(w | u64(h) << 32, 0x52);                                 // TRXREG
+        qword(0, 0x53);                                                // TRXDIR: host to local
+        qword(qwords | u64(2) << 58, 0);        // IMAGE
+        for (u32 i = 0; i < 4 * qwords; ++i) stream.push_back(seed = seed * 1664525u + 1013904223u);
+        auto one = std::make_unique<Gs>(), blocks = std::make_unique<Gs>();
+        for (u32 word : stream) one->Word(3, word);
+        for (std::size_t at = 0, step = 1; at < stream.size(); at += step, step = step * 3 % 23 + 1)
+            blocks->Words(3, stream.data() + at, u32(std::min(step, stream.size() - at)));
+        if (std::memcmp(one->memory.data(), blocks->memory.data(), 4u << 20) != 0 || !one->uploads() ||
+            !blocks->uploads())
+            ++wrong;
+    }
+    Check(wrong == 0, "GS image packets taken in blocks store as a word at a time");
+}
+
 // cells whose right edge lies on a whole pixel, translucent: drawn on both
 // sides they doubled a column.
 void GsFillsTopLeft() {
@@ -722,6 +755,7 @@ int main() {
     Path3GoesOneGroupPerWindow();
     GsKeepsAFlatDepthExact();
     GsFillsTopLeft();
+    GsTakesImagesInBlocks();
 #if PS2HOST_VULKAN
     GpuMemorySwizzlesAsTheGs();
     GpuDecodesTexturesAsTheGs();

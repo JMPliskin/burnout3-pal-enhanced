@@ -13,39 +13,60 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
+#include <vector>
 
 namespace ps2host {
 
 class Path3Queue {
 public:
     void Push(std::uint32_t word) { held_.push_back(word); }
-    bool empty() const { return held_.empty(); }
-    std::size_t size() const { return held_.size(); }
+    void Push(const std::uint32_t* words, std::size_t count) { held_.insert(held_.end(), words, words + count); }
+    bool empty() const { return size() == 0; }
+    std::size_t size() const { return held_.size() - head_; }
 
-    /* Hands words to `sink`, up to the end of the first packet with EOP set
-       (or all of them). */
+    /* Hands words to `sink` (one run: words, count), up to the end of the
+       first packet with EOP set (or all of them). */
     template <typename Sink>
-    void Release(bool all, Sink&& sink) {
-        std::size_t end = held_.size();
+    void ReleaseBlock(bool all, Sink&& sink) {
+        const std::uint32_t* words = held_.data() + head_;
+        const std::size_t held = size();
+        std::size_t end = held;
         if (!all) {
             std::size_t at = 0;
-            while (at + 4 <= held_.size()) {
-                const std::uint64_t low = std::uint64_t(held_[at]) | std::uint64_t(held_[at + 1]) << 32;
+            while (at + 4 <= held) {
+                const std::uint64_t low = std::uint64_t(words[at]) | std::uint64_t(words[at + 1]) << 32;
                 const std::uint64_t nloop = low & 0x7FFF, eop = (low >> 15) & 1;
                 const std::uint64_t flg = (low >> 58) & 3, nreg = (low >> 60) ? (low >> 60) : 16;
                 const std::uint64_t qwords = flg == 0 ? nloop * nreg : flg == 1 ? (nloop * nreg + 1) / 2 : nloop;
                 at += 4 + std::size_t(qwords) * 4;
                 if (eop) break;
             }
-            end = std::min(at, held_.size());
+            end = std::min(at, held);
         }
-        for (std::size_t i = 0; i < end; ++i) sink(held_[i]);
-        held_.erase(held_.begin(), held_.begin() + std::ptrdiff_t(end));
+        // Taken off before the sink runs: what it does may hold more.
+        std::vector<std::uint32_t> going(words, words + end);
+        head_ += end;
+        if (head_ == held_.size()) {
+            held_.clear();
+            head_ = 0;
+        } else if (head_ > held_.size() / 2) {
+            held_.erase(held_.begin(), held_.begin() + std::ptrdiff_t(head_));
+            head_ = 0;
+        }
+        if (!going.empty()) sink(going.data(), going.size());
+    }
+
+    /* The same, a word at a time. */
+    template <typename Sink>
+    void Release(bool all, Sink&& sink) {
+        ReleaseBlock(all, [&](const std::uint32_t* words, std::size_t count) {
+            for (std::size_t i = 0; i < count; ++i) sink(words[i]);
+        });
     }
 
 private:
-    std::deque<std::uint32_t> held_;
+    std::vector<std::uint32_t> held_;
+    std::size_t head_ = 0;                  // words before it have gone
 };
 
 }  // namespace ps2host

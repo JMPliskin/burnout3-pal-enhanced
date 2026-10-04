@@ -34,11 +34,17 @@ public:
     std::function<void(bool masked)> on_mask_path3;
     /* Each word of DIRECT/DIRECTHL data: GIF data on PATH2. */
     std::function<void(std::uint32_t word)> on_direct;
+    /* DIRECT's data a run at a time, from guest address `from` (Words); when
+       unset, a word at a time through on_direct. */
+    std::function<void(const std::uint32_t* words, std::uint32_t count, std::uint32_t from)> on_direct_block;
     /* Commands worth seeing in a trace (FLUSHA), when set. */
     std::function<void(const char* what)> on_trace;
 
     /* The next 32-bit word of the stream, from the FIFO or a DMA transfer. */
     void Word(std::uint32_t word);
+    /* `count` words from guest address `from`, as Word each (keeping
+       g_dma_source), DIRECT's data handed on a run at a time. */
+    void Words(const std::uint32_t* words, std::uint32_t count, std::uint32_t from);
 
     std::uint64_t commands() const { return commands_; }
     std::uint64_t data_words() const { return data_words_; }

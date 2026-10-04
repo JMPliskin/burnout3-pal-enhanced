@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ps2host/dma.h"
 #include "ps2host/vu.h"
 
 namespace ps2host {
@@ -126,6 +127,22 @@ void VifStream::Start(std::uint32_t pc) {
     vu->itop = itop;
     vu->Run(pc);
     end_pc_ = vu->resume;
+}
+
+void VifStream::Words(const std::uint32_t* words, std::uint32_t count, std::uint32_t from) {
+    for (std::uint32_t i = 0; i < count;) {
+        if (pending_ && data_ == Data::Direct && on_direct_block) {
+            const std::uint32_t run = std::min(pending_, count - i);
+            pending_ -= run;
+            data_words_ += run;
+            data_index_ += run;
+            on_direct_block(words + i, run, from + 4 * i);
+            i += run;
+            continue;
+        }
+        g_dma_source = from + 4 * i;
+        Word(words[i++]);
+    }
 }
 
 void VifStream::Word(std::uint32_t word) {

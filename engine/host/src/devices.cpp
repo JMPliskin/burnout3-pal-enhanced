@@ -89,14 +89,16 @@ constexpr u32 kGifStatFqcShift = 24, kGifStatFqc = 0x1Fu << kGifStatFqcShift;
 Path3Queue g_path3_held;
 bool g_path3_masked = false;
 
-void Path3(u32 word) {
+void Path3(const u32* words, u32 count, u32 from) {
     // Behind what is still held, even unmasked: the GIF keeps PATH3 in order.
-    if (g_path3_masked || !g_path3_held.empty()) g_path3_held.Push(word);
-    else gs::TheGs().Word(3, word);
+    if (g_path3_masked || !g_path3_held.empty()) g_path3_held.Push(words, count);
+    else gs::TheGs().Words(3, words, count, from);
 }
 
 void ReleasePath3(bool all) {
-    g_path3_held.Release(all, [](u32 word) { gs::TheGs().Word(3, word); });
+    g_path3_held.ReleaseBlock(all, [](const u32* words, std::size_t count) {
+        gs::TheGs().Words(3, words, u32(count));
+    });
 }
 
 u32* Register(u32 address) { return reinterpret_cast<u32*>(GuestMemory().Translate(address, 4)); }
@@ -163,23 +165,12 @@ std::string Walk(const Channel& ch, u32 chcr) {
                           u32(m.Read(ch.base + kAsr1, 4))};
     // A run of words at a time, each handed on directly.
     auto to_vif = [](VifStream& vif) {
-        return [&vif](const u32* words, u32 count, u32 from) {
-            for (u32 i = 0; i < count; ++i) {
-                g_dma_source = from + 4 * i;
-                vif.Word(words[i]);
-            }
-        };
+        return [&vif](const u32* words, u32 count, u32 from) { vif.Words(words, count, from); };
     };
     DmaBlockSink sink = [](const u32*, u32, u32) {};
     if (ch.base == 0x10008000u) sink = to_vif(Vif0());
     if (ch.base == 0x10009000u) sink = to_vif(Vif1());
-    if (ch.base == 0x1000A000u)
-        sink = [](const u32* words, u32 count, u32 from) {
-            for (u32 i = 0; i < count; ++i) {
-                g_dma_source = from + 4 * i;
-                Path3(words[i]);
-            }
-        };
+    if (ch.base == 0x1000A000u) sink = Path3;
     char text[160];
     try {
         Timed timed(Section::Dma);      // (VU1 and the GS, which it drives, timed apart)
@@ -319,6 +310,7 @@ void InstallDevices() {
         if (!masked) ReleasePath3(false);
     };
     Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
+    Vif1().on_direct_block = [](const u32* words, u32 count, u32 from) { gs::TheGs().Words(2, words, count, from); };
     Vif1().on_trace = [](const char* what) {
         if (gs::TheGs().trace) std::fprintf(stderr, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
         // FLUSHA waits for PATH3 to finish: unmasked, all it holds goes.
