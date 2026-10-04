@@ -17,13 +17,8 @@
 #include "ps2host/memory.h"
 #include "ps2host/profile.h"
 #include "ps2rt/generated.h"
+#include "ps2rt/vu_math.h"
 
-namespace lifted {
-// The arithmetic model (runtime/src/vu0.cpp).
-u32 Clean(u32 bits);
-double Value(u32 bits);
-u32 Result(double number);
-}  // namespace lifted
 
 namespace ps2host {
 

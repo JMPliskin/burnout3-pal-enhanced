@@ -5,63 +5,12 @@
  */
 
 #include "ps2rt/lifted.h"
+#include "ps2rt/vu_math.h"
 
 #include <cmath>
 #include <cstring>
 
 namespace lifted {
-
-/* Not in an anonymous namespace: generated::Vu* below are built on these. */
-const u32 kSign = 0x80000000u;
-const u32 kMax = 0x7F7FFFFFu;
-const u32 kOne = 0x3F800000u;
-const int kRegR = 20, kRegI = 21, kRegQ = 22;
-
-u32 Clean(u32 bits) {
-    const u32 exponent = bits & 0x7F800000u;
-    if (exponent == 0) return bits & kSign;
-    if (exponent == 0x7F800000u) return (bits & kSign) | kMax;
-    return bits;
-}
-
-double Value(u32 bits) {
-    const u32 cleaned = Clean(bits);
-    float value;
-    std::memcpy(&value, &cleaned, sizeof value);
-    return value;
-}
-
-u32 Result(double number) {
-    if (number != number) return kMax;
-    const float narrowed = static_cast<float>(number);
-    u32 bits;
-    std::memcpy(&bits, &narrowed, sizeof bits);
-    if ((bits & 0x7F800000u) == 0x7F800000u) return (bits & kSign) | kMax;
-    if ((bits & 0x7F800000u) == 0) return bits & kSign;
-    return bits;
-}
-
-enum Op { kAdd, kSub, kMul, kMadd, kMsub, kMax_, kMini };
-
-u32 Binary(int op, u32 a, u32 b, u32 acc) {
-    const double x = Value(a), y = Value(b);
-    switch (op) {
-        case kAdd: return Result(x + y);
-        case kSub: return Result(x - y);
-        case kMul: return Result(x * y);
-        case kMadd: return Result(Value(acc) + Value(Result(x * y)));
-        case kMsub: return Result(Value(acc) - Value(Result(x * y)));
-        case kMax_: return x < y ? Clean(b) : Clean(a);
-        case kMini: return y < x ? Clean(b) : Clean(a);
-    }
-    return 0;
-}
-
-u32 FloatToInt(double number) {
-    if (number >= 2147483647.0) return 0x7FFFFFFFu;
-    if (number <= -2147483648.0) return 0x80000000u;
-    return (u32)(s32)number;
-}
 
 namespace {
 
