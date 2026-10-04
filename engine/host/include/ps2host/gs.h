@@ -106,9 +106,18 @@ public:
         bool pabe;
     };
     std::function<void(const DrawCall&)> on_draw;
+    /* --gpu: the GS model draws nothing itself (rasterize false) and a second
+       renderer draws instead; to keep its images and local memory in step it
+       hears of every other access to local memory first - blocks
+       [begin, end), read or written: image transfers, local copies, CLUT
+       loads, the displayed picture. */
+    bool rasterize = true;
+    std::function<void(u32 begin, u32 end, bool write)> on_memory;
     /* The texture the primitive being drawn samples, decoded as the software
        rasteriser reads it (CLUT, TEXA): RGBA in memory, rows top-down. */
     void DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const;
+    /* The CLUT as the last TEX0 loaded it. */
+    const std::array<u32, 256>& Clut() const { return *clut_; }
     /* Which frame buffer is displayed: FBP (as FRAME has it), FBW, PSM. */
     bool Displayed(u32* fbp, u32* fbw, u32* psm) const;
     /* A pixel of a frame buffer as RGBA, whatever its format (alpha 0x80 for
@@ -181,6 +190,8 @@ private:
     u32 Texel(const Setup& st, float u, float v) const;      /* filtered as TEX1 says */
     u32 TexelAt(const Setup& st, int u, int v) const;        /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
+    /* Tells on_memory of a rectangle of a buffer about to be read or written. */
+    void Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) const;
     void LocalToLocal();
 
     Context ctx_[2];

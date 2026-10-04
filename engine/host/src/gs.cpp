@@ -14,6 +14,7 @@
 #include "ps2host/profile.h"
 #include "ps2host/dma.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -214,6 +215,15 @@ void Gs::WriteRegister(u32 address, u64 value) {
                              Bits(trxpos_, 0, 11), Bits(trxpos_, 16, 11), Bits(bitbltbuf_, 32, 14), Bits(bitbltbuf_, 48, 6),
                              Bits(bitbltbuf_, 56, 6), Bits(trxpos_, 32, 11), Bits(trxpos_, 48, 11), Bits(trxreg_, 0, 12),
                              Bits(trxreg_, 32, 12));
+            if (on_memory) {
+                const u32 w = Bits(trxreg_, 0, 12), h = Bits(trxreg_, 32, 12);
+                if (trxdir_ == 0 || trxdir_ == 2)       // into local memory
+                    Touch(Bits(bitbltbuf_, 32, 14), Bits(bitbltbuf_, 48, 6), Bits(bitbltbuf_, 56, 6),
+                          Bits(trxpos_, 32, 11), Bits(trxpos_, 48, 11), w, h, true);
+                if (trxdir_ == 1 || trxdir_ == 2)       // out of it
+                    Touch(Bits(bitbltbuf_, 0, 14), Bits(bitbltbuf_, 16, 6), Bits(bitbltbuf_, 24, 6),
+                          Bits(trxpos_, 0, 11), Bits(trxpos_, 16, 11), w, h, false);
+            }
             if (trxdir_ == 2) LocalToLocal();
             break;
         case 0x54: Transfer(value, 0); break;          // HWREG: 64 bits
@@ -308,6 +318,7 @@ void Gs::LoadClut(u64 tex0) {
     if (cld == 3 || cld == 5) cbp1_ = cbp;
     if (!load) return;
     Finish();                                   // the CLUT may have been drawn
+    if (on_memory) on_memory(cbp, cbp + 8, false);
     auto clut = std::make_shared<std::array<u32, 256>>(*clut_);
     const bool eight = psm == PSMT8 || psm == PSMT8H;
     const u32 count = eight ? 256 : 16;
@@ -344,6 +355,18 @@ void Gs::SetPrivileged(u32 address, u64 value) {
     }
 }
 
+void Gs::Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) const {
+    if (!on_memory) return;
+    (void)x;
+    // Whole rows of pages: buffers are laid out a page (8 KB, 32 blocks) at a
+    // time, rows of FBW pages, 32 to 128 pixels tall by format.
+    const u32 page_rows = (psm == PSMCT32 || psm == PSMCT24 || psm == PSMZ32 || psm == PSMZ24) ? 32
+                        : (psm == PSMT4) ? 128 : 64;
+    const u32 pages_wide = std::max(1u, (psm == PSMT8 || psm == PSMT4) ? bw / 2 : bw);
+    const u32 rows = (y + h + page_rows - 1) / page_rows;
+    on_memory(bp, bp + rows * pages_wide * 32, write);
+}
+
 bool Gs::Picture(std::vector<u32>* pixels, u32* width, u32* height) const {
     Finish();
     // The read circuit shown: 2 if enabled, else 1.
@@ -360,6 +383,7 @@ bool Gs::Picture(std::vector<u32>* pixels, u32* width, u32* height) const {
     if (!w || w > 1024) w = 640;
     if (!h || h > 1024) h = 448;
     if (!fbw) return false;
+    Touch(fbp, fbw, psm, dbx, dby, w, h, false);
     pixels->assign(std::size_t(w) * h, 0);
     for (u32 y = 0; y < h; ++y)
         for (u32 x = 0; x < w; ++x) {

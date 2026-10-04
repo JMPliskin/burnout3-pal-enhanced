@@ -77,7 +77,8 @@ struct Options {
     bool window = false;           /* show the picture in a window as it runs */
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
     long long gs_trace_frame = -1; /* ... during this frame only */
-    bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_shadow.cpp) */
+    bool gpu = false;              /* draw on the GPU instead of the software GS (gpu_bridge.cpp) */
+    bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_bridge.cpp) */
     bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */
     bool gpu_show = false;         /* ...and the window shows the GPU's picture */
     bool virtual_time = false;     /* the scheduler keeps time: runs repeat exactly (run.h) */

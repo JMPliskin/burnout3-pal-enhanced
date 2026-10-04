@@ -116,10 +116,12 @@ void InstallDevices();
 /* Each vertical blank: write the displayed picture to `dir` every `every`
    frames, at most `limit` of them (--frames). */
 void SetFrameDumps(const std::string& dir, int every, int limit);
-/* --gpu-shadow (gpu_shadow.cpp): the GPU renderer draws beside the software
-   GS; each frame its targets are compared with local memory (and written as
-   BMP files into `dump_dir` when that is not empty). */
-bool StartGpuShadow(std::string* error, bool targets_as_textures, bool show);
+/* The GPU renderer (gpu_bridge.cpp). Shadow: it draws beside the software GS;
+   each frame its targets are compared with local memory (and written as BMP
+   files into `dump_dir` when that is not empty); ShadowRtt also samples GPU
+   targets as textures. Primary (--gpu): it draws instead of the software GS. */
+enum class GpuMode { Shadow, ShadowRtt, Primary };
+bool StartGpuRenderer(std::string* error, GpuMode mode, bool show);
 void GpuShadowFrame(u64 frame, const std::string& dump_dir);
 std::string GpuShadowSummary();
 /* --until-frame: stop the run when frame N is done (with --virtual-time, the

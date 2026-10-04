@@ -222,6 +222,13 @@ void DepthTested(ps2gpu::GsRenderer& renderer) {
     uploaded.zbp = 0x61;
     DepthRect(renderer, uploaded, 0, 0, 64, 64, 0x700000, Rgba(0xFF, 0, 0, 0x80));
     Check(Pixel(renderer, 0x51, 10, 10) == 0, "an uploaded depth buffer hides what is behind it");
+    // Read back: what was uploaded, and what a draw wrote, as the GS's Z.
+    DepthRect(renderer, uploaded, 0, 0, 16, 16, 0x900000, Rgba(0xFF, 0, 0, 0x80));
+    std::vector<std::uint32_t> back;
+    Check(renderer.ReadDepth(0x61, 64, 64, &back) && back.size() == 64 * 64, "a depth buffer reads back");
+    Check(back[40 * 64 + 40] == 0x800000, "...uploaded Z as it was");
+    Check(back[4 * 64 + 4] == 0x900000, "...drawn Z as the GS's Z");
+    Check(!renderer.ReadDepth(0x62, 64, 64, &back), "...and a buffer never made does not");
 }
 
 void AlphaFailWrites(ps2gpu::GsRenderer& renderer) {
@@ -331,6 +338,17 @@ void RenderToTexture(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x90, 4, 4) == Rgba(0x11, 0x22, 0x33, 0x80), "a target drawing itself reads a copy");
 }
 
+void TargetFromMemory(ps2gpu::GsRenderer& renderer) {
+    std::vector<std::uint32_t> pixels(64 * 64);
+    for (std::uint32_t i = 0; i < pixels.size(); ++i) pixels[i] = Rgba(std::uint8_t(i), std::uint8_t(i >> 6), 7, 0x80);
+    renderer.UploadTarget(0x92, 1, 0, pixels.data(), 64, 64);
+    Check(Pixel(renderer, 0x92, 5, 3) == pixels[3 * 64 + 5], "a target loaded from memory reads back the same");
+    ps2gpu::GsDrawState state = Target(0x92);
+    Rect(renderer, state, 0, 0, 8, 8, Rgba(1, 2, 3, 4));
+    Check(Pixel(renderer, 0x92, 2, 2) == Rgba(1, 2, 3, 4) && Pixel(renderer, 0x92, 20, 20) == pixels[20 * 64 + 20],
+          "drawing over it keeps the rest");
+}
+
 void PerPixelBlending(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x7E);
     Rect(renderer, state, 0, 0, 64, 64, Rgba(0xFF, 0xFF, 0xFF, 0x80));
@@ -395,6 +413,7 @@ int main() {
     PerPixelBlending(*renderer);
     Addressed(*renderer);
     RenderToTexture(*renderer);
+    TargetFromMemory(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

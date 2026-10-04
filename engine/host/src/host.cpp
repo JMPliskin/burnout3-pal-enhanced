@@ -353,9 +353,11 @@ int Run(const Options& options) {
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
     SetUntilFrame(options.until_frame);
-    if (options.gpu_shadow) {
+    if (options.gpu || options.gpu_shadow) {
         std::string error;
-        if (!StartGpuShadow(&error, options.gpu_shadow_rtt, options.gpu_show)) std::fprintf(stderr, "--gpu-shadow: %s\n", error.c_str());
+        const GpuMode mode = options.gpu ? GpuMode::Primary : options.gpu_shadow_rtt ? GpuMode::ShadowRtt : GpuMode::Shadow;
+        if (!StartGpuRenderer(&error, mode, options.gpu_show))
+            std::fprintf(stderr, "%s: %s\n", options.gpu ? "--gpu" : "--gpu-shadow", error.c_str());
     }
     bool sound = false;
     if (options.audio) {
@@ -420,6 +422,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--iop-trace") options.iop_trace = true;
         else if (arg == "--window") options.window = true;
         else if (arg == "--gs-trace") options.gs_trace = true;
+        else if (arg == "--gpu") options.gpu = true;
         else if (arg == "--gpu-shadow") options.gpu_shadow = true;
         else if (arg == "--gpu-shadow-rtt") options.gpu_shadow = options.gpu_shadow_rtt = true;
         else if (arg == "--gpu-show") options.gpu_shadow = options.gpu_shadow_rtt = options.gpu_show = true;

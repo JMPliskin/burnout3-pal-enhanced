@@ -106,7 +106,7 @@ proved itself in PCSX2's hardware renderers, made smaller:
 * Not yet checked against the Vulkan validation layers (not installed on the
   machine this was written on); the results are what the tests check.
 * `ps2gpu_tests` checks each of these by reading pixels back.
-* **The host drives it**: `--gpu-shadow` (engine/host/src/gpu_shadow.cpp)
+* **The host drives it**: `--gpu-shadow` (engine/host/src/gpu_bridge.cpp)
   hands every primitive the software GS draws to the renderer as well - its
   FRAME, SCISSOR, TEX0/TEX1/CLAMP, TEST and ALPHA, sprites as two triangles -
   with textures decoded from the software GS's local memory (decoded again
@@ -129,26 +129,40 @@ proved itself in PCSX2's hardware renderers, made smaller:
    ~~(DATE, through a stencil pass: the target's alpha bit copied into
    stencil, then the draw tested against it)~~, ~~PABE (a second pass)~~.
 5. Upscaling, widescreen (a wider projection where the game's matrices allow).
-6. **The GPU as the renderer** (`--gpu`), the software rasteriser off. What the
-   shadow mode gets from local memory the GPU must then keep itself:
-   * *targets as textures*: a TEX0 whose TBP and format match a target's FBP
-     samples the target's image (copied first when it is also the target
-     being drawn); Burnout 3 does this every frame, its 0x8C0 frame copied to
-     the CT16S display buffer;
-   * *uploads*: an image transfer into memory a target covers is drawn into
-     the target too (or the target dropped and re-created from memory);
-   * *read-backs*: where the EE reads local memory (an IMAGE transfer from
-     the GS) or a texture in another format overlaps a target, the target is
-     written back to local memory first, in the GS's swizzled layout;
-   * *display*: DISPFB names the target shown;
-   * *aliasing*: targets are keyed by (FBP, FBW, PSM), but the GS has one
-     memory - Burnout 3's car select draws its reflection buffer at FBP 0x18B
-     both 32 pixels wide and 128 wide, two GPU images where the GS has one.
-     A target drawn under another width or format must be converted from the
-     one that holds its memory (the shadow run's 27-58% on those buffers);
-     and memory a frame never draws (the corners of its 256x256 sphere map)
-     keeps what was there before, which the GPU must also keep.
-   On the car select the shadow run agrees on 96.7% of the 3D frame (the
-   rest is the blender's rounding) and 100% of the display.
+6. ~~**The GPU as the renderer**~~ (`--gpu`, engine/host/src/gpu_bridge.cpp):
+   the GS model still takes every packet, register and transfer but draws
+   nothing (`Gs::rasterize` false); the GPU draws, and its images stand for
+   regions of local memory. Each image (a target or a depth buffer) knows the
+   blocks it covers - the rows drawn so far, not all the scissor allows - and
+   whether the GPU has drawn what memory lacks or memory changed under it.
+   * *read-backs*: before the GS model reads or writes local memory other
+     than by drawing (an image transfer either way, a local copy, a CLUT
+     load, the picture shown) it calls `Gs::on_memory` with the blocks, and
+     the GPU images over them are written back (`ReadTarget`, `ReadDepth`,
+     stored in the GS's swizzled layout);
+   * *uploads*: memory written under an image makes it stale; it reloads
+     from memory (`UploadTarget`, `UploadDepth`) before the GPU next uses it;
+   * *aliasing*: an image drawn over another's blocks under another width or
+     format (Burnout 3's reflection buffers at 0x16B-0x1A7, its depth buffer
+     at 0xD2 reused for 64x32 to 320x224 scratch targets) is written back and
+     the other reloaded - once a frame, not once a draw;
+   * *targets as textures*: a TEX0 whose TBP and format match a target's
+     samples the target's image;
+   * *other textures*: decoded by the host into a cache keyed by
+     TBP/TBW/PSM/TW/TH, CLAMP's region modes, TEXA and the CLUT's contents,
+     invalid once memory under them is written or the GPU draws over them,
+     the least recently used of 2,048 released;
+   * *lines and points*: one-pixel bands that cover what the software GS
+     plots (the position rounded, both ends);
+   * primitives wholly outside the scissor are dropped before any of this -
+     the garage sends thousands a frame to FRAME 0/FBW 1, whose colour and Z
+     alias one page.
+   Checked by running the same scripted input (`--virtual-time`) under both
+   renderers and comparing the pictures with `engine/tools/framediff.py`:
+   `car_select.args`, 40 pictures from boot to the 3D garage, 99.85% of
+   pixels agree on average (within 8 per channel); the garage 99.96%, the
+   menus 99.9-100%. The run takes 5m15s against the software GS's 9m07s.
+   Left: a text-entry screen's highlight boxes (99.42%), the globe's light
+   beams (99.25%).
    Local memory stays the meeting point: the shadow mode's comparison, run on
    a few frames, checks each step.

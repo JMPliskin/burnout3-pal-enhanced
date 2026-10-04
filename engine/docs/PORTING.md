@@ -50,6 +50,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--gs-trace` | every GS image transfer and primitive, with its TEX0 fields |
 | `--until-frame N` | stop when frame N is done - with `--virtual-time`, the same point of the game every time |
 | `--virtual-time` | the scheduler keeps the clock (each loop slice is 1 ms, waiting skips to the next event): the EE timers, alarms, the IOP and the vblanks follow it, so a scripted run (`--press`) is the same run on any machine under any load; frame-identical across runs |
+| `--gpu` | the GPU renderer draws instead of the software GS (`gpu_bridge.cpp`); local memory is kept in step with the GPU's images where the game reads it (transfers, CLUT loads, textures, the picture). Compare its `--frames` with a software run's using `engine/tools/framediff.py` |
 | `--gpu-shadow` | the GPU renderer draws every primitive too; each frame its targets are compared with the software GS's (and written beside `--frames` pictures as gpu_/soft_ BMPs) |
 | `--gpu-shadow-rtt` | the same, a texture that is a GPU target sampled from the target (render to texture), as the GPU renderer will on its own |
 | `--gpu-show` | `--gpu-shadow-rtt`, and the window (`--window`) shows the GPU renderer's picture instead of the software GS's |

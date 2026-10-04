@@ -12,7 +12,7 @@
 
 namespace ps2host {
 
-enum class Section { GsDraw, GsUpload, Vu1, Vu0, Count };
+enum class Section { GsDraw, GsUpload, Vu1, Vu0, GpuBridge, GpuRender, GpuSync, Count };
 
 class Timed {
 public:

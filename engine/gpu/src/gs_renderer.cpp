@@ -162,11 +162,15 @@ public:
     void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
                        std::uint32_t height) override;
     void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, const std::uint32_t* z) override;
+    void UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, const std::uint32_t* pixels,
+                      std::uint32_t width, std::uint32_t height) override;
+    void ReleaseTexture(std::uint64_t key) override;
     bool HasTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm) const override {
         return targets_.count(Key{fbp, fbw, psm}) != 0;
     }
     void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) override;
     void Flush() override;
+    bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t>* z) override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
                     std::uint32_t* width, std::uint32_t* height) override;
 
@@ -621,6 +625,54 @@ void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pix
     Fill(texture, pixels);
 }
 
+void VulkanGsRenderer::UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
+                                    const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) {
+    Flush();                        // what is pending draws into the old contents first
+    GsDrawState state;
+    state.fbp = fbp;
+    state.fbw = fbw;
+    state.psm = psm;
+    state.width = width;
+    state.height = height;
+    Image* t = TargetFor(state);
+    const std::uint32_t w = std::min(width, t->width), h = std::min(height, t->height);
+    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    for (std::uint32_t y = 0; y < h; ++y)
+        std::memcpy(static_cast<std::uint8_t*>(mapped) + std::size_t(y) * w * 4, pixels + std::size_t(y) * width,
+                    std::size_t(w) * 4);
+    g_.Record([&](VkCommandBuffer cmd) {
+        Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {w, h, 1};
+        vkCmdCopyBufferToImage(cmd, buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    });
+    FreeAfterSubmit(buffer, memory);
+}
+
+void VulkanGsRenderer::ReleaseTexture(std::uint64_t key) {
+    auto found = textures_.find(key);
+    if (found == textures_.end()) return;
+    Flush();
+    Texture texture = found->second;
+    textures_.erase(found);
+    // Recorded draws may still sample it: it goes after they have run.
+    VkDevice device = g_.device;
+    VkDescriptorPool pool = pool_;
+    g_.AfterSubmit([device, pool, texture]() mutable {
+        for (VkDescriptorSet& set : texture.sets)
+            if (set) vkFreeDescriptorSets(device, pool, 1, &set);
+        if (texture.image.view) vkDestroyImageView(device, texture.image.view, nullptr);
+        if (texture.image.image) vkDestroyImage(device, texture.image.image, nullptr);
+        if (texture.image.memory) vkFreeMemory(device, texture.image.memory, nullptr);
+    });
+}
+
 Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
     Image& t = targets_[Key{state.fbp, state.fbw, state.psm}];
     if (t.image) return &t;
@@ -641,7 +693,9 @@ Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
 Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::uint32_t height) {
     Image& d = depths_[Key{key, width, height}];
     if (d.image) return &d;
-    MakeImage(d, width, height, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    MakeImage(d, width, height,
+              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
               kDepthFormat);
     // Local memory starts as zeros: the farthest Z.
     g_.Record([&](VkCommandBuffer cmd) {
@@ -870,6 +924,38 @@ void VulkanGsRenderer::Flush() {
         });
     }
     pending_.clear();
+}
+
+bool VulkanGsRenderer::ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
+                                 std::vector<std::uint32_t>* z) {
+    Flush();
+    auto found = depths_.find(Key{zbp, width, height});
+    if (found == depths_.end()) return false;
+    Image& d = found->second;
+    const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buffer, &memory, &mapped)) return false;
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+        copy.imageExtent = {width, height, 1};
+        vkCmdCopyImageToBuffer(cmd, d.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    });
+    // Z / 2^32 back to the GS's Z.
+    const float* in = static_cast<const float*>(mapped);
+    z->resize(std::size_t(width) * height);
+    for (std::size_t i = 0; i < z->size(); ++i) {
+        const double v = double(in[i]) * 4294967296.0 + 0.5;
+        (*z)[i] = v <= 0.0 ? 0u : v >= 4294967295.0 ? 0xFFFFFFFFu : std::uint32_t(v);
+    }
+    vkUnmapMemory(g_.device, memory);
+    vkDestroyBuffer(g_.device, buffer, nullptr);
+    vkFreeMemory(g_.device, memory, nullptr);
+    return true;
 }
 
 bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,

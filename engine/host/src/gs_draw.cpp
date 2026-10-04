@@ -263,7 +263,7 @@ void Gs::Draw() {
                      (unsigned long long)c.test, (unsigned long long)c.alpha);
     }
     const u32 type = u32(Prim() & 7);
-    if (type == 7) return;
+    if (type == 7 || !rasterize) return;
     Job job{setup_, {}, queued_, 0};
     for (u32 i = 0; i < queued_ && i < 3; ++i) job.v[i] = queue_[i];
     // About how many pixels: the box around it (half for a triangle).

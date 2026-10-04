@@ -126,12 +126,22 @@ public:
        memory holds there (the GS's Z, unsigned). */
     virtual void UploadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
                              const std::uint32_t* z) = 0;
+    /* A target's contents from local memory, RGBA rows top-down (made, at
+       this size, if there was none). */
+    virtual void UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, const std::uint32_t* pixels,
+                              std::uint32_t width, std::uint32_t height) = 0;
+    /* Forgets a texture (after what is recorded has used it). */
+    virtual void ReleaseTexture(std::uint64_t key) = 0;
     /* Whether a target exists for (FBP, FBW, PSM) - what a draw can sample. */
     virtual bool HasTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm) const = 0;
     /* Triangles, three vertices each, in GS order. */
     virtual void DrawTriangles(const GsDrawState& state, const GsVertex* vertices, std::size_t count) = 0;
     /* Runs what has been drawn. */
     virtual void Flush() = 0;
+    /* A depth buffer's Z (the GS's, unsigned), rows top-down; false if there
+       is none of that size. */
+    virtual bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
+                           std::vector<std::uint32_t>* z) = 0;
     /* A target's pixels, RGBA in memory, rows top-down; false if there is none. */
     virtual bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
                             std::vector<std::uint32_t>* pixels, std::uint32_t* width,

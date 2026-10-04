@@ -40,16 +40,18 @@ Timed::~Timed() {
 }
 
 std::string ProfileSummary() {
-    static const char* const kNames[] = {"GS drawing", "GS image transfers", "VU1", "VU0"};
+    static const char* const kNames[] = {"GS drawing", "GS image transfers", "VU1", "VU0",
+                                         "GPU bookkeeping", "GPU drawing", "GPU and memory in step"};
     const double total = Elapsed(g_start, Clock::now());
     std::string out = "time:";
     char text[64];
     std::snprintf(text, sizeof text, " %.1f s;", total);
     out += text;
     for (int i = 0; i < int(Section::Count); ++i) {
-        std::snprintf(text, sizeof text, " %s %.1f%%", kNames[i], total > 0 ? 100.0 * g_seconds[i] / total : 0.0);
+        if (i >= int(Section::GpuBridge) && g_seconds[i] == 0) continue;   // the GPU's, when it ran
+        std::snprintf(text, sizeof text, "%s %s %.1f%%", i ? "," : "", kNames[i],
+                      total > 0 ? 100.0 * g_seconds[i] / total : 0.0);
         out += text;
-        if (i + 1 < int(Section::Count)) out += ",";
     }
     return out;
 }
