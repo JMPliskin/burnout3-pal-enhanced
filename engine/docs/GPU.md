@@ -139,34 +139,46 @@ proved itself in PCSX2's hardware renderers, made smaller:
    regions of local memory. Each image (a target or a depth buffer) knows the
    blocks it covers - the rows drawn so far, not all the scissor allows - and
    whether the GPU has drawn what memory lacks or memory changed under it.
-   * *read-backs*: before the GS model reads or writes local memory other
-     than by drawing (an image transfer either way, a local copy, a CLUT
-     load, the picture shown) it calls `Gs::on_memory` with the blocks, and
-     the GPU images over them are written back (`ReadTarget`, `ReadDepth`,
-     stored in the GS's swizzled layout);
+   * *GS local memory on the GPU*: ps2gpu keeps a copy of the 4 MB, and a
+     compute shader (shaders/swizzle.comp) swizzles targets (CT32/24/16/16S)
+     and depth buffers (Z32/24/16/16S) into it and out of it, in the GS's
+     layout (checked byte for byte against the host's gs::Memory by
+     GpuMemorySwizzlesAsTheGs). Per 256-byte block the bridge knows whether
+     the CPU's copy, the GPU's, or both are current;
+   * *read-backs*: before the GS model reads or writes local memory (an image
+     transfer either way, a local copy, a CLUT load, the picture shown) it
+     calls `Gs::on_memory` with the blocks; the GPU images over them are
+     swizzled into the GPU's copy, and the blocks the CPU lacks come back
+     (`MemoryRead`, the one call that waits for the GPU);
    * *uploads*: memory written under an image makes it stale; it reloads
-     from memory (`UploadTarget`, `UploadDepth`) before the GPU next uses it;
+     from the GPU's copy, once the blocks the CPU wrote have gone over
+     (`MemoryWrite`), before the GPU next uses it;
    * *aliasing*: an image drawn over another's blocks under another width or
-     format (Burnout 3's reflection buffers at 0x16B-0x1A7, its depth buffer
-     at 0xD2 reused for 64x32 to 320x224 scratch targets) is written back and
-     the other reloaded - once a frame, not once a draw;
+     format (Burnout 3's reflection buffers at 0x16B-0x1A7, the race's blur
+     and glow passes in its depth buffer's memory at 0xD2) is swizzled into
+     the GPU's copy and the other unswizzled from it - on the GPU, waiting
+     for nothing;
    * *targets as textures*: a TEX0 whose TBP and format match a target's
      samples the target's image;
    * *other textures*: decoded by the host into a cache keyed by
-     TBP/TBW/PSM/TW/TH, CLAMP's region modes, TEXA and the CLUT's contents,
-     invalid once memory under them is written or the GPU draws over them,
-     the least recently used of 2,048 released;
+     TBP/TBW/PSM/TW/TH, CLAMP's region modes, TEXA and the CLUT's contents;
+     once memory under one is written or the GPU draws over it, its blocks
+     are hashed and it is decoded again only if they changed (the car
+     select: 646 decodes, 239,661 re-sent textures found unchanged); the
+     least recently used of 2,048 released;
    * *lines and points*: one-pixel bands that cover what the software GS
      plots (the position rounded, both ends);
-   * primitives wholly outside the scissor are dropped before any of this -
-     the garage sends thousands a frame to FRAME 0/FBW 1, whose colour and Z
-     alias one page.
+   * primitives wholly outside the scissor, and ZTST NEVER, are dropped
+     before any of this; a draw with ZTST ALWAYS and ZMSK has no depth
+     buffer (the race's blur passes leave ZBUF at their own address).
    Checked by running the same scripted input (`--virtual-time`) under both
    renderers and comparing the pictures with `engine/tools/framediff.py`:
-   `car_select.args`, 40 pictures from boot to the 3D garage, 99.85% of
-   pixels agree on average (within 8 per channel); the garage 99.96%, the
-   menus 99.9-100%. The run takes 5m15s against the software GS's 9m07s.
-   Left: a text-entry screen's highlight boxes (99.42%), the globe's light
-   beams (99.25%).
+   `car_select.args`, 40 pictures from boot to the 3D garage: 35 identical,
+   the rest 99.30-99.98% (the globe's light rays, drawn as lines; the
+   garage). Keeping GPU and memory in step takes 1.7% of the run.
+   The comparison found two bugs in the reference: the software GS drew
+   triangles' right and bottom edges (the GS fills top-left), and
+   `sceCdReadClock` answered wall-clock time under `--virtual-time`, so the
+   EA Trax playlist differed between runs.
    Local memory stays the meeting point: the shadow mode's comparison, run on
    a few frames, checks each step.

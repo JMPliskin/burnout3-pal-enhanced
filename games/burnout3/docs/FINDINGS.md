@@ -1554,7 +1554,7 @@ all), the race loads: the briefing over the Silver Lake track, then RACE
 TRAINING's in-engine crash demo ("IMPACT TIME", "33ft Nose Grind + 4.1s
 Air") - the physics and crash code running in the port
 (`games/burnout3/port/runs/race_training.args`). Open there: the tips' movies
-(the IPU), an IOP server 0x8000131B the host answers with zeros, and the speed
+(the IPU), an IOP server 0x8000131B the host answers with zeros (libdbc's, see "Memory cards"), and the speed
 - the race's 3D in the software GS runs at a fraction of a frame a second.
 
 ## Memory cards: libmc2
@@ -1562,11 +1562,27 @@ Air") - the physics and crash code running in the port
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
 MC2_S1.IRX, with MCMAN, MCSERV and SIO2MAN. MC2_S1 drives the card itself -
 it imports sio2man, sio2d, secrman (MagicGate authentication) and dbcman -
-so running it would mean emulating SIO2 and the card's protocol. The host
-will answer libmc2's RPC instead, over a directory standing for the card; the
-protocol is read from the game's own libmc2 when the frontend first uses it:
-it lives at 0x00241000-0x0024B000, binds server 0x80001101 at 0x00249A0C, and
-calls it from 0x00249B48, 0x00249BD8 and 0x0024AAE8.
+so running it would mean emulating SIO2 and the card's protocol.
+
+libmc2 (0x00240660-0x002498F8) makes no SIF RPC of its own. sceMc2Init
+(0x00241BC0) makes two semaphores and a worker thread (0x00242A60) that
+takes one request at a time from 0x01D810C0 and dispatches on its command
+(table at 0x004BB320, commands 2-100: 2 is 0x00244218, the card's
+information). Each request first asks libdbc about the card's socket
+(0x00249640 -> 0x00216510): the socket's status word in DBCMAN's work
+area, copied from 0x0067CCC0, must be 1, or the request fails with
+0x81010013 - which is why the game finds no memory card: the host's
+DBCMAN reports nothing on port 2. The card is then spoken to through that
+DBCMAN socket: libmc2 calls libdbc's 0x00216BB8 (nine places), an RPC to
+server 0x8000131C, and 0x00216758 (0x8000131D); MC2_S1 answers on the IOP.
+libdbc binds 0x8000131B and 0x8000131C as servers of their own beside
+DBCMAN's 0x80001300 (its other calls: 0x80001318, 0x80001319, 0x8000131A
+sceDbcReceiveData). Emulating a card means answering 0x8000131C's requests
+for the socket on port 2 over a directory standing for the card.
+
+(The server 0x80001101 bound at 0x00249A0C is not libmc2's: the code
+around it, 0x002499D0-0x0024AB10, is netcnfif's - "SceNetcnfifCallbackThread",
+"[fatal error] c_sema in netcnfif" - the network configuration's interface.)
 
 ## Open questions
 

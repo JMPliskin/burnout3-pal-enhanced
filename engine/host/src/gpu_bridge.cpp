@@ -177,6 +177,7 @@ struct Bridge {
     u64 downloads = 0, uploads = 0;  // blocks copied GPU -> CPU, CPU -> GPU
     u64 write_backs = 0, reloads = 0, decodes = 0;
     u64 unchanged = 0;              // textures invalidated whose texels proved the same
+    u64 gpu_textures = 0;           // textures made images from GPU memory instead
 };
 
 Bridge* g_bridge = nullptr;
@@ -329,7 +330,22 @@ u64 ClutHash(u32 psm) {
 
 /* The renderer's key for the texture the current primitive samples, decoded if
    need be (--gpu). */
-u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
+/* Whether the GPU holds blocks [begin, end) newer than the CPU: an image drawn
+   over them and not yet swizzled into GPU memory, or GPU memory newer. */
+bool GpuHolds(const Bridge& b, u32 begin, u32 end) {
+    for (const auto& [key, o] : b.owned)
+        if (o.gpu_newer && o.begin < end && begin < o.drawn_end) return true;
+    end = std::min(end, 16384u);
+    for (u32 i = begin; i < end; ++i)
+        if (b.blocks[i] == Bridge::kGpuNewer) return true;
+    return false;
+}
+
+/* The renderer's key for the texture the current primitive samples, decoded if
+   need be - or 0 when `on_gpu` allows it and the GPU holds the texture's
+   blocks: then it is better unswizzled on the GPU than brought back to be
+   decoded (the race samples its own targets under other widths). */
+u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th, bool on_gpu) {
     const u32 tbp = Bits(c.tex0, 0, 14), tbw = Bits(c.tex0, 14, 6), psm = Bits(c.tex0, 20, 6);
     // What decides the decoded texels: where and how it is stored (TBP0, TBW,
     // PSM, TW, TH), how a region mode wraps it (CLAMP), TEXA, the CLUT's
@@ -352,6 +368,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     // as surely as memory written there.
     for (const auto& [okey, o] : b.owned)
         if (o.drawn_serial > t.decoded_serial && o.begin < t.end && t.begin < o.drawn_end) t.valid = false;
+    if (!t.valid && on_gpu && GpuHolds(b, t.begin, t.end)) return 0;
     if (!t.valid) {
         Timed timed(Section::GpuSync);
         Sync(b, t.begin, t.end, false);
@@ -549,8 +566,19 @@ void OnDraw(const gs::Gs::DrawCall& call) {
             state.aem = Bits(call.texa, 15, 1) != 0;
         }
         if (!state.texture_target) {
-            if (s.primary) {
-                state.texture = CachedTexture(s, c, call.texa, tw, th);
+            const u32 tex_fbp = tbp_blocks / 32, tex_fbw = std::max(1u, Bits(c.tex0, 14, 6));
+            const bool on_gpu = s.primary && tex_format < 3 && tbp_blocks % 32 == 0;
+            const u64 texture = s.primary ? CachedTexture(s, c, call.texa, tw, th, on_gpu) : 0;
+            if (s.primary && !texture) {
+                // An image of the texture, from GPU memory, sampled as a target is.
+                Use(s, tex_fbp, tex_fbw, tex_psm, false, std::min(2048u, tex_fbw * 64), std::max(512u, th), th);
+                state.texture_target = true;
+                state.tex_fbp = tex_fbp;
+                state.tex_fbw = tex_fbw;
+                state.tex_target_psm = tex_psm;
+                ++s.gpu_textures;
+            } else if (s.primary) {
+                state.texture = texture;
             } else {
                 // Decoded again when the texture's registers change, local memory
                 // is uploaded into, or a draw since went into the texture's blocks.
