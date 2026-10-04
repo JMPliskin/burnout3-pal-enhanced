@@ -80,7 +80,11 @@ bool VulkanGpu::Init(std::string* error) {
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     if ((r = vkCreateDevice(gpu, &dci, nullptr, &device)) != VK_SUCCESS) return fail("vkCreateDevice", r);
-    volkLoadDevice(device);
+    // Device functions stay the loader's (volkLoadInstance): they dispatch by
+    // handle, so the window's device and this one can live side by side. volk
+    // keeps one global table; loading a device into it would point the other
+    // device's calls at this one's driver entries (--window with --gpu-shadow
+    // crashed so).
     vkGetDeviceQueue(device, family, 0, &queue);
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -99,6 +103,36 @@ bool VulkanGpu::Init(std::string* error) {
     return true;
 }
 
+bool VulkanGpu::InitShared(VkInstance shared_instance, VkPhysicalDevice shared_gpu, VkDevice shared_device,
+                           std::uint32_t shared_family, VkQueue shared_queue, bool shared_dual_source,
+                           const std::string& describe, std::string* error) {
+    owns_device = false;
+    instance = shared_instance;
+    gpu = shared_gpu;
+    device = shared_device;
+    family = shared_family;
+    queue = shared_queue;
+    dual_source = shared_dual_source;
+    describe_ = describe;
+    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = family;
+    VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateCommandPool(device, &pci, nullptr, &pool) != VK_SUCCESS) {
+        if (error) *error = "vkCreateCommandPool failed";
+        return false;
+    }
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device, &cai, &cmd) != VK_SUCCESS || vkCreateFence(device, &fci, nullptr, &fence) != VK_SUCCESS) {
+        if (error) *error = "no command buffer or fence";
+        return false;
+    }
+    return true;
+}
+
 std::uint32_t VulkanGpu::FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const {
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(gpu, &mp);
@@ -112,9 +146,9 @@ VulkanGpu::~VulkanGpu() {
         vkDeviceWaitIdle(device);
         if (fence) vkDestroyFence(device, fence, nullptr);
         if (pool) vkDestroyCommandPool(device, pool, nullptr);
-        vkDestroyDevice(device, nullptr);
+        if (owns_device) vkDestroyDevice(device, nullptr);
     }
-    if (instance) vkDestroyInstance(instance, nullptr);
+    if (instance && owns_device) vkDestroyInstance(instance, nullptr);
 }
 
 std::unique_ptr<Gpu> CreateGpu(std::string* error) {

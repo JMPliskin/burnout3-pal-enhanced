@@ -44,6 +44,8 @@ namespace ps2host {
 
 #if PS2HOST_VULKAN
 
+ps2gpu::Gpu* WindowGpu();       // window.cpp: the window's device, when there is one
+
 namespace {
 
 using gs::u32;
@@ -274,16 +276,42 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
 
 }  // namespace
 
-bool StartGpuShadow(std::string* error, bool targets_as_textures) {
+bool StartGpuShadow(std::string* error, bool targets_as_textures, bool show) {
     static Shadow shadow;
-    shadow.gpu = ps2gpu::CreateGpu(error);
-    if (!shadow.gpu) return false;
-    shadow.renderer = ps2gpu::CreateGsRenderer(*shadow.gpu, error);
+    // On the window's device when there is a window: one Vulkan device for both.
+    ps2gpu::Gpu* device = WindowGpu();
+    if (!device) {
+        shadow.gpu = ps2gpu::CreateGpu(error);
+        if (!shadow.gpu) return false;
+        device = shadow.gpu.get();
+    }
+    shadow.renderer = ps2gpu::CreateGsRenderer(*device, error);
     if (!shadow.renderer) return false;
     g_shadow = &shadow;
     shadow.targets_as_textures = targets_as_textures;
+    if (show) {
+        // The window shows the GPU's picture: the displayed buffer read back
+        // from its target (the software picture where the GPU has none).
+        SetPictureSource([](std::vector<u32>* pixels, u32* width, u32* height) {
+            u32 fbp = 0, fbw = 0, psm = 0;
+            if (!g_shadow || !gs::TheGs().Displayed(&fbp, &fbw, &psm)) return false;
+            std::vector<u32> rgba;
+            u32 w = 0, h = 0;
+            if (!g_shadow->renderer->ReadTarget(fbp, fbw, psm, &rgba, &w, &h)) return false;
+            const u32 shown_w = std::min(w, 640u), shown_h = std::min(h, 448u);
+            pixels->resize(std::size_t(shown_w) * shown_h);
+            for (u32 y = 0; y < shown_h; ++y)
+                for (u32 x = 0; x < shown_w; ++x) {
+                    const u32 c = rgba[std::size_t(y) * w + x];
+                    (*pixels)[std::size_t(y) * shown_w + x] = (c & 0xFF00FF00u) | ((c & 0xFF) << 16) | ((c >> 16) & 0xFF);
+                }
+            *width = shown_w;
+            *height = shown_h;
+            return true;
+        });
+    }
     gs::TheGs().on_draw = OnDraw;
-    std::fprintf(stderr, "gpu-shadow: drawing on %s beside the software GS\n", shadow.gpu->Describe().c_str());
+    std::fprintf(stderr, "gpu-shadow: drawing on %s beside the software GS\n", device->Describe().c_str());
     return true;
 }
 
@@ -358,7 +386,7 @@ std::string GpuShadowSummary() {
 
 #else
 
-bool StartGpuShadow(std::string* error, bool targets_as_textures) {
+bool StartGpuShadow(std::string* error, bool, bool) {
     if (error) *error = "built without the GPU renderer (PS2HOST_VULKAN)";
     return false;
 }

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <map>
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "ps2host/host.h"
@@ -118,7 +119,7 @@ void SetFrameDumps(const std::string& dir, int every, int limit);
 /* --gpu-shadow (gpu_shadow.cpp): the GPU renderer draws beside the software
    GS; each frame its targets are compared with local memory (and written as
    BMP files into `dump_dir` when that is not empty). */
-bool StartGpuShadow(std::string* error, bool targets_as_textures);
+bool StartGpuShadow(std::string* error, bool targets_as_textures, bool show);
 void GpuShadowFrame(u64 frame, const std::string& dump_dir);
 std::string GpuShadowSummary();
 /* --until-frame: stop the run when frame N is done (with --virtual-time, the
@@ -133,6 +134,9 @@ bool OpenWindow(const wchar_t* title, int width, int height);
 bool WindowOpen();
 bool WindowClosed();
 void PresentFrame();
+/* What the window shows instead of the software GS's picture (BGRA, as
+   Gs::Picture gives it); false falls back to the software picture. */
+void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source);
 /* Whether the window has the keyboard (input is read only then). */
 bool WindowFocused();
 /* Whether a key (a Win32 virtual key) is down, on the window's keyboard. */

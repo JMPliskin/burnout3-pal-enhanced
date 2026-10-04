@@ -15,6 +15,10 @@ class VulkanGpu final : public Gpu {
 public:
     ~VulkanGpu() override;
     bool Init(std::string* error);
+    /* On a device someone else made and keeps (a Display's): only the command
+       pool and fence are this one's own. */
+    bool InitShared(VkInstance instance, VkPhysicalDevice gpu, VkDevice device, std::uint32_t family, VkQueue queue,
+                    bool dual_source, const std::string& describe, std::string* error);
     std::string Describe() const override { return describe_; }
 
     std::uint32_t FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const;
@@ -31,6 +35,7 @@ public:
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool dual_source = false;       /* dualSrcBlend: the GS's blending */
+    bool owns_device = true;
 
 private:
     std::string describe_;

@@ -355,7 +355,7 @@ int Run(const Options& options) {
     SetUntilFrame(options.until_frame);
     if (options.gpu_shadow) {
         std::string error;
-        if (!StartGpuShadow(&error, options.gpu_shadow_rtt)) std::fprintf(stderr, "--gpu-shadow: %s\n", error.c_str());
+        if (!StartGpuShadow(&error, options.gpu_shadow_rtt, options.gpu_show)) std::fprintf(stderr, "--gpu-shadow: %s\n", error.c_str());
     }
     bool sound = false;
     if (options.audio) {
@@ -422,6 +422,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--gs-trace") options.gs_trace = true;
         else if (arg == "--gpu-shadow") options.gpu_shadow = true;
         else if (arg == "--gpu-shadow-rtt") options.gpu_shadow = options.gpu_shadow_rtt = true;
+        else if (arg == "--gpu-show") options.gpu_shadow = options.gpu_shadow_rtt = options.gpu_show = true;
         else if (arg == "--virtual-time") options.virtual_time = true;
         else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);

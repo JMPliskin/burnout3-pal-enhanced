@@ -52,6 +52,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--virtual-time` | the scheduler keeps the clock (each loop slice is 1 ms, waiting skips to the next event): the EE timers, alarms, the IOP and the vblanks follow it, so a scripted run (`--press`) is the same run on any machine under any load; frame-identical across runs |
 | `--gpu-shadow` | the GPU renderer draws every primitive too; each frame its targets are compared with the software GS's (and written beside `--frames` pictures as gpu_/soft_ BMPs) |
 | `--gpu-shadow-rtt` | the same, a texture that is a GPU target sampled from the target (render to texture), as the GPU renderer will on its own |
+| `--gpu-show` | `--gpu-shadow-rtt`, and the window (`--window`) shows the GPU renderer's picture instead of the software GS's |
 | `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |

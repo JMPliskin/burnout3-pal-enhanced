@@ -35,6 +35,10 @@ public:
 
     /* The GPU and driver, for the report. */
     virtual std::string Describe() const = 0;
+
+    /* The window's device as a Gpu, for a GsRenderer to draw with: one
+       Vulkan instance and device for both (owned by the display). */
+    virtual class Gpu* SharedGpu() = 0;
 };
 
 /* A window with a Vulkan swapchain; null, with `error` saying why, when there is

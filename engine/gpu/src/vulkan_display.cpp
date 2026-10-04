@@ -15,6 +15,8 @@
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
 
+#include "gpu_internal.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +35,7 @@ public:
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
     std::string Describe() const override { return describe_; }
+    Gpu* SharedGpu() override;
     const std::string& error() const { return error_; }
 
 private:
@@ -69,8 +72,21 @@ private:
     std::uint32_t picture_width_ = 0, picture_height_ = 0;
 
     bool closed_ = false, stale_ = false;
+    bool dual_source_ = false;
     std::string describe_, error_;
+    std::unique_ptr<VulkanGpu> shared_;
 };
+
+Gpu* VulkanDisplay::SharedGpu() {
+    if (!shared_) {
+        auto gpu = std::make_unique<VulkanGpu>();
+        std::string error;
+        if (!gpu->InitShared(instance_, gpu_, device_, family_, queue_, dual_source_, describe_, &error))
+            return nullptr;
+        shared_ = std::move(gpu);
+    }
+    return shared_.get();
+}
 
 bool VulkanDisplay::Check(VkResult result, const char* what) {
     if (result == VK_SUCCESS) return true;
@@ -97,7 +113,7 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     const char* const* extensions = SDL_Vulkan_GetInstanceExtensions(&count);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = title;
-    app.apiVersion = VK_API_VERSION_1_1;
+    app.apiVersion = VK_API_VERSION_1_3;      // the GS renderer draws on this device too
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = count;
@@ -153,13 +169,25 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
     const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // What the GS renderer needs, for when it draws on this device
+    // (SharedGpu): dynamic rendering, and dual-source blending if there is any.
+    VkPhysicalDeviceFeatures supported;
+    vkGetPhysicalDeviceFeatures(gpu_, &supported);
+    dual_source_ = supported.dualSrcBlend == VK_TRUE;
+    VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    v13.dynamicRendering = VK_TRUE;
+    v13.synchronization2 = VK_TRUE;
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    features.features.dualSrcBlend = supported.dualSrcBlend;
+    features.pNext = &v13;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    dci.pNext = &features;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = 1;
     dci.ppEnabledExtensionNames = device_extensions;
     if (!Check(vkCreateDevice(gpu_, &dci, nullptr, &device_), "vkCreateDevice")) return false;
-    volkLoadDevice(device_);
+    // Device functions stay the loader's: see gpu.cpp.
     vkGetDeviceQueue(device_, family_, 0, &queue_);
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -422,6 +450,7 @@ bool VulkanDisplay::KeyDown(int scancode) const {
 }
 
 VulkanDisplay::~VulkanDisplay() {
+    shared_.reset();
     if (device_) vkDeviceWaitIdle(device_);
     DestroyPicture();
     DestroySwapchain();

@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "ps2host/gs.h"
@@ -149,6 +150,19 @@ bool HostKeyDown(int key) {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+namespace {
+// --gpu-show: where the window's picture comes from instead of the software GS.
+std::function<bool(std::vector<u32>*, u32*, u32*)> g_picture_source;
+}  // namespace
+
+#ifdef PS2HOST_VULKAN
+ps2gpu::Gpu* WindowGpu() { return g_display ? g_display->SharedGpu() : nullptr; }
+#endif
+
+void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source) {
+    g_picture_source = std::move(source);
+}
+
 void PresentFrame() {
 #ifdef PS2HOST_VULKAN
     if (g_display) {
@@ -158,8 +172,8 @@ void PresentFrame() {
         }
         std::vector<u32> pixels;
         u32 w = 0, h = 0;
-        if (gs::TheGs().Picture(&pixels, &w, &h) && !g_display->Present(pixels.data(), w, h))
-            g_closed = true;
+        const bool got = (g_picture_source && g_picture_source(&pixels, &w, &h)) || gs::TheGs().Picture(&pixels, &w, &h);
+        if (got && !g_display->Present(pixels.data(), w, h)) g_closed = true;
         return;
     }
 #endif
