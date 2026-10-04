@@ -238,13 +238,22 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
 void WriteBack(Bridge& b, Owned& o) {
     Timed timed(Section::GpuSync);
     o.gpu_newer = false;
+    if (o.dirty_end <= o.dirty_begin) return;
+    // Only the rows drawn into since the last write-back: the image's other
+    // rows may be stale - another image drew over them since, and memory has
+    // that, not this.
+    const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
+    const u32 first = (o.dirty_begin - o.begin) / row_blocks * page_rows;
+    const u32 last = std::min(o.y1, (o.dirty_end - o.begin) / row_blocks * page_rows);
     // Blocks the CPU wrote go over first: the image covers them only in part.
-    Coherent(b, o.begin, o.drawn_end, true);
-    const bool done = o.depth ? b.renderer->DepthToMemory(o.fbp, o.width, o.height, o.fbw, o.psm, o.x1, o.y1)
-                              : b.renderer->TargetToMemory(o.fbp, o.fbw, o.psm, o.x1, o.y1);
-    if (!done) return;
-    ++b.write_backs;
-    std::fill(b.blocks.begin() + o.begin, b.blocks.begin() + std::min(o.drawn_end, 16384u), Bridge::kGpuNewer);
+    Coherent(b, o.dirty_begin, o.dirty_end, true);
+    const bool done = o.depth ? b.renderer->DepthToMemory(o.fbp, o.width, o.height, o.fbw, o.psm, o.x1, last, first)
+                              : b.renderer->TargetToMemory(o.fbp, o.fbw, o.psm, o.x1, last, first);
+    if (done) {
+        ++b.write_backs;
+        std::fill(b.blocks.begin() + std::min(o.dirty_begin, 16384u),
+                  b.blocks.begin() + std::min(o.dirty_end, 16384u), Bridge::kGpuNewer);
+    }
     o.dirty_begin = ~0u;
     o.dirty_end = 0;
 }

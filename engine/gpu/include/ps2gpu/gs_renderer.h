@@ -156,17 +156,19 @@ public:
     virtual void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) = 0;
     /* The GPU's copy of blocks, into `bytes` (runs what is recorded, waits). */
     virtual void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) = 0;
-    /* A target's first `rows` rows, `cols` wide, into GPU memory at FBP as
-       its PSM lays them out (CT32, CT24, CT16, CT16S); false if there is none. */
+    /* A target's rows [first_row, rows), `cols` wide, into GPU memory at FBP
+       as its PSM lays them out (CT32, CT24, CT16, CT16S); false if there is
+       none. */
     virtual bool TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
-                                std::uint32_t rows) = 0;
+                                std::uint32_t rows, std::uint32_t first_row = 0) = 0;
     /* A target, made at this size if there is none, loaded from GPU memory. */
     virtual void TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
                                   std::uint32_t height) = 0;
     /* The same for the depth buffer at ZBP of this size, laid out by ZPSM
        (Z32, Z24, Z16, Z16S) FBW pages wide. */
     virtual bool DepthToMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
-                               std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) = 0;
+                               std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows,
+                               std::uint32_t first_row = 0) = 0;
     virtual void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                                  std::uint32_t zpsm) = 0;
     /* A texture decoded from GPU memory, as the host's software GS decodes

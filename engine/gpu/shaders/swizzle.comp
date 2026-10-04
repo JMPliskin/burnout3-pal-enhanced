@@ -18,6 +18,7 @@ layout(push_constant) uniform Params {
     uint stride;        // the linear rows' length, in pixels
     uint to_memory;     // 1: linear -> memory; 0: memory -> linear
     uint depth;         // the linear side is depth (float)
+    uint row0;          // the image's row that linear row 0 holds
 } p;
 
 const uint PSMCT32 = 0x00u, PSMCT24 = 0x01u, PSMCT16 = 0x02u, PSMCT16S = 0x0Au;
@@ -85,7 +86,7 @@ uint From16(uint c) {
 void main() {
     const uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
     if (x >= p.cols || y >= p.rows) return;
-    const uint a = Address(x, y);
+    const uint a = Address(x, y + p.row0);
     const uint word = a >> 2;
     const uint li = y * p.stride + x;
     const bool z24 = p.psm == PSMCT24 || p.psm == PSMZ24;

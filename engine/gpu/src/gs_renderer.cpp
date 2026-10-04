@@ -99,7 +99,7 @@ struct DecodeParams {
 
 /* swizzle.comp's push constants. */
 struct SwizzleParams {
-    std::uint32_t bp, bw, psm, cols, rows, stride, to_memory, depth;
+    std::uint32_t bp, bw, psm, cols, rows, stride, to_memory, depth, row0;
 };
 
 constexpr VkDeviceSize kLocalMemory = 4u << 20;
@@ -222,11 +222,11 @@ public:
     void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) override;
     void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) override;
     bool TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
-                        std::uint32_t rows) override;
+                        std::uint32_t rows, std::uint32_t first_row) override;
     void TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
                           std::uint32_t height) override;
     bool DepthToMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
-                       std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) override;
+                       std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows, std::uint32_t first_row) override;
     void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                          std::uint32_t zpsm) override;
     void TextureFromMemory(std::uint64_t key, const GsTextureDecode& decode) override;
@@ -304,7 +304,8 @@ private:
     bool DeviceBuffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory);
     void Swizzle(VkCommandBuffer cmd, const SwizzleParams& params);
     /* An image's first rows into the linear buffer, or back. */
-    void ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect, std::uint32_t rows);
+    void ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect, std::uint32_t rows,
+                       std::uint32_t first_row = 0);
     void LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect);
     /* A texture image of this size under `key`, made (or made again) if need be. */
     Texture* TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height);
@@ -581,12 +582,13 @@ void VulkanGsRenderer::Swizzle(VkCommandBuffer cmd, const SwizzleParams& params)
 }
 
 void VulkanGsRenderer::ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect,
-                                     std::uint32_t rows) {
+                                     std::uint32_t rows, std::uint32_t first_row) {
     Transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy copy{};
     copy.bufferRowLength = image.width;
     copy.imageSubresource = {aspect, 0, 0, 1};
+    copy.imageOffset = {0, std::int32_t(first_row), 0};
     copy.imageExtent = {image.width, rows, 1};
     vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, linear_, 1, &copy);
     MemoryBarrier(cmd);
@@ -643,17 +645,19 @@ void VulkanGsRenderer::MemoryRead(std::uint32_t begin, std::uint32_t end, std::u
 }
 
 bool VulkanGsRenderer::TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
-                                      std::uint32_t rows) {
+                                      std::uint32_t rows, std::uint32_t first_row) {
     auto found = targets_.find(Key{fbp, fbw, psm});
     if (found == targets_.end()) return false;
     Flush();
     Image& t = found->second;
     cols = std::min(cols, t.width);
     rows = std::min(rows, t.height);
-    if (!cols || !rows) return true;
+    if (first_row >= rows) return true;
+    rows -= first_row;
+    if (!cols) return true;
     g_.Record([&](VkCommandBuffer cmd) {
-        ImageToLinear(cmd, t, VK_IMAGE_ASPECT_COLOR_BIT, rows);
-        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, cols, rows, t.width, 1, 0});
+        ImageToLinear(cmd, t, VK_IMAGE_ASPECT_COLOR_BIT, rows, first_row);
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, cols, rows, t.width, 1, 0, first_row});
         MemoryBarrier(cmd);
     });
     return true;
@@ -671,23 +675,26 @@ void VulkanGsRenderer::TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, st
     Image* t = TargetFor(state);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, t->height, t->width, 0, 0});
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, t->height, t->width, 0, 0, 0});
         LinearToImage(cmd, *t, VK_IMAGE_ASPECT_COLOR_BIT);
     });
 }
 
 bool VulkanGsRenderer::DepthToMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
-                                     std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) {
+                                     std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows,
+                                     std::uint32_t first_row) {
     auto found = depths_.find(Key{zbp, width, height});
     if (found == depths_.end()) return false;
     Flush();
     Image& d = found->second;
     cols = std::min(cols, d.width);
     rows = std::min(rows, d.height);
-    if (!cols || !rows) return true;
+    if (first_row >= rows) return true;
+    rows -= first_row;
+    if (!cols) return true;
     g_.Record([&](VkCommandBuffer cmd) {
-        ImageToLinear(cmd, d, VK_IMAGE_ASPECT_DEPTH_BIT, rows);
-        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, cols, rows, d.width, 1, 1});
+        ImageToLinear(cmd, d, VK_IMAGE_ASPECT_DEPTH_BIT, rows, first_row);
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, cols, rows, d.width, 1, 1, first_row});
         MemoryBarrier(cmd);
     });
     return true;
@@ -699,7 +706,7 @@ void VulkanGsRenderer::DepthFromMemory(std::uint32_t zbp, std::uint32_t width, s
     Image* d = DepthFor(zbp, width, height);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, d->height, d->width, 0, 1});
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, d->height, d->width, 0, 1, 0});
         LinearToImage(cmd, *d, VK_IMAGE_ASPECT_DEPTH_BIT);
     });
 }
