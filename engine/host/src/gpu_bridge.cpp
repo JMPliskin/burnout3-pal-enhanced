@@ -313,7 +313,10 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         }
     o.checked = b.newer_epoch;
     if (o.stale) {
-        // Loaded from the GPU's local memory, the CPU's writes there first.
+        // Loaded from the GPU's local memory, the CPU's writes there first -
+        // and its own drawing not yet there: an image goes stale for rows
+        // another drew over while newer than memory in rows of its own.
+        if (o.gpu_newer) WriteBack(b, o);
         Timed timed(Section::GpuSync);
         ++b.reloads;
         Coherent(b, o.begin, o.full_end, true);
