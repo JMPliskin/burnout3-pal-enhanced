@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <string>
 
@@ -105,6 +106,12 @@ u32* Register(u32 address) { return reinterpret_cast<u32*>(GuestMemory().Transla
 // (normal or a source chain) into it.
 constexpr u32 kSadr = 0x80;
 
+// Main RAM or the scratchpad, with nothing watching stores: no hooks to run,
+// so a copy may go through pointers.
+bool Plain(const Memory& m, u32 address) {
+    return !m.watching() && ((address & 0x1FFFFFFFu) < 0x10000000u || (address >> 28) == 0x7);
+}
+
 std::string Scratchpad(const Channel& ch, u32 chcr) {
     Memory& m = GuestMemory();
     u32 sadr = u32(m.Read(ch.base + kSadr, 4)) & 0x3FF0u;
@@ -112,8 +119,14 @@ std::string Scratchpad(const Channel& ch, u32 chcr) {
     char text[160];
     if (ch.base == 0x1000D000u) {                       // SPR_FROM
         if ((chcr >> 2) & 3) return "chain mode is not modelled (nothing copied)";
-        for (u32 i = 0; i < 16 * qwc; i += 4) {
-            m.Write(madr + i, m.Read(kScratchpadBase + ((sadr + i) & 0x3FFCu), 4), 4);
+        for (u32 i = 0; i < 16 * qwc; i += 16) {           // a quadword at a time (SADR is aligned)
+            const u32 from = kScratchpadBase + ((sadr + i) & 0x3FF0u);
+            u8* to = Plain(m, madr + i) ? m.Translate(madr + i, 16) : nullptr;
+            if (const u8* source = to ? m.Translate(from, 16) : nullptr) {
+                std::memcpy(to, source, 16);
+                continue;
+            }
+            for (u32 k = 0; k < 16; k += 4) m.Write(madr + i + k, m.Read(from + k, 4), 4);
         }
         *Register(ch.base + kMadr) = madr + 16 * qwc;
         *Register(ch.base + kQwc) = 0;
@@ -123,9 +136,14 @@ std::string Scratchpad(const Channel& ch, u32 chcr) {
     }
     DmaChannelState state{chcr, madr, qwc, u32(m.Read(ch.base + kTadr, 4)),
                           u32(m.Read(ch.base + kAsr0, 4)), u32(m.Read(ch.base + kAsr1, 4))};
-    const DmaOutcome outcome = SendDma(state, [&sadr](u32 word) {
-        GuestMemory().Write(kScratchpadBase + (sadr & 0x3FFCu), word, 4);
-        sadr = (sadr + 4) & 0x3FFFu;
+    u8* scratchpad = Plain(m, kScratchpadBase) ? m.Translate(kScratchpadBase, kScratchpadSize) : nullptr;
+    const DmaOutcome outcome = SendDmaBlocks(state, [&sadr, scratchpad](const u32* words, u32 count, u32 from) {
+        for (u32 i = 0; i < count; ++i) {
+            g_dma_source = from + 4 * i;
+            if (scratchpad) std::memcpy(scratchpad + (sadr & 0x3FFCu), &words[i], 4);
+            else GuestMemory().Write(kScratchpadBase + (sadr & 0x3FFCu), words[i], 4);
+            sadr = (sadr + 4) & 0x3FFFu;
+        }
     });
     *Register(ch.base + kMadr) = state.madr;
     *Register(ch.base + kQwc) = state.qwc;

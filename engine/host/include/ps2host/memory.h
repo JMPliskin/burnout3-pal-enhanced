@@ -64,6 +64,9 @@ public:
     /* Log every store that touches one of these guest addresses (--watch-write),
        with the value and the function storing it. */
     void WatchWrites(const std::vector<u32>& addresses);
+    /* Whether any store is being watched: if not, a store to main RAM or the
+       scratchpad (no register hooks there) may go straight through Translate. */
+    bool watching() const { return !watched_.empty(); }
 
 private:
     std::vector<u8> rdram_, scratchpad_, ee_registers_, vu_memory_, gs_registers_, iop_ram_, bios_;
