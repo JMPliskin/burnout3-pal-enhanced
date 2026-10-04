@@ -72,7 +72,7 @@ struct Thread {
     u32 waiting_on = 0;             // the semaphore, while Waiting
     s32 wakeups = 0;                // WakeupThread calls not yet consumed by a sleep
     u64 runs = 0;                   // times the scheduler switched to it, for the report
-    lifted::Context context{};
+    lifted::Context context = NewContext();
     std::vector<u32> calls;         // the guest call stack, for the report
     LPVOID fiber = nullptr;
 };
@@ -107,7 +107,7 @@ struct Scheduler {
     s64 loop_budget = 0;
     u64 frames = 0;
     bool in_interrupt = false;
-    lifted::Context interrupt_context{};
+    lifted::Context interrupt_context = NewContext();
     u32 pending_dmac = 0;                   // channels whose interrupt waits
     bool realtime = false;                  // a vblank timer runs (unlimited budget)
     std::atomic<bool> vblank_due{false};    // set by the timer, taken by LoopHead
@@ -528,7 +528,7 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
         case 0x22: {                                 // StartThread(id, arg)
             Thread* t = Find(a0);
             if (!t || t->state != State::Dormant) { result = u64(-1); return true; }
-            t->context = lifted::Context{};
+            t->context = NewContext();
             t->context.r[4] = a1;
             t->context.r[28] = t->gp;
             t->context.r[29] = t->stack + t->stack_size - 0x2A0;

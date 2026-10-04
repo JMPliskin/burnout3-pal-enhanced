@@ -84,8 +84,12 @@ u64 Memory::Read(u32 address, u32 size) {
 void Memory::Watched(u32 address, u64 value, u32 size) {
     const std::vector<u32>& calls = CurrentCalls();
     const u32 in = calls.empty() ? 0 : calls.back();
-    std::fprintf(stderr, "[write] 0x%08X <- 0x%llX (%u bytes) in 0x%08X\n", unsigned(address),
-                 static_cast<unsigned long long>(value), unsigned(size), unsigned(in));
+    // The callers too, innermost first: the function writing is often a helper.
+    char chain[64] = "";
+    for (std::size_t i = 1, n = 0; i < calls.size() && i <= 4; ++i)
+        n += std::snprintf(chain + n, sizeof chain - n, " < %08X", unsigned(calls[calls.size() - 1 - i]));
+    std::fprintf(stderr, "[write] 0x%08X <- 0x%llX (%u bytes) in 0x%08X%s\n", unsigned(address),
+                 static_cast<unsigned long long>(value), unsigned(size), unsigned(in), chain);
 }
 
 void Memory::Write(u32 address, u64 value, u32 size) {

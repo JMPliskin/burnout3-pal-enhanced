@@ -76,6 +76,7 @@ struct Options {
     int frames_every = 30;         /* ...every this many frames */
     bool window = false;           /* show the picture in a window as it runs */
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
+    long long gs_trace_frame = -1; /* ... during this frame only */
     bool audio = false;            /* play the SPU2's output on the sound device */
     std::string audio_wav;         /* record the SPU2's output to this WAV file */
     std::vector<std::pair<std::string, u64>> presses;   /* --press BUTTON@FRAME */

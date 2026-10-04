@@ -30,6 +30,15 @@ struct GuestExit {
 /* Run a guest function: an override if there is one, else the translated code. */
 void Dispatch(lifted::Context& c, u32 address);
 
+/* A fresh EE register context. VU0's vf0 reads (0, 0, 0, 1) in hardware: macro
+   code multiplies by vf0w for a 1.0 (Burnout 3's menu fades do), so it starts
+   so, and nothing writes it (lifted::Cop2 drops writes to vf0). */
+inline lifted::Context NewContext() {
+    lifted::Context c{};
+    c.vf[0][3] = 0x3F800000u;
+    return c;
+}
+
 /* What the run touched, for the report at the end. */
 struct Stats {
     std::map<u32, u64> calls;                  /* function -> times called */
@@ -106,6 +115,8 @@ void InstallDevices();
 /* Each vertical blank: write the displayed picture to `dir` every `every`
    frames, at most `limit` of them (--frames). */
 void SetFrameDumps(const std::string& dir, int every, int limit);
+/* --gs-trace-frame: trace the GS during one frame. */
+void SetGsTraceFrame(long long frame);
 void FrameDone(u64 frame);
 /* The window (window.cpp): opened with --window, presented each frame. */
 bool OpenWindow(const wchar_t* title, int width, int height);

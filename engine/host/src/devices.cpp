@@ -165,7 +165,20 @@ void SetFrameDumps(const std::string& dir, int every, int limit) {
     g_frames_limit = limit;
 }
 
+namespace {
+long long g_trace_frame = -1;
+}  // namespace
+
+void SetGsTraceFrame(long long frame) { g_trace_frame = frame; }
+
 void FrameDone(u64 frame) {
+    if (g_trace_frame >= 0) {
+        // From the end of the frame before to the end of six frames on: the
+        // game draws a picture across several.
+        if ((long long)frame + 1 == g_trace_frame) gs::TheGs().trace = true;
+        else if ((long long)frame == g_trace_frame + 5) gs::TheGs().trace = false;
+        if (gs::TheGs().trace) std::fprintf(stderr, "[gs] ---- frame %llu\n", static_cast<unsigned long long>(frame + 1));
+    }
     DbcFrame();
     PresentFrame();
     if (WindowClosed()) throw GuestExit{0};             // the user closed the window

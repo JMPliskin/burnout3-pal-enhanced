@@ -347,6 +347,7 @@ int Run(const Options& options) {
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
+    SetGsTraceFrame(options.gs_trace_frame);
     bool sound = false;
     if (options.audio) {
         sound = OpenAudio();
@@ -363,7 +364,7 @@ int Run(const Options& options) {
     g_watch = options.watch;
     InstallDevices();
     InstallIopServers();
-    lifted::Context c{};
+    lifted::Context c = NewContext();
     Watchdog watchdog(options.timeout_seconds);
     std::string outcome;
     int code = 2;
@@ -408,6 +409,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--iop-trace") options.iop_trace = true;
         else if (arg == "--window") options.window = true;
         else if (arg == "--gs-trace") options.gs_trace = true;
+        else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--audio") options.audio = true;
         else if (arg == "--audio-wav" && i + 1 < argc) options.audio_wav = argv[++i];
         else if (arg == "--press" && i + 1 < argc) {
