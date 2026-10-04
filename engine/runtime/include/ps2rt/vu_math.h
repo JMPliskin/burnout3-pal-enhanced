@@ -13,6 +13,13 @@
 
 #include "ps2rt/types.h"
 
+/* The model's steps, inlined into the interpreter and compiled microprograms. */
+#if defined(_MSC_VER)
+#define PS2RT_VU_INLINE __forceinline
+#else
+#define PS2RT_VU_INLINE inline __attribute__((always_inline))
+#endif
+
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #include <emmintrin.h>
 #define PS2RT_VU_SSE 1
@@ -20,12 +27,7 @@
 #define PS2RT_VU_SSE 0
 #endif
 
-/* The lane kernels, inlined into compiled microprograms (vu_core.h). */
-#if defined(_MSC_VER)
-#define PS2RT_VU_INLINE __forceinline
-#else
-#define PS2RT_VU_INLINE inline __attribute__((always_inline))
-#endif
+
 
 namespace lifted {
 
@@ -34,21 +36,21 @@ inline constexpr u32 kMax = 0x7F7FFFFFu;
 inline constexpr u32 kOne = 0x3F800000u;
 inline constexpr int kRegR = 20, kRegI = 21, kRegQ = 22;
 
-inline u32 Clean(u32 bits) {
+PS2RT_VU_INLINE u32 Clean(u32 bits) {
     const u32 exponent = bits & 0x7F800000u;
     if (exponent == 0) return bits & kSign;
     if (exponent == 0x7F800000u) return (bits & kSign) | kMax;
     return bits;
 }
 
-inline double Value(u32 bits) {
+PS2RT_VU_INLINE double Value(u32 bits) {
     const u32 cleaned = Clean(bits);
     float value;
     std::memcpy(&value, &cleaned, sizeof value);
     return value;
 }
 
-inline u32 Result(double number) {
+PS2RT_VU_INLINE u32 Result(double number) {
     if (number != number) return kMax;
     const float narrowed = static_cast<float>(number);
     u32 bits;

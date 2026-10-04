@@ -121,9 +121,7 @@ private:
        flag_head_ the oldest. */
     FlagWrite flag_queue_[8] = {};
     int flag_head_ = 0, flag_count_ = 0;
-    void PushFlags(const FlagWrite& write) {
-        if (flag_count_ < 8) flag_queue_[(flag_head_ + flag_count_++) & 7] = write;
-    }
+    void PushFlags(const FlagWrite& write);   /* (vu_core.h) */
     void Land();                    /* results whose time has come (a look, inline) */
     void LandNow();                 /* ...landing them */
     void LandAll();

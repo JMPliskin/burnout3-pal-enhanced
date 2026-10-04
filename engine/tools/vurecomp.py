@@ -365,6 +365,16 @@ def emit_upper(word: int):
         op, operand, to_acc = fmac
         lines.append("C::Fmac<%s, %d, %d, %du>(v, %d, %d);" % (OP_NAMES[op], operand, -1 if to_acc else fd,
                                                               dest, fs, ft))
+    elif funct == 0x2E:                                                 # OPMSUB
+        lines.append("C::Opmsub<%du>(v, %d, %d, %d);" % (dest, fd, fs, ft))
+    elif funct >= 0x3C and special_index(word) == 0x2E:                 # OPMULA
+        lines.append("C::Opmula<%du>(v, %d, %d);" % (dest, fs, ft))
+    elif funct >= 0x3C and 0x10 <= special_index(word) <= 0x13:         # ITOF0 4 12 15
+        lines.append("C::Itof<%du, %d>(v, %d, %d);" % (dest, special_index(word) & 3, ft, fs))
+    elif funct >= 0x3C and 0x14 <= special_index(word) <= 0x17:         # FTOI0 4 12 15
+        lines.append("C::Ftoi<%du, %d>(v, %d, %d);" % (dest, special_index(word) & 3, ft, fs))
+    elif funct >= 0x3C and special_index(word) == 0x1D:                 # ABS
+        lines.append("C::Abs<%du>(v, %d, %d);" % (dest, ft, fs))
     else:
         lines.append("C::Cop2(v, 0x%08Xu);" % word)
     if flags:

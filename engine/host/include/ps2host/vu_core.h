@@ -56,6 +56,10 @@ inline void Vu::LandNow() {
     }
 }
 
+PS2HOST_VU_INLINE void Vu::PushFlags(const FlagWrite& write) {
+    if (flag_count_ < 8) flag_queue_[(flag_head_ + flag_count_++) & 7] = write;
+}
+
 PS2HOST_VU_INLINE void Vu::Land() {
     if ((q_busy_ && q_ready_ <= cycle_) || (p_busy_ && p_ready_ <= cycle_) ||
         (flag_count_ && flag_queue_[flag_head_].ready <= cycle_))
@@ -280,6 +284,62 @@ struct VuCore {
         lifted::RunFmac(v.regs, f);
     }
 #endif
+    /* Macro mode's COP2 operations, as it runs them (vu0.cpp's Cop2), without
+       finding which each time. */
+    template <u32 Dest>
+    static PS2HOST_VU_INLINE void Opmula(Vu& v, int fs, int ft) {
+        const u32 *a = v.regs.vf[fs], *b = v.regs.vf[ft];
+        const u32 out[3] = {lifted::Result(lifted::Value(a[1]) * lifted::Value(b[2])),
+                            lifted::Result(lifted::Value(a[2]) * lifted::Value(b[0])),
+                            lifted::Result(lifted::Value(a[0]) * lifted::Value(b[1]))};
+        if constexpr ((Dest & 8) != 0) v.regs.vacc[0] = out[0];
+        if constexpr ((Dest & 4) != 0) v.regs.vacc[1] = out[1];
+        if constexpr ((Dest & 2) != 0) v.regs.vacc[2] = out[2];
+    }
+    template <u32 Dest>
+    static PS2HOST_VU_INLINE void Opmsub(Vu& v, int fd, int fs, int ft) {
+        const u32 *a = v.regs.vf[fs], *b = v.regs.vf[ft];
+        const u32* acc = v.regs.vacc;
+        const u32 out[3] = {lifted::Binary(lifted::kMsub, a[1], b[2], acc[0]),
+                            lifted::Binary(lifted::kMsub, a[2], b[0], acc[1]),
+                            lifted::Binary(lifted::kMsub, a[0], b[1], acc[2])};
+        if (fd == 0) return;
+        if constexpr ((Dest & 8) != 0) v.regs.vf[fd][0] = out[0];
+        if constexpr ((Dest & 4) != 0) v.regs.vf[fd][1] = out[1];
+        if constexpr ((Dest & 2) != 0) v.regs.vf[fd][2] = out[2];
+    }
+    /* ITOF0/4/12/15 (Shift 0-3), FTOI the same, ABS: into ft (VF0 stays). */
+    template <u32 Dest, int Shift>
+    static PS2HOST_VU_INLINE void Itof(Vu& v, int ft, int fs) {
+        static constexpr double kScale[4] = {1.0, 16.0, 4096.0, 32768.0};
+        const u32* a = v.regs.vf[fs];
+        u32 out[4];
+        for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::Result(double(std::int32_t(a[lane])) / kScale[Shift]);
+        WriteVf<Dest>(v, ft, out);
+    }
+    template <u32 Dest, int Shift>
+    static PS2HOST_VU_INLINE void Ftoi(Vu& v, int ft, int fs) {
+        static constexpr double kScale[4] = {1.0, 16.0, 4096.0, 32768.0};
+        const u32* a = v.regs.vf[fs];
+        u32 out[4];
+        for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::FloatToInt(lifted::Value(a[lane]) * kScale[Shift]);
+        WriteVf<Dest>(v, ft, out);
+    }
+    template <u32 Dest>
+    static PS2HOST_VU_INLINE void Abs(Vu& v, int ft, int fs) {
+        const u32* a = v.regs.vf[fs];
+        u32 out[4];
+        for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::Clean(a[lane]) & ~lifted::kSign;
+        WriteVf<Dest>(v, ft, out);
+    }
+    template <u32 Dest>
+    static PS2HOST_VU_INLINE void WriteVf(Vu& v, int reg, const u32 out[4]) {
+        if (reg == 0) return;
+        if constexpr ((Dest & 8) != 0) v.regs.vf[reg][0] = out[0];
+        if constexpr ((Dest & 4) != 0) v.regs.vf[reg][1] = out[1];
+        if constexpr ((Dest & 2) != 0) v.regs.vf[reg][2] = out[2];
+        if constexpr ((Dest & 1) != 0) v.regs.vf[reg][3] = out[3];
+    }
     /* Any other upper operation, as macro mode's COP2 runs it. */
     static void Cop2(Vu& v, u32 word) { lifted::Cop2(v.regs, 0x4A000000u | (word & 0x01FFFFFF)); }
     /* CLIP: fs.xyz against |ft.w|. */
