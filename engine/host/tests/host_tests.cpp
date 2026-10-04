@@ -432,6 +432,78 @@ void GpuMemorySwizzlesAsTheGs() {
         base += 8;
     }
 }
+
+// Textures decoded on the GPU from its copy of local memory (--gpu, when the
+// GPU holds their blocks) must come out texel for texel as the GS model
+// decodes them: every format, CLUTs (CSA for 4-bit ones), TEXA, region modes.
+void GpuDecodesTexturesAsTheGs() {
+    using namespace ps2host::gs;
+    std::string error;
+    auto gpu = ps2gpu::CreateGpu(&error);
+    if (!gpu) return;                               // reported by GpuMemorySwizzlesAsTheGs
+    auto renderer = ps2gpu::CreateGsRenderer(*gpu, &error);
+    if (!renderer) return;
+    Gs gs;
+    gs.rasterize = false;
+    u32 seed = 777;
+    for (u32 i = 0; i < (4u << 20); ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        gs.memory.data()[i] = u8(seed >> 24);
+    }
+    renderer->MemoryWrite(0, 16384, gs.memory.data());
+    std::vector<u32> decoded;
+    gs.on_draw = [&](const Gs::DrawCall&) {
+        u32 w = 0, h = 0;
+        gs.DecodeTexture(&decoded, &w, &h);
+    };
+    struct Case { u32 psm, cpsm, csa; u64 clamp; const char* name; };
+    const u64 region_clamp = 2 | 2 << 2 | u64(5) << 4 | u64(40) << 14 | u64(3) << 24 | u64(20) << 34;
+    const u64 region_repeat = 3 | 3 << 2 | u64(15) << 4 | u64(32) << 14 | u64(7) << 24 | u64(8) << 34;
+    const Case cases[] = {
+        {PSMCT32, 0, 0, 0, "CT32"}, {PSMCT24, 0, 0, 0, "CT24"}, {PSMCT16, 0, 0, 0, "CT16"},
+        {PSMCT16S, 0, 0, region_clamp, "CT16S, region clamp"}, {PSMT8, 0, 0, 0, "T8, CT32 CLUT"},
+        {PSMT8, PSMCT16, 0, region_repeat, "T8, CT16 CLUT, region repeat"}, {PSMT4, 0, 3, 0, "T4, CSA 3"},
+        {PSMT8H, 0, 0, 0, "T8H"}, {PSMT4HL, 0, 5, 0, "T4HL"}, {PSMT4HH, 0, 1, 0, "T4HH"},
+        {PSMZ32, 0, 0, 0, "Z32"}, {PSMZ24, 0, 0, 0, "Z24"}, {PSMZ16, 0, 0, 0, "Z16"}, {PSMZ16S, 0, 0, 0, "Z16S"}};
+    u64 key = 1;
+    for (const Case& k : cases) {
+        const u32 tbp = 0x480, tbw = 2, lw = 6, lh = 6;             // 64 x 64
+        const u64 texa = 0x40 | 1ull << 15 | 0x90ull << 32;           // TA0 0x40, AEM, TA1 0x90
+        const u64 tex0 = u64(tbp) | u64(tbw) << 14 | u64(k.psm) << 20 | u64(lw) << 26 | u64(lh) << 30 |
+                         u64(0x2400) << 37 | u64(k.cpsm) << 51 | u64(k.csa) << 56 | 1ull << 61;   // CLD 1
+        gs.WriteRegister(0x3B, texa);
+        gs.WriteRegister(0x08, k.clamp);
+        gs.WriteRegister(0x06, tex0);
+        gs.WriteRegister(0x00, 6 | 1 << 4);                           // a textured sprite
+        gs.WriteRegister(0x05, 0);
+        gs.WriteRegister(0x05, (u64(16) << 4) | (u64(16) << 4) << 16);
+        ps2gpu::GsTextureDecode d;
+        d.tbp = tbp;
+        d.tbw = tbw;
+        d.psm = k.psm;
+        d.tw = 1u << lw;
+        d.th = 1u << lh;
+        d.wms = u32(k.clamp & 3);
+        d.wmt = u32(k.clamp >> 2 & 3);
+        d.minu = u32(k.clamp >> 4 & 1023);
+        d.maxu = u32(k.clamp >> 14 & 1023);
+        d.minv = u32(k.clamp >> 24 & 1023);
+        d.maxv = u32(k.clamp >> 34 & 1023);
+        d.texa_lo = u32(texa & 0x80FF);
+        d.ta1 = u32(texa >> 32 & 0xFF);
+        d.csa = k.csa;
+        d.clut = gs.Clut().data();
+        renderer->TextureFromMemory(key, d);
+        std::vector<u32> back;
+        u32 w = 0, h = 0;
+        const bool read = renderer->ReadTexture(key, &back, &w, &h);
+        u32 wrong = 0;
+        for (std::size_t i = 0; i < back.size() && i < decoded.size(); ++i) wrong += back[i] != decoded[i];
+        const std::string what = std::string(k.name) + ": decoded on the GPU as the GS model decodes it";
+        Check(read && back.size() == decoded.size() && decoded.size() == 64 * 64 && wrong == 0, what.c_str());
+        ++key;
+    }
+}
 #endif
 
 // VIF1 into a VU: a microprogram loaded with MPG and run with MSCAL, UNPACK's
@@ -620,6 +692,7 @@ int main() {
     GsFillsTopLeft();
 #if PS2HOST_VULKAN
     GpuMemorySwizzlesAsTheGs();
+    GpuDecodesTexturesAsTheGs();
 #endif
     VifRunsMicroprogramsOnAVu();
     VuTimingIsVisible();

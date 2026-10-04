@@ -30,6 +30,8 @@ layout(push_constant) uniform Params {
     uint tw, th;        // TEX0's size (0: the image's own)
     uint tex_format;    // a target read as 0 32-bit, 1 24-bit, 2 16-bit texels
     uint ta0, ta1, aem; // TEXA
+    uint logic;         // FBMSK masking part of a channel: 1 the AND pass, 2 the OR pass, 0 neither
+    uint keep;          // ...the bits FBMSK keeps, RGBA bytes as the target holds them
 } p;
 
 // A texel coordinate wrapped as CLAMP says, as the software GS's Wrap.
@@ -132,6 +134,10 @@ void main() {
     if (p.pabe == 2u && c.a >= 128.0) discard;
 
     colour = c / 255.0;
+    // A partly masked channel: the target ANDed with what FBMSK keeps, then
+    // ORed with the rest of the source's bits (the pipelines' logic ops).
+    if (p.logic == 1u) colour = unpackUnorm4x8(p.keep);
+    if (p.logic == 2u) colour = unpackUnorm4x8(packUnorm4x8(c / 255.0) & ~p.keep);
 #ifndef SINGLE_OUTPUT
     float k = p.fix_factor != 0u ? float(p.fix) : c.a;
     factor = vec4(k / 128.0);

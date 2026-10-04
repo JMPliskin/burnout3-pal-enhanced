@@ -175,9 +175,22 @@ struct Bridge {
     enum : u8 { kSame = 0, kCpuNewer = 1, kGpuNewer = 2 };
     std::vector<u8> blocks = std::vector<u8>(16384, kSame);
     u64 downloads = 0, uploads = 0;  // blocks copied GPU -> CPU, CPU -> GPU
+    // Why blocks came back to the CPU (PS2HOST_GPU_LOG): 0 a texture decoded,
+    // 1 the GS model reading, 2 the GS model writing.
+    int cause = 1;
+    u64 downloads_by[3] = {};
+    std::map<u32, u64> texture_downloads;   // by the texture's TEX0 PSM << 16 | TBW
     u64 write_backs = 0, reloads = 0, decodes = 0;
     u64 unchanged = 0;              // textures invalidated whose texels proved the same
-    u64 gpu_textures = 0;           // textures made images from GPU memory instead
+    u64 gpu_decodes = 0;            // textures decoded on the GPU from its copy of local memory
+    // PS2HOST_GPU_DUMP_FRAME=N (and PS2HOST_GPU_DUMP_DIR): during frame N, each
+    // target as it stood when drawing moved on to another, as a BMP, with a
+    // line per pass on stderr - to see which pass of a frame goes wrong.
+    u64 frame = 0;
+    long long dump_frame = -1;
+    std::string dump_passes = ".";
+    std::tuple<u32, u32, u32> last_target{~0u, 0, 0};
+    u32 pass = 0;
 };
 
 Bridge* g_bridge = nullptr;
@@ -204,6 +217,7 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
         } else {
             b.renderer->MemoryRead(i, j, bytes + std::size_t(i) * 256);
             b.downloads += j - i;
+            b.downloads_by[b.cause] += j - i;
         }
         i = j;
     }
@@ -342,10 +356,11 @@ bool GpuHolds(const Bridge& b, u32 begin, u32 end) {
 }
 
 /* The renderer's key for the texture the current primitive samples, decoded if
-   need be - or 0 when `on_gpu` allows it and the GPU holds the texture's
-   blocks: then it is better unswizzled on the GPU than brought back to be
-   decoded (the race samples its own targets under other widths). */
-u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th, bool on_gpu) {
+   need be: by the CPU from its copy of local memory, or - when the GPU holds
+   the texture's blocks newer (the race reads its own targets' alpha as
+   PSMT8H textures, its depth buffer as PSMZ16) - by the GPU from its own,
+   rather than wait for them to come back. */
+u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     const u32 tbp = Bits(c.tex0, 0, 14), tbw = Bits(c.tex0, 14, 6), psm = Bits(c.tex0, 20, 6);
     // What decides the decoded texels: where and how it is stored (TBP0, TBW,
     // PSM, TW, TH), how a region mode wraps it (CLAMP), TEXA, the CLUT's
@@ -368,10 +383,39 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th, boo
     // as surely as memory written there.
     for (const auto& [okey, o] : b.owned)
         if (o.drawn_serial > t.decoded_serial && o.begin < t.end && t.begin < o.drawn_end) t.valid = false;
-    if (!t.valid && on_gpu && GpuHolds(b, t.begin, t.end)) return 0;
+    if (!t.valid && GpuHolds(b, t.begin, t.end)) {
+        Timed timed(Section::GpuSync);
+        for (auto& [okey, o] : b.owned)
+            if (o.gpu_newer && o.begin < t.end && t.begin < o.drawn_end) WriteBack(b, o);
+        Coherent(b, t.begin, t.end, true);
+        ps2gpu::GsTextureDecode d;
+        d.tbp = tbp;
+        d.tbw = tbw;
+        d.psm = psm;
+        d.tw = tw;
+        d.th = th;
+        d.wms = Bits(c.clamp, 0, 2);
+        d.wmt = Bits(c.clamp, 2, 2);
+        d.minu = Bits(c.clamp, 4, 10);
+        d.maxu = Bits(c.clamp, 14, 10);
+        d.minv = Bits(c.clamp, 24, 10);
+        d.maxv = Bits(c.clamp, 34, 10);
+        d.texa_lo = u32(texa & 0x80FF);
+        d.ta1 = Bits(texa, 32, 8);
+        d.csa = Bits(c.tex0, 56, 5);
+        d.clut = gs::TheGs().Clut().data();
+        b.renderer->TextureFromMemory(t.renderer_key, d);
+        t.valid = true;
+        t.decoded = false;              // the CPU's copy was not read: no hash to compare
+        t.decoded_serial = b.serial;
+        ++b.gpu_decodes;
+    }
     if (!t.valid) {
         Timed timed(Section::GpuSync);
+        b.cause = 0;
+        const u64 before = b.downloads;
         Sync(b, t.begin, t.end, false);
+        if (b.downloads != before) b.texture_downloads[psm << 16 | tbw] += b.downloads - before;
         // Games send the same texels again and again (Burnout 3 its textures
         // every frame, through PATH3): decoded again only if its blocks hold
         // something else than when it was last decoded.
@@ -478,6 +522,20 @@ std::size_t Triangles(const gs::Gs::DrawCall& call, bool fst, u32 tw, u32 th, ps
     return 0;
 }
 
+void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride, u32 w, u32 h);
+
+/* PS2HOST_GPU_DUMP_FRAME: the target drawing just left, as it stands. */
+void DumpPass(Bridge& s, const std::tuple<u32, u32, u32>& target) {
+    const auto [fbp, fbw, psm] = target;
+    std::vector<u32> pixels;
+    u32 w = 0, h = 0;
+    if (!s.renderer->ReadTarget(fbp, fbw, psm, &pixels, &w, &h)) return;
+    char name[96];
+    std::snprintf(name, sizeof name, "/pass_%03u_%X_%u_%02X.bmp", unsigned(s.pass), unsigned(fbp), unsigned(fbw),
+                  unsigned(psm));
+    WriteBmp(s.dump_passes + name, pixels, w, std::min(w, 640u), std::min(h, 512u));
+}
+
 void OnDraw(const gs::Gs::DrawCall& call) {
     Timed timed(Section::GpuBridge);
     Bridge& s = *g_bridge;
@@ -533,6 +591,21 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         if (Bits(c.test, 16, 1) && Bits(c.test, 17, 2) == 0) return;    // ZTST NEVER: every pixel fails
     }
     const u32 rows = std::max(1u, y1);
+    if (s.primary && (long long)s.frame == s.dump_frame) {
+        const auto key = std::make_tuple(state.fbp, state.fbw, state.psm);
+        if (key != s.last_target) {
+            if (std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
+            ++s.pass;
+            std::fprintf(stderr, "[gpu-pass] %03u: frame %X/%u/%02X fbmsk %08X; prim %llX tex0 %llX clamp %llX; "
+                                 "alpha %llX test %llX zbuf %llX\n",
+                         unsigned(s.pass), unsigned(state.fbp), unsigned(state.fbw), unsigned(state.psm),
+                         unsigned(state.fbmsk), static_cast<unsigned long long>(call.prim),
+                         static_cast<unsigned long long>(c.tex0), static_cast<unsigned long long>(c.clamp),
+                         static_cast<unsigned long long>(c.alpha), static_cast<unsigned long long>(c.test),
+                         static_cast<unsigned long long>(c.zbuf));
+            s.last_target = key;
+        }
+    }
     Owned* target = nullptr;
     if (s.primary) target = &Use(s, state.fbp, state.fbw, state.psm, false, state.width, state.height, rows);
     if (state.textured) {
@@ -566,19 +639,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
             state.aem = Bits(call.texa, 15, 1) != 0;
         }
         if (!state.texture_target) {
-            const u32 tex_fbp = tbp_blocks / 32, tex_fbw = std::max(1u, Bits(c.tex0, 14, 6));
-            const bool on_gpu = s.primary && tex_format < 3 && tbp_blocks % 32 == 0;
-            const u64 texture = s.primary ? CachedTexture(s, c, call.texa, tw, th, on_gpu) : 0;
-            if (s.primary && !texture) {
-                // An image of the texture, from GPU memory, sampled as a target is.
-                Use(s, tex_fbp, tex_fbw, tex_psm, false, std::min(2048u, tex_fbw * 64), std::max(512u, th), th);
-                state.texture_target = true;
-                state.tex_fbp = tex_fbp;
-                state.tex_fbw = tex_fbw;
-                state.tex_target_psm = tex_psm;
-                ++s.gpu_textures;
-            } else if (s.primary) {
-                state.texture = texture;
+            if (s.primary) {
+                state.texture = CachedTexture(s, c, call.texa, tw, th);
             } else {
                 // Decoded again when the texture's registers change, local memory
                 // is uploaded into, or a draw since went into the texture's blocks.
@@ -712,12 +774,17 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
     if (!bridge.renderer) return false;
     g_bridge = &bridge;
     bridge.primary = mode == GpuMode::Primary;
+    if (const char* dump = std::getenv("PS2HOST_GPU_DUMP_FRAME")) bridge.dump_frame = std::atoll(dump);
+    if (const char* dir = std::getenv("PS2HOST_GPU_DUMP_DIR")) bridge.dump_passes = dir;
     bridge.targets_as_textures = mode == GpuMode::ShadowRtt;
     gs::Gs& g = gs::TheGs();
     g.on_draw = OnDraw;
     if (bridge.primary) {
         g.rasterize = false;
-        g.on_memory = [](u32 begin, u32 end, bool write) { Sync(*g_bridge, begin, end, write); };
+        g.on_memory = [](u32 begin, u32 end, bool write) {
+            g_bridge->cause = write ? 2 : 1;
+            Sync(*g_bridge, begin, end, write);
+        };
     }
     if (show || bridge.primary) {
         // The window shows the GPU's picture: the displayed buffer read back
@@ -753,11 +820,23 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
     if (!g_bridge) return;
     Bridge& s = *g_bridge;
     if (s.primary) {
+        if ((long long)s.frame == s.dump_frame && std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
+        s.frame = frame + 1;
         if (frame % 100 == 0)
             std::fprintf(stderr, "[gpu] frame %llu: %llu draws, %llu write-backs, %llu reloads, %llu decodes, %zu images, %zu textures\n",
                          static_cast<unsigned long long>(frame), static_cast<unsigned long long>(s.serial),
                          static_cast<unsigned long long>(s.write_backs), static_cast<unsigned long long>(s.reloads),
                          static_cast<unsigned long long>(s.decodes), s.owned.size(), s.textures.size());
+        if (std::getenv("PS2HOST_GPU_LOG")) {
+            std::fprintf(stderr, "[gpu]   KB to the CPU: %llu for textures, %llu for reads, %llu for writes;",
+                         static_cast<unsigned long long>(s.downloads_by[0] / 4),
+                         static_cast<unsigned long long>(s.downloads_by[1] / 4),
+                         static_cast<unsigned long long>(s.downloads_by[2] / 4));
+            for (const auto& [kind, blocks] : s.texture_downloads)
+                std::fprintf(stderr, " psm %02X tbw %u: %llu KB", unsigned(kind >> 16), unsigned(kind & 0xFFFF),
+                             static_cast<unsigned long long>(blocks / 4));
+            std::fprintf(stderr, "\n");
+        }
         if (std::getenv("PS2HOST_GPU_LOG"))
             for (const auto& [key, o] : s.owned)
                 std::fprintf(stderr, "[gpu]   %s %X/%u/%02X blocks %X-%X drawn to %X, %ux%u; reloads new %llu memory %llu draw %llu write-back %llu\n",
@@ -831,13 +910,14 @@ std::string GpuShadowSummary() {
     if (g_bridge->primary) {
         std::snprintf(text, sizeof text,
                       "gpu: %llu images into GPU local memory, %llu out of it; %llu KB to the CPU, %llu KB"
-                      " from it; %llu textures decoded (%llu more found unchanged)",
+                      " from it; %llu textures decoded (%llu more found unchanged), %llu on the GPU",
                       static_cast<unsigned long long>(g_bridge->write_backs),
                       static_cast<unsigned long long>(g_bridge->reloads),
                       static_cast<unsigned long long>(g_bridge->downloads / 4),
                       static_cast<unsigned long long>(g_bridge->uploads / 4),
                       static_cast<unsigned long long>(g_bridge->decodes),
-                      static_cast<unsigned long long>(g_bridge->unchanged));
+                      static_cast<unsigned long long>(g_bridge->unchanged),
+                      static_cast<unsigned long long>(g_bridge->gpu_decodes));
         return text;
     }
     if (!g_bridge->frames) return "";

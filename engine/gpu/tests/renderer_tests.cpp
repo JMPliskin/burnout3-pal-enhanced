@@ -338,6 +338,28 @@ void RenderToTexture(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x90, 4, 4) == Rgba(0x11, 0x22, 0x33, 0x80), "a target drawing itself reads a copy");
 }
 
+// FBMSK masking part of a channel keeps exactly those bits: Burnout 3's race
+// writes two bits of each half of its frame's pixels through a 16-bit view.
+void PartlyMaskedChannels(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x94);
+    Rect(renderer, state, 0, 0, 16, 16, 0x12345678u);
+    state.fbmsk = 0x0F0F0F0Fu;
+    Rect(renderer, state, 0, 0, 8, 16, 0xFFFFFFFFu);
+    Check(Pixel(renderer, 0x94, 2, 2) == 0xF2F4F6F8u, "a partly masked channel keeps its masked bits");
+    Check(Pixel(renderer, 0x94, 12, 2) == 0x12345678u, "...and nothing outside the draw changes");
+    // A 16-bit target: FBMSK in its own bits (0x3FFF keeps R, G and B's low
+    // four; B's top bit and A are written).
+    ps2gpu::GsDrawState sixteen = Target(0x95);
+    sixteen.psm = 0x02;
+    Rect(renderer, sixteen, 0, 0, 16, 16, 0x00102030u);        // A 0, B 0x10, G 0x20, R 0x30
+    sixteen.fbmsk = 0x3FFF;
+    Rect(renderer, sixteen, 0, 0, 16, 16, 0x80F8F8F8u);
+    std::vector<std::uint32_t> pixels;
+    std::uint32_t w = 0, h = 0;
+    renderer.ReadTarget(0x95, 1, 0x02, &pixels, &w, &h);
+    Check(!pixels.empty() && pixels[0] == 0x80902030u, "a 16-bit target's FBMSK in its own bits");
+}
+
 void TargetFromMemory(ps2gpu::GsRenderer& renderer) {
     std::vector<std::uint32_t> pixels(64 * 64);
     for (std::uint32_t i = 0; i < pixels.size(); ++i) pixels[i] = Rgba(std::uint8_t(i), std::uint8_t(i >> 6), 7, 0x80);
@@ -414,6 +436,7 @@ int main() {
     Addressed(*renderer);
     RenderToTexture(*renderer);
     TargetFromMemory(*renderer);
+    PartlyMaskedChannels(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

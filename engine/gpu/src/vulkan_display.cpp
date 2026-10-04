@@ -179,6 +179,7 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     v13.synchronization2 = VK_TRUE;
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features.features.dualSrcBlend = supported.dualSrcBlend;
+    features.features.logicOp = supported.logicOp;
     features.pNext = &v13;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pNext = &features;

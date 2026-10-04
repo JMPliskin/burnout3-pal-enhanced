@@ -533,14 +533,16 @@ u32 Gs::TexelAt(const Setup& s, int iu, int iv) const {
     const int u = Wrap(iu, s.tw, s.wms, s.minu, s.maxu);
     const int v = Wrap(iv, s.th, s.wmt, s.minv, s.maxv);
     const u32 raw = memory.Read(s.tbp, s.tbw, u32(u) & 2047, u32(v) & 2047, s.tpsm);
+    // A Z-format texture reads as its CT counterpart (Burnout 3's race reads
+    // its depth buffer as a PSMZ16 texture, into the frame's alpha).
     switch (s.tpsm) {
-        case PSMCT32: return raw;
-        case PSMCT24: {
+        case PSMCT32: case PSMZ32: return raw;
+        case PSMCT24: case PSMZ24: {
             const u32 rgb = raw & 0xFFFFFF;
             const u32 a = (Bits(s.texa, 15, 1) && !rgb) ? 0 : Bits(s.texa, 0, 8);
             return rgb | a << 24;
         }
-        case PSMCT16: case PSMCT16S: return From16(raw, s.texa);
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return From16(raw, s.texa);
         case PSMT8: case PSMT8H: return (*s.clut)[raw & 0xFF];
         case PSMT4: case PSMT4HL: case PSMT4HH: return (*s.clut)[(s.csa * 16 + (raw & 15)) & 0xFF];
         default: return raw;

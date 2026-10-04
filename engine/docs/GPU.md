@@ -160,12 +160,23 @@ proved itself in PCSX2's hardware renderers, made smaller:
      for nothing;
    * *targets as textures*: a TEX0 whose TBP and format match a target's
      samples the target's image;
-   * *other textures*: decoded by the host into a cache keyed by
-     TBP/TBW/PSM/TW/TH, CLAMP's region modes, TEXA and the CLUT's contents;
-     once memory under one is written or the GPU draws over it, its blocks
-     are hashed and it is decoded again only if they changed (the car
-     select: 646 decodes, 239,661 re-sent textures found unchanged); the
-     least recently used of 2,048 released;
+   * *other textures*: decoded into a cache keyed by TBP/TBW/PSM/TW/TH,
+     CLAMP's region modes, TEXA and the CLUT's contents. By the host, from
+     the CPU's copy: once memory under one is written its blocks are hashed
+     and it is decoded again only if they changed (the car select: 646
+     decodes, 239,661 re-sent textures found unchanged). By the GPU, from its
+     copy (shaders/decode.comp, every format, CLUT, CSA, TEXA and the region
+     modes as the host's TexelAt; GpuDecodesTexturesAsTheGs checks all 14),
+     when the GPU holds the blocks newer - the race reads its targets' alpha
+     as PSMT8H textures and its depth buffer as PSMZ16, which brought 13 GB
+     back to the CPU over 9,550 frames before. The least recently used of
+     2,048 released;
+   * *FBMSK exactly*: the mask is taken in the target's own format (a 16-bit
+     target's five bits a channel are the top of the image's bytes), and a
+     channel masked only in part is drawn in two passes with logic ops - AND
+     with the bits kept, then OR with the rest of the source - where the
+     blend leaves the source as it is (the race writes two bits of each half
+     of its frame's 32-bit pixels through a 16-bit view, mask 0x3FFF);
    * *lines and points*: one-pixel bands that cover what the software GS
      plots (the position rounded, both ends);
    * primitives wholly outside the scissor, and ZTST NEVER, are dropped
@@ -176,8 +187,9 @@ proved itself in PCSX2's hardware renderers, made smaller:
    `car_select.args`, 40 pictures from boot to the 3D garage: 35 identical,
    the rest 99.30-99.98% (the globe's light rays, drawn as lines; the
    garage). Keeping GPU and memory in step takes 1.7% of the run.
-   The comparison found two bugs in the reference: the software GS drew
-   triangles' right and bottom edges (the GS fills top-left), and
+   The comparison found bugs in the reference too: the software GS drew
+   triangles' right and bottom edges (the GS fills top-left) and read
+   Z-format textures raw (the GS reads them as their CT formats), and
    `sceCdReadClock` answered wall-clock time under `--virtual-time`, so the
    EA Trax playlist differed between runs.
    Local memory stays the meeting point: the shadow mode's comparison, run on

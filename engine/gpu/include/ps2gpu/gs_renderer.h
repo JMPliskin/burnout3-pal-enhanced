@@ -115,6 +115,17 @@ struct GsDrawState {
     bool depth_write = true;                             /* !ZBUF.ZMSK */
 };
 
+/* A texture in GS local memory, and how its texels expand: TEX0's TBP0 (in
+   blocks), TBW, PSM and size, CLAMP's modes and region, TEXA, CSA, and the
+   CLUT as the GS model holds it (256 RGBA entries; palettized formats). */
+struct GsTextureDecode {
+    std::uint32_t tbp = 0, tbw = 1, psm = 0, tw = 1, th = 1;
+    std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
+    std::uint32_t texa_lo = 0;      // TA0, and AEM at bit 15
+    std::uint32_t ta1 = 0, csa = 0;
+    const std::uint32_t* clut = nullptr;
+};
+
 class GsRenderer {
 public:
     virtual ~GsRenderer() = default;
@@ -158,10 +169,16 @@ public:
                                std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) = 0;
     virtual void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                                  std::uint32_t zpsm) = 0;
+    /* A texture decoded from GPU memory, as the host's software GS decodes
+       one (GsTextureDecode); replaces what the key named. */
+    virtual void TextureFromMemory(std::uint64_t key, const GsTextureDecode& decode) = 0;
     /* A depth buffer's Z (the GS's, unsigned), rows top-down; false if there
        is none of that size. */
     virtual bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
                            std::vector<std::uint32_t>* z) = 0;
+    /* A texture's texels, RGBA, rows top-down; false if there is none. */
+    virtual bool ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
+                             std::uint32_t* height) = 0;
     /* A target's pixels, RGBA in memory, rows top-down; false if there is none. */
     virtual bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
                             std::vector<std::uint32_t>* pixels, std::uint32_t* width,

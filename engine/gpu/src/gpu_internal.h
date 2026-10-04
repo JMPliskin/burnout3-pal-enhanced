@@ -50,6 +50,7 @@ public:
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool dual_source = false;       /* dualSrcBlend: the GS's blending */
+    bool logic_op = false;          /* logicOp: FBMSK's partly masked channels */
     bool owns_device = true;
 
 private:

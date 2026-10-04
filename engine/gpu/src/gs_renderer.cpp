@@ -27,6 +27,7 @@
 #include "date_frag.h"
 #include "date_vert.h"
 #include "swizzle_comp.h"
+#include "decode_comp.h"
 
 namespace ps2gpu {
 
@@ -45,6 +46,7 @@ struct FragmentParams {
     std::uint32_t textured, tfx, tcc, atst, aref, fix_factor, fix, afail, fge, fogcol, pabe;
     std::uint32_t bilinear, wms, wmt, minu, maxu, minv, maxv;
     std::uint32_t tw, th, tex_format, ta0, ta1, aem;
+    std::uint32_t logic, keep;
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -90,6 +92,11 @@ void MemoryBarrier(VkCommandBuffer cmd) {
                          nullptr, 0, nullptr);
 }
 
+/* decode.comp's push constants: GsTextureDecode without the CLUT. */
+struct DecodeParams {
+    std::uint32_t tbp, tbw, psm, tw, th, wms, wmt, minu, maxu, minv, maxv, texa_lo, ta1, csa;
+};
+
 /* swizzle.comp's push constants. */
 struct SwizzleParams {
     std::uint32_t bp, bw, psm, cols, rows, stride, to_memory, depth;
@@ -98,19 +105,42 @@ struct SwizzleParams {
 constexpr VkDeviceSize kLocalMemory = 4u << 20;
 constexpr VkDeviceSize kLinear = VkDeviceSize(2048) * 1024 * 4;    // the largest image, a value a pixel
 
-/* FBMSK as the blender's write mask: a channel is kept when every bit of its
-   byte is masked (a partly masked byte is written whole - not yet exact). */
-std::uint32_t WriteMask(std::uint32_t fbmsk) {
+/* FBMSK as the bits of the target's RGBA bytes it keeps. A 16-bit format's
+   five bits a channel are the top five of the byte (the rest stay 0 either
+   way, so count as kept), its alpha bit the byte's top bit; a 24-bit format
+   keeps the alpha it does not store. */
+std::uint32_t KeptBits(std::uint32_t fbmsk, std::uint32_t psm) {
+    if (psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A) {
+        const std::uint32_t r = ((fbmsk & 31) << 3) | 7, g = (((fbmsk >> 5) & 31) << 3) | 7;
+        const std::uint32_t b = (((fbmsk >> 10) & 31) << 3) | 7, a = (fbmsk & 0x8000) ? 0xFF : 0x7F;
+        return r | g << 8 | b << 16 | a << 24;
+    }
+    if (psm == 0x01 || psm == 0x31) return fbmsk | 0xFF000000u;
+    return fbmsk;
+}
+
+/* The channels written whole or in part (Vulkan's write mask: R, G, B, A in
+   bits 0-3). */
+std::uint32_t WriteMask(std::uint32_t kept) {
     std::uint32_t mask = 0;
     for (int channel = 0; channel < 4; ++channel)
-        if (((fbmsk >> (8 * channel)) & 0xFF) != 0xFF) mask |= 1u << channel;
+        if (((kept >> (8 * channel)) & 0xFF) != 0xFF) mask |= 1u << channel;
     return mask;
+}
+
+/* Whether some channel is written only in part. */
+bool PartlyMasked(std::uint32_t kept) {
+    for (int channel = 0; channel < 4; ++channel) {
+        const std::uint32_t byte = (kept >> (8 * channel)) & 0xFF;
+        if (byte != 0 && byte != 0xFF) return true;
+    }
+    return false;
 }
 
 /* The pipeline a state needs: blending and its operands, and the write mask
    (bits 9-12, inverted so that 0 is the plain pipeline). */
 std::uint32_t PipelineKey(const GsDrawState& s) {
-    const std::uint32_t masked = (~WriteMask(s.fbmsk) & 0xF) << 9;
+    const std::uint32_t masked = (~WriteMask(KeptBits(s.fbmsk, s.psm)) & 0xF) << 9;
     if (!s.blend) return masked;
     return masked | 1u | std::uint32_t(s.a) << 1 | std::uint32_t(s.b) << 3 | std::uint32_t(s.c) << 5 |
            std::uint32_t(s.d) << 7;
@@ -123,7 +153,7 @@ std::uint32_t PipelineKey(const GsDrawState& s) {
 VkPipelineColorBlendAttachmentState Blending(std::uint32_t key, bool dual_source) {
     VkPipelineColorBlendAttachmentState b{};
     b.colorWriteMask = ~(key >> 9) & 0xF;           // R, G, B, A are bits 0-3, as Vulkan has them
-    if (!(key & 1)) return b;
+    if (!(key & 1) || (key >> 13) & 3) return b;    // (a logic op replaces blending)
     const auto a = BlendColour((key >> 1) & 3), bb = BlendColour((key >> 3) & 3), d = BlendColour((key >> 7) & 3);
     const auto c = BlendAlpha((key >> 5) & 3);
     const bool dest_alpha = c == BlendAlpha::Dest;
@@ -158,7 +188,7 @@ VkPipelineColorBlendAttachmentState Blending(std::uint32_t key, bool dual_source
 }
 
 bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
-    return x.fbp == y.fbp && x.fbw == y.fbw && x.psm == y.psm && x.scissor_x0 == y.scissor_x0 &&
+    return x.fbp == y.fbp && x.fbw == y.fbw && x.psm == y.psm && x.fbmsk == y.fbmsk && x.scissor_x0 == y.scissor_x0 &&
            x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
            x.tcc == y.tcc && x.bilinear == y.bilinear && x.wms == y.wms && x.wmt == y.wmt && x.minu == y.minu &&
@@ -199,8 +229,12 @@ public:
                        std::uint32_t zpsm, std::uint32_t cols, std::uint32_t rows) override;
     void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                          std::uint32_t zpsm) override;
+    void TextureFromMemory(std::uint64_t key, const GsTextureDecode& decode) override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
                     std::uint32_t* width, std::uint32_t* height) override;
+    bool ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
+                     std::uint32_t* height) override;
+    bool ReadImage(Image& image, std::vector<std::uint32_t>* pixels);
 
 private:
     using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
@@ -261,8 +295,12 @@ private:
     /* An image's first rows into the linear buffer, or back. */
     void ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect, std::uint32_t rows);
     void LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect);
-    VkBuffer gsmem_ = VK_NULL_HANDLE, linear_ = VK_NULL_HANDLE;
-    VkDeviceMemory gsmem_memory_ = VK_NULL_HANDLE, linear_memory_ = VK_NULL_HANDLE;
+    /* A texture image of this size under `key`, made (or made again) if need be. */
+    Texture* TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height);
+    VkBuffer gsmem_ = VK_NULL_HANDLE, linear_ = VK_NULL_HANDLE, clut_ = VK_NULL_HANDLE;
+    VkDeviceMemory gsmem_memory_ = VK_NULL_HANDLE, linear_memory_ = VK_NULL_HANDLE, clut_memory_ = VK_NULL_HANDLE;
+    VkShaderModule decode_ = VK_NULL_HANDLE;
+    VkPipeline decode_pipeline_ = VK_NULL_HANDLE;
     VkShaderModule swizzle_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout swizzle_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool swizzle_pool_ = VK_NULL_HANDLE;
@@ -444,7 +482,8 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (!DeviceBuffer(kLocalMemory, usage, &gsmem_, &gsmem_memory_) ||
-        !DeviceBuffer(kLinear, usage, &linear_, &linear_memory_)) {
+        !DeviceBuffer(kLinear, usage, &linear_, &linear_memory_) ||
+        !DeviceBuffer(1024, usage, &clut_, &clut_memory_)) {
         if (error) *error = "no GPU memory for GS local memory";
         return false;
     }
@@ -452,14 +491,15 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
     ci.codeSize = sizeof spirv_swizzle_comp;
     ci.pCode = spirv_swizzle_comp;
     vkCreateShaderModule(g_.device, &ci, nullptr, &swizzle_);
-    VkDescriptorSetLayoutBinding bindings[2] = {
+    VkDescriptorSetLayoutBinding bindings[3] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    dli.bindingCount = 2;
+    dli.bindingCount = 3;
     dli.pBindings = bindings;
     vkCreateDescriptorSetLayout(g_.device, &dli, nullptr, &swizzle_set_layout_);
-    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpi.maxSets = 1;
     dpi.poolSizeCount = 1;
@@ -473,9 +513,10 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
         if (error) *error = "no descriptor set for GS local memory";
         return false;
     }
-    VkDescriptorBufferInfo infos[2] = {{gsmem_, 0, VK_WHOLE_SIZE}, {linear_, 0, VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet writes[2] = {};
-    for (int i = 0; i < 2; ++i) {
+    VkDescriptorBufferInfo infos[3] = {{gsmem_, 0, VK_WHOLE_SIZE}, {linear_, 0, VK_WHOLE_SIZE},
+                                       {clut_, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet writes[3] = {};
+    for (int i = 0; i < 3; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = swizzle_set_;
         writes[i].dstBinding = std::uint32_t(i);
@@ -483,8 +524,9 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo = &infos[i];
     }
-    vkUpdateDescriptorSets(g_.device, 2, writes, 0, nullptr);
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SwizzleParams)};
+    vkUpdateDescriptorSets(g_.device, 3, writes, 0, nullptr);
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                             std::uint32_t(std::max(sizeof(SwizzleParams), sizeof(DecodeParams)))};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     lci.setLayoutCount = 1;
     lci.pSetLayouts = &swizzle_set_layout_;
@@ -500,6 +542,15 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
     if (!swizzle_ ||
         vkCreateComputePipelines(g_.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &swizzle_pipeline_) != VK_SUCCESS) {
         if (error) *error = "the swizzle shader did not load";
+        return false;
+    }
+    ci.codeSize = sizeof spirv_decode_comp;
+    ci.pCode = spirv_decode_comp;
+    vkCreateShaderModule(g_.device, &ci, nullptr, &decode_);
+    cpi.stage.module = decode_;
+    if (!decode_ ||
+        vkCreateComputePipelines(g_.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &decode_pipeline_) != VK_SUCCESS) {
+        if (error) *error = "the texture decode shader did not load";
         return false;
     }
     // Local memory starts as zeros, the CPU's copy too.
@@ -677,6 +728,10 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     const VkPipelineColorBlendAttachmentState blend = Blending(key, g_.dual_source);
     VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    if ((key >> 13) & 3) {                          // bits 13-14: the logic op of a partly masked draw
+        blending.logicOpEnable = VK_TRUE;
+        blending.logicOp = ((key >> 13) & 3) == 1 ? VK_LOGIC_OP_AND : VK_LOGIC_OP_OR;
+    }
     blending.attachmentCount = 1;
     blending.pAttachments = &blend;
     // Depth's test, write and comparison are set per batch (Vulkan 1.3).
@@ -871,6 +926,11 @@ void VulkanGsRenderer::Fill(Texture& texture, const std::uint32_t* pixels) {
 void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
                                      std::uint32_t height) {
     Flush();                        // what is pending may sample the old contents
+    Texture* texture = TextureImage(key, width, height);
+    if (texture) Fill(*texture, pixels);
+}
+
+Texture* VulkanGsRenderer::TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height) {
     Texture& texture = textures_[key];
     if (texture.image.width != width || texture.image.height != height) {
         if (texture.image.image) g_.Submit();   // recorded draws may still sample it
@@ -880,10 +940,41 @@ void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pix
                 set = VK_NULL_HANDLE;
             }
         DestroyImage(texture.image);
-        if (!MakeImage(texture.image, width, height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
-            return;
+        if (!MakeImage(texture.image, width, height,
+                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+            return nullptr;
     }
-    Fill(texture, pixels);
+    return &texture;
+}
+
+void VulkanGsRenderer::TextureFromMemory(std::uint64_t key, const GsTextureDecode& d) {
+    Flush();                        // what is pending may sample the old contents
+    Texture* texture = TextureImage(key, d.tw, d.th);
+    if (!texture) return;
+    Image& t = texture->image;
+    const DecodeParams params{d.tbp, d.tbw, d.psm, d.tw, d.th, d.wms, d.wmt, d.minu, d.maxu, d.minv, d.maxv,
+                              d.texa_lo, d.ta1, d.csa};
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        if (d.clut) vkCmdUpdateBuffer(cmd, clut_, 0, 1024, d.clut);
+        MemoryBarrier(cmd);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
+                                nullptr);
+        vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
+        vkCmdDispatch(cmd, (d.tw + 7) / 8, (d.th + 7) / 8, 1);
+        MemoryBarrier(cmd);
+        Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.bufferRowLength = t.width;
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {t.width, t.height, 1};
+        vkCmdCopyBufferToImage(cmd, linear_, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        MemoryBarrier(cmd);
+    });
 }
 
 void VulkanGsRenderer::UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
@@ -1061,7 +1152,16 @@ void VulkanGsRenderer::Flush() {
     // passing ones, 2 none).
     struct Pass { std::uint32_t mode; bool depth_write; std::uint32_t write_mask; };
     const bool depth_write = state_.depth && state_.depth_write;
-    const std::uint32_t mask = WriteMask(state_.fbmsk);
+    const std::uint32_t kept = KeptBits(state_.fbmsk, state_.psm);
+    const std::uint32_t mask = WriteMask(kept);
+    // A channel FBMSK masks only in part is drawn exactly with two logic ops -
+    // which replace blending, so only where the blend leaves the source as it
+    // is (Burnout 3's race writes two bits of each half of its frame's pixels
+    // through a 16-bit view). Otherwise the channel is written whole.
+    const bool source_only = !state_.blend || (state_.a == state_.b && state_.d == BlendColour::Source) ||
+                             (state_.a == BlendColour::Source && state_.b == BlendColour::Zero &&
+                              state_.c == BlendAlpha::Fix && state_.fix == 0x80 && state_.d == BlendColour::Zero);
+    const bool logic = g_.logic_op && PartlyMasked(kept) && source_only;
     std::vector<Pass> passes;
     if (!state_.alpha_test || state_.atst == 1) {
         passes = {{2, depth_write, mask}};
@@ -1170,15 +1270,25 @@ void VulkanGsRenderer::Flush() {
                 for (std::uint32_t half = split ? 1 : 0; half <= (split ? 2u : 0u); ++half) {
                     std::uint32_t key = (PipelineKey(state_) & ~(0xFu << 9)) | ((~pass.write_mask & 0xFu) << 9);
                     if (half == 2) key &= 0xFu << 9;                // blending off
-                    const VkPipeline chosen = key == PipelineKey(state_) ? pipeline : PipelineFor(key);
-                    if (!chosen) continue;
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
-                    vkCmdSetDepthWriteEnable(cmd, pass.depth_write ? VK_TRUE : VK_FALSE);
-                    params.afail = pass.mode;
-                    params.pabe = half;
-                    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params,
-                                       &params);
-                    vkCmdDraw(cmd, count, 1, 0, 0);
+                    // Partly masked: AND with the kept bits, then OR the rest
+                    // in (a channel this pass leaves alone keeps every bit).
+                    std::uint32_t keep = kept;
+                    for (int channel = 0; channel < 4; ++channel)
+                        if (!(pass.write_mask >> channel & 1)) keep |= 0xFFu << (8 * channel);
+                    for (std::uint32_t op = logic ? 1 : 0; op <= (logic ? 2u : 0u); ++op) {
+                        const std::uint32_t op_key = op ? ((key & (0xFu << 9)) | op << 13) : key;
+                        const VkPipeline chosen = op_key == PipelineKey(state_) ? pipeline : PipelineFor(op_key);
+                        if (!chosen) continue;
+                        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
+                        vkCmdSetDepthWriteEnable(cmd, pass.depth_write && op != 1 ? VK_TRUE : VK_FALSE);
+                        params.afail = pass.mode;
+                        params.pabe = half;
+                        params.logic = op;
+                        params.keep = keep;
+                        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset,
+                                           sizeof params, &params);
+                        vkCmdDraw(cmd, count, 1, 0, 0);
+                    }
                 }
             }
             vkCmdEndRendering(cmd);
@@ -1217,6 +1327,38 @@ bool VulkanGsRenderer::ReadDepth(std::uint32_t zbp, std::uint32_t width, std::ui
     vkDestroyBuffer(g_.device, buffer, nullptr);
     vkFreeMemory(g_.device, memory, nullptr);
     return true;
+}
+
+bool VulkanGsRenderer::ReadImage(Image& t, std::vector<std::uint32_t>* pixels) {
+    Flush();
+    const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buffer, &memory, &mapped)) return false;
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {t.width, t.height, 1};
+        vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    });
+    pixels->assign(std::size_t(t.width) * t.height, 0);
+    std::memcpy(pixels->data(), mapped, bytes);
+    vkUnmapMemory(g_.device, memory);
+    vkDestroyBuffer(g_.device, buffer, nullptr);
+    vkFreeMemory(g_.device, memory, nullptr);
+    return true;
+}
+
+bool VulkanGsRenderer::ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
+                                   std::uint32_t* height) {
+    auto found = textures_.find(key);
+    if (found == textures_.end() || !found->second.image.image) return false;
+    *width = found->second.image.width;
+    *height = found->second.image.height;
+    return ReadImage(found->second.image, pixels);
 }
 
 bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
@@ -1274,7 +1416,10 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     if (swizzle_pool_) vkDestroyDescriptorPool(g_.device, swizzle_pool_, nullptr);
     if (swizzle_set_layout_) vkDestroyDescriptorSetLayout(g_.device, swizzle_set_layout_, nullptr);
     if (swizzle_) vkDestroyShaderModule(g_.device, swizzle_, nullptr);
-    for (auto [buffer, memory] : {std::pair{gsmem_, gsmem_memory_}, std::pair{linear_, linear_memory_}}) {
+    if (decode_pipeline_) vkDestroyPipeline(g_.device, decode_pipeline_, nullptr);
+    if (decode_) vkDestroyShaderModule(g_.device, decode_, nullptr);
+    for (auto [buffer, memory] : {std::pair{gsmem_, gsmem_memory_}, std::pair{linear_, linear_memory_},
+                                  std::pair{clut_, clut_memory_}}) {
         if (buffer) vkDestroyBuffer(g_.device, buffer, nullptr);
         if (memory) vkFreeMemory(g_.device, memory, nullptr);
     }
