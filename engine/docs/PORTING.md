@@ -123,11 +123,13 @@ image transfers into GS memory write a row's run of pixels at a time
 (the page and its offsets found once a page, not once a pixel).
 
 Burnout 3's scripted runs under `--gpu`: the car select from 3m55s to about
-48s; the race script from 8m28s to about 4m (the software GS: 46 minutes).
-VU1 (an interpreter, with its timing model) and DMA/VIF are now the largest
-parts; then the GPU's hand-offs between views of the same memory. The
-sampler (`--sample`) shows where: run with it before choosing what to speed
-up next.
+46s; the race script from 8m28s to about 4m (the software GS: 46 minutes).
+Each frame's GPU work now runs while the next frame is made (GPU.md,
+*submission*). VU1 (an interpreter, with its timing model) and DMA/VIF are
+now the largest parts; then the GPU's hand-offs between views of the same
+memory. The sampler (`--sample`) shows where: run with it before choosing
+what to speed up next. Wall-clock times on a laptop vary by half again over
+a day (throttling): compare builds back to back.
 
 Each of these was checked by running the scripted runs and comparing the
 pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
