@@ -118,17 +118,36 @@ bool DecodeFmac(u32 word, FmacOp* out) {
     return true;
 }
 
+namespace {
+
+template <int Op>
+void Lanes(const Context& c, const FmacOp& f, u32 out[4]) {
+    const u32* fs = c.vf[f.fs];
+    const u32 broadcast = f.operand < 4 ? c.vf[f.ft][f.operand]
+                        : f.operand == 4 ? c.vc[kRegQ] : c.vf[f.ft][0];
+    const u32 each = f.operand == 5 ? c.vc[kRegI] : broadcast;
+    for (int lane = 0; lane < 4; ++lane) {
+        if (!(f.dest & (8u >> lane))) continue;
+        const u32 b = f.operand == 6 ? c.vf[f.ft][lane] : each;
+        out[lane] = BinaryOf<Op>(fs[lane], b, c.vacc[lane]);
+    }
+}
+
+}  // namespace
+
 void RunFmac(Context& c, const FmacOp& f) {
     // Every lane is read before any is written (fd may be fs or ft); a lane
     // dest leaves alone is not computed at all - the arithmetic has no other
     // effect.
     u32 out[4];
-    for (int lane = 0; lane < 4; ++lane) {
-        if (!(f.dest & (8u >> lane))) continue;
-        const u32 b = f.operand < 4 ? c.vf[f.ft][f.operand]
-                    : f.operand == 4 ? c.vc[kRegQ]
-                    : f.operand == 5 ? c.vc[kRegI] : c.vf[f.ft][lane];
-        out[lane] = Binary(f.op, c.vf[f.fs][lane], b, c.vacc[lane]);
+    switch (f.op) {
+        case kAdd: Lanes<kAdd>(c, f, out); break;
+        case kSub: Lanes<kSub>(c, f, out); break;
+        case kMul: Lanes<kMul>(c, f, out); break;
+        case kMadd: Lanes<kMadd>(c, f, out); break;
+        case kMsub: Lanes<kMsub>(c, f, out); break;
+        case kMax_: Lanes<kMax_>(c, f, out); break;
+        default: Lanes<kMini>(c, f, out); break;
     }
     u32* to = f.to_acc ? c.vacc : f.fd ? c.vf[f.fd] : nullptr;
     if (!to) return;

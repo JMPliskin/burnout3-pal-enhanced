@@ -46,16 +46,29 @@ inline u32 Result(double number) {
 
 enum Op { kAdd, kSub, kMul, kMadd, kMsub, kMax_, kMini };
 
-inline u32 Binary(int op, u32 a, u32 b, u32 acc) {
+/* One operation, chosen at compile time: RunFmac picks it once an
+   instruction rather than once a lane. */
+template <int Op>
+inline u32 BinaryOf(u32 a, u32 b, u32 acc) {
     const double x = Value(a), y = Value(b);
+    if constexpr (Op == kAdd) return Result(x + y);
+    else if constexpr (Op == kSub) return Result(x - y);
+    else if constexpr (Op == kMul) return Result(x * y);
+    else if constexpr (Op == kMadd) return Result(Value(acc) + Value(Result(x * y)));
+    else if constexpr (Op == kMsub) return Result(Value(acc) - Value(Result(x * y)));
+    else if constexpr (Op == kMax_) return x < y ? Clean(b) : Clean(a);
+    else return y < x ? Clean(b) : Clean(a);
+}
+
+inline u32 Binary(int op, u32 a, u32 b, u32 acc) {
     switch (op) {
-        case kAdd: return Result(x + y);
-        case kSub: return Result(x - y);
-        case kMul: return Result(x * y);
-        case kMadd: return Result(Value(acc) + Value(Result(x * y)));
-        case kMsub: return Result(Value(acc) - Value(Result(x * y)));
-        case kMax_: return x < y ? Clean(b) : Clean(a);
-        case kMini: return y < x ? Clean(b) : Clean(a);
+        case kAdd: return BinaryOf<kAdd>(a, b, acc);
+        case kSub: return BinaryOf<kSub>(a, b, acc);
+        case kMul: return BinaryOf<kMul>(a, b, acc);
+        case kMadd: return BinaryOf<kMadd>(a, b, acc);
+        case kMsub: return BinaryOf<kMsub>(a, b, acc);
+        case kMax_: return BinaryOf<kMax_>(a, b, acc);
+        case kMini: return BinaryOf<kMini>(a, b, acc);
     }
     return 0;
 }
