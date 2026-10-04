@@ -74,10 +74,21 @@ void Transition(VkCommandBuffer cmd, Image& t, VkImageLayout to, VkAccessFlags d
     t.layout = to;
 }
 
-/* The pipeline a state needs: blending and its operands. */
+/* FBMSK as the blender's write mask: a channel is kept when every bit of its
+   byte is masked (a partly masked byte is written whole - not yet exact). */
+std::uint32_t WriteMask(std::uint32_t fbmsk) {
+    std::uint32_t mask = 0;
+    for (int channel = 0; channel < 4; ++channel)
+        if (((fbmsk >> (8 * channel)) & 0xFF) != 0xFF) mask |= 1u << channel;
+    return mask;
+}
+
+/* The pipeline a state needs: blending and its operands, and the write mask
+   (bits 9-12, inverted so that 0 is the plain pipeline). */
 std::uint32_t PipelineKey(const GsDrawState& s) {
-    if (!s.blend) return 0;
-    return 1u | std::uint32_t(s.a) << 1 | std::uint32_t(s.b) << 3 | std::uint32_t(s.c) << 5 |
+    const std::uint32_t masked = (~WriteMask(s.fbmsk) & 0xF) << 9;
+    if (!s.blend) return masked;
+    return masked | 1u | std::uint32_t(s.a) << 1 | std::uint32_t(s.b) << 3 | std::uint32_t(s.c) << 5 |
            std::uint32_t(s.d) << 7;
 }
 
@@ -87,8 +98,8 @@ std::uint32_t PipelineKey(const GsDrawState& s) {
    as 1). */
 VkPipelineColorBlendAttachmentState Blending(std::uint32_t key, bool dual_source) {
     VkPipelineColorBlendAttachmentState b{};
-    b.colorWriteMask = 0xF;
-    if (!key) return b;
+    b.colorWriteMask = ~(key >> 9) & 0xF;           // R, G, B, A are bits 0-3, as Vulkan has them
+    if (!(key & 1)) return b;
     const auto a = BlendColour((key >> 1) & 3), bb = BlendColour((key >> 3) & 3), d = BlendColour((key >> 7) & 3);
     const auto c = BlendAlpha((key >> 5) & 3);
     const bool dest_alpha = c == BlendAlpha::Dest;

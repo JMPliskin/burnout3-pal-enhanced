@@ -60,6 +60,7 @@ enum class BlendAlpha : std::uint32_t { Source = 0, Dest = 1, Fix = 2 };
 /* The state a batch of triangles is drawn with. */
 struct GsDrawState {
     std::uint32_t fbp = 0, fbw = 1, psm = 0;            /* FRAME: the target */
+    std::uint32_t fbmsk = 0;                             /* FRAME.FBMSK: bits not written */
     std::uint32_t width = 640, height = 448;            /* how much of it to make */
     std::int32_t scissor_x0 = 0, scissor_y0 = 0, scissor_x1 = 639, scissor_y1 = 447;   /* inclusive */
     bool gouraud = true;                                 /* else the last vertex's colour */

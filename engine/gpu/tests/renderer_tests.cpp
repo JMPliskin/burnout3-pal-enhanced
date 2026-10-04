@@ -224,6 +224,18 @@ void DepthTested(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x51, 10, 10) == 0, "an uploaded depth buffer hides what is behind it");
 }
 
+void Masked(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x78);
+    Rect(renderer, state, 0, 0, 32, 32, Rgba(0x10, 0x20, 0x30, 0x40));
+    ps2gpu::GsDrawState masked = state;
+    masked.fbmsk = 0xFF000000u;                     // alpha kept, as Burnout 3 draws
+    Rect(renderer, masked, 0, 0, 32, 32, Rgba(0xA0, 0xB0, 0xC0, 0x80));
+    Check(Pixel(renderer, 0x78, 4, 4) == Rgba(0xA0, 0xB0, 0xC0, 0x40), "FBMSK 0xFF000000 keeps the frame's alpha");
+    masked.fbmsk = 0x0000FF00u;
+    Rect(renderer, masked, 0, 0, 32, 32, Rgba(1, 2, 3, 4));
+    Check(Pixel(renderer, 0x78, 4, 4) == Rgba(1, 0xB0, 3, 4), "FBMSK 0x0000FF00 keeps green");
+}
+
 void Fogged(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x70);
     state.fog = true;
@@ -256,6 +268,7 @@ int main() {
     AlphaTested(*renderer);
     DepthTested(*renderer);
     Fogged(*renderer);
+    Masked(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

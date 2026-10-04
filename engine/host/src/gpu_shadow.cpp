@@ -111,6 +111,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.fbp = Bits(c.frame, 0, 9);
     state.fbw = std::max(1u, Bits(c.frame, 16, 6));
     state.psm = Bits(c.frame, 24, 6);
+    state.fbmsk = u32(c.frame >> 32);
     state.width = std::min(2048u, state.fbw * 64);
     state.height = 512;
     state.scissor_x0 = int(Bits(c.scissor, 0, 11));
@@ -267,7 +268,7 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
             for (u32 x = 0; x < x1; ++x) {
                 const u32 want = g.FramePixel(fbp, fbw, psm, x, y), got = pixels[std::size_t(y) * w + x];
                 bool same = true;
-                for (int shift = 0; shift < 24; shift += 8) {
+                for (int shift = 0; shift < (psm == gs::PSMCT32 ? 32 : 24); shift += 8) {   // alpha too where it is stored
                     const int a = int((want >> shift) & 0xFF), b = int((got >> shift) & 0xFF);
                     if (std::abs(a - b) > slack) same = false;
                 }
