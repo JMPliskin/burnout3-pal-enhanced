@@ -155,23 +155,28 @@ PageTable Build(u32 psm, u32 width, u32 height, bool half_width) {
     return t;
 }
 
-const PageTable* TableFor(u32 psm) {
-    static const PageTable ct32 = Build(PSMCT32, 64, 32, false), z32 = Build(PSMZ32, 64, 32, false);
-    static const PageTable ct16 = Build(PSMCT16, 64, 64, false), ct16s = Build(PSMCT16S, 64, 64, false);
-    static const PageTable z16 = Build(PSMZ16, 64, 64, false), z16s = Build(PSMZ16S, 64, 64, false);
-    static const PageTable t8 = Build(PSMT8, 128, 64, true), t4 = Build(PSMT4, 128, 128, true);
-    switch (psm) {
-        case PSMCT32: case PSMCT24: case PSMT8H: case PSMT4HL: case PSMT4HH: return &ct32;
-        case PSMZ32: case PSMZ24: return &z32;
-        case PSMCT16: return &ct16;
-        case PSMCT16S: return &ct16s;
-        case PSMZ16: return &z16;
-        case PSMZ16S: return &z16s;
-        case PSMT8: return &t8;
-        case PSMT4: return &t4;
-        default: return nullptr;
+// Built once at start-up (the reference tables they come from are constant),
+// and found by PSM without a guard or a switch: Address runs per pixel.
+struct PageTables {
+    PageTable ct32 = Build(PSMCT32, 64, 32, false), z32 = Build(PSMZ32, 64, 32, false);
+    PageTable ct16 = Build(PSMCT16, 64, 64, false), ct16s = Build(PSMCT16S, 64, 64, false);
+    PageTable z16 = Build(PSMZ16, 64, 64, false), z16s = Build(PSMZ16S, 64, 64, false);
+    PageTable t8 = Build(PSMT8, 128, 64, true), t4 = Build(PSMT4, 128, 128, true);
+    const PageTable* by_psm[64] = {};
+    PageTables() {
+        for (u32 psm : {PSMCT32, PSMCT24, PSMT8H, PSMT4HL, PSMT4HH}) by_psm[psm] = &ct32;
+        by_psm[PSMZ32] = by_psm[PSMZ24] = &z32;
+        by_psm[PSMCT16] = &ct16;
+        by_psm[PSMCT16S] = &ct16s;
+        by_psm[PSMZ16] = &z16;
+        by_psm[PSMZ16S] = &z16s;
+        by_psm[PSMT8] = &t8;
+        by_psm[PSMT4] = &t4;
     }
-}
+};
+const PageTables g_page_tables;
+
+inline const PageTable* TableFor(u32 psm) { return g_page_tables.by_psm[psm & 63]; }
 
 }  // namespace
 
