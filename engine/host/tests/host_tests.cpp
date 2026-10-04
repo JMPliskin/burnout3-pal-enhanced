@@ -16,6 +16,7 @@
 #include "spu2.h"
 #include "ps2host/memory.h"
 #include "ps2host/vif.h"
+#include "ps2host/path3.h"
 #include "ps2host/vu.h"
 #include "ps2rt/generated.h"
 
@@ -235,6 +236,32 @@ void GsDrawsASprite() {
     Check(gs.memory.Read(0, 1, 8, 5, PSMCT32) == 0 && gs.memory.Read(0, 1, 5, 6, PSMCT32) == 0,
           "a sprite stops short of its far edges");
     Check(gs.primitives() == 1 && gs.pixels_drawn() == 8, "one sprite of 4x2 pixels");
+}
+
+// PATH3 held by MSKPATH3: an unmask lets one EOP-ended group of packets go,
+// as Burnout 3's texture uploads need (one group per window, five a picture).
+void Path3GoesOneGroupPerWindow() {
+    ps2host::Path3Queue queue;
+    auto tag = [&](u32 nloop, bool eop, u32 flg, u32 nreg) {
+        const u64 low = u64(nloop) | u64(eop) << 15 | u64(flg) << 58 | u64(nreg) << 60;
+        queue.Push(u32(low));
+        queue.Push(u32(low >> 32));
+        queue.Push(0);
+        queue.Push(0);
+    };
+    auto data = [&](u32 qwords) { for (u32 i = 0; i < 4 * qwords; ++i) queue.Push(0xD0D0D0D0u); };
+    tag(1, false, 0, 4); data(4);                   // PACKED: A+D setup, no EOP
+    tag(3, true, 2, 0); data(3);                    // IMAGE, EOP: the first group ends here
+    tag(2, true, 1, 3); data(3);                    // REGLIST 2 x 3 registers: 3 quadwords
+    std::vector<u32> sent;
+    queue.Release(false, [&](u32 word) { sent.push_back(word); });
+    Check(sent.size() == 4 * (1 + 4 + 1 + 3), "an unmask lets the packets up to the first EOP go");
+    sent.clear();
+    queue.Release(false, [&](u32 word) { sent.push_back(word); });
+    Check(sent.size() == 4 * (1 + 3) && queue.empty(), "the next unmask the next group (REGLIST sized by halves)");
+    tag(1, false, 2, 0); data(1);
+    queue.Release(false, [&](u32 word) { sent.push_back(word); });
+    Check(queue.empty(), "a group without its EOP yet goes whole");
 }
 
 // Fog (PRIM.FGE): C = (F * C + (255 - F) * FOGCOL) >> 8, F from XYZF2 or the
@@ -462,6 +489,7 @@ int main() {
     GsLayoutsArePermutations();
     GsDrawsASprite();
     GsFogsTowardsFogcol();
+    Path3GoesOneGroupPerWindow();
     GsKeepsAFlatDepthExact();
     VifRunsMicroprogramsOnAVu();
     VuTimingIsVisible();

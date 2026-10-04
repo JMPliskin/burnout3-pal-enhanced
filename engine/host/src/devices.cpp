@@ -22,12 +22,15 @@
  * to implement is the one the game leans on.
  */
 
+#include <algorithm>
 #include <cstdio>
+#include <deque>
 #include <string>
 
 #include "ps2host/dma.h"
 #include "ps2host/gs.h"
 #include "ps2host/memory.h"
+#include "ps2host/path3.h"
 #include "ps2host/run.h"
 #include "ps2host/vif.h"
 #include "ps2host/vu.h"
@@ -72,12 +75,26 @@ constexpr u32 kGifStatFqcShift = 24, kGifStatFqc = 0x1Fu << kGifStatFqcShift;
 
 // PATH3: GIF DMA data to the GS, held while VIF1 has PATH3 masked - it goes
 // after the PATH2 data VIF1 sends meanwhile, as the GIF arbitrates.
-std::vector<u32> g_path3_held;
+//
+// A mask takes effect only at the end of the GIF packet PATH3 is in - the one
+// whose tag has EOP set - so unmasking and masking again at once lets exactly
+// one EOP-ended group through. Burnout 3 queues a picture's texture uploads
+// (161,280 words at the car select) on PATH3 while it is masked and opens a
+// window like that before each group of draws: five groups, five windows,
+// each texture slot refilled between the draws that use its contents.
+// Releasing everything at the first window refilled every slot early, and the
+// garage was drawn with whatever was uploaded last into its slots (the font).
+Path3Queue g_path3_held;
 bool g_path3_masked = false;
 
 void Path3(u32 word) {
-    if (g_path3_masked) g_path3_held.push_back(word);
+    // Behind what is still held, even unmasked: the GIF keeps PATH3 in order.
+    if (g_path3_masked || !g_path3_held.empty()) g_path3_held.Push(word);
     else gs::TheGs().Word(3, word);
+}
+
+void ReleasePath3(bool all) {
+    g_path3_held.Release(all, [](u32 word) { gs::TheGs().Word(3, word); });
 }
 
 u32* Register(u32 address) { return reinterpret_cast<u32*>(GuestMemory().Translate(address, 4)); }
@@ -180,6 +197,8 @@ void SetUntilFrame(u64 frame) { g_until_frame = frame; }
 bool UntilFrameReached() { return g_until_reached; }
 
 void FrameDone(u64 frame) {
+    // Time passes: unmasked, PATH3 sends what it still holds.
+    if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
     if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
         g_until_reached = true;
         StopRequested() = true;
@@ -239,18 +258,17 @@ void InstallDevices() {
         if (gs::TheGs().trace)
             std::fprintf(stderr, "[vif1] MSKPATH3 %d, %zu PATH3 words held\n", int(masked), g_path3_held.size());
         u32* stat = reinterpret_cast<u32*>(GuestMemory().Translate(kGifStat, 4));
-        // Unmasking lets PATH3 take its turn, which drains what the FIFO held.
+        // Unmasking lets PATH3 take its turn: the packet group it is in goes
+        // through before a mask can stop it again.
         *stat = masked ? (*stat | kGifStatM3P) : (*stat & ~(kGifStatM3P | kGifStatFqc));
         g_path3_masked = masked;
-        if (!masked) {
-            std::vector<u32> held;
-            held.swap(g_path3_held);
-            for (u32 word : held) gs::TheGs().Word(3, word);
-        }
+        if (!masked) ReleasePath3(false);
     };
     Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
     Vif1().on_trace = [](const char* what) {
         if (gs::TheGs().trace) std::fprintf(stderr, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
+        // FLUSHA waits for PATH3 to finish: unmasked, all it holds goes.
+        if (!g_path3_masked) ReleasePath3(true);
     };
     // VU1 behind VIF1; its XGKICKs are GIF PATH1.
     Vif1().vu = &Vu1();
