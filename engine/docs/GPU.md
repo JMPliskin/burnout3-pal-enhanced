@@ -129,6 +129,10 @@ proved itself in PCSX2's hardware renderers, made smaller:
    ~~(DATE, through a stencil pass: the target's alpha bit copied into
    stencil, then the draw tested against it)~~, ~~PABE (a second pass)~~.
 5. Upscaling, widescreen (a wider projection where the game's matrices allow).
+   With these comes a settings front end: internal resolution and the other
+   display options set there are saved (a settings file beside the
+   executable) and loaded on every run, command-line options overriding them
+   - settings must persist across runs.
 6. ~~**The GPU as the renderer**~~ (`--gpu`, engine/host/src/gpu_bridge.cpp):
    the GS model still takes every packet, register and transfer but draws
    nothing (`Gs::rasterize` false); the GPU draws, and its images stand for
