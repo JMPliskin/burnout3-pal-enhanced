@@ -1546,6 +1546,17 @@ The analysis now drops a "function" that nothing calls, found by a pointer or
 in a gap, when a called function reaches it by its own branches or by
 falling through: 30 such labels across the executable. The budget is 0x10000.
 
+The next stop was 0x002A6B80, a leaf that is nothing but a switch, reached
+through an address code builds; the gap recovery wanted a `jr $ra` to end a
+function and refused it, and its four cases were taken for functions. With a
+switch's `jr` ending a function too (42 labels dropped, 92 functions found in
+all), the race loads: the briefing over the Silver Lake track, then RACE
+TRAINING's in-engine crash demo ("IMPACT TIME", "33ft Nose Grind + 4.1s
+Air") - the physics and crash code running in the port
+(`games/burnout3/port/runs/race_training.args`). Open there: the tips' movies
+(the IPU), an IOP server 0x8000131B the host answers with zeros, and the speed
+- the race's 3D in the software GS runs at a fraction of a frame a second.
+
 ## Memory cards: libmc2
 
 The game links libmc2 ("PsIIlibmc2  2811") and ships its IOP side,
