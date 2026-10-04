@@ -99,6 +99,12 @@ proved itself in PCSX2's hardware renderers, made smaller:
   (FB_ONLY colour, ZB_ONLY depth, RGB_ONLY colour without alpha), the shader
   told which pixels each pass keeps.
 * FBMSK as the colour write mask, per byte; fog (FGE, FOGCOL) in the shader.
+* The destination alpha test: depth buffers are D32_SFLOAT_S8_UINT; before a
+  DATE batch a setup pass (shaders/date.*) samples the target and sets the
+  stencil where its alpha bit equals DATM, and the batch draws with a stencil
+  EQUAL test.
+* Not yet checked against the Vulkan validation layers (not installed on the
+  machine this was written on); the results are what the tests check.
 * `ps2gpu_tests` checks each of these by reading pixels back.
 * **The host drives it**: `--gpu-shadow` (engine/host/src/gpu_shadow.cpp)
   hands every primitive the software GS draws to the renderer as well - its
@@ -120,8 +126,8 @@ proved itself in PCSX2's hardware renderers, made smaller:
 3. ~~Textures~~ (decoded by the host); the texture cache and CLUTs on the GPU
    come with step 6.
 4. ~~Blending, alpha and depth tests, fog, FBMSK~~; the destination alpha test
-   (DATE, through a stencil pass: the target's alpha bit copied into stencil,
-   then the draw tested against it) and PABE (a second pass) remain.
+   ~~(DATE, through a stencil pass: the target's alpha bit copied into
+   stencil, then the draw tested against it)~~; PABE (a second pass) remains.
 5. Upscaling, widescreen (a wider projection where the game's matrices allow).
 6. **The GPU as the renderer** (`--gpu`), the software rasteriser off. What the
    shadow mode gets from local memory the GPU must then keep itself:

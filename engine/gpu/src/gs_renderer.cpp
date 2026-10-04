@@ -24,6 +24,8 @@
 #include "gs_frag.h"
 #include "gs_frag_single.h"
 #include "gs_vert.h"
+#include "date_frag.h"
+#include "date_vert.h"
 
 namespace ps2gpu {
 
@@ -50,9 +52,11 @@ struct Image {
     std::uint32_t width = 0, height = 0;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    VkDescriptorSet sampled = VK_NULL_HANDLE;   /* a target read by the DATE setup pass */
 };
 
-constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+// Depth with stencil: the stencil carries the destination alpha test.
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
 
 struct Texture {
     Image image;
@@ -141,7 +145,7 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            x.alpha_test == y.alpha_test && (!x.alpha_test || (x.atst == y.atst && x.aref == y.aref && x.afail == y.afail)) &&
            PipelineKey(x) == PipelineKey(y) && (!x.blend || x.fix == y.fix) && x.depth == y.depth &&
            (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
-           x.fog == y.fog && (!x.fog || x.fogcol == y.fogcol);
+           x.fog == y.fog && (!x.fog || x.fogcol == y.fogcol) && x.date == y.date && (!x.date || x.datm == y.datm);
 }
 
 class VulkanGsRenderer final : public GsRenderer {
@@ -168,6 +172,11 @@ private:
     void DestroyImage(Image& image);
     void Fill(Texture& texture, const std::uint32_t* pixels);
     VkPipeline PipelineFor(std::uint32_t key);
+    /* The destination alpha test's setup pass: stencil 1 where the target's
+       alpha bit equals DATM. */
+    bool MakeDatePipeline();
+    void DateSetup(VkCommandBuffer cmd, Image& target, Image& depth, std::uint32_t datm);
+    VkPipeline date_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSet SetFor(Texture& texture, int sampler);
     bool Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory, void** mapped);
 
@@ -211,7 +220,8 @@ bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t he
                                  VkFormat format) {
     t.width = width;
     t.height = height;
-    t.aspect = format == kDepthFormat ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    t.aspect = format == kDepthFormat ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
+                                      : VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = format;
@@ -291,7 +301,7 @@ bool VulkanGsRenderer::Init(std::string* error) {
     lci.pushConstantRangeCount = 2;
     lci.pPushConstantRanges = push;
     vkCreatePipelineLayout(g_.device, &lci, nullptr, &layout_);
-    if (!PipelineFor(0)) {
+    if (!PipelineFor(0) || !MakeDatePipeline()) {
         if (error) *error = "vkCreateGraphicsPipelines failed";
         return false;
     }
@@ -343,18 +353,22 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     blending.attachmentCount = 1;
     blending.pAttachments = &blend;
     // Depth's test, write and comparison are set per batch (Vulkan 1.3).
+    // The destination alpha test: drawn only where the setup pass set stencil 1.
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 1, 0, 1};
+    depth.back = depth.front;
     VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
                                        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-                                       VK_DYNAMIC_STATE_DEPTH_COMPARE_OP};
+                                       VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE};
     VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 5;
+    dynamic.dynamicStateCount = 6;
     dynamic.pDynamicStates = dynamic_states;
     const VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
     rendering.depthAttachmentFormat = kDepthFormat;
+    rendering.stencilAttachmentFormat = kDepthFormat;
     VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pci.pNext = &rendering;
     pci.stageCount = 2;
@@ -373,6 +387,115 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
         return VK_NULL_HANDLE;
     pipelines_[key] = pipeline;
     return pipeline;
+}
+
+bool VulkanGsRenderer::MakeDatePipeline() {
+    auto module = [&](const std::uint32_t* code, std::size_t bytes) {
+        VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        ci.codeSize = bytes;
+        ci.pCode = code;
+        VkShaderModule m = VK_NULL_HANDLE;
+        vkCreateShaderModule(g_.device, &ci, nullptr, &m);
+        return m;
+    };
+    VkShaderModule vert = module(spirv_date_vert, sizeof spirv_date_vert);
+    VkShaderModule frag = module(spirv_date_frag, sizeof spirv_date_frag);
+    VkPipelineShaderStageCreateInfo stages[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
+                                                 {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.stencilTestEnable = VK_TRUE;
+    depth.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 1, 1, 1};
+    depth.back = depth.front;
+    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.depthAttachmentFormat = kDepthFormat;
+    rendering.stencilAttachmentFormat = kDepthFormat;
+    VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pci.pNext = &rendering;
+    pci.stageCount = 2;
+    pci.pStages = stages;
+    pci.pVertexInputState = &input;
+    pci.pInputAssemblyState = &assembly;
+    pci.pViewportState = &viewport;
+    pci.pRasterizationState = &raster;
+    pci.pMultisampleState = &multisample;
+    pci.pDepthStencilState = &depth;
+    pci.pColorBlendState = &blending;
+    pci.pDynamicState = &dynamic;
+    pci.layout = layout_;
+    const VkResult r = vkCreateGraphicsPipelines(g_.device, VK_NULL_HANDLE, 1, &pci, nullptr, &date_pipeline_);
+    vkDestroyShaderModule(g_.device, vert, nullptr);
+    vkDestroyShaderModule(g_.device, frag, nullptr);
+    return r == VK_SUCCESS;
+}
+
+void VulkanGsRenderer::DateSetup(VkCommandBuffer cmd, Image& target, Image& depth, std::uint32_t datm) {
+    if (!target.sampled) {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = pool_;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &set_layout_;
+        if (vkAllocateDescriptorSets(g_.device, &ai, &target.sampled) != VK_SUCCESS) return;
+        VkDescriptorImageInfo info{samplers_[3], target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = target.sampled;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &info;
+        vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
+    }
+    Transition(cmd, target, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    Transition(cmd, depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
+    VkRenderingAttachmentInfo z{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    z.imageView = depth.view;
+    z.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    z.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    z.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo stencil = z;
+    stencil.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   // 0 everywhere first
+    stencil.clearValue.depthStencil = {0.0f, 0};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {target.width, target.height}};
+    ri.layerCount = 1;
+    ri.pDepthAttachment = &z;
+    ri.pStencilAttachment = &stencil;
+    vkCmdBeginRendering(cmd, &ri);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, date_pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &target.sampled, 0, nullptr);
+    VkViewport vp{0, 0, float(target.width), float(target.height), 0, 1};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D all{{0, 0}, {target.width, target.height}};
+    vkCmdSetScissor(cmd, 0, 1, &all);
+    FragmentParams params{};
+    params.textured = datm;                         // the setup shader's first word is DATM
+    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof params, &params);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
 }
 
 VkDescriptorSet VulkanGsRenderer::SetFor(Texture& texture, int sampler) {
@@ -460,7 +583,7 @@ Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::u
         Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         const VkClearDepthStencilValue zero{0.0f, 0};
-        const VkImageSubresourceRange all{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        const VkImageSubresourceRange all{VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
         vkCmdClearDepthStencilImage(cmd, d.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &all);
     });
     return &d;
@@ -568,6 +691,7 @@ void VulkanGsRenderer::Flush() {
     }
     if (pipeline && set) {
         g_.Run([&](VkCommandBuffer cmd) {
+            if (state_.date) DateSetup(cmd, *t, *depth, state_.datm);
             Transition(cmd, *t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -576,12 +700,12 @@ void VulkanGsRenderer::Flush() {
             colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            Transition(cmd, *depth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            Transition(cmd, *depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
             VkRenderingAttachmentInfo z{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             z.imageView = depth->view;
-            z.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            z.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             z.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             z.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -590,11 +714,13 @@ void VulkanGsRenderer::Flush() {
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &colour;
             ri.pDepthAttachment = &z;
+            ri.pStencilAttachment = &z;
             vkCmdBeginRendering(cmd, &ri);
             // ZTST: NEVER, ALWAYS, GEQUAL, GREATER - the larger Z is nearer.
             static const VkCompareOp kCompare[4] = {VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS,
                                                     VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
             vkCmdSetDepthTestEnable(cmd, state_.depth ? VK_TRUE : VK_FALSE);
+            vkCmdSetStencilTestEnable(cmd, state_.date ? VK_TRUE : VK_FALSE);
             vkCmdSetDepthCompareOp(cmd, kCompare[state_.ztst & 3]);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
             VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
@@ -664,6 +790,7 @@ VulkanGsRenderer::~VulkanGsRenderer() {
         vkFreeMemory(g_.device, vertex_memory_, nullptr);
     }
     for (auto& [key, pipeline] : pipelines_) vkDestroyPipeline(g_.device, pipeline, nullptr);
+    if (date_pipeline_) vkDestroyPipeline(g_.device, date_pipeline_, nullptr);
     for (VkSampler s : samplers_)
         if (s) vkDestroySampler(g_.device, s, nullptr);
     if (pool_) vkDestroyDescriptorPool(g_.device, pool_, nullptr);

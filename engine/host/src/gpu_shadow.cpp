@@ -152,6 +152,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.atst = Bits(c.test, 1, 3);
     state.aref = Bits(c.test, 4, 8);
     state.afail = Bits(c.test, 12, 2);
+    state.date = Bits(c.test, 14, 1) != 0 && state.psm != gs::PSMCT24;
+    state.datm = Bits(c.test, 15, 1);
     state.blend = (call.prim >> 6) & 1;
     state.a = ps2gpu::BlendColour(std::min(2u, Bits(c.alpha, 0, 2)));
     state.b = ps2gpu::BlendColour(std::min(2u, Bits(c.alpha, 2, 2)));

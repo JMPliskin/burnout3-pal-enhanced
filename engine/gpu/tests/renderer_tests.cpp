@@ -254,6 +254,22 @@ void AlphaFailWrites(ps2gpu::GsRenderer& renderer) {
     Check(Pixel(renderer, 0x7A, 36, 4) == Rgba(0, 0xFF, 0xFF, 0x80), "RGB_ONLY: ...and no depth");
 }
 
+void DestinationAlphaTested(ps2gpu::GsRenderer& renderer) {
+    ps2gpu::GsDrawState state = Target(0x7C);
+    Rect(renderer, state, 0, 0, 32, 64, Rgba(0x10, 0x10, 0x10, 0x80));    // alpha bit 1
+    Rect(renderer, state, 32, 0, 64, 64, Rgba(0x20, 0x20, 0x20, 0x7F));   // alpha bit 0
+    ps2gpu::GsDrawState date = state;
+    date.date = true;
+    date.datm = 1;
+    Rect(renderer, date, 0, 0, 64, 32, Rgba(0xFF, 0, 0, 0x80));
+    Check(Pixel(renderer, 0x7C, 4, 4) == Rgba(0xFF, 0, 0, 0x80), "DATM 1 draws where the alpha bit is 1");
+    Check(Pixel(renderer, 0x7C, 36, 4) == Rgba(0x20, 0x20, 0x20, 0x7F), "...and not where it is 0");
+    date.datm = 0;
+    Rect(renderer, date, 0, 32, 64, 64, Rgba(0, 0xFF, 0, 0x80));
+    Check(Pixel(renderer, 0x7C, 4, 36) == Rgba(0x10, 0x10, 0x10, 0x80), "DATM 0 does not draw where the bit is 1");
+    Check(Pixel(renderer, 0x7C, 36, 36) == Rgba(0, 0xFF, 0, 0x80), "...and draws where it is 0");
+}
+
 void Masked(ps2gpu::GsRenderer& renderer) {
     ps2gpu::GsDrawState state = Target(0x78);
     Rect(renderer, state, 0, 0, 32, 32, Rgba(0x10, 0x20, 0x30, 0x40));
@@ -300,6 +316,7 @@ int main() {
     Fogged(*renderer);
     Masked(*renderer);
     AlphaFailWrites(*renderer);
+    DestinationAlphaTested(*renderer);
     if (g_failures) std::printf("gpu renderer tests: %d failed\n", g_failures);
     else std::printf("gpu renderer tests: all passed (%s)\n", gpu->Describe().c_str());
     return g_failures ? EXIT_FAILURE : EXIT_SUCCESS;

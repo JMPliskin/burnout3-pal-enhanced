@@ -80,6 +80,11 @@ struct GsDrawState {
     bool alpha_test = false;
     std::uint32_t atst = 1, aref = 0, afail = 0;         /* ATST 1 is ALWAYS */
 
+    /* The destination alpha test (TEST.DATE, DATM): a pixel is drawn only
+       where the target's alpha bit (its alpha's top bit) equals DATM. */
+    bool date = false;
+    std::uint32_t datm = 0;
+
     /* Blending (PRIM.ABE) with ALPHA's operands and FIX. */
     bool blend = false;
     BlendColour a = BlendColour::Source, b = BlendColour::Dest, d = BlendColour::Dest;
