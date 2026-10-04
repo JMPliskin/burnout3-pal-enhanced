@@ -1,6 +1,6 @@
 # Decompilation progress
 
-_Generated 2026-10-04 03:31 from `SLUS_210.50`._
+_Generated 2026-10-04 04:51 from `SLUS_210.50`._
 
 ## Headline number
 
@@ -8,7 +8,7 @@ _Generated 2026-10-04 03:31 from `SLUS_210.50`._
 
 This is the only number that means anything on its own. The tiers below track work in progress, but until a function reaches `verified` there is no evidence the source is right.
 
-**70.7432%** is machine-checked: verified, or `lifted` - translated instruction by instruction and differential-tested, so correct and complete enough to run, but not yet readable source.
+**70.7628%** is machine-checked: verified, or `lifted` - translated instruction by instruction and differential-tested, so correct and complete enough to run, but not yet readable source.
 
 ## Static analysis
 
@@ -29,10 +29,10 @@ This is the only number that means anything on its own. The tiers below track wo
 
 | tier | functions | share | code bytes | share |
 | --- | ---: | ---: | ---: | ---: |
-| `undecompiled` | 4 | 0.04% | 1,152 | 0.03% |
+| `undecompiled` | 3 | 0.03% | 876 | 0.02% |
 | `analyzed` | 0 | 0.00% | 0 | 0.00% |
-| `reconstructed` | 1,692 | 18.35% | 1,031,252 | 29.22% |
-| `lifted` | 3,800 | 41.21% | 1,952,252 | 55.32% |
+| `reconstructed` | 1,691 | 18.34% | 1,030,836 | 29.21% |
+| `lifted` | 3,802 | 41.23% | 1,952,944 | 55.34% |
 | `verified` | 3,725 | 40.40% | 544,112 | 15.42% |
 
 Tier meanings are defined in [METHODOLOGY.md](../../../engine/docs/METHODOLOGY.md).
