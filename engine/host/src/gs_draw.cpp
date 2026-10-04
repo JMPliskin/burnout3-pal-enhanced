@@ -11,8 +11,12 @@
  */
 
 #include <algorithm>
-#include <cstdio>
 #include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <functional>
+#include <mutex>
+#include <thread>
 
 #include "ps2host/gs.h"
 #include "ps2host/profile.h"
@@ -35,6 +39,9 @@ u32 From16(u32 c, u64 texa) {
 u32 To16(u32 c) {
     return ((c >> 3) & 31) | (((c >> 11) & 31) << 5) | (((c >> 19) & 31) << 10) | ((c >> 31) << 15);
 }
+
+// Pixels drawn by this thread since it last reported them.
+thread_local u64 t_pixels = 0;
 
 int Wrap(int i, u32 size, u32 mode, u32 min, u32 max) {
     switch (mode) {
@@ -152,6 +159,8 @@ void Gs::Draw() {
         case 6: DrawSprite(queue_[0], queue_[1]); break;
         default: break;
     }
+    pixels_ += t_pixels;
+    t_pixels = 0;
 }
 
 namespace {
@@ -169,6 +178,121 @@ void Coords(const Vertex& v, bool fst, u32 tw, u32 th, float* u, float* t) {
 
 }  // namespace
 
+namespace {
+
+/* Rows of one large primitive, drawn by several threads. A pixel's result does
+   not depend on any other pixel of the same primitive, unless the primitive
+   samples memory it writes (FeedsBack), so the picture is the same as drawn in
+   order. Workers live for the process. */
+class RowPool {
+public:
+    static RowPool& Get() {
+        static RowPool* pool = new RowPool;     // never destroyed: its threads wait to the end
+        return *pool;
+    }
+    int threads() const { return int(workers_) + 1; }
+    /* body(y0, y1) over [begin, end), in chunks, on the workers and the caller. */
+    void Run(int begin, int end, const std::function<void(int, int)>& body) {
+        {
+            std::lock_guard<std::mutex> hold(lock_);
+            body_ = &body;
+            next_ = begin;
+            end_ = end;
+            chunk_ = std::max(1, (end - begin) / (threads() * 4));
+            pending_ = workers_;
+            ++generation_;
+        }
+        wake_.notify_all();
+        int a, b;
+        while (Take(&a, &b)) body(a, b);
+        std::unique_lock<std::mutex> hold(lock_);
+        done_.wait(hold, [&] { return pending_ == 0; });
+        body_ = nullptr;
+    }
+
+private:
+    RowPool() {
+        const unsigned cores = std::thread::hardware_concurrency();
+        workers_ = cores > 2 ? std::min(cores - 1, 7u) : 1u;
+        for (unsigned i = 0; i < workers_; ++i) std::thread([this] { Work(); }).detach();
+    }
+    bool Take(int* a, int* b) {
+        std::lock_guard<std::mutex> hold(lock_);
+        if (next_ >= end_) return false;
+        *a = next_;
+        *b = std::min(end_, next_ + chunk_);
+        next_ = *b;
+        return true;
+    }
+    void Work() {
+        u64 seen = 0;
+        for (;;) {
+            const std::function<void(int, int)>* body;
+            {
+                std::unique_lock<std::mutex> hold(lock_);
+                wake_.wait(hold, [&] { return generation_ != seen; });
+                seen = generation_;
+                body = body_;
+            }
+            int a, b;
+            while (body && Take(&a, &b)) (*body)(a, b);
+            std::lock_guard<std::mutex> hold(lock_);
+            if (--pending_ == 0) done_.notify_one();
+        }
+    }
+    unsigned workers_ = 0;
+    std::mutex lock_;
+    std::condition_variable wake_, done_;
+    const std::function<void(int, int)>* body_ = nullptr;
+    int next_ = 0, end_ = 0, chunk_ = 1;
+    unsigned pending_ = 0;
+    u64 generation_ = 0;
+};
+
+// Primitives smaller than this are drawn on the calling thread.
+constexpr long long kParallelPixels = 16384;
+
+u32 BitsPerPixel(u32 psm) {
+    switch (psm) {
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return 16;
+        case PSMT8: return 8;
+        case PSMT4: return 4;
+        default: return 32;
+    }
+}
+
+}  // namespace
+
+// Whether the primitive samples local memory that it may also write - its frame
+// or depth buffer - so that its pixels must be drawn in order.
+bool Gs::FeedsBack(bool textured) const {
+    if (!textured) return false;
+    const Setup& s = setup_;
+    const u32 tex_end = s.tbp + std::max(1u, s.tbw * 64 * s.th * BitsPerPixel(s.tpsm) / 8 / 256);
+    const u32 rows = u32(std::max(0, s.sy1 + 1));
+    const u32 frame_end = s.fbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.fpsm) / 8 / 256);
+    const u32 z_end = s.zbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.zpsm) / 8 / 256);
+    const bool frame = s.tbp < frame_end && s.fbp < tex_end;
+    const bool depth = (s.zte || !s.zmsk) && s.tbp < z_end && s.zbp < tex_end;
+    return frame || depth;
+}
+
+void Gs::DrawRows(int begin, int end, long long pixels, bool textured,
+                  const std::function<void(int, int)>& rows) {
+    if (end <= begin) return;
+    if (pixels >= kParallelPixels && !FeedsBack(textured)) {
+        RowPool::Get().Run(begin, end, [&](int y0, int y1) {
+            rows(y0, y1);
+            pixels_ += t_pixels;
+            t_pixels = 0;
+        });
+    } else {
+        rows(begin, end);
+        pixels_ += t_pixels;
+        t_pixels = 0;
+    }
+}
+
 void Gs::DrawSprite(const Vertex& a, const Vertex& b) {
     const u64 prim = Prim();
     const bool tme = Bits(prim, 4, 1), fst = Bits(prim, 8, 1);
@@ -179,20 +303,19 @@ void Gs::DrawSprite(const Vertex& a, const Vertex& b) {
     Coords(b, fst, tw, th, &ub, &vb);
     const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
     const float y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
-    const bool flip_x = a.x > b.x, flip_y = a.y > b.y;
     const int ix0 = int(std::ceil(x0)), ix1 = int(std::ceil(x1));
     const int iy0 = int(std::ceil(y0)), iy1 = int(std::ceil(y1));
     const float du = x1 > x0 ? (ub - ua) / (b.x - a.x) : 0, dv = y1 > y0 ? (vb - va) / (b.y - a.y) : 0;
-    (void)flip_x;
-    (void)flip_y;
     // Only what the scissor lets through (Plot would drop the rest).
     const int cx0 = std::max({ix0, setup_.sx0, 0}), cx1 = std::min(ix1, setup_.sx1 + 1);
     const int cy0 = std::max({iy0, setup_.sy0, 0}), cy1 = std::min(iy1, setup_.sy1 + 1);
-    for (int y = cy0; y < cy1; ++y)
-        for (int x = cx0; x < cx1; ++x) {
-            const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
-            Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme);
-        }
+    DrawRows(cy0, cy1, (long long)(cy1 - cy0) * std::max(0, cx1 - cx0), tme, [&](int r0, int r1) {
+        for (int y = r0; y < r1; ++y)
+            for (int x = cx0; x < cx1; ++x) {
+                const float u = ua + (float(x) - a.x) * du, v = va + (float(y) - a.y) * dv;
+                Plot(x, y, b.z, b.r, b.g, b.b, b.a, 0, 0, 1, u, v, tme);
+            }
+    });
 }
 
 void Gs::DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c) {
@@ -209,34 +332,37 @@ void Gs::DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c) {
     const int maxy = std::min(int(std::ceil(std::max({a.y, b.y, c.y}))), int(Bits(sc, 48, 11)));
     float ua = 0, va = 0, ub = 0, vb = 0, uc = 0, vc = 0;
     if (fst) { Coords(a, true, tw, th, &ua, &va); Coords(b, true, tw, th, &ub, &vb); Coords(c, true, tw, th, &uc, &vc); }
-    for (int y = miny; y <= maxy; ++y)
-        for (int x = minx; x <= maxx; ++x) {
-            const float px = float(x), py = float(y);
-            float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
-            float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
-            float w2 = 1.0f - w0 - w1;
-            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-            const Vertex& last = c;
-            u8 r = last.r, g = last.g, bl = last.b, al = last.a;
-            if (iip) {
-                r = u8(w0 * a.r + w1 * b.r + w2 * c.r);
-                g = u8(w0 * a.g + w1 * b.g + w2 * c.g);
-                bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
-                al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
+    const long long box = (long long)std::max(0, maxy - miny + 1) * std::max(0, maxx - minx + 1);
+    DrawRows(miny, maxy + 1, box / 2, tme, [&](int r0, int r1) {
+        for (int y = r0; y < r1; ++y)
+            for (int x = minx; x <= maxx; ++x) {
+                const float px = float(x), py = float(y);
+                float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
+                float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
+                float w2 = 1.0f - w0 - w1;
+                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+                const Vertex& last = c;
+                u8 r = last.r, g = last.g, bl = last.b, al = last.a;
+                if (iip) {
+                    r = u8(w0 * a.r + w1 * b.r + w2 * c.r);
+                    g = u8(w0 * a.g + w1 * b.g + w2 * c.g);
+                    bl = u8(w0 * a.b + w1 * b.b + w2 * c.b);
+                    al = u8(w0 * a.a + w1 * b.a + w2 * c.a);
+                }
+                // Depth in double, from the first vertex: 24 and 32-bit depths do not
+                // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
+                const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
+                                             double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
+                if (fst) {
+                    Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme);
+                } else {
+                    const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
+                    const float q = w0 * a.q + w1 * b.q + w2 * c.q;
+                    const float qq = q != 0.0f ? q : 1.0f;
+                    Plot(x, y, z, r, g, bl, al, s, t, q, s / qq * float(tw), t / qq * float(th), tme);
+                }
             }
-            // Depth in double, from the first vertex: 24 and 32-bit depths do not
-            // survive float, and a flat 0xFFFFFF came out 0xFFFFFE, failing GEQUAL.
-            const u32 z = u32(std::clamp(double(a.z) + double(w1) * (double(b.z) - double(a.z)) +
-                                         double(w2) * (double(c.z) - double(a.z)), 0.0, 4294967295.0));
-            if (fst) {
-                Plot(x, y, z, r, g, bl, al, 0, 0, 1, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc, tme);
-            } else {
-                const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
-                const float q = w0 * a.q + w1 * b.q + w2 * c.q;
-                const float qq = q != 0.0f ? q : 1.0f;
-                Plot(x, y, z, r, g, bl, al, s, t, q, s / qq * float(tw), t / qq * float(th), tme);
-            }
-        }
+    });
 }
 
 void Gs::DrawLine(const Vertex& a, const Vertex& b) {
@@ -456,7 +582,7 @@ void Gs::Plot(int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float s, float t, flo
     if (mask != 0xFFFFFFFF) {
         if (fpsm == PSMCT16 || fpsm == PSMCT16S) memory.Write(fbp, fbw, u32(x), u32(y), fpsm, To16(out));
         else memory.Write(fbp, fbw, u32(x), u32(y), fpsm, out);
-        ++pixels_;
+        ++t_pixels;
     }
     if (write_z) memory.Write(zbp, fbw, u32(x), u32(y), zpsm, z);
 }

@@ -18,6 +18,7 @@
 #define PS2HOST_GS_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -144,6 +145,10 @@ private:
     };
     Setup setup_{};
     void Prepare();
+    /* Rows [begin, end) of a primitive of about `pixels` pixels: on the row
+       workers when it is large and does not sample what it draws into. */
+    bool FeedsBack(bool textured) const;
+    void DrawRows(int begin, int end, long long pixels, bool textured, const std::function<void(int, int)>& rows);
     void Packed(u32 descriptor, u64 low, u64 high);
     void Kick(bool draw);
     void Draw();
@@ -173,7 +178,8 @@ private:
     u32 cbp0_ = 0, cbp1_ = 0;                       // CLUT bases CLD compares with
     // Privileged.
     u64 pmode_ = 0, dispfb_[2] = {}, display_[2] = {}, bgcolor_ = 0;
-    u64 primitives_ = 0, pixels_ = 0, uploads_ = 0;
+    u64 primitives_ = 0, uploads_ = 0;
+    std::atomic<u64> pixels_{0};               // written by the row workers too
     u64 tags_[4] = {}, image_qwords_ = 0;
     std::array<u64, 256> register_writes_{};
     // CLUT, loaded per TEX0's CLD.
