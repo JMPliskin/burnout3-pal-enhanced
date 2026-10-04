@@ -1,0 +1,1 @@
+--virtual-time --press up@1200 --press cross@1350 --press start@3000 --press down@3400 --press cross@3550 --press cross@4100 --press cross@4500 --press up@4900 --press cross@5050 --press cross@5800 --press cross@6400 --press cross@7000 --press cross@7600 --until-frame 8000
