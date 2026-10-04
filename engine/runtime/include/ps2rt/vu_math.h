@@ -13,6 +13,13 @@
 
 #include "ps2rt/types.h"
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define PS2RT_VU_SSE 1
+#else
+#define PS2RT_VU_SSE 0
+#endif
+
 namespace lifted {
 
 inline constexpr u32 kSign = 0x80000000u;

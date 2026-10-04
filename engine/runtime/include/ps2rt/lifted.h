@@ -135,6 +135,9 @@ struct FmacOp {
 };
 bool DecodeFmac(u32 word, FmacOp* out);
 void RunFmac(Context& c, const FmacOp& op);
+/* The same, a lane at a time through the arithmetic model (vu_math.h):
+   what RunFmac's four lanes at once must equal. */
+void RunFmacScalar(Context& c, const FmacOp& op);
 void Cop2Move(Context& c, u32 word, u32 rt);
 /* vcallms / vcallmsr: VU0 runs the microprogram at `address` (bytes in its
    instruction memory) on the registers macro mode shares with it. Defined by

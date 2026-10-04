@@ -631,6 +631,52 @@ void VifRunsMicroprogramsOnAVu() {
 // The VU's visible timing: the flags reach FMAND four cycles after the FMAC
 // operation, Q seven after DIV (WAITQ waits for it), and an upper beside a LOI
 // reads the I from before - as Burnout 3's microcode depends on.
+// The FMAC's four lanes at once (single precision, SSE) give what the
+// arithmetic model gives a lane at a time in double: every operation, operand
+// form, dest mask and destination, on bit patterns rich in zeros, denormals,
+// infinities, NaNs and values near overflow and underflow.
+void VuLanesAreTheModel() {
+    auto context = std::make_unique<lifted::Context>(), scalar = std::make_unique<lifted::Context>();
+    u32 seed = 2024, wrong = 0, runs = 0;
+    auto next = [&] { return seed = seed * 1664525u + 1013904223u; };
+    auto value = [&]() -> u32 {
+        const u32 r = next(), sign = r & 0x80000000u;
+        switch ((r >> 8) % 8) {
+            case 0: return sign;                                            // zero
+            case 1: return sign | (r & 0x007FFFFFu);                        // denormal
+            case 2: return sign | 0x7F800000u | ((r >> 4) & 1);             // infinity, NaN
+            case 3: return sign | 0x7F000000u | (next() & 0x007FFFFFu);     // near the top
+            case 4: return sign | 0x00800000u | (next() & 0x00FFFFFFu);     // near the bottom
+            case 5: return sign | 0x3F800000u | (next() & 0x007FFFFFu);     // about one
+            default: return next();
+        }
+    };
+    for (int i = 0; i < 200000; ++i) {
+        for (auto& v : context->vf) for (u32& lane : v) lane = value();
+        for (u32& lane : context->vacc) lane = value();
+        context->vc[20 + 1] = value();                                       // I
+        context->vc[20 + 2] = value();                                       // Q
+        lifted::FmacOp f;
+        f.op = int(next() % 7);
+        f.operand = int(next() % 7);
+        f.to_acc = (next() & 3) == 0;
+        f.fd = next() % 32;
+        f.fs = next() % 32;
+        f.ft = next() % 32;
+        f.dest = next() % 16;
+        *scalar = *context;
+        lifted::RunFmac(*context, f);
+        lifted::RunFmacScalar(*scalar, f);
+        ++runs;
+        if (std::memcmp(context->vf, scalar->vf, sizeof context->vf) != 0 ||
+            std::memcmp(context->vacc, scalar->vacc, sizeof context->vacc) != 0)
+            ++wrong;
+    }
+    char what[96];
+    std::snprintf(what, sizeof what, "VU FMAC lanes at once match the model (%u of %u differ)", wrong, runs);
+    Check(wrong == 0, what);
+}
+
 void VuTimingIsVisible() {
     ps2host::Vu vu(0);
     auto f = [](float x) { std::uint32_t u; std::memcpy(&u, &x, 4); return u; };
@@ -761,6 +807,7 @@ int main() {
     GpuDecodesTexturesAsTheGs();
 #endif
     VifRunsMicroprogramsOnAVu();
+    VuLanesAreTheModel();
     VuTimingIsVisible();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
