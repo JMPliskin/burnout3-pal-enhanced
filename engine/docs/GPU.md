@@ -114,8 +114,26 @@ proved itself in PCSX2's hardware renderers, made smaller:
 
 ## Order of work
 
-1. The renderer interface in the host, with the software GS as one backend.
-2. Vulkan targets, the batcher and a flat-shaded pipeline: the frontend's 2D.
-3. Textures and the cache; CLUTs.
-4. Blending, alpha and depth tests, the destination alpha test.
+1. ~~The renderer interface in the host, with the software GS as one backend~~
+   (`Gs::on_draw`, `--gpu-shadow`).
+2. ~~Vulkan targets, the batcher and a flat-shaded pipeline~~.
+3. ~~Textures~~ (decoded by the host); the texture cache and CLUTs on the GPU
+   come with step 6.
+4. ~~Blending, alpha and depth tests, fog, FBMSK~~; the destination alpha test
+   (DATE, through a stencil pass: the target's alpha bit copied into stencil,
+   then the draw tested against it) and PABE (a second pass) remain.
 5. Upscaling, widescreen (a wider projection where the game's matrices allow).
+6. **The GPU as the renderer** (`--gpu`), the software rasteriser off. What the
+   shadow mode gets from local memory the GPU must then keep itself:
+   * *targets as textures*: a TEX0 whose TBP and format match a target's FBP
+     samples the target's image (copied first when it is also the target
+     being drawn); Burnout 3 does this every frame, its 0x8C0 frame copied to
+     the CT16S display buffer;
+   * *uploads*: an image transfer into memory a target covers is drawn into
+     the target too (or the target dropped and re-created from memory);
+   * *read-backs*: where the EE reads local memory (an IMAGE transfer from
+     the GS) or a texture in another format overlaps a target, the target is
+     written back to local memory first, in the GS's swizzled layout;
+   * *display*: DISPFB names the target shown.
+   Local memory stays the meeting point: the shadow mode's comparison, run on
+   a few frames, checks each step.
