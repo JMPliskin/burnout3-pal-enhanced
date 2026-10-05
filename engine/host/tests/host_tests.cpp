@@ -573,6 +573,32 @@ void GpuDecodesTexturesAsTheGs() {
         const std::string what = std::string(k.name) + ": decoded on the GPU as the GS model decodes it";
         Check(read && back.size() == decoded.size() && decoded.size() == 64 * 64 && wrong == 0, what.c_str());
         ++key;
+        if (k.psm != PSMT8 && k.psm != PSMT4 && k.psm != PSMT8H && k.psm != PSMT4HL && k.psm != PSMT4HH) continue;
+        // The same through a CLUT the GPU loads from its own copy of memory
+        // (--gpu, a CLUT drawn on the GPU): its other rows garbage first, so
+        // a texture reading any row the load did not set fails.
+        std::vector<u32> garbage(256);
+        for (u32 i = 0; i < 256; ++i) garbage[i] = i * 0x9E3779B9u;
+        const bool eight = k.psm == PSMT8 || k.psm == PSMT8H;
+        renderer->ClutRows(garbage.data(), 0xFFFF);
+        if (!eight) renderer->ClutRows(gs.Clut().data(), ~(1u << (k.csa % 16)));
+        ps2gpu::GsClutLoad load;
+        load.cbp = 0x2400;
+        load.cpsm = k.cpsm;
+        load.csa = k.csa;
+        load.eight = eight;
+        load.texa_lo = d.texa_lo;
+        load.ta1 = d.ta1;
+        renderer->ClutFromMemory(load);
+        d.clut = nullptr;
+        renderer->TextureFromMemory(key, d);
+        back.clear();
+        const bool again = renderer->ReadTexture(key, &back, &w, &h);
+        wrong = 0;
+        for (std::size_t i = 0; i < back.size() && i < decoded.size(); ++i) wrong += back[i] != decoded[i];
+        const std::string loaded = std::string(k.name) + ": through a CLUT loaded on the GPU";
+        Check(again && back.size() == decoded.size() && wrong == 0, loaded.c_str());
+        ++key;
     }
 }
 #endif

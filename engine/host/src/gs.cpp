@@ -351,8 +351,9 @@ void Gs::LoadClut(u64 tex0) {
     if (cld == 3 || cld == 5) cbp1_ = cbp;
     if (!load) return;
     Finish();                                   // the CLUT may have been drawn
-    if (on_memory) on_memory(cbp, cbp + 8, false);
     ++clut_loads_;
+    if (on_clut_load && on_clut_load(tex0, texa_)) return;
+    if (on_memory) on_memory(cbp, cbp + 8, false);
     auto clut = std::make_shared<std::array<u32, 256>>(*clut_);
     const bool eight = psm == PSMT8 || psm == PSMT8H;
     const u32 count = eight ? 256 : 16;

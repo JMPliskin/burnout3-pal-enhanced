@@ -193,6 +193,14 @@ struct Bridge {
     u64 write_backs = 0, reloads = 0, decodes = 0;
     u64 unchanged = 0;              // textures invalidated whose texels proved the same
     u64 gpu_decodes = 0;            // textures decoded on the GPU from its copy of local memory
+    // The CLUT, in rows of 16 entries (bit r for row r): which the GS model
+    // holds as loaded (a load from blocks the CPU has), which the GPU's copy
+    // holds (loaded from GPU memory, where the GPU drew them, or sent over).
+    // Every row is at least one of the two. A GPU load bumps its rows'
+    // generations, which key the textures read through them.
+    u32 clut_cpu = 0xFFFF, clut_gpu = 0;
+    u64 clut_generation[16] = {};
+    u64 gpu_clut_loads = 0;
     // PS2HOST_GPU_DUMP_FRAME=N (and PS2HOST_GPU_DUMP_DIR): during frame N, each
     // target as it stood when drawing moved on to another, as a BMP, with a
     // line per pass on stderr - to see which pass of a frame goes wrong.
@@ -388,18 +396,73 @@ u64 Hash(const unsigned char* data, std::size_t size) {
     return out;
 }
 
-/* The CLUT a palettized texture is read through, as a hash. */
-u64 ClutHash(u32 psm) {
-    if (psm != gs::PSMT8 && psm != gs::PSMT4 && psm != gs::PSMT8H && psm != gs::PSMT4HL && psm != gs::PSMT4HH)
-        return 0;
+bool GpuHolds(const Bridge& b, u32 begin, u32 end);
+
+bool Palettized(u32 psm) {
+    return psm == gs::PSMT8 || psm == gs::PSMT4 || psm == gs::PSMT8H || psm == gs::PSMT4HL || psm == gs::PSMT4HH;
+}
+
+/* The CLUT rows a palettized texture reads: all 16 for 8-bit, CSA's for 4-bit. */
+u32 ClutRowsOf(u32 psm, u32 csa) {
+    if (!Palettized(psm)) return 0;
+    return (psm == gs::PSMT8 || psm == gs::PSMT8H) ? 0xFFFFu : 1u << (csa % 16);
+}
+
+/* The CLUT rows a palettized texture reads, as a hash: their entries where
+   the GS model holds them, their generation where only the GPU does. */
+u64 ClutHash(const Bridge& b, u32 psm, u32 csa) {
+    const u32 rows = ClutRowsOf(psm, csa);
+    if (!rows) return 0;
     // Hashed once a load: hundreds of thousands of palettized draws a frame.
-    static u64 loads = ~0ull, hash = 0;
+    static u64 loads = ~0ull, row_hash[16];
     if (gs::TheGs().clut_loads() != loads) {
         loads = gs::TheGs().clut_loads();
-        hash = 1469598103934665603ull;
-        for (u32 c : gs::TheGs().Clut()) hash = (hash ^ c) * 1099511628211ull;
+        const auto& clut = gs::TheGs().Clut();
+        for (u32 r = 0; r < 16; ++r) {
+            u64 hash = 1469598103934665603ull;
+            for (u32 i = 0; i < 16; ++i) hash = (hash ^ clut[r * 16 + i]) * 1099511628211ull;
+            row_hash[r] = hash;
+        }
+    }
+    u64 hash = 0x9E3779B97F4A7C15ull;
+    for (u32 r = 0; r < 16; ++r) {
+        if (!(rows >> r & 1)) continue;
+        const u64 row = (b.clut_cpu >> r & 1) ? row_hash[r] : ~(b.clut_generation[r] * 0xC2B2AE3D27D4EB4Full);
+        hash = (hash ^ row ^ r) * 0xFF51AFD7ED558CCDull;
     }
     return hash;
+}
+
+/* A CLUT load (on_clut_load): from the GPU's copy of local memory when the
+   GPU holds its blocks newer - the race's crash and glow scenes load CLUTs
+   from images just drawn, and bringing those back waited ~8 ms each - else
+   left to the GS model. */
+bool LoadClut(Bridge& b, u64 tex0, u64 texa) {
+    const u32 psm = Bits(tex0, 20, 6), cbp = Bits(tex0, 37, 14), cpsm = Bits(tex0, 51, 4), csa = Bits(tex0, 56, 5);
+    const u32 rows = ClutRowsOf(psm, csa);
+    if (!GpuHolds(b, cbp, cbp + 8)) {
+        b.clut_cpu |= rows;
+        b.clut_gpu &= ~rows;
+        return false;
+    }
+    Timed timed(Section::GpuSync);
+    for (auto& [key, o] : b.owned)
+        if (o.gpu_newer && o.dirty_begin < cbp + 8 && cbp < o.dirty_end) WriteBack(b, o);
+    Coherent(b, cbp, cbp + 8, true);
+    ps2gpu::GsClutLoad load;
+    load.cbp = cbp;
+    load.cpsm = cpsm;
+    load.csa = csa;
+    load.eight = psm == gs::PSMT8 || psm == gs::PSMT8H;
+    load.texa_lo = u32(texa & 0x80FF);
+    load.ta1 = Bits(texa, 32, 8);
+    b.renderer->ClutFromMemory(load);
+    b.clut_gpu |= rows;
+    b.clut_cpu &= ~rows;
+    for (u32 r = 0; r < 16; ++r)
+        if (rows >> r & 1) ++b.clut_generation[r];
+    ++b.gpu_clut_loads;
+    return true;
 }
 
 /* The renderer's key for the texture the current primitive samples, decoded if
@@ -428,7 +491,8 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     u64 key = c.tex0 & 0x3FFFFFFFFull;
     if (Bits(c.clamp, 0, 2) >= 2 || Bits(c.clamp, 2, 2) >= 2) key ^= c.clamp * 0xC2B2AE3D27D4EB4Full;
     key ^= texa * 0x165667B19E3779F9ull;
-    key ^= ClutHash(psm) * 0x27D4EB2F165667C5ull;
+    const u32 clut_rows = ClutRowsOf(psm, Bits(c.tex0, 56, 5));
+    key ^= ClutHash(b, psm, Bits(c.tex0, 56, 5)) * 0x27D4EB2F165667C5ull;
     Cached& t = b.textures[key];
     if (!t.renderer_key) {
         t.renderer_key = b.next_texture++;
@@ -443,7 +507,8 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     // as surely as memory written there.
     for (const auto& [okey, o] : b.owned)
         if (o.drawn_serial > t.decoded_serial && o.begin < t.end && t.begin < o.drawn_end) t.valid = false;
-    if (!t.valid && GpuHolds(b, t.begin, t.end)) {
+    // Decoded on the GPU too when the CLUT rows it reads are only there.
+    if (!t.valid && (GpuHolds(b, t.begin, t.end) || (clut_rows & ~b.clut_cpu))) {
         Timed timed(Section::GpuSync);
         for (auto& [okey, o] : b.owned)
             if (o.gpu_newer && o.dirty_begin < t.end && t.begin < o.dirty_end) WriteBack(b, o);
@@ -463,7 +528,12 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         d.texa_lo = u32(texa & 0x80FF);
         d.ta1 = Bits(texa, 32, 8);
         d.csa = Bits(c.tex0, 56, 5);
-        d.clut = gs::TheGs().Clut().data();
+        // Through the GPU's CLUT, its rows the GPU lacks sent over first.
+        d.clut = nullptr;
+        if (clut_rows) {
+            b.renderer->ClutRows(gs::TheGs().Clut().data(), b.clut_cpu & ~b.clut_gpu);
+            b.clut_gpu |= b.clut_cpu;
+        }
         b.renderer->TextureFromMemory(t.renderer_key, d);
         t.valid = true;
         t.decoded = false;              // the CPU's copy was not read: no hash to compare
@@ -897,6 +967,7 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
             g_bridge->cause = write ? 2 : 1;
             Sync(*g_bridge, begin, end, write);
         };
+        g.on_clut_load = [](u64 tex0, u64 texa) { return LoadClut(*g_bridge, tex0, texa); };
     }
     if (show || bridge.primary) {
         // The window shows the GPU's picture: the displayed buffer read back
@@ -1025,14 +1096,16 @@ std::string GpuShadowSummary() {
     if (g_bridge->primary) {
         std::snprintf(text, sizeof text,
                       "gpu: %llu images into GPU local memory, %llu out of it; %llu KB to the CPU, %llu KB"
-                      " from it; %llu textures decoded (%llu more found unchanged), %llu on the GPU",
+                      " from it; %llu textures decoded (%llu more found unchanged), %llu on the GPU;"
+                      " %llu CLUTs loaded on the GPU",
                       static_cast<unsigned long long>(g_bridge->write_backs),
                       static_cast<unsigned long long>(g_bridge->reloads),
                       static_cast<unsigned long long>(g_bridge->downloads / 4),
                       static_cast<unsigned long long>(g_bridge->uploads / 4),
                       static_cast<unsigned long long>(g_bridge->decodes),
                       static_cast<unsigned long long>(g_bridge->unchanged),
-                      static_cast<unsigned long long>(g_bridge->gpu_decodes));
+                      static_cast<unsigned long long>(g_bridge->gpu_decodes),
+                      static_cast<unsigned long long>(g_bridge->gpu_clut_loads));
         return std::string(text) + "\ngpu: " + ps2gpu::SubmitStats();
     }
     if (!g_bridge->frames) return "";

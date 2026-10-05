@@ -95,6 +95,7 @@ void MemoryBarrier(VkCommandBuffer cmd) {
 /* decode.comp's push constants: GsTextureDecode without the CLUT. */
 struct DecodeParams {
     std::uint32_t tbp, tbw, psm, tw, th, wms, wmt, minu, maxu, minv, maxv, texa_lo, ta1, csa;
+    std::uint32_t mode = 0;     // 0 a texture, 1 a CLUT load
 };
 
 /* swizzle.comp's push constants. */
@@ -234,6 +235,8 @@ public:
     void DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                          std::uint32_t zpsm) override;
     void TextureFromMemory(std::uint64_t key, const GsTextureDecode& decode) override;
+    void ClutFromMemory(const GsClutLoad& load) override;
+    void ClutRows(const std::uint32_t* clut, std::uint32_t rows) override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
                     std::uint32_t* width, std::uint32_t* height) override;
     bool ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
@@ -1003,6 +1006,42 @@ void VulkanGsRenderer::TextureFromMemory(std::uint64_t key, const GsTextureDecod
         vkCmdCopyBufferToImage(cmd, linear_, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        MemoryBarrier(cmd);
+    });
+}
+
+void VulkanGsRenderer::ClutFromMemory(const GsClutLoad& load) {
+    Flush();                        // what is pending may draw the CLUT, or sample through the old one
+    DecodeParams params{load.cbp, 1, load.cpsm, load.eight ? 256u : 16u, 1, 0, 0, 0, 0, 0, 0,
+                        load.texa_lo, load.ta1, load.csa};
+    params.mode = 1;
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
+                                nullptr);
+        vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
+        vkCmdDispatch(cmd, (params.tw + 7) / 8, 1, 1);
+        MemoryBarrier(cmd);
+    });
+}
+
+void VulkanGsRenderer::ClutRows(const std::uint32_t* clut, std::uint32_t rows) {
+    rows &= 0xFFFF;
+    if (!rows) return;
+    Flush();                        // what is pending samples through the old rows
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        for (std::uint32_t r = 0; r < 16;) {
+            if (!(rows >> r & 1)) {
+                ++r;
+                continue;
+            }
+            std::uint32_t e = r;
+            while (e < 16 && (rows >> e & 1)) ++e;
+            vkCmdUpdateBuffer(cmd, clut_, VkDeviceSize(r) * 64, VkDeviceSize(e - r) * 64, clut + r * 16);
+            r = e;
+        }
         MemoryBarrier(cmd);
     });
 }

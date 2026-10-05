@@ -124,6 +124,11 @@ public:
        loads, the displayed picture. */
     bool rasterize = true;
     std::function<void(u32 begin, u32 end, bool write)> on_memory;
+    /* --gpu: a CLUT load (TEX0 with its CLD, and TEXA) about to happen; true
+       if the second renderer made it from its own copy of local memory - the
+       model's CLUT then keeps its old entries for those (on_memory is not
+       called, and nothing reads them but that renderer). */
+    std::function<bool(u64 tex0, u64 texa)> on_clut_load;
     /* The texture the primitive being drawn samples, decoded as the software
        rasteriser reads it (CLUT, TEXA): RGBA in memory, rows top-down. */
     void DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const;

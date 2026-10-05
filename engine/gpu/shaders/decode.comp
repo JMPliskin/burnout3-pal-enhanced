@@ -10,7 +10,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(std430, binding = 0) readonly buffer Memory { uint mem[]; };
 layout(std430, binding = 1) writeonly buffer Linear { uint lin[]; };
-layout(std430, binding = 2) readonly buffer Clut { uint clut[256]; };
+layout(std430, binding = 2) buffer Clut { uint clut[256]; };
 
 layout(push_constant) uniform Params {
     uint tbp, tbw, psm, tw, th;
@@ -18,6 +18,7 @@ layout(push_constant) uniform Params {
     uint texa_lo;       // TA0 (bits 0-7), AEM (bit 15)
     uint ta1;
     uint csa;
+    uint mode;          // 0 a texture decoded; 1 a CLUT loaded (below)
 } p;
 
 const uint PSMCT32 = 0x00u, PSMCT24 = 0x01u, PSMCT16 = 0x02u, PSMCT16S = 0x0Au;
@@ -125,28 +126,54 @@ uint Wrap(int i, uint size, uint mode, uint lo, uint hi) {
     return (uint(i) & lo) | hi;
 }
 
+// A texel as the GS expands it: TEXA for 24- and 16-bit texels, the CLUT for
+// palettized ones.
+uint Expand(uint raw) {
+    const uint psm = p.psm;
+    const uint ta0 = p.texa_lo & 0xFFu;
+    const bool aem = (p.texa_lo & 0x8000u) != 0u;
+    if (psm == PSMT8 || psm == PSMT8H) return clut[raw & 0xFFu];
+    if (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) return clut[(p.csa * 16u + (raw & 15u)) & 0xFFu];
+    if (psm == PSMCT24 || psm == PSMZ24) {
+        const uint rgb = raw & 0xFFFFFFu;
+        return rgb | ((aem && rgb == 0u) ? 0u : ta0) << 24;
+    }
+    if (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) {
+        const uint a = (raw & 0x8000u) != 0u ? p.ta1 : ((aem && (raw & 0x7FFFu) == 0u) ? 0u : ta0);
+        return ((raw & 31u) << 3) | (((raw >> 5) & 31u) << 11) | (((raw >> 10) & 31u) << 19) | (a << 24);
+    }
+    return raw;
+}
+
+// Mode 1: a CLUT load (TEX0's CLD), as the host's Gs::LoadClut does one, from
+// the GPU's copy of local memory: tbp is CBP, tbw 1, psm CPSM (CT32, CT16,
+// CT16S), tw the entries (256 for an 8-bit texture, 16 for a 4-bit one at
+// CSA), CSM1's arrangement - an 8-bit CLUT a 16x16 image with index bits 3 and
+// 4 swapped, a 4-bit one 8x2. 16-bit entries expand by TEXA as they load.
+void LoadClut() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (gl_GlobalInvocationID.y != 0u || i >= p.tw) return;
+    const bool eight = p.tw == 256u;
+    uint x, y;
+    if (eight) {
+        const uint q = (i & 0xE7u) | ((i & 0x08u) << 1) | ((i & 0x10u) >> 1);
+        x = q % 16u;
+        y = q / 16u;
+    } else {
+        x = i % 8u;
+        y = i / 8u;
+    }
+    clut[eight ? i : (p.csa * 16u + i) % 256u] = Expand(Raw(x, y));
+}
+
 void main() {
+    if (p.mode == 1u) {
+        LoadClut();
+        return;
+    }
     const uint u = gl_GlobalInvocationID.x, v = gl_GlobalInvocationID.y;
     if (u >= p.tw || v >= p.th) return;
     const uint x = Wrap(int(u), p.tw, p.wms, p.minu, p.maxu) & 2047u;
     const uint y = Wrap(int(v), p.th, p.wmt, p.minv, p.maxv) & 2047u;
-    const uint raw = Raw(x, y);
-    const uint psm = p.psm;
-    const uint ta0 = p.texa_lo & 0xFFu;
-    const bool aem = (p.texa_lo & 0x8000u) != 0u;
-    uint c;
-    if (psm == PSMT8 || psm == PSMT8H) {
-        c = clut[raw & 0xFFu];
-    } else if (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) {
-        c = clut[(p.csa * 16u + (raw & 15u)) & 0xFFu];
-    } else if (psm == PSMCT24 || psm == PSMZ24) {
-        const uint rgb = raw & 0xFFFFFFu;
-        c = rgb | ((aem && rgb == 0u) ? 0u : ta0) << 24;
-    } else if (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) {
-        const uint a = (raw & 0x8000u) != 0u ? p.ta1 : ((aem && (raw & 0x7FFFu) == 0u) ? 0u : ta0);
-        c = ((raw & 31u) << 3) | (((raw >> 5) & 31u) << 11) | (((raw >> 10) & 31u) << 19) | (a << 24);
-    } else {
-        c = raw;
-    }
-    lin[v * p.tw + u] = c;
+    lin[v * p.tw + u] = Expand(Raw(x, y));
 }

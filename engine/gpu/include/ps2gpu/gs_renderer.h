@@ -123,7 +123,18 @@ struct GsTextureDecode {
     std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
     std::uint32_t texa_lo = 0;      // TA0, and AEM at bit 15
     std::uint32_t ta1 = 0, csa = 0;
+    /* The CLUT as the GS model holds it, or null: the CLUT the GPU holds
+       (ClutFromMemory, ClutRows) at this point of what is recorded. */
     const std::uint32_t* clut = nullptr;
+};
+
+/* A CLUT load (TEX0's CLD) from GS local memory, as the host's GS model does
+   one: CBP (blocks), CPSM, CSA, an 8-bit texture's 256 entries or a 4-bit
+   one's 16, 16-bit entries expanded by TEXA (TA0 and AEM at bit 15, TA1). */
+struct GsClutLoad {
+    std::uint32_t cbp = 0, cpsm = 0, csa = 0;
+    bool eight = true;
+    std::uint32_t texa_lo = 0, ta1 = 0;
 };
 
 class GsRenderer {
@@ -178,6 +189,13 @@ public:
     /* A texture decoded from GPU memory, as the host's software GS decodes
        one (GsTextureDecode); replaces what the key named. */
     virtual void TextureFromMemory(std::uint64_t key, const GsTextureDecode& decode) = 0;
+    /* The GPU's CLUT - the 256 RGBA entries textures decoded on the GPU with
+       no CLUT of their own read - loaded from GPU memory, in order with what
+       is recorded: a CLUT the GPU drew never waits to come back. */
+    virtual void ClutFromMemory(const GsClutLoad& load) = 0;
+    /* Rows of the GPU's CLUT (16 entries each; bit r of `rows` for row r)
+       from the host's copy, `clut` being all 256 entries. */
+    virtual void ClutRows(const std::uint32_t* clut, std::uint32_t rows) = 0;
     /* A depth buffer's Z (the GS's, unsigned), rows top-down; false if there
        is none of that size. */
     virtual bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,

@@ -216,17 +216,24 @@ proved itself in PCSX2's hardware renderers, made smaller:
    EA Trax playlist differed between runs.
    Local memory stays the meeting point: the shadow mode's comparison, run on
    a few frames, checks each step.
-7. **CLUTs loaded on the GPU.** The submission statistics name what waited
-   for the GPU: in the race script it is all memory read-backs (3,134 of
-   them, 25 s of about 2 minutes, around 8 ms each), and every one is a CLUT
-   load - from 0x2CD0, 0x2CD4, 0x2D30 and 0x2D3C - in the crash and glow
-   scenes (frames 9,000-10,100), whose CLUTs are images the GPU has just
-   drawn: a 192-wide textured blur target over 0x2BC0-0x2D40, sprites into
-   the page at 0x2D40 and a 256-point ramp at 0x2D20. (Drawing such draws
-   on the CPU as well was tried: only the ramp qualifies, being untextured.)
-   The fix is a CLUT the GPU loads from its own copy of local memory (a
-   compute pass doing what `Gs`'s CLUT load does, CSM and CSA included) when
-   the blocks are the GPU's, the CPU's CLUT then marked unknown for those
-   entries, and textures read through it decoded on the GPU (decode.comp
-   already takes a CLUT buffer), keyed by a CLUT generation rather than the
-   CPU-side hash.
+7. ~~**CLUTs loaded on the GPU.**~~ The submission statistics named what
+   waited for the GPU: in the race script all of it was memory read-backs
+   (3,134 of them, 25 s of about 2 minutes, around 8 ms each), every one a
+   CLUT load - from 0x2CD0, 0x2CD4, 0x2D30 and 0x2D3C - in the crash and
+   glow scenes (frames 9,000-10,100), whose CLUTs are images the GPU has
+   just drawn: a 192-wide textured blur target over 0x2BC0-0x2D40, sprites
+   into the page at 0x2D40 and a 256-point ramp at 0x2D20. (Drawing such
+   draws on the CPU as well was tried: only the ramp qualifies, being
+   untextured.)
+   Now a CLUT load whose blocks the GPU holds newer (`Gs::on_clut_load`) is
+   made by the GPU from its own copy of local memory - decode.comp's mode 1,
+   CSM1's arrangement, CSA and TEXA as `Gs::LoadClut` - in order with the
+   drawing. The bridge keeps the CLUT in rows of 16 entries: which rows the
+   GS model holds as loaded, which the GPU's CLUT buffer holds (rows the CPU
+   loaded are sent over, `ClutRows`, before a GPU decode reads them). A
+   texture reading a row only the GPU has is decoded on the GPU, keyed by the
+   row's generation rather than its entries. The race script: 6,138 CLUTs
+   loaded on the GPU, 82 read-backs left (0.2 s of waiting, from 29 s),
+   "GPU and memory in step" from 29% of the run to 5%; every picture as
+   recorded. `GpuDecodesTexturesAsTheGs` checks each palettized format
+   through a CLUT loaded on the GPU over a garbage one.
