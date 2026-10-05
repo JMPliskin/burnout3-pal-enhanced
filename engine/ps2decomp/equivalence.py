@@ -79,17 +79,15 @@ u64 Mix(u64 x) { x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29; return 
 }
 
 namespace generated {
-u64 ReadS8(u32 a) { return u64(s64(s8(Load(a, 1)))); }
-u64 ReadU8(u32 a) { return Load(a, 1); }
-u64 ReadS16(u32 a) { return u64(s64(s16(Load(a, 2)))); }
-u64 ReadU16(u32 a) { return Load(a, 2); }
-u64 ReadS32(u32 a) { return u64(s64(s32(Load(a, 4)))); }
-u64 ReadU32(u32 a) { return Load(a, 4); }
-u64 ReadU64(u32 a) { return Load(a, 8); }
-void Write8(u32 a, u32 v) { Store(a, v, 1); }
-void Write16(u32 a, u32 v) { Store(a, v, 2); }
-void Write32(u32 a, u32 v) { Store(a, v, 4); }
-void Write64(u32 a, u64 v) { Store(a, v, 8); }
+u8* ram_base = nullptr;
+bool ram_watched = false;
+u64 PortRead(u32 a, u32 n, bool is_signed) {
+    const u64 v = Load(a, n);
+    if (!is_signed || n == 8) return v;
+    const u32 shift = 64 - 8 * n;
+    return u64(s64(v << shift) >> shift);
+}
+void PortWrite(u32 a, u64 v, u32 n) { Store(a, v, n); }
 u64 StackEnter(u32) { return 0; }
 void StackLeave(u32) {}
 u64 CallPointer(u32, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) { return 0; }

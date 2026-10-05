@@ -49,6 +49,8 @@ def abi_view(state):
 SEARCH_ATTEMPTS = 12
 SEARCH_BUDGET = 20_000
 CASES = 8
+# Cases that must complete, and agree, for a verdict.
+MIN_CASES = 5
 
 
 def _cases(func, machine):
@@ -63,6 +65,12 @@ def _cases(func, machine):
     if plan is not None:
         arg_sets, profile = plan
         return [(args, profile, func["addr"] + case) for case, args in enumerate(arg_sets)]
+    return _search(func, machine, CASES) or None
+
+
+def _search(func, machine, want):
+    """Up to `want` (arguments, profile, seed) the original completes on, from
+    fresh random inputs, each under every profile."""
     rng = random.Random(func["addr"] ^ 0x5EA4C4)
     memory = machine.memory
     found = []
@@ -90,9 +98,9 @@ def _cases(func, machine):
                 break
         if not ran:
             memory.unmap_to(mark)
-        if len(found) >= CASES:
+        if len(found) >= want:
             break
-    return found or None
+    return found
 
 
 def verify(func, machine, library, abi=False) -> str:
@@ -105,21 +113,55 @@ def verify(func, machine, library, abi=False) -> str:
     return outcome
 
 
-def _verify(func, machine, library, abi) -> str:
-    cases = _cases(func, machine)
-    if cases is None:
-        return "untestable: " + testplan.failure_reason()
+def _run_original(func, machine, args, profiles, seed) -> bool:
+    """Run the original on `args` under the first of `profiles` it completes
+    with, leaving memory journalled as it left it; False if none."""
     memory = machine.memory
-    tested = 0
-    for args, profile, seed in cases:
+    for profile in profiles:
+        # Pages a failed attempt mapped are given back, as _cases does: they
+        # would use up the mapping budget of the functions verified after.
+        mark = memory.page_mark()
         memory.end_journal()
         memory.write(layout.CURRENT.scratch, testmem.build(profile, seed))
         memory.begin_journal()
         try:
             machine.call(func["addr"], args, max_instructions=testplan.VERIFY_BUDGET)
+            return True
         except Exception:
             memory.rollback()
             memory.end_journal()
+            memory.unmap_to(mark)
+    return False
+
+
+def _verify(func, machine, library, abi) -> str:
+    cases = _cases(func, machine)
+    if cases is None:
+        return "untestable: " + testplan.failure_reason()
+    tested, failure = _check(func, machine, library, abi, cases)
+    if failure is None and tested < MIN_CASES and len(cases) == testplan.ARG_SETS:
+        # The plan's inputs left too few cases: fresh ones, searched for,
+        # make up the rest (a plan's seeds lie below 1000 past the address,
+        # a search's from there on, so no input is tried twice).
+        more, failure = _check(func, machine, library, abi, _search(func, machine, CASES))
+        tested += more
+    if failure is not None:
+        return failure
+    return "verified" if tested >= MIN_CASES else "untestable: only %d cases ran" % tested
+
+
+def _check(func, machine, library, abi, cases):
+    """(how many cases the original completed and the lifted code agreed on,
+    the first disagreement or None)."""
+    memory = machine.memory
+    tested = 0
+    for args, profile, seed in cases:
+        # A case the original does not complete under the profile chosen for
+        # the first is tried under the others: the shape that lets one input
+        # finish need not suit the next (a count in one, a list in another).
+        # Which inputs are tried never changes what a case concludes.
+        others = tuple(p for p in testmem.PROFILES if p != profile)
+        if not _run_original(func, machine, args, (profile,) + others, seed):
             continue
         expected = liftcheck.machine_state(machine)
         effects = testplan._effects_digest(memory)
@@ -129,17 +171,17 @@ def _verify(func, machine, library, abi) -> str:
         if why is not None:
             memory.rollback()
             memory.end_journal()
-            return "lifted run failed: " + why
+            return tested, "lifted run failed: " + why
         actual = liftcheck.context_state(context)
         replayed = testplan._effects_digest(memory)
         memory.rollback()
         memory.end_journal()
         if abi:
             if abi_view(actual) != abi_view(expected):
-                return "disagrees: " + _difference(abi_view(actual), abi_view(expected))
+                return tested, "disagrees: " + _difference(abi_view(actual), abi_view(expected))
         elif actual != expected:
-            return "disagrees: " + _difference(actual, expected)
+            return tested, "disagrees: " + _difference(actual, expected)
         if replayed != effects:
-            return "disagrees: memory"
+            return tested, "disagrees: memory"
         tested += 1
-    return "verified" if tested >= 5 else "untestable: only %d cases ran" % tested
+    return tested, None

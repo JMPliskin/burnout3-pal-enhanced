@@ -80,10 +80,7 @@ def harness_source(names) -> str:
         "    if (fault) throw lifted::Abort{a, 4};",
         "}",
     ]
-    for name, size, signed in cppcheck.READERS:
-        lines.append("u64 %s(u32 a) { return Read(a, %d, %d); }" % (name, size, signed))
-    for name, size, value_type in cppcheck.WRITERS:
-        lines.append("void %s(u32 a, %s v) { Write(a, v, %d); }" % (name, value_type, size))
+    lines += cppcheck.port_memory("Read(a, size, is_signed)", "Write(a, v, size)")
     lines += [
         "}",
         "",

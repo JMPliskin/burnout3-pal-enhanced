@@ -109,6 +109,18 @@ def externs_in(source: str) -> list:
     return found
 
 
+def port_memory(read: str, write: str) -> list:
+    """generated.h's memory hooks for a harness: no main RAM given to the code
+    inline (ram_base null), so every access goes through `read` (of a, size,
+    is_signed) and `write` (of a, v, size)."""
+    return [
+        "u8* ram_base = nullptr;",
+        "bool ram_watched = false;",
+        "u64 PortRead(u32 a, u32 size, bool is_signed) { return %s; }" % read,
+        "void PortWrite(u32 a, u64 v, u32 size) { %s; }" % write,
+    ]
+
+
 def harness_source(functions, typed: bool, externs=()) -> str:
     """A dispatch table plus memory helpers that forward to Python callbacks."""
     # The dispatch switch has a case per function - over two thousand - and
@@ -164,10 +176,7 @@ def harness_source(functions, typed: bool, externs=()) -> str:
         else:
             lines.append("    return g_call(0x%08X, vector, top, 0);" % address)
         lines.append("}")
-    for name, size, signed in READERS:
-        lines.append("u64 %s(u32 a) { return g_read(a, %d, %d); }" % (name, size, signed))
-    for name, size, value_type in WRITERS:
-        lines.append("void %s(u32 a, %s v) { g_write(a, v, %d); }" % (name, value_type, size))
+    lines += port_memory("g_read(a, size, is_signed)", "g_write(a, v, size)")
     lines += [
         "}",
         "",
@@ -194,6 +203,9 @@ def harness_source(functions, typed: bool, externs=()) -> str:
 def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str) -> tuple:
     """Compile the generated file into a DLL; returns (dll path, functions)."""
     vcvars = find_vcvars()
+    # Absolute: the build script changes into work_dir before compiling, so a
+    # relative path (a relative --game) would name a file that is not there.
+    work_dir = os.path.abspath(work_dir)
     os.makedirs(work_dir, exist_ok=True)
     with open(generated_path, encoding="utf-8") as handle:
         functions = functions_in(handle.read())
