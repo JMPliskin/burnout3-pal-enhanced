@@ -79,7 +79,7 @@ void Gs::Words(int path, const u32* words, u32 count, u32 from) {
             i += 4 * qwords;
             continue;
         }
-        if (from != kNoSource) g_dma_source = from + 4 * i;
+        if (from != kNoSource) dma_source_ = from + 4 * i;
         Word(path, words[i++]);
     }
 }
@@ -129,7 +129,7 @@ void Gs::Packed(u32 descriptor, u64 low, u64 high) {
     switch (descriptor) {
         case 0x0: WriteRegister(0x00, low & 0x7FF); break;
         case 0x1: {                                     // RGBA, Q from ST
-            rgba_source_ = g_dma_source;
+            rgba_source_ = dma_source_;
             u32 qbits;
             std::memcpy(&qbits, &q_, 4);
             rgbaq_ = Bits(low, 0, 8) | Bits(low, 32, 8) << 8 | u64(Bits(high, 0, 8)) << 16 |

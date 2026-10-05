@@ -414,6 +414,7 @@ int Run(const Options& options) {
     g_watch = options.watch;
     InstallDevices();
     InstallIopServers();
+    if (!options.gs_inline) StartGsThread();
     lifted::Context c = NewContext();
     Watchdog watchdog(options.timeout_seconds);
     std::string outcome;
@@ -448,6 +449,12 @@ int Run(const Options& options) {
         if (abort.reason == 2 && UntilFrameReached())
             outcome = "stopped: frame " + std::to_string(options.until_frame) + " reached (--until-frame)";
     }
+    // The GS takes what it was sent before the report reads it.
+    try {
+        StopGsThread();
+    } catch (const Unimplemented& missing) {
+        if (outcome.empty()) outcome = "stopped: " + missing.what;
+    }
     Report(options, outcome);
     return code;
 }
@@ -468,6 +475,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--virtual-time") options.virtual_time = true;
         else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
         else if (arg == "--frame-times" && i + 1 < argc) options.frame_times = unsigned(std::stoul(argv[++i]));
+        else if (arg == "--gs-inline") options.gs_inline = true;
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--sample") options.sample = true;

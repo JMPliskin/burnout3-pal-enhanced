@@ -57,6 +57,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
 | `--gs-dump-frame N` | GS local memory, all 4 MB, written to `gsmem_N.bin` (in the `--frames` directory) when frame N is done - under `--gpu`, as the GPU has it. `engine/tools/gsmem.py` shows a buffer from a dump, or compares two runs' dumps buffer by buffer |
 | `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name, and where it was running by source file and line (inlined code by the line inlined: a VU step in vu_core.h, not the block) - the port builds with symbols for it |
+| `--gs-inline` | the GS model (and the GPU renderer behind it) on the EE's thread rather than its own (`gs_thread.cpp`): for debugging, and for `--sample` to see the GS's share |
 | `--frame-times N` | every N frames, how long they took in wall-clock time and the frame rate (`regress.py --frame-times N` prints them): the menus and the race are very different loads |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
@@ -168,7 +169,18 @@ and what was done:
 * compiled VU code: a stall check that can never stall is left out (VF0;
   a field written four or more pairs before in the block; a field the
   block has not written, from its fourth pair: see `needless_wait`), and
-  the MAC flags are found for four lanes at once.
+  the MAC flags are found for four lanes at once;
+* the GS on a thread of its own (`gs_thread.cpp`). To the EE the GS is a
+  sink: the host answers CSR reads itself, and nothing it does comes back
+  before the frame is shown. So the EE side writes each call that feeds it
+  (a quadword from XGKICK, a run of PATH2 or PATH3 words, a privileged
+  register) into a ring, and the GS thread makes the same calls in the same
+  order - the GS model, the GPU bridge, the renderer's recording - while the
+  EE, VIF1 and VU1 go on. At the end of a frame, before anything reads the
+  GS (the picture, the GPU's frame, dumps), `SyncGs` waits for the ring to
+  empty; a scripted run draws the same pictures. Timed sections are kept
+  per thread, so the report's shares can add up to more than 100%.
+  The car select from 23 s to 15 s; the race script from about 90 s to 56 s.
 
 ## VU microprograms compiled ahead of time
 

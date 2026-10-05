@@ -43,11 +43,38 @@ std::uint64_t Ticks() {
 
 const Clock::time_point g_start = Clock::now();
 const std::uint64_t g_start_ticks = Ticks();
-std::uint64_t g_ticks[int(Section::Count)] = {};
-// The sections open now, innermost last, and when the innermost resumed.
-Section g_stack[16];
-int g_depth = 0;
-std::uint64_t g_since = 0;
+// Each thread times its own sections (the GS has one: gs_thread.cpp): the
+// sections open now, innermost last, when the innermost resumed, and the
+// ticks spent in each. A thread's ticks are added up when it ends.
+struct ThreadTicks;
+std::mutex g_threads_mutex;
+std::vector<ThreadTicks*> g_threads;
+std::uint64_t g_ended[int(Section::Count)] = {};
+
+struct ThreadTicks {
+    std::uint64_t ticks[int(Section::Count)] = {};
+    Section stack[16];
+    int depth = 0;
+    std::uint64_t since = 0;
+    ThreadTicks() {
+        std::lock_guard<std::mutex> lock(g_threads_mutex);
+        g_threads.push_back(this);
+    }
+    ~ThreadTicks() {
+        std::lock_guard<std::mutex> lock(g_threads_mutex);
+        for (int i = 0; i < int(Section::Count); ++i) g_ended[i] += ticks[i];
+        g_threads.erase(std::find(g_threads.begin(), g_threads.end(), this));
+    }
+};
+
+thread_local ThreadTicks t_ticks;
+
+std::uint64_t SectionTicks(int section) {
+    std::lock_guard<std::mutex> lock(g_threads_mutex);
+    std::uint64_t total = g_ended[section];
+    for (const ThreadTicks* t : g_threads) total += t->ticks[section];
+    return total;
+}
 
 double Elapsed(Clock::time_point from, Clock::time_point to) {
     return std::chrono::duration<double>(to - from).count();
@@ -56,18 +83,20 @@ double Elapsed(Clock::time_point from, Clock::time_point to) {
 }  // namespace
 
 Timed::Timed(Section section) : section_(section) {
+    ThreadTicks& t = t_ticks;
     const std::uint64_t now = Ticks();
-    if (g_depth > 0) g_ticks[int(g_stack[g_depth - 1])] += now - g_since;
-    if (g_depth < 16) g_stack[g_depth] = section;
-    ++g_depth;
-    g_since = now;
+    if (t.depth > 0) t.ticks[int(t.stack[t.depth - 1])] += now - t.since;
+    if (t.depth < 16) t.stack[t.depth] = section;
+    ++t.depth;
+    t.since = now;
 }
 
 Timed::~Timed() {
+    ThreadTicks& t = t_ticks;
     const std::uint64_t now = Ticks();
-    g_ticks[int(section_)] += now - g_since;
-    --g_depth;
-    g_since = now;
+    t.ticks[int(section_)] += now - t.since;
+    --t.depth;
+    t.since = now;
 }
 
 std::string ProfileSummary() {
@@ -81,8 +110,9 @@ std::string ProfileSummary() {
     std::snprintf(text, sizeof text, " %.1f s;", total);
     out += text;
     for (int i = 0; i < int(Section::Count); ++i) {
-        if (i >= int(Section::GpuBridge) && g_ticks[i] == 0) continue;   // the GPU's, when it ran
-        const double seconds = double(g_ticks[i]) * seconds_per_tick;
+        const std::uint64_t ticks = SectionTicks(i);
+        if (i >= int(Section::GpuBridge) && ticks == 0) continue;   // the GPU's, when it ran
+        const double seconds = double(ticks) * seconds_per_tick;
         std::snprintf(text, sizeof text, "%s %s %.1f%%", i ? "," : "", kNames[i],
                       total > 0 ? 100.0 * seconds / total : 0.0);
         out += text;

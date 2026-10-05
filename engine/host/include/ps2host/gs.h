@@ -185,7 +185,8 @@ private:
         u32 a, b, c, d, fix;                        // ALPHA
     };
     Setup setup_{};
-    bool setup_stale_ = false;          // !rasterize: Prepare left to DecodeTexture, which alone reads it
+    bool setup_stale_ = false;
+    u32 dma_source_ = 0;                // where the word being taken came from (--gs-trace)          // !rasterize: Prepare left to DecodeTexture, which alone reads it
     void Prepare();
     /* A primitive waiting to be drawn. */
     struct Job {

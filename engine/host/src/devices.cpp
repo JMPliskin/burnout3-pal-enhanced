@@ -93,12 +93,12 @@ bool g_path3_masked = false;
 void Path3(const u32* words, u32 count, u32 from) {
     // Behind what is still held, even unmasked: the GIF keeps PATH3 in order.
     if (g_path3_masked || !g_path3_held.empty()) g_path3_held.Push(words, count);
-    else gs::TheGs().Words(3, words, count, from);
+    else GsWords(3, words, count, from);
 }
 
 void ReleasePath3(bool all) {
     g_path3_held.ReleaseBlock(all, [](const u32* words, std::size_t count) {
-        gs::TheGs().Words(3, words, u32(count));
+        GsWords(3, words, u32(count));
     });
 }
 
@@ -254,6 +254,9 @@ void FrameDone(u64 frame) {
     FrameTimes(frame);
     // Time passes: unmasked, PATH3 sends what it still holds.
     if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
+    // What reads the GS from here on - the picture, the GPU's frame, the
+    // dumps - sees it with all of the frame's packets taken.
+    SyncGs();
     if (g_dump_frame >= 0 && (long long)frame == g_dump_frame) {
         gs::Gs& g = gs::TheGs();
         g.Finish();
@@ -332,8 +335,8 @@ void InstallDevices() {
         g_path3_masked = masked;
         if (!masked) ReleasePath3(false);
     };
-    Vif1().on_direct = [](u32 word) { gs::TheGs().Word(2, word); };
-    Vif1().on_direct_block = [](const u32* words, u32 count, u32 from) { gs::TheGs().Words(2, words, count, from); };
+    Vif1().on_direct = [](u32 word) { GsWord(2, word); };
+    Vif1().on_direct_block = [](const u32* words, u32 count, u32 from) { GsWords(2, words, count, from); };
     Vif1().on_trace = [](const char* what) {
         if (gs::TheGs().trace) std::fprintf(stderr, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
         // FLUSHA waits for PATH3 to finish: unmasked, all it holds goes.
@@ -343,13 +346,13 @@ void InstallDevices() {
     Vif1().vu = &Vu1();
     Vif1().double_buffered = true;
     Vif0().vu = &Vu0();
-    Vu1().on_kick = [](u64 low, u64 high) { gs::TheGs().Qword(1, low, high); };
+    Vu1().on_kick = [](u64 low, u64 high) { GsQword(1, low, high); };
     // The GS's privileged registers: what is displayed. A 64-bit store reaches
     // both words; each passes the whole register on.
     for (u32 reg : {0x12000000u, 0x12000070u, 0x12000080u, 0x12000090u, 0x120000A0u, 0x120000E0u}) {
         for (u32 half : {0u, 4u}) {
             GuestMemory().OnWrite(reg + half, [reg](u32, u64) {
-                gs::TheGs().SetPrivileged(reg, GuestMemory().Read(reg, 8));
+                GsPrivileged(reg, GuestMemory().Read(reg, 8));
             });
         }
     }

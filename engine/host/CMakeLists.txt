@@ -39,6 +39,7 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/timers.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/window.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/gs.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/gs_thread.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/gs_draw.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/gs_memory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/gpu_bridge.cpp

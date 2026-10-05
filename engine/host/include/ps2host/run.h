@@ -129,6 +129,16 @@ std::string GpuShadowSummary();
 void SetUntilFrame(u64 frame);
 /* --frame-times N: every N frames, a line with the frame rate over them. */
 void SetFrameTimes(unsigned every);
+/* The GS on a thread of its own (gs_thread.cpp; --gs-inline keeps it on the
+   EE's): what feeds the GS goes through these, in order; SyncGs waits until
+   the GS has taken all of it, before anything reads the GS's state. */
+void StartGsThread();
+void StopGsThread();
+void SyncGs();
+void GsQword(int path, u64 low, u64 high);
+void GsWord(int path, u32 word);
+void GsWords(int path, const u32* words, u32 count, u32 from = ~0u);
+void GsPrivileged(u32 address, u64 value);
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);
