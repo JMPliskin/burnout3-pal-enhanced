@@ -117,9 +117,31 @@ struct VuCore {
     }
     static PS2HOST_VU_INLINE void WaitQ(u64& t, const Vu& v) { if (v.q_busy_) t = std::max(t, v.q_ready_); }
     static PS2HOST_VU_INLINE void WaitP(u64& t, const Vu& v) { if (v.p_busy_) t = std::max(t, v.p_ready_); }
+    /* Compiled code lands the flags lazily: an FMAC's flags arrive four
+       cycles after it, and landing them at every pair (as the interpreter
+       does) was a loop of thirty instructions a pair. Nothing sees the
+       landed flags but the lower instructions that read or write them
+       (Mac, Status, Clip below), and they land first whatever has arrived
+       by now - so they see what eager landing would have left, in the same
+       order. A full queue lands what has arrived before taking more, and a
+       run lands everything as it ends (Run's LandAll). Q and P still land
+       here. */
     static PS2HOST_VU_INLINE void Issue(Vu& v, u64 t) {
         v.cycle_ = t;
-        v.Land();
+        if ((v.q_busy_ && v.q_ready_ <= t) || (v.p_busy_ && v.p_ready_ <= t)) v.LandNow();
+    }
+    static PS2HOST_VU_INLINE void LandFlags(Vu& v) {
+        while (v.flag_count_ && v.flag_queue_[v.flag_head_].ready <= v.cycle_) {
+            const Vu::FlagWrite& f = v.flag_queue_[v.flag_head_];
+            if (f.sets_mac) {
+                v.mac = f.mac;
+                v.status = (v.status & ~0x3u) | (f.status & 0x3u);
+                v.status |= f.status & 0xC0u;
+            }
+            if (f.sets_clip) v.clip = f.clip;
+            v.flag_head_ = (v.flag_head_ + 1) & 7;
+            --v.flag_count_;
+        }
     }
 
     // ------------------------------------------------------------ lower
@@ -245,12 +267,12 @@ struct VuCore {
     static PS2HOST_VU_INLINE double Value(const Vu& v, int reg, int lane) {
         return lifted::Value(v.regs.vf[reg][lane]);
     }
-    // The flag instructions read and set these.
-    static PS2HOST_VU_INLINE u32& Clip(Vu& v) { return v.clip; }
+    // The flag instructions read and set these (landed first: see Issue).
+    static PS2HOST_VU_INLINE u32& Clip(Vu& v) { LandFlags(v); return v.clip; }
     static PS2HOST_VU_INLINE u32& ClipLatest(Vu& v) { return v.clip_latest_; }
-    static PS2HOST_VU_INLINE u32& Status(Vu& v) { return v.status; }
+    static PS2HOST_VU_INLINE u32& Status(Vu& v) { LandFlags(v); return v.status; }
     static PS2HOST_VU_INLINE u32& StatusLatest(Vu& v) { return v.status_latest_; }
-    static PS2HOST_VU_INLINE u32 Mac(const Vu& v) { return v.mac; }
+    static PS2HOST_VU_INLINE u32 Mac(Vu& v) { LandFlags(v); return v.mac; }
 
     // ------------------------------------------------------------ upper
 #if PS2RT_VU_SSE
@@ -433,6 +455,7 @@ struct VuCore {
         if (written > 0)
             for (int lane = 0; lane < 4; ++lane)
                 if (lanes & (8u >> lane)) v.vf_ready_[written][lane] = ready;
+        if (set_flags && v.flag_count_ == 8) LandFlags(v);   // as eager landing would have, at this issue
         if (set_flags && v.flag_count_ < 8) {
             // Straight into the queue's slot (PushFlags, without the copy).
             Vu::FlagWrite& f = v.flag_queue_[(v.flag_head_ + v.flag_count_++) & 7];
