@@ -368,10 +368,14 @@ struct VuCore {
     static PS2HOST_VU_INLINE void Flags(Vu& v) {
         const u32* out = Target >= 0 ? v.regs.vf[Target] : v.regs.vacc;
 #if PS2RT_VU_SSE
-        // The four lanes at once: which are zero and which negative (as Clean
-        // leaves them), lane x the highest bit as the MAC flag has it.
+        // The four lanes at once: which are zero and which negative, lane x
+        // the highest bit as the MAC flag has it. No Clean, as the
+        // interpreter has: every operation that sets the flags leaves its
+        // fields clean (the FMAC through LanesSse, the rest through
+        // lifted::Result; VF0, the target of none, is 0, 0, 0, 1) - Clean
+        // would hand back the same bits.
         static constexpr u32 kReversed[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
-        const __m128i bits = lifted::CleanLanes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(out)));
+        const __m128i bits = _mm_loadu_si128(reinterpret_cast<const __m128i*>(out));
         const __m128i magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));
         const u32 zero = u32(_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(magnitude, _mm_setzero_si128()))));
         const u32 sign = u32(_mm_movemask_ps(_mm_castsi128_ps(bits)));
@@ -395,12 +399,14 @@ struct VuCore {
        upper's fields), when the fields land, the flags on their way, Q and P. */
     static PS2HOST_VU_INLINE void Finish(Vu& v, Vu::Pending& pending, int written, u32 lanes, bool set_flags,
                                          bool sets_mac, bool sets_clip) {
+        // Once: MSVC reads cycle_ again after every store otherwise.
+        const u64 ready = v.cycle_ + kFmacLatency;
         if (pending.vf > 0) {
             for (int lane = 0; lane < 4; ++lane) {
                 const u32 bit = 8u >> lane;
                 if ((pending.lanes & bit) && !(written == pending.vf && (lanes & bit))) {
                     v.regs.vf[pending.vf][lane] = pending.value[lane];
-                    v.vf_ready_[pending.vf][lane] = v.cycle_ + kFmacLatency;
+                    v.vf_ready_[pending.vf][lane] = ready;
                 }
             }
         }
@@ -423,12 +429,20 @@ struct VuCore {
     /* The same for a pair whose lower left nothing (FinishUpper, then End). */
     static PS2HOST_VU_INLINE void FinishUpper(Vu& v, int written, u32 lanes, bool set_flags, bool sets_mac,
                                               bool sets_clip) {
+        const u64 ready = v.cycle_ + kFmacLatency;
         if (written > 0)
             for (int lane = 0; lane < 4; ++lane)
-                if (lanes & (8u >> lane)) v.vf_ready_[written][lane] = v.cycle_ + kFmacLatency;
-        if (set_flags)
-            v.PushFlags({v.cycle_ + kFmacLatency, v.mac_latest_, v.status_latest_, v.clip_latest_, sets_mac,
-                         sets_clip});
+                if (lanes & (8u >> lane)) v.vf_ready_[written][lane] = ready;
+        if (set_flags && v.flag_count_ < 8) {
+            // Straight into the queue's slot (PushFlags, without the copy).
+            Vu::FlagWrite& f = v.flag_queue_[(v.flag_head_ + v.flag_count_++) & 7];
+            f.ready = ready;
+            f.mac = v.mac_latest_;
+            f.status = v.status_latest_;
+            f.clip = v.clip_latest_;
+            f.sets_mac = sets_mac;
+            f.sets_clip = sets_clip;
+        }
     }
     static PS2HOST_VU_INLINE void End(Vu& v) {
         v.regs.vc[0] = 0;
