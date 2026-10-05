@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 #include "ps2host/gs.h"
@@ -237,7 +238,10 @@ u32 Gs::FramePixel(u32 fbp, u32 fbw, u32 psm, u32 x, u32 y) const {
 void Gs::Finish() const { const_cast<Gs*>(this)->FinishJobs(); }
 
 void Gs::Draw() {
-    Timed timed(Section::GsDraw);
+    // Timed only when it rasterises: under --gpu the bridge times itself, and
+    // a timer per primitive is a measurable share of a race.
+    std::optional<Timed> timed;
+    if (rasterize) timed.emplace(Section::GsDraw);
     ++primitives_;
     Prepare();
     if (on_draw) {

@@ -94,6 +94,7 @@ struct Options {
     bool gpu_show = false;         /* ...and the window shows the GPU's picture */
     bool virtual_time = false;     /* the scheduler keeps time: runs repeat exactly (run.h) */
     unsigned long long until_frame = 0;    /* stop when this frame is done (0: never) */
+    unsigned frame_times = 0;              /* every N frames, the wall-clock frame rate (0: never) */
     bool audio = false;            /* play the SPU2's output on the sound device */
     std::string audio_wav;         /* record the SPU2's output to this WAV file */
     std::string memcard;           /* --memcard DIR: a memory card in slot 1, kept as this directory (mc2.h) */

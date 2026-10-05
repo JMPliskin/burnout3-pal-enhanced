@@ -127,6 +127,8 @@ std::string GpuShadowSummary();
 /* --until-frame: stop the run when frame N is done (with --virtual-time, the
    same point every time). */
 void SetUntilFrame(u64 frame);
+/* --frame-times N: every N frames, a line with the frame rate over them. */
+void SetFrameTimes(unsigned every);
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);

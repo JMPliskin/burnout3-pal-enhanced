@@ -61,9 +61,17 @@ PS2HOST_VU_INLINE void Vu::PushFlags(const FlagWrite& write) {
 }
 
 PS2HOST_VU_INLINE void Vu::Land() {
-    if ((q_busy_ && q_ready_ <= cycle_) || (p_busy_ && p_ready_ <= cycle_) ||
-        (flag_count_ && flag_queue_[flag_head_].ready <= cycle_))
-        LandNow();
+    // The flags land inline: nearly every pair has an FMAC's flags arriving,
+    // and a call for each was 5% of a race. (Q, P and the flags are apart:
+    // the order they land in within a cycle changes nothing.)
+    while (flag_count_ && flag_queue_[flag_head_].ready <= cycle_) {
+        const FlagWrite& f = flag_queue_[flag_head_];
+        if (f.sets_mac) { mac = f.mac; status = (status & ~0x3u) | (f.status & 0x3u); status |= f.status & 0xC0u; }
+        if (f.sets_clip) clip = f.clip;
+        flag_head_ = (flag_head_ + 1) & 7;
+        --flag_count_;
+    }
+    if ((q_busy_ && q_ready_ <= cycle_) || (p_busy_ && p_ready_ <= cycle_)) LandNow();
 }
 
 /* Where a run stands between pairs. */
@@ -359,6 +367,16 @@ struct VuCore {
     template <int Target, u32 Dest>
     static PS2HOST_VU_INLINE void Flags(Vu& v) {
         const u32* out = Target >= 0 ? v.regs.vf[Target] : v.regs.vacc;
+#if PS2RT_VU_SSE
+        // The four lanes at once: which are zero and which negative (as Clean
+        // leaves them), lane x the highest bit as the MAC flag has it.
+        static constexpr u32 kReversed[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+        const __m128i bits = lifted::CleanLanes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(out)));
+        const __m128i magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));
+        const u32 zero = u32(_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(magnitude, _mm_setzero_si128()))));
+        const u32 sign = u32(_mm_movemask_ps(_mm_castsi128_ps(bits)));
+        const u32 m = (kReversed[zero] & Dest) | (kReversed[sign] & Dest) << 4;
+#else
         u32 m = 0;
         for (int lane = 0; lane < 4; ++lane) {
             if (!(Dest & (8u >> lane))) continue;
@@ -366,6 +384,7 @@ struct VuCore {
             if ((bits & 0x7FFFFFFFu) == 0) m |= 8u >> lane;
             if (bits & 0x80000000u) m |= 0x80u >> lane;
         }
+#endif
         v.mac_latest_ = m;
         v.status_latest_ = (v.status_latest_ & ~0x3u) | ((m & 0xF) ? 1u : 0u) | ((m & 0xF0) ? 2u : 0u);
         v.status_latest_ |= (v.status_latest_ & 3u) << 6;

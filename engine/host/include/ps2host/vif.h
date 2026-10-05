@@ -74,6 +74,11 @@ private:
     /* Words of data an UNPACK of `num` elements in format `format` reads. */
     std::uint32_t UnpackWords(std::uint32_t format, std::uint32_t num) const;
     void UnpackData(std::uint32_t word);
+    /* A run of UNPACK's data words: whole elements straight from them while
+       none is left part-read, the rest a word at a time. */
+    void UnpackRun(const std::uint32_t* words, std::uint32_t count);
+    /* One element's components from its bytes, as UNPACK expands them. */
+    void Element(const std::uint8_t* b, std::uint32_t c[4]) const;
     void UnpackFill();
     void WriteElement(const std::uint32_t value[4], bool from_data);
     void Start(std::uint32_t pc);

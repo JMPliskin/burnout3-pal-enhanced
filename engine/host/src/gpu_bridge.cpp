@@ -142,6 +142,11 @@ struct Cached {
     u64 decoded_serial = 0;         // Bridge::serial when decoded
     u64 content = 0;                // a hash of its blocks when decoded
     bool decoded = false;
+    // The images whose blocks it can share (all they could ever cover), as of
+    // `owned_seen` images: images are only ever added, and live as long as
+    // the bridge.
+    std::vector<const Owned*> over;
+    std::size_t owned_seen = 0;
     std::list<u64>::iterator lru;
 };
 
@@ -173,6 +178,24 @@ struct Bridge {
     std::map<std::tuple<u32, u32, u32, bool>, Owned> owned;
     std::unordered_map<u64, Cached> textures;
     std::list<u64> texture_lru;     // most recent first
+    // The textures over each page (32 blocks) of local memory, for what a
+    // write there invalidates: scanning all 2,048 on every write was 3% of a
+    // race. Elements of `textures` stay put until erased.
+    std::vector<std::vector<Cached*>> texture_pages = std::vector<std::vector<Cached*>>(512);
+    void IndexTexture(Cached* t, bool add) {
+        for (u32 page = t->begin >> 5; page <= ((std::max(t->end, t->begin + 1) - 1) >> 5) && page < 512; ++page) {
+            std::vector<Cached*>& list = texture_pages[page];
+            if (add) {
+                list.push_back(t);
+            } else {
+                auto found = std::find(list.begin(), list.end(), t);
+                if (found != list.end()) {
+                    *found = list.back();
+                    list.pop_back();
+                }
+            }
+        }
+    }
     u64 next_texture = 1;
     u64 serial = 0;                 // counts GPU draws, so a texture knows if one went over it
     // Bumped when an image starts holding drawing memory lacks, or reaches
@@ -285,9 +308,10 @@ void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullp
             o.stale_beyond = true;
         }
     }
-    if (write)
-        for (auto& [key, t] : b.textures)
-            if (t.begin < end && begin < t.end) t.valid = false;
+    if (write && begin < end)
+        for (u32 page = begin >> 5; page <= ((end - 1) >> 5) && page < 512; ++page)
+            for (Cached* t : b.texture_pages[page])
+                if (t->begin < end && begin < t->end) t->valid = false;
 }
 
 /* A target or depth buffer about to be drawn into or sampled: up to date with
@@ -500,13 +524,20 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         t.lru = b.texture_lru.begin();
         t.begin = tbp;
         t.end = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(psm) / 8 / 256 + 32));
+        b.IndexTexture(&t, true);
     } else {
         b.texture_lru.splice(b.texture_lru.begin(), b.texture_lru, t.lru);
     }
     // The GPU drawing over its blocks since it was decoded makes it out of date
     // as surely as memory written there.
-    for (const auto& [okey, o] : b.owned)
-        if (o.drawn_serial > t.decoded_serial && o.begin < t.end && t.begin < o.drawn_end) t.valid = false;
+    if (t.owned_seen != b.owned.size()) {
+        t.over.clear();
+        for (const auto& [okey, o] : b.owned)
+            if (o.begin < t.end && t.begin < o.full_end) t.over.push_back(&o);
+        t.owned_seen = b.owned.size();
+    }
+    for (const Owned* o : t.over)
+        if (o->drawn_serial > t.decoded_serial && o->begin < t.end && t.begin < o->drawn_end) t.valid = false;
     // Decoded on the GPU too when the CLUT rows it reads are only there.
     if (!t.valid && (GpuHolds(b, t.begin, t.end) || (clut_rows & ~b.clut_cpu))) {
         Timed timed(Section::GpuSync);
@@ -573,6 +604,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         auto found = b.textures.find(old);
         if (found != b.textures.end()) {
             b.renderer->ReleaseTexture(found->second.renderer_key);
+            b.IndexTexture(&found->second, false);
             b.textures.erase(found);
         }
     }
@@ -868,10 +900,9 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     }
 
     for (std::size_t i = 0; i < n; ++i) v[i].z = std::min(v[i].z, zmax);
-    {
-        Timed drawing(Section::GpuRender);
-        s.renderer->DrawTriangles(state, v, n);
-    }
+    // Not timed apart: tens of millions of primitives a race, and a timer's
+    // two clock reads each cost as much as recording one.
+    s.renderer->DrawTriangles(state, v, n);
     if (s.primary) {
         // FBMSK over every bit the format stores: the colour is not written.
         const u32 stored = state.psm == gs::PSMCT24 ? 0xFFFFFFu : Is16(state.psm) ? 0x80F8F8F8u : 0xFFFFFFFFu;
@@ -902,10 +933,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
                 zv[i].a = u8(c >> 24);
             }
             Owned& view = Use(s, zs.fbp, zs.fbw, zs.psm, false, zs.width, zs.height, rows);
-            {
-                Timed drawing(Section::GpuRender);
-                s.renderer->DrawTriangles(zs, zv, n);
-            }
+            s.renderer->DrawTriangles(zs, zv, n);
             Drew(s, view, x1, y1, y0);
         }
         return;
@@ -1007,7 +1035,10 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
         s.frame = frame + 1;
         // The frame's drawing to the GPU now, to run while the next is made,
         // rather than when something next waits on the GPU.
-        s.renderer->Kick();
+        {
+            Timed timed(Section::GpuRender);
+            s.renderer->Kick();
+        }
         if (frame % 100 == 0)
             std::fprintf(stderr, "[gpu] frame %llu: %llu draws, %llu write-backs, %llu reloads, %llu decodes, %zu images, %zu textures\n",
                          static_cast<unsigned long long>(frame), static_cast<unsigned long long>(s.serial),

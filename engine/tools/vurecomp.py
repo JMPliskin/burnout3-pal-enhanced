@@ -383,16 +383,58 @@ def emit_upper(word: int):
     return lines, written, dest if target > 0 else 0, flags
 
 
-def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool) -> list:
+# The lower operations that hold a vector register write back to the pair's
+# end, and where their arguments name it: (index of `it`, index of `dest`)
+# counted from the end of the argument list.
+HELD_WRITES = {"Load": (-2, -1), "Move": (-3, -1), "Mr32": (-3, -1), "Mfir": (-3, -1),
+               "Mfp": (-2, -1), "ThroughCop2": (-2, -1)}
+
+
+def lower_writes(lines: list) -> list:
+    """(register, lanes) the lower's held write may land in, from its C++."""
+    out = []
+    for line in lines:
+        line = line.strip()
+        for name, (it, dest) in HELD_WRITES.items():
+            if line.startswith("C::%s(v, pd, " % name):
+                args = line[len("C::%s(" % name):].rstrip(");").split(", ")
+                out.append((int(args[it]), int(args[dest].rstrip("u"))))
+    return out
+
+
+def needless_wait(r: int, lane: int, index: int, written: dict) -> bool:
+    """Whether a stall check on (r, lane) at the block's pair `index` can never
+    stall: VF0 is never written; a field written by the block's pair j lands
+    at j's issue cycle + 4, and every pair takes a cycle at least, so from
+    pair j + 4 on it has landed; a field the block has not written was last
+    written before the block, landing by the entry cycle + 3 at the latest
+    (only ever set to an issue cycle + 4, and the cycle only grows), so from
+    pair 3 on."""
+    if r == 0:
+        return True
+    j = written.get((r, lane))
+    return index - j >= 4 if j is not None else index >= 3
+
+
+def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
+              written: dict = None) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
-    driver with s.pc."""
+    driver with s.pc. `index` is its place in the block and `written` where
+    the block's pairs before it wrote each vector field; the pair's own
+    writes are added to it."""
+    if written is None:
+        written = {}
     immediate = bool(upper & 0x80000000)
     end = bool(upper & 0x40000000)
     reads = upper_reads(upper) + ([] if immediate else lower_reads(lower))
     out = ["    if (s.count >= limit) { s.pc = 0x%Xu; return; }" % pc, "    {"]
     body = []
-    waits = [(r, lane) for r, lanes in reads for lane in range(4) if lanes & (8 >> lane)]
+    waits = []
+    for r, lanes in reads:
+        for lane in range(4):
+            if lanes & (8 >> lane) and (r, lane) not in waits and not needless_wait(r, lane, index, written):
+                waits.append((r, lane))
     q_waits = not immediate and (is_divide(lower) or is_wait(lower, 0x3B))
     p_waits = not immediate and (is_efu(lower) or is_wait(lower, 0x7B))
     if waits or q_waits or p_waits:
@@ -411,18 +453,24 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool) -> list:
     if branch:
         body.append("u32 branch = kNone;")
     body += lower_lines
-    upper_lines, written, lanes, set_flags = emit_upper(upper)
+    upper_lines, upper_written, lanes, set_flags = emit_upper(upper)
     body += upper_lines
+    for r, dest in lower_writes(lower_lines) + [(upper_written, lanes)]:
+        for lane in range(4):
+            if r > 0 and dest & (8 >> lane):
+                written[(r, lane)] = index
+    written_reg = upper_written
     if immediate:
         body.append("v.regs.vc[lifted::kRegI] = 0x%08Xu;" % lower)
     sets_mac = "true" if (upper & 0x7FF) != 0x1FF else "false"
     sets_clip = "true" if (upper & 0x7FF) == 0x1FF else "false"
     flags = "true" if set_flags else "false"
     if pending:
-        body.append("C::Finish(v, pd, %d, %du, %s, %s, %s);" % (written, lanes, flags, sets_mac, sets_clip))
+        body.append("C::Finish(v, pd, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac, sets_clip))
     else:
-        if written > 0 or set_flags:
-            body.append("C::FinishUpper(v, %d, %du, %s, %s, %s);" % (written, lanes, flags, sets_mac, sets_clip))
+        if written_reg > 0 or set_flags:
+            body.append("C::FinishUpper(v, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac,
+                                                                     sets_clip))
         body.append("C::End(v);")
     next_pc = (pc + 8) & mask
     body.append("++s.count;")
@@ -484,8 +532,9 @@ def blocks_of(pairs: dict, entries: list, mask: int) -> list:
 
 def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name]
+    written = {}
     for i, pc in enumerate(block):
-        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1)
+        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written)
     out.append("}")
     return out
 

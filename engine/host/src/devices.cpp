@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -226,9 +227,31 @@ bool g_until_reached = false;
 }  // namespace
 
 void SetUntilFrame(u64 frame) { g_until_frame = frame; }
+
+namespace {
+unsigned g_frame_times = 0;
+}  // namespace
+
+void SetFrameTimes(unsigned every) { g_frame_times = every; }
+
+/* --frame-times: the frames since the last line, and how fast they went. */
+void FrameTimes(u64 frame) {
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point last = Clock::now();
+    static u64 last_frame = 0;
+    if (!g_frame_times || frame < last_frame + g_frame_times) return;
+    const Clock::time_point now = Clock::now();
+    const double seconds = std::chrono::duration<double>(now - last).count();
+    std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second\n",
+                 static_cast<unsigned long long>(last_frame), static_cast<unsigned long long>(frame), seconds,
+                 seconds > 0 ? double(frame - last_frame) / seconds : 0.0);
+    last = now;
+    last_frame = frame;
+}
 bool UntilFrameReached() { return g_until_reached; }
 
 void FrameDone(u64 frame) {
+    FrameTimes(frame);
     // Time passes: unmasked, PATH3 sends what it still holds.
     if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
     if (g_dump_frame >= 0 && (long long)frame == g_dump_frame) {

@@ -169,7 +169,7 @@ std::string SampleReport(int top) {
     s.thread.join();
     timeEndPeriod(1);
     HANDLE process = GetCurrentProcess();
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     if (!SymInitialize(process, nullptr, TRUE)) return "sample: no symbols";
     std::unordered_map<std::uint64_t, std::string> names;
     auto name = [&](std::uint64_t address) -> const std::string& {
@@ -190,7 +190,25 @@ std::string SampleReport(int top) {
         }
         return names.emplace(address, text).first->second;
     };
-    std::map<std::string, std::uint64_t> self, total;
+    // The source line an address is on - for inlined code, the line of what
+    // was inlined (a VU step in vu_core.h, not the block that called it).
+    std::unordered_map<std::uint64_t, std::string> lines;
+    auto line_of = [&](std::uint64_t address) -> const std::string& {
+        auto found = lines.find(address);
+        if (found != lines.end()) return found->second;
+        IMAGEHLP_LINE64 info{};
+        info.SizeOfStruct = sizeof info;
+        DWORD displacement = 0;
+        std::string text = "?";
+        if (SymGetLineFromAddr64(process, address, &displacement, &info) && info.FileName) {
+            std::string file = info.FileName;
+            const std::size_t slash = file.find_last_of("/\\");
+            if (slash != std::string::npos) file = file.substr(slash + 1);
+            text = file + ":" + std::to_string(info.LineNumber);
+        }
+        return lines.emplace(address, text).first->second;
+    };
+    std::map<std::string, std::uint64_t> self, total, by_line, by_file;
     std::map<std::string, std::map<std::string, std::uint64_t>> callers;
     const std::size_t samples = s.stacks.size() / kFrames;
     for (std::size_t i = 0; i < samples; ++i) {
@@ -198,6 +216,9 @@ std::string SampleReport(int top) {
         if (!f[0]) continue;
         const std::string& leaf = name(f[0]);
         ++self[leaf];
+        const std::string& where = line_of(f[0]);
+        ++by_line[where];
+        ++by_file[where.substr(0, where.find(':'))];
         std::string seen[kFrames];
         for (int n = 0; n < kFrames && f[n]; ++n) {
             const std::string& fn = name(f[n]);
@@ -226,6 +247,21 @@ std::string SampleReport(int top) {
             from += (k ? ", " : "  <- ") + by_caller[k].second;
         std::snprintf(line, sizeof line, "  %5.1f%%  %s%s\n", 100.0 * double(n) / double(samples ? samples : 1),
                       fn.substr(0, 90).c_str(), from.substr(0, 160).c_str());
+        out += line;
+    }
+    out += "  by source file (where it was running):\n";
+    const auto files = ranked(by_file);
+    for (int i = 0; i < top && i < int(files.size()); ++i) {
+        std::snprintf(line, sizeof line, "  %5.1f%%  %s\n",
+                      100.0 * double(files[i].first) / double(samples ? samples : 1), files[i].second.c_str());
+        out += line;
+    }
+    out += "  by source line (where it was running):\n";
+    const auto by_source = ranked(by_line);
+    for (int i = 0; i < top && i < int(by_source.size()); ++i) {
+        std::snprintf(line, sizeof line, "  %5.1f%%  %s\n",
+                      100.0 * double(by_source[i].first) / double(samples ? samples : 1),
+                      by_source[i].second.substr(0, 120).c_str());
         out += line;
     }
     out += "  total (anywhere in the eight frames):\n";

@@ -56,7 +56,8 @@ Options for finding out why boot stops, passed after `run --`:
 | `--gpu-show` | `--gpu-shadow-rtt`, and the window (`--window`) shows the GPU renderer's picture instead of the software GS's |
 | `--gs-trace-frame N` | the same for six frames from frame N (a picture is drawn across several) |
 | `--gs-dump-frame N` | GS local memory, all 4 MB, written to `gsmem_N.bin` (in the `--frames` directory) when frame N is done - under `--gpu`, as the GPU has it. `engine/tools/gsmem.py` shows a buffer from a dump, or compares two runs' dumps buffer by buffer |
-| `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name - the port builds with symbols for it |
+| `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name, and where it was running by source file and line (inlined code by the line inlined: a VU step in vu_core.h, not the block) - the port builds with symbols for it |
+| `--frame-times N` | every N frames, how long they took in wall-clock time and the frame rate (`regress.py --frame-times N` prints them): the menus and the race are very different loads |
 | `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
 | `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
@@ -146,6 +147,28 @@ race script about 2 minutes (the software GS: 46 minutes).
 
 Each of these was checked by running the scripted runs and comparing the
 pictures with the recorded ones (`engine/tools/regress.py`, runs/README.md).
+
+`--frame-times` showed where the race script really stands: the menus run
+at hundreds of frames a second, the race itself (frames 9,300-9,900, the
+crash and glow scenes) at 12-22. What `--sample`'s line view found there,
+and what was done:
+
+* CLUTs drawn by the GPU loaded on the GPU (GPU.md, step 7): 29 s of the
+  script's waiting gone;
+* every write to GS memory scanned all 2,048 cached textures for the ones
+  it invalidates (3%): textures are now indexed by page;
+* each texture checked every GPU image for drawing over it on every
+  textured primitive: it keeps the few images that can overlap it;
+* timers: three nested timed sections a primitive (73 million in the
+  script) cost two clock reads each; the bridge times itself once;
+* VU flags landing went through a call nearly every pair (5%): inline;
+* UNPACK's data went into a byte buffer a word at a time: whole elements
+  are read from the DMA words, and an unmasked element is copied as is
+  (DMA and VIF from 23% of the run to 11%);
+* compiled VU code: a stall check that can never stall is left out (VF0;
+  a field written four or more pairs before in the block; a field the
+  block has not written, from its fourth pair: see `needless_wait`), and
+  the MAC flags are found for four lanes at once.
 
 ## VU microprograms compiled ahead of time
 

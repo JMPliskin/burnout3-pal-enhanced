@@ -391,6 +391,7 @@ int Run(const Options& options) {
     if (!options.memcard.empty()) mc2::SetCardDirectory(options.memcard);
     if (options.vu_interpret) Vu1().use_compiled = Vu0().use_compiled = false;
     SetUntilFrame(options.until_frame);
+    SetFrameTimes(options.frame_times);
     if (options.gpu || options.gpu_shadow) {
         std::string error;
         const GpuMode mode = options.gpu ? GpuMode::Primary : options.gpu_shadow_rtt ? GpuMode::ShadowRtt : GpuMode::Shadow;
@@ -466,6 +467,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--gpu-show") options.gpu_shadow = options.gpu_shadow_rtt = options.gpu_show = true;
         else if (arg == "--virtual-time") options.virtual_time = true;
         else if (arg == "--until-frame" && i + 1 < argc) options.until_frame = std::stoull(argv[++i]);
+        else if (arg == "--frame-times" && i + 1 < argc) options.frame_times = unsigned(std::stoul(argv[++i]));
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--sample") options.sample = true;

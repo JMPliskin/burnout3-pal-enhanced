@@ -47,10 +47,14 @@ void VifStream::WriteElement(const std::uint32_t value[4], bool from_data) {
     if (wl == 0) { wl = 1; cl = std::max(cl, 1u); }
     const std::uint32_t k = u.written++;
     const std::uint32_t address = wl <= cl ? u.address + (k / wl) * cl + (k % wl) : u.address + k;
-    const std::uint32_t position = std::min(k % wl, 3u);
     if (!vu) return;
     std::uint32_t* q = vu->Quad(address);
     const bool three = ((u.format >> 2) & 3) == 2;
+    if (from_data && !u.masked && mode == 0) {      // the usual case: the element as it is
+        std::memcpy(q, value, three ? 12 : 16);
+        return;
+    }
+    const std::uint32_t position = std::min(k % wl, 3u);
     for (std::uint32_t f = 0; f < 4; ++f) {
         std::uint32_t m = u.masked ? (mask >> (position * 8 + f * 2)) & 3 : 0;
         if (!from_data && m == 0) m = 1;            // a filling write: the row
@@ -77,42 +81,71 @@ void VifStream::UnpackFill() {
     while (u.written < u.num && (u.written % write_length_) >= cycle_length_) WriteElement(zero, false);
 }
 
+void VifStream::Element(const std::uint8_t* b, std::uint32_t c[4]) const {
+    const Unpack& u = unpack_;
+    const std::uint32_t vl = u.format & 3, vn = (u.format >> 2) & 3;
+    c[0] = c[1] = c[2] = c[3] = 0;
+    if (vn == 3 && vl == 3) {                       // V4-5
+        const std::uint32_t v = std::uint32_t(b[0]) | std::uint32_t(b[1]) << 8;
+        c[0] = (v & 0x1F) << 3;
+        c[1] = ((v >> 5) & 0x1F) << 3;
+        c[2] = ((v >> 10) & 0x1F) << 3;
+        c[3] = ((v >> 15) & 1) << 7;
+        return;
+    }
+    const std::uint32_t width = 4u >> vl;           // bytes per component
+    for (std::uint32_t i = 0; i <= vn; ++i) {
+        const std::uint8_t* e = b + i * width;
+        if (width == 4) std::memcpy(&c[i], e, 4);
+        else if (width == 2) {
+            const std::uint16_t h = std::uint16_t(e[0] | e[1] << 8);
+            c[i] = u.unsigned_ ? h : std::uint32_t(std::int32_t(std::int16_t(h)));
+        } else {
+            c[i] = u.unsigned_ ? e[0] : std::uint32_t(std::int32_t(std::int8_t(e[0])));
+        }
+    }
+    if (vn == 0) c[1] = c[2] = c[3] = c[0];             // S: every field
+    else if (vn == 1) { c[2] = c[0]; c[3] = c[1]; }     // V2: x y x y
+}
+
 void VifStream::UnpackData(std::uint32_t word) {
     Unpack& u = unpack_;
     for (int i = 0; i < 4; ++i) u.bytes.push_back(std::uint8_t(word >> (8 * i)));
     const std::uint32_t vl = u.format & 3, vn = (u.format >> 2) & 3;
     const bool v45 = vn == 3 && vl == 3;
-    const std::uint32_t width = 4u >> vl;           // bytes per component
-    const std::uint32_t size = v45 ? 2 : (vn + 1) * width;
+    const std::uint32_t size = v45 ? 2 : (vn + 1) * (4u >> vl);
     std::size_t at = 0;
     while (u.bytes.size() - at >= size && u.written < u.num) {
-        const std::uint8_t* b = u.bytes.data() + at;
-        std::uint32_t c[4] = {};
-        if (v45) {
-            const std::uint32_t v = std::uint32_t(b[0]) | std::uint32_t(b[1]) << 8;
-            c[0] = (v & 0x1F) << 3;
-            c[1] = ((v >> 5) & 0x1F) << 3;
-            c[2] = ((v >> 10) & 0x1F) << 3;
-            c[3] = ((v >> 15) & 1) << 7;
-        } else {
-            for (std::uint32_t i = 0; i <= vn; ++i) {
-                const std::uint8_t* e = b + i * width;
-                if (width == 4) std::memcpy(&c[i], e, 4);
-                else if (width == 2) {
-                    const std::uint16_t h = std::uint16_t(e[0] | e[1] << 8);
-                    c[i] = u.unsigned_ ? h : std::uint32_t(std::int32_t(std::int16_t(h)));
-                } else {
-                    c[i] = u.unsigned_ ? e[0] : std::uint32_t(std::int32_t(std::int8_t(e[0])));
-                }
-            }
-            if (vn == 0) c[1] = c[2] = c[3] = c[0];             // S: every field
-            else if (vn == 1) { c[2] = c[0]; c[3] = c[1]; }     // V2: x y x y
-        }
+        std::uint32_t c[4];
+        Element(u.bytes.data() + at, c);
         at += size;
         WriteElement(c, true);
         UnpackFill();
     }
     u.bytes.erase(u.bytes.begin(), u.bytes.begin() + std::ptrdiff_t(at));
+}
+
+void VifStream::UnpackRun(const std::uint32_t* words, std::uint32_t count) {
+    Unpack& u = unpack_;
+    const std::uint32_t vl = u.format & 3, vn = (u.format >> 2) & 3;
+    const std::uint32_t size = (vn == 3 && vl == 3) ? 2 : (vn + 1) * (4u >> vl);
+    // Elements of whole words, none part-read: straight from the words (the
+    // bytes are the same; the byte buffer would hold just these).
+    if (u.bytes.empty() && size % 4 == 0) {
+        const std::uint32_t per = size / 4;
+        const std::uint8_t* bytes = reinterpret_cast<const std::uint8_t*>(words);
+        std::uint32_t used = 0;
+        while (count - used >= per && u.written < u.num) {
+            std::uint32_t c[4];
+            Element(bytes + std::size_t(used) * 4, c);
+            used += per;
+            WriteElement(c, true);
+            UnpackFill();
+        }
+        words += used;
+        count -= used;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) UnpackData(words[i]);
 }
 
 void VifStream::Start(std::uint32_t pc) {
@@ -131,6 +164,16 @@ void VifStream::Start(std::uint32_t pc) {
 
 void VifStream::Words(const std::uint32_t* words, std::uint32_t count, std::uint32_t from) {
     for (std::uint32_t i = 0; i < count;) {
+        if (pending_ && data_ == Data::Unpack) {
+            const std::uint32_t run = std::min(pending_, count - i);
+            pending_ -= run;
+            data_words_ += run;
+            data_index_ += run;
+            g_dma_source = from + 4 * i;
+            UnpackRun(words + i, run);
+            i += run;
+            continue;
+        }
         if (pending_ && data_ == Data::Direct && on_direct_block) {
             const std::uint32_t run = std::min(pending_, count - i);
             pending_ -= run;

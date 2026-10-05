@@ -52,6 +52,8 @@ def main(argv=None) -> int:
     parser.add_argument("--every", type=int, default=200, help="a picture every N frames")
     parser.add_argument("--update", action="store_true", help="record this run's pictures as expected")
     parser.add_argument("--keep", help="keep the pictures in this directory")
+    parser.add_argument("--frame-times", type=int, default=0, metavar="N",
+                        help="print the wall-clock frame rate every N frames (the run's --frame-times)")
     args = parser.parse_args(argv)
     game = game_config.from_args(args)
 
@@ -73,11 +75,16 @@ def main(argv=None) -> int:
         "--timeout", "14400", "--frames", pictures, "--frames-every", str(args.every)]
     if args.gpu:
         command.append("--gpu")
+    if args.frame_times:
+        command += ["--frame-times", str(args.frame_times)]
     started = time.time()
     result = subprocess.run(command, capture_output=True, text=True, errors="replace")
     elapsed = time.time() - started
     for line in result.stdout.splitlines():
         if line.startswith("time:") or line.startswith("gpu: "):
+            print(line)
+    for line in result.stderr.splitlines():
+        if line.startswith("[frames]"):
             print(line)
     print("run: %.0f s" % elapsed)
 
