@@ -206,6 +206,7 @@ void Gs::Kick(bool draw) {
 
 void Gs::DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const {
     Finish();
+    if (setup_stale_) const_cast<Gs*>(this)->Prepare();
     const Setup& s = setup_;
     pixels->resize(std::size_t(s.tw) * s.th);
     for (u32 v = 0; v < s.th; ++v)
@@ -243,7 +244,10 @@ void Gs::Draw() {
     std::optional<Timed> timed;
     if (rasterize) timed.emplace(Section::GsDraw);
     ++primitives_;
-    Prepare();
+    // The software rasteriser's state; without it (--gpu), made only if the
+    // texture is decoded from it - a few thousand of 73 million primitives.
+    if (rasterize) Prepare();
+    else setup_stale_ = true;
     if (on_draw) {
         Finish();                               // the second renderer reads local memory as of now
         on_draw(DrawCall{Prim(), &Ctx(), texa_, queue_, queued_, fogcol_, (pabe_ & 1) != 0});
@@ -453,6 +457,7 @@ void Gs::Prepare() {
     const Context& c = Ctx();
     const u64 prim = Prim(), test = c.test;
     Setup& s = setup_;
+    setup_stale_ = false;
     s.prim = prim;
     s.texa = texa_;
     s.clut = clut_;

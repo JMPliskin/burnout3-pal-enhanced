@@ -185,6 +185,7 @@ private:
         u32 a, b, c, d, fix;                        // ALPHA
     };
     Setup setup_{};
+    bool setup_stale_ = false;          // !rasterize: Prepare left to DecodeTexture, which alone reads it
     void Prepare();
     /* A primitive waiting to be drawn. */
     struct Job {

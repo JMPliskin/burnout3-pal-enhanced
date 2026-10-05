@@ -19,6 +19,7 @@
 #include <cstring>
 #include <map>
 #include <tuple>
+#include <unordered_map>
 
 #include "gpu_internal.h"
 #include "gs_frag.h"
@@ -309,6 +310,18 @@ private:
     void* Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset);
     /* A staging buffer, freed once the submission that reads it has run. */
     void FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory);
+    /* Staging buffers for uploads, kept mapped and used again once the GPU
+       is done with them: allocating and freeing one an upload (the race
+       uploads to GPU memory tens of thousands of times) was 3% of the run
+       in the driver. By size class (a power of two, 64 KB at least). */
+    struct Staged {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkDeviceSize size = 0;
+    };
+    std::vector<Staged> staging_free_;
+    std::unordered_map<VkBuffer, Staged> staging_live_;
 
     /* GS local memory on the GPU (swizzle.comp): the memory itself, and the
        linear rows images are copied through on their way in and out. */
@@ -366,6 +379,21 @@ void* VulkanGsRenderer::Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceS
 }
 
 void VulkanGsRenderer::FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory) {
+    auto live = staging_live_.find(buffer);
+    if (live != staging_live_.end()) {
+        const Staged staged = live->second;
+        staging_live_.erase(live);
+        g_.AfterSubmit([this, staged] {
+            if (staging_free_.size() < 64) {
+                staging_free_.push_back(staged);
+                return;
+            }
+            vkUnmapMemory(g_.device, staged.memory);
+            vkDestroyBuffer(g_.device, staged.buffer, nullptr);
+            vkFreeMemory(g_.device, staged.memory, nullptr);
+        });
+        return;
+    }
     VkDevice device = g_.device;
     g_.AfterSubmit([device, buffer, memory] {
         vkUnmapMemory(device, memory);
@@ -376,6 +404,36 @@ void VulkanGsRenderer::FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory) {
 
 bool VulkanGsRenderer::Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer,
                               VkDeviceMemory* memory, void** mapped) {
+    if (usage == VK_BUFFER_USAGE_TRANSFER_SRC_BIT) {
+        VkDeviceSize size = 64 * 1024;
+        while (size < bytes) size *= 2;
+        for (std::size_t i = 0; i < staging_free_.size(); ++i)
+            if (staging_free_[i].size == size) {
+                const Staged staged = staging_free_[i];
+                staging_free_[i] = staging_free_.back();
+                staging_free_.pop_back();
+                staging_live_[staged.buffer] = staged;
+                *buffer = staged.buffer;
+                *memory = staged.memory;
+                *mapped = staged.mapped;
+                return true;
+            }
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = size;
+        bci.usage = usage;
+        if (vkCreateBuffer(g_.device, &bci, nullptr, buffer) != VK_SUCCESS) return false;
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(g_.device, *buffer, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = g_.FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(g_.device, &mai, nullptr, memory) != VK_SUCCESS) return false;
+        vkBindBufferMemory(g_.device, *buffer, *memory, 0);
+        if (vkMapMemory(g_.device, *memory, 0, size, 0, mapped) != VK_SUCCESS) return false;
+        staging_live_[*buffer] = Staged{*buffer, *memory, *mapped, size};
+        return true;
+    }
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size = bytes;
     bci.usage = usage;
@@ -1475,6 +1533,11 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     DestroyImage(feedback_);
+    for (const Staged& staged : staging_free_) {
+        vkUnmapMemory(g_.device, staged.memory);
+        vkDestroyBuffer(g_.device, staged.buffer, nullptr);
+        vkFreeMemory(g_.device, staged.memory, nullptr);
+    }
     for (VertexRing& ring : vertex_rings_)
         for (VertexChunk& chunk : ring.chunks) {
             vkDestroyBuffer(g_.device, chunk.buffer, nullptr);
