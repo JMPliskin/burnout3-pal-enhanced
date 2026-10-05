@@ -113,16 +113,20 @@ PS2RT_VU_INLINE __m128i CleanLanes(__m128i v) {
 inline __m128 AsFloats(__m128i v) { return _mm_castsi128_ps(v); }
 inline __m128i AsBits(__m128 v) { return _mm_castps_si128(v); }
 
-template <int Op>
+/* `Known` says which operands the caller knows to be clean already (bit 0
+   a, bit 1 b, bit 2 acc) in the lanes it keeps: Clean would leave them as
+   they are. Compiled VU code knows it of fields an FMAC wrote earlier in
+   the same block (vurecomp.py, `clean`). */
+template <int Op, int Known = 0>
 PS2RT_VU_INLINE __m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
-    a = CleanLanes(a);
-    b = CleanLanes(b);
+    if constexpr ((Known & 1) == 0) a = CleanLanes(a);
+    if constexpr ((Known & 2) == 0) b = CleanLanes(b);
     if constexpr (Op == kAdd) return CleanLanes(AsBits(_mm_add_ps(AsFloats(a), AsFloats(b))));
     else if constexpr (Op == kSub) return CleanLanes(AsBits(_mm_sub_ps(AsFloats(a), AsFloats(b))));
     else if constexpr (Op == kMul) return CleanLanes(AsBits(_mm_mul_ps(AsFloats(a), AsFloats(b))));
     else if constexpr (Op == kMadd || Op == kMsub) {
         const __m128i product = CleanLanes(AsBits(_mm_mul_ps(AsFloats(a), AsFloats(b))));
-        const __m128 total = AsFloats(CleanLanes(acc));
+        const __m128 total = AsFloats((Known & 4) != 0 ? acc : CleanLanes(acc));
         return CleanLanes(AsBits(Op == kMadd ? _mm_add_ps(total, AsFloats(product))
                                              : _mm_sub_ps(total, AsFloats(product))));
     } else {

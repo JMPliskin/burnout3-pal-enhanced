@@ -278,7 +278,7 @@ struct VuCore {
 #if PS2RT_VU_SSE
     /* An FMAC operation: Op (vu_math.h's), Operand (0-3 a lane of ft, 4 Q,
        5 I, 6 ft), into To (-1 ACC; 0 nowhere: VF0 stays). */
-    template <int Op, int Operand, int To, u32 Dest>
+    template <int Op, int Operand, int To, u32 Dest, int Known = 0>
     static PS2HOST_VU_INLINE void Fmac(Vu& v, int fs, int ft) {
         lifted::Context& c = v.regs;
         const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[fs]));
@@ -288,7 +288,7 @@ struct VuCore {
         else if constexpr (Operand == 5) b = _mm_set1_epi32(int(c.vc[lifted::kRegI]));
         else b = _mm_set1_epi32(int(c.vf[ft][Operand]));
         const __m128i acc = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vacc));
-        const __m128i result = lifted::LanesSse<Op>(a, b, acc);
+        const __m128i result = lifted::LanesSse<Op, Known>(a, b, acc);
         if constexpr (To == 0 || Dest == 0) {
             return;
         } else {
@@ -301,7 +301,7 @@ struct VuCore {
         }
     }
 #else
-    template <int Op, int Operand, int To, u32 Dest>
+    template <int Op, int Operand, int To, u32 Dest, int Known = 0>
     static void Fmac(Vu& v, int fs, int ft) {
         lifted::FmacOp f;
         f.op = Op;

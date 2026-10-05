@@ -340,7 +340,57 @@ def emit_lower(word: int, pc: int, mask: int):
     return [], False, None
 
 
-def emit_upper(word: int):
+def known_clean(word: int, clean: dict) -> int:
+    """Which of an FMAC's operands are clean in every lane it keeps, from
+    `clean` ((register or 'acc', lane) -> written clean earlier in the block):
+    bit 0 fs, bit 1 ft (or its broadcast lane), bit 2 ACC."""
+    fmac = decode_fmac(word)
+    if not fmac or clean is None:
+        return 0
+    op, operand, _to_acc = fmac
+    dest, ft, fs = field(word, 21, 4), field(word, 16, 5), field(word, 11, 5)
+    lanes = [lane for lane in range(4) if dest & (8 >> lane)]
+    is_clean = lambda r, lane: r == 0 or clean.get((r, lane), False)
+    known = 0
+    if all(is_clean(fs, lane) for lane in lanes):
+        known |= 1
+    if operand < 4:
+        known |= 2 if is_clean(ft, operand) else 0
+    elif operand == 6:
+        known |= 2 if all(is_clean(ft, lane) for lane in lanes) else 0
+    if all(clean.get(("acc", lane), False) for lane in lanes):
+        known |= 4
+    return known
+
+
+def clean_writes(word: int) -> list:
+    """(register or 'acc', lanes, clean) the upper instruction writes: the
+    FMAC, OPMULA, OPMSUB, ITOF and ABS leave their fields clean; FTOI leaves
+    integers, anything else is not known."""
+    funct, dest = word & 0x3F, field(word, 21, 4)
+    ft, fs, fd = field(word, 16, 5), field(word, 11, 5), field(word, 6, 5)
+    fmac = decode_fmac(word)
+    if fmac:
+        return [("acc" if fmac[2] else fd, dest, True)]
+    if funct < 0x3C:
+        if funct == 0x2E:
+            return [(fd, dest & 0xE, True)]                             # OPMSUB
+        if funct >= 0x30:
+            return []
+        return [(fd, dest, False), ("acc", 0xF, False)]
+    index = special_index(word)
+    if index in (0x1F, 0x2F):                                           # CLIP, NOP
+        return []
+    if index == 0x2E:
+        return [("acc", dest & 0xE, True)]                              # OPMULA
+    if 0x10 <= index <= 0x13 or index == 0x1D:
+        return [(ft, dest, True)]                                       # ITOF, ABS
+    if 0x14 <= index <= 0x17:
+        return [(ft, dest, False)]                                      # FTOI
+    return [("acc", 0xF, False)]
+
+
+def emit_upper(word: int, clean: dict = None):
     """C++ for the upper instruction; (lines, written, lanes, set_flags)."""
     funct, dest = word & 0x3F, field(word, 21, 4)
     ft, fs, fd = field(word, 16, 5), field(word, 11, 5), field(word, 6, 5)
@@ -363,8 +413,9 @@ def emit_upper(word: int):
     lines = []
     if fmac:
         op, operand, to_acc = fmac
-        lines.append("C::Fmac<%s, %d, %d, %du>(v, %d, %d);" % (OP_NAMES[op], operand, -1 if to_acc else fd,
-                                                              dest, fs, ft))
+        known = known_clean(word, clean)
+        lines.append("C::Fmac<%s, %d, %d, %du%s>(v, %d, %d);" % (OP_NAMES[op], operand, -1 if to_acc else fd,
+                                                                dest, ", %d" % known if known else "", fs, ft))
     elif funct == 0x2E:                                                 # OPMSUB
         lines.append("C::Opmsub<%du>(v, %d, %d, %d);" % (dest, fd, fs, ft))
     elif funct >= 0x3C and special_index(word) == 0x2E:                 # OPMULA
@@ -417,7 +468,7 @@ def needless_wait(r: int, lane: int, index: int, written: dict) -> bool:
 
 
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
-              written: dict = None) -> list:
+              written: dict = None, clean: dict = None) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
     driver with s.pc. `index` is its place in the block and `written` where
@@ -453,12 +504,23 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     if branch:
         body.append("u32 branch = kNone;")
     body += lower_lines
-    upper_lines, upper_written, lanes, set_flags = emit_upper(upper)
+    upper_lines, upper_written, lanes, set_flags = emit_upper(upper, clean)
     body += upper_lines
     for r, dest in lower_writes(lower_lines) + [(upper_written, lanes)]:
         for lane in range(4):
             if r > 0 and dest & (8 >> lane):
                 written[(r, lane)] = index
+    if clean is not None:
+        # The pair's end: the lower's held writes (not known clean), then the
+        # upper's, which win over them in the fields both write.
+        for r, dest in lower_writes(lower_lines):
+            for lane in range(4):
+                if dest & (8 >> lane):
+                    clean[(r, lane)] = False
+        for r, dest, is_clean in clean_writes(upper):
+            for lane in range(4):
+                if dest & (8 >> lane) and r != 0:
+                    clean[(r, lane)] = is_clean
     written_reg = upper_written
     if immediate:
         body.append("v.regs.vc[lifted::kRegI] = 0x%08Xu;" % lower)
@@ -532,9 +594,9 @@ def blocks_of(pairs: dict, entries: list, mask: int) -> list:
 
 def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name]
-    written = {}
+    written, clean = {}, {}
     for i, pc in enumerate(block):
-        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written)
+        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean)
     out.append("}")
     return out
 
