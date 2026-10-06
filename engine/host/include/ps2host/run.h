@@ -58,6 +58,8 @@ bool Tracing();
 
 /* A one-time note: logged the first time `key` is seen, then only counted. */
 void Note(const std::string& key, const std::string& text);
+/* Whether a Note under `key` would be logged (so its text is worth making). */
+bool Noting(const std::string& key);
 
 /* Threads (threads.cpp): run the program's first thread from `entry` under the
    kernel's scheduler; returns only by throwing why the run ended. */

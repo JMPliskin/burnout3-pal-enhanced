@@ -161,12 +161,18 @@ struct Source {
     u32 madr = 0, qwc = 0, tadr = 0, asr[2] = {0, 0}, asp = 0;
     u32 tag_bits = 0;       // the last tag's bits 16-31, as CHCR's TAG field keeps them
     bool chain = false, last = true, tie = false;
+    u32 tag_at = 0;         // where the last tag read was (Physical), and the tag
+    u64 tag_read = 0;
+    bool tag_seen = false;
 
     bool Next(Qword* q) {
         Memory& m = GuestMemory();
         while (qwc == 0) {
             if (!chain || last) return false;
-            const u64 tag = m.Read(Physical(tadr), 8);
+            tag_at = Physical(tadr);
+            const u64 tag = m.Read(tag_at, 8);
+            tag_read = tag;
+            tag_seen = true;
             const u32 count = u32(tag & 0xFFFF), id = u32(tag >> 28) & 7;
             const u32 addr = u32(tag >> 32) & 0x7FFFFFF0u;
             const u32 at = (tag >> 63) ? (0x80000000u | addr) : addr;     // SPR: the scratchpad (Physical)
@@ -191,7 +197,9 @@ struct Source {
             tag_bits = u32(tag) >> 16;
             if (tie && (tag >> 31) & 1) last = true;                                    // IRQ, with TIE
         }
-        for (u32 i = 0; i < 4; ++i) (*q)[i] = u32(m.Read(Physical(madr) + 4 * i, 4));
+        const u8* bytes = m.Translate(Physical(madr), 16);
+        if (!bytes) throw MemoryFault{Physical(madr), false};
+        std::memcpy(q->data(), bytes, 16);
         madr += 16;
         --qwc;
         return true;
@@ -227,6 +235,39 @@ public:
     bool from_running = false;
     s32 dc_pred[3] = {128, 128, 128};
 
+    /* A step that ran out of bitstream ran out where the buffer, the FIFO
+       and channel 4 (a chain to the tag that ended it) end; libmpeg polls
+       IPU_CTRL and IPU_CMD meanwhile, and running the step again from the
+       start each time was most of a movie's time. So it is tried again only
+       when one of those has changed: the command, IPU_CTRL, the buffer's and FIFO's
+       lengths, the channel's registers, or that tag in memory. */
+    struct Stalled {
+        u64 commands;
+        u32 ctrl;
+        std::size_t buffer, fifo;
+        u32 bp, madr, qwc, tadr, asp;
+        bool running, last;
+        bool tag_seen;
+        u32 tag_at;
+        u64 tag;
+    };
+    u64 commands = 0;
+    bool stalled = false;
+    Stalled stall{};
+    Stalled Now(const Source& walked) const {
+        return Stalled{commands, ctrl, buffer.size(), fifo.size(), bp, to.madr, to.qwc, to.tadr, to.asp, to_running,
+                       to.last, walked.tag_seen, walked.tag_at, walked.tag_read};
+    }
+    bool StillStalled() const {
+        if (!stalled) return false;
+        const Stalled& s = stall;
+        if (s.commands != commands || s.ctrl != ctrl || s.buffer != buffer.size() || s.fifo != fifo.size() || s.bp != bp ||
+            s.madr != to.madr || s.qwc != to.qwc || s.tadr != to.tadr || s.asp != to.asp ||
+            s.running != to_running || s.last != to.last)
+            return false;
+        return !s.tag_seen || GuestMemory().Read(s.tag_at, 8) == s.tag;
+    }
+
     void Reset() {
         buffer.clear();
         fifo.clear();
@@ -246,6 +287,7 @@ public:
         std::vector<Qword> ahead;       // beyond the FIFO, from a copy of channel 4
         Source source;
         bool source_on;
+        bool ran_dry = false;           // it wanted more than channel 4 has left to send
 
         explicit Reader(Ipu& unit) : ipu(unit), bit(unit.bp), source(unit.to), source_on(unit.to_running) {}
 
@@ -256,7 +298,11 @@ public:
             index -= ipu.fifo.size();
             while (ahead.size() <= index) {
                 Qword q;
-                if (!source_on || !source.Next(&q)) throw NeedData{};
+                if (!source_on) throw NeedData{};
+                if (!source.Next(&q)) {
+                    ran_dry = true;
+                    throw NeedData{};
+                }
                 ahead.push_back(q);
             }
             return ahead[index];
@@ -265,14 +311,34 @@ public:
             const Qword& q = At(std::size_t(at >> 4));
             return u8(q[(at >> 2) & 3] >> (8 * (at & 3)));
         }
+        // The quadword `cached` and (when `cached_next`) the one after it, as
+        // bytes in memory order, eight more to spare for the window's load.
+        std::size_t cached = ~std::size_t(0);
+        bool cached_next = false;
+        u8 bytes_[40] = {};
         u32 Peek(u32 n) {               // n <= 32: the next n bits, the first the highest
             if (n == 0) return 0;
-            u64 window = 0;
-            const u64 first = bit >> 3;
+            const std::size_t index = std::size_t(bit >> 7);
+            const u32 offset = u32(bit >> 3) & 15;
             const u32 skew = u32(bit & 7);
-            const u32 bytes = (skew + n + 7) / 8;
-            for (u32 i = 0; i < bytes; ++i) window = window << 8 | Byte(first + i);
-            return u32((window >> (bytes * 8 - skew - n)) & ((n == 32) ? 0xFFFFFFFFull : ((1ull << n) - 1)));
+            const u32 count = (skew + n + 7) / 8;           // the bytes the bits are in
+            if (index != cached) {
+                std::memcpy(bytes_, At(index).data(), 16);
+                cached = index;
+                cached_next = false;
+            }
+            if (offset + count > 16 && !cached_next) {      // into the next quadword
+                std::memcpy(bytes_ + 16, At(index + 1).data(), 16);
+                cached_next = true;
+            }
+            u64 window;
+            std::memcpy(&window, bytes_ + offset, 8);
+#if defined(_MSC_VER)
+            window = _byteswap_uint64(window);
+#else
+            window = __builtin_bswap64(window);
+#endif
+            return u32((window << skew) >> (64 - n));
         }
         void Skip(u32 n) { bit += n; }
         u32 Get(u32 n) {
@@ -366,7 +432,9 @@ public:
         Memory& m = GuestMemory();
         while (qwc && !out.empty()) {
             const Qword& q = out.front();
-            for (u32 i = 0; i < 4; ++i) m.Write(Physical(madr) + 4 * i, q[i], 4);
+            u8* bytes = m.Translate(Physical(madr), 16);
+            if (!bytes) throw MemoryFault{Physical(madr), true};
+            std::memcpy(bytes, q.data(), 16);
             out.pop_front();
             madr += 16;
             --qwc;
@@ -382,6 +450,7 @@ public:
 
     // ------------------------------------------------ the commands
     void Command(u32 word) {
+        ++commands;
         command = word;
         busy = true;
         ctrl &= ~(1u << 14);                            // ECD
@@ -413,6 +482,8 @@ public:
     bool Step() {
         if (!busy) return false;
         if (out.size() >= 8) return false;              // the output FIFO is full
+        if (StillStalled()) return false;
+        stalled = false;
         Reader r(*this);
         const u32 code = command >> 28;
         // A step that runs out of data is tried again from the start when
@@ -437,6 +508,22 @@ public:
         } catch (const NeedData&) {
             ctrl = ctrl_before;
             std::copy(dc_before, dc_before + 3, dc_pred);
+            if (r.ran_dry && to_running) {
+                // The IPU takes its bits as it decodes, so a macroblock longer
+                // than the FIFO keeps channel 4 going to the end of what it was
+                // given, and the channel ends (its interrupt is when libmpeg's
+                // caller hands it more). Decoded whole here, the macroblock
+                // would hold a full FIFO and the channel for ever: the RACE
+                // TRAINING movie stopped there. So the channel sends the rest
+                // now, past the FIFO's eight quadwords.
+                Qword q;
+                while (to.Next(&q)) fifo.push_back(q);
+                SyncToRegisters();
+                EndTo();
+                Fill();
+            }
+            stall = Now(r.source);
+            stalled = true;
             return false;
         }
         Take(r);
@@ -643,7 +730,13 @@ public:
     void Csc(Reader& r) {
         if (left == 0) { busy = false; return; }
         u8 raw[384];
-        for (u8& b : raw) b = u8(r.Get(8));
+        for (int i = 0; i < 384; i += 4) {             // four bytes a read, the first the highest
+            const u32 v = r.Get(32);
+            raw[i] = u8(v >> 24);
+            raw[i + 1] = u8(v >> 16);
+            raw[i + 2] = u8(v >> 8);
+            raw[i + 3] = u8(v);
+        }
         const bool rgb16 = (command >> 27) & 1, dither = (command >> 26) & 1;
         static const int kDither[4][4] = {{-4, 0, -3, 1}, {2, -2, 3, -1}, {-3, 1, -4, 0}, {3, -1, 2, -2}};
         u32 rgba[256];
@@ -722,13 +815,12 @@ public:
     }
 
     u64 Top() {
+        // Only what has arrived: the 32 bits from BP, in the bytes Peek reads.
+        const u64 last_byte = (u64(bp) >> 3) + (u64(bp & 7) + 32 + 7) / 8 - 1;
+        if ((last_byte >> 4) >= buffer.size() + fifo.size()) return 1ull << 63;
         Reader r(*this);
-        r.source_on = false;                    // only what has arrived
-        try {
-            return r.Peek(32);
-        } catch (const NeedData&) {
-            return 1ull << 63;
-        }
+        r.source_on = false;
+        return r.Peek(32);
     }
 };
 

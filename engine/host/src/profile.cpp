@@ -138,7 +138,20 @@ Sampler& TheSampler() {
     return sampler;
 }
 
+std::atomic<unsigned long long> g_sample_from{0};
+std::atomic<bool> g_sampling{true};
+
 }  // namespace
+
+void SetSampleFrom(unsigned long long frame) {
+    g_sample_from = frame;
+    g_sampling = frame == 0;
+}
+
+void SampleFrame(unsigned long long frame) {
+    if (!g_sampling.load(std::memory_order_relaxed) && frame >= g_sample_from.load(std::memory_order_relaxed))
+        g_sampling = true;
+}
 
 #ifdef _WIN32
 
@@ -154,6 +167,7 @@ void StartSampler() {
         local.reserve(1 << 20);
         while (!s.stop.load()) {
             Sleep(1);
+            if (!g_sampling.load(std::memory_order_relaxed)) continue;
             // While the thread is suspended nothing here may allocate or take a
             // lock it could hold: the walk goes into a fixed array, through
             // the executable's unwind tables.

@@ -435,6 +435,21 @@ def emit_upper(word: int, clean: dict = None):
     return lines, written, dest if target > 0 else 0, flags
 
 
+def fuse_flags(lines: list) -> list:
+    """An FMAC then its flags, as one: Fmac's SetFlags (1 Flags, 2
+    StickyFlags) takes them from the result while it is in a register."""
+    if len(lines) != 2 or not lines[0].startswith("C::Fmac<"):
+        return lines
+    mode = 1 if lines[1].startswith("C::Flags<") else 2 if lines[1].startswith("C::StickyFlags<") else 0
+    if not mode:
+        return lines
+    head, args = lines[0][:-len(lines[0].split(">(")[-1]) - 2], lines[0].split(">(")[-1]
+    params = head[len("C::Fmac<"):].split(", ")
+    if len(params) == 4:
+        params.append("0")
+    return ["C::Fmac<%s, %d>(%s" % (", ".join(params), mode, args)]
+
+
 # The lower operations that hold a vector register write back to the pair's
 # end, and where their arguments name it: (index of `it`, index of `dest`)
 # counted from the end of the argument list.
@@ -513,6 +528,7 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     if dead_flags:
         upper_lines = [line.replace("C::Flags<", "C::StickyFlags<") for line in upper_lines]
         set_flags = False
+    upper_lines = fuse_flags(upper_lines)
     body += upper_lines
     for r, dest in lower_writes(lower_lines) + [(upper_written, lanes)]:
         for lane in range(4):
@@ -601,10 +617,11 @@ def blocks_of(pairs: dict, entries: list, mask: int) -> list:
     return blocks
 
 
-def is_flag_instruction(lower: int, upper: int) -> bool:
-    """FCEQ ... FCGET, FSEQ ... FSOR, FMEQ, FMAND, FMOR: the lowers that read
-    or set the landed flags."""
-    return not (upper & 0x80000000) and 0x10 <= (lower >> 25) <= 0x1C
+def reads_mac(lower: int, upper: int) -> bool:
+    """FSEQ, FSSET, FSAND, FSOR, FMEQ, FMAND, FMOR: the lowers that read or
+    set the landed MAC or STATUS flags (FCEQ ... FCOR and FCGET touch CLIP
+    alone)."""
+    return not (upper & 0x80000000) and 0x14 <= (lower >> 25) <= 0x1B
 
 
 def sets_mac(upper: int) -> bool:
@@ -613,23 +630,24 @@ def sets_mac(upper: int) -> bool:
 
 
 def dead_flags(block: list, pairs: dict) -> set:
-    """The block's pairs whose MAC/STATUS flags no one can see: a later pair
-    j of the block pushes its own, which land over these; no flag
-    instruction reads or sets the landed flags after them in the block; and
-    j is four or more pairs from the block's end, so its flags have arrived
-    (four cycles; a pair takes one at least) before anything after the block
-    can look. The block runs whole (it does not start where it could not:
-    emit_block), so j does run. STATUS's sticky bits are still gathered."""
+    """The block's pairs whose MAC/STATUS flags no one can see: the next
+    pair j of the block that pushes its own is four or more pairs from the
+    block's end, and nothing reads or sets the landed MAC or STATUS from
+    after i to three pairs after j. j's flags land four cycles after it
+    issues, and a pair takes one cycle at least, so from j + 4 on - and
+    after the block, whatever comes next - the landed flags are j's or
+    later ones; before that a reader might see i's. The block runs whole
+    (it does not start where it could not: emit_block), so j does run.
+    STATUS's sticky bits are still gathered."""
     n = len(block)
-    flag_instruction_after = [False] * (n + 1)
-    for k in range(n - 1, -1, -1):
-        lower, upper = pairs[block[k]]
-        flag_instruction_after[k] = flag_instruction_after[k + 1] or is_flag_instruction(lower, upper)
     dead = set()
     for i in range(n):
-        if not sets_mac(pairs[block[i]][1]) or flag_instruction_after[i + 1]:
+        if not sets_mac(pairs[block[i]][1]):
             continue
-        if any(sets_mac(pairs[block[j]][1]) for j in range(i + 1, n - 3)):
+        j = next((j for j in range(i + 1, n) if sets_mac(pairs[block[j]][1])), None)
+        if j is None or j >= n - 3:
+            continue
+        if not any(reads_mac(*pairs[block[k]]) for k in range(i + 1, j + 4)):
             dead.add(i)
     return dead
 

@@ -6,6 +6,9 @@
 
 #include <cmath>
 #include <cstring>
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
 
 namespace lifted {
 
@@ -146,9 +149,44 @@ u64 LanesOf(int op, u64 a, u64 b) {
 
 }  // namespace
 
-void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+#if defined(__SSE2__) || defined(_M_X64)
+/* The same lanes in SSE2 for the operations it has exactly (signed compares,
+   halfword max and min, wrapping and unsigned-saturating adds); `done` false
+   for the rest. LanesAreScalar (host tests) compares the two. */
+bool LanesSse2(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+    const __m128i a = _mm_set_epi64x(s64(ahi), s64(alo)), b = _mm_set_epi64x(s64(bhi), s64(blo));
+    __m128i r;
+    switch (op) {
+        case kPcgtb: r = _mm_cmpgt_epi8(a, b); break;
+        case kPcgth: r = _mm_cmpgt_epi16(a, b); break;
+        case kPcgtw: r = _mm_cmpgt_epi32(a, b); break;
+        case kPceqb: r = _mm_cmpeq_epi8(a, b); break;
+        case kPceqh: r = _mm_cmpeq_epi16(a, b); break;
+        case kPceqw: r = _mm_cmpeq_epi32(a, b); break;
+        case kPmaxh: r = _mm_max_epi16(a, b); break;
+        case kPminh: r = _mm_min_epi16(a, b); break;
+        case kPaddh: r = _mm_add_epi16(a, b); break;
+        case kPaddub: r = _mm_adds_epu8(a, b); break;
+        case kPaddw: r = _mm_add_epi32(a, b); break;
+        case kPsubw: r = _mm_sub_epi32(a, b); break;
+        default: return false;
+    }
+    lo = u64(_mm_cvtsi128_si64(r));
+    hi = u64(_mm_cvtsi128_si64(_mm_unpackhi_epi64(r, r)));
+    return true;
+}
+#endif
+
+void LanesScalar(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
     lo = LanesOf(op, alo, blo);
     hi = LanesOf(op, ahi, bhi);
+}
+
+void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {
+#if defined(__SSE2__) || defined(_M_X64)
+    if (LanesSse2(op, lo, hi, alo, ahi, blo, bhi)) return;
+#endif
+    LanesScalar(op, lo, hi, alo, ahi, blo, bhi);
 }
 
 void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount) {
@@ -185,7 +223,7 @@ void ShiftLanes(u64& lo, u64& hi, u64 blo, u64 bhi, u32 width, u32 kind, u32 amo
     hi = out[1];
 }
 
-void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width) {
+void InterleaveScalar(u64& lo, u64& hi, u64 a, u64 b, u32 width) {
     const u64 mask = (1ull << width) - 1;
     u64 out[2] = {0, 0};
     for (u32 i = 0; i < 64 / width; ++i) {
@@ -195,6 +233,21 @@ void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width) {
     }
     lo = out[0];
     hi = out[1];
+}
+
+/* PEXTLB, PEXTLH, PEXTLW: SSE2's unpack does the same (b's lanes even). */
+void Interleave(u64& lo, u64& hi, u64 a, u64 b, u32 width) {
+#if defined(__SSE2__) || defined(_M_X64)
+    if (width == 8 || width == 16 || width == 32) {
+        const __m128i x = _mm_cvtsi64_si128(s64(b)), y = _mm_cvtsi64_si128(s64(a));
+        const __m128i r = width == 8 ? _mm_unpacklo_epi8(x, y) : width == 16 ? _mm_unpacklo_epi16(x, y)
+                                                                             : _mm_unpacklo_epi32(x, y);
+        lo = u64(_mm_cvtsi128_si64(r));
+        hi = u64(_mm_cvtsi128_si64(_mm_unpackhi_epi64(r, r)));
+        return;
+    }
+#endif
+    InterleaveScalar(lo, hi, a, b, width);
 }
 
 void PackHalfwords(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi) {

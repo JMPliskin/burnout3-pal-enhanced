@@ -35,6 +35,9 @@ std::string ProfileSummary();
    often on the stack at all ("total"), by name from the executable's
    symbols. Windows only (elsewhere it reports nothing). */
 void StartSampler();
+/* --sample-from N: no samples until frame N (devices.cpp calls this each frame). */
+void SetSampleFrom(unsigned long long frame);
+void SampleFrame(unsigned long long frame);
 std::string SampleReport(int top = 30);
 
 }  // namespace ps2host

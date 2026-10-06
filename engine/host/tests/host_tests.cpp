@@ -961,6 +961,50 @@ void IpuDecodesAndRetriesCleanly() {
 // MAX and MINI hand back an operand as it is: Burnout 3's car microcode
 // builds its GIF tag's REGS (0x412, a denormal as a float) with LOI and MAXI;
 // cleaned to 0, every vertex went to PRIM and no car was drawn.
+// The MMI lane operations and PEXTL* in SSE2 (lifted_support.cpp) give
+// what the lane-by-lane model gives, over random values and lanes at their
+// limits (0, 1, the signed extremes, all ones).
+void MmiLanesAreScalar() {
+    u64 seed = 0x9E3779B97F4A7C15ull;
+    auto next = [&] {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        return seed;
+    };
+    static const u64 kEdges[] = {0, 1, 0x7F7F7F7F7F7F7F7Full, 0x8080808080808080ull, 0x7FFF7FFF7FFF7FFFull,
+                                 0x8000800080008000ull, 0x7FFFFFFF7FFFFFFFull, 0x8000000080000000ull, ~0ull,
+                                 0xFF00FF00FF00FF00ull};
+    auto value = [&]() -> u64 {
+        const u64 r = next();
+        if (r % 3 == 0) return kEdges[(r >> 8) % (sizeof kEdges / sizeof kEdges[0])];
+        if (r % 3 == 1) return next() & next();     // more zero lanes
+        return next();
+    };
+    u32 wrong = 0, checked = 0;
+    for (int op = lifted::kPmaxw; op <= lifted::kPminh; ++op)
+        for (int trial = 0; trial < 4000; ++trial) {
+            const u64 alo = value(), ahi = value(), blo = trial & 1 ? alo : value(), bhi = value();
+            u64 lo1, hi1, lo2, hi2;
+            lifted::Lanes(op, lo1, hi1, alo, ahi, blo, bhi);
+            lifted::LanesScalar(op, lo2, hi2, alo, ahi, blo, bhi);
+            ++checked;
+            if (lo1 != lo2 || hi1 != hi2) ++wrong;
+        }
+    for (u32 width : {8u, 16u, 32u})
+        for (int trial = 0; trial < 4000; ++trial) {
+            const u64 a = value(), b = value();
+            u64 lo1, hi1, lo2, hi2;
+            lifted::Interleave(lo1, hi1, a, b, width);
+            lifted::InterleaveScalar(lo2, hi2, a, b, width);
+            ++checked;
+            if (lo1 != lo2 || hi1 != hi2) ++wrong;
+        }
+    char what[128];
+    std::snprintf(what, sizeof what, "MMI lanes in SSE2 are the model's (%u of %u differ)", wrong, checked);
+    Check(wrong == 0, what);
+}
+
 void VuMaxKeepsADenormal() {
     ps2host::Vu vu(0);
     const std::uint32_t kNopU = 0x000002FF, kNopL = 0x8000033C, kI = 0x80000000, kEnd = 0x40000000;
@@ -1116,6 +1160,7 @@ int main() {
     VuTimingIsVisible();
     VuFlagsOfAResultIntoVf0();
     VuMaxKeepsADenormal();
+    MmiLanesAreScalar();
     IpuDecodesAndRetriesCleanly();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();

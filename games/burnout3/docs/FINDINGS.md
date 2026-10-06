@@ -1821,6 +1821,23 @@ EA, Criterion and RenderWare logos and skip the intro with START; the first
 World Tour race plays its RACE TRAINING tutorial video, which no button
 skips.
 
+The tutorial (in OVID/MOVIE.RWS, read 32 sectors at a time beside a 16-sector
+audio stream) froze about 104 seconds in, the picture still and the sound
+going on. Its macroblocks are larger than the logos': BDEC needed more than
+the FIFO's eight quadwords and the four left in the ring's fenced block. The
+IPU takes bits as it decodes, so on the console the channel runs on to the
+fence and ends, and that end is when the game moves the fence; decoded whole,
+the macroblock held the FIFO full and the channel open, and the game polled
+IPU_CTRL for ever. A step that runs dry now lets channel 4 send the rest of
+what it was given. The race follows: the loading screen, the briefing, GO.
+
+A movie's own cost was mostly libmpeg polling IPU_CTRL and IPU_CMD while the
+IPU waited for data, each poll decoding the waiting macroblock again from the
+start (and throwing when it ran out). A step that ran dry is now tried again
+only when what it reads could have changed - the command, IPU_CTRL, the
+buffer and FIFO, channel 4's registers, or the tag the chain ended on - and
+the boot movies run 1.6 times as fast.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

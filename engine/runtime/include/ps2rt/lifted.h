@@ -99,6 +99,9 @@ enum LaneOp { kPmaxw = 1, kPminw, kPsubw, kPadduw, kPaddub, kPabsw, kPaddw, kPad
               /* all ones where rs > rt (signed) or rs == rt; signed halfword max/min */
               kPcgtb, kPcgth, kPcgtw, kPceqb, kPceqh, kPceqw, kPmaxh, kPminh };
 void Lanes(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
+/* Lanes and Interleave lane by lane: the model their SSE2 forms are checked against. */
+void LanesScalar(int op, u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi);
+void InterleaveScalar(u64& lo, u64& hi, u64 a, u64 b, u32 width);
 void ShiftHalfwordsRight(u64& lo, u64& hi, u64 blo, u64 bhi, u32 amount);   /* psrlh */
 
 /* More 128-bit MMI: lane shifts (kind 0 sll, 1 srl, 2 sra), the low-doubleword

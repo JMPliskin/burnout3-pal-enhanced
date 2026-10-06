@@ -394,16 +394,30 @@ std::atomic<bool>& StopRequested() {
 
 void RaiseDmac(u32 channel) {
     Scheduler& s = S();
-    const std::string key = "dmac " + std::to_string(channel);
+    // The notes' keys and texts, made once a channel (a movie raises
+    // channels 3 and 4 thousands of times a second).
+    struct Texts {
+        std::string key, masked_key, masked, delivered, none_key, none;
+    };
+    static const std::vector<Texts> texts = [] {
+        std::vector<Texts> all;
+        for (u32 c = 0; c < 32; ++c) {
+            const std::string n = std::to_string(c), key = "dmac " + n;
+            all.push_back({key, key + " masked", "DMAC: channel " + n + " completed while its interrupt is disabled",
+                           "DMAC: channel " + n + " interrupt delivered", key + " none",
+                           "DMAC: channel " + n + " interrupt has no handler"});
+        }
+        return all;
+    }();
+    const Texts& t = texts[channel & 31];
     if (!(s.dmac_mask & (1u << channel))) {
-        Note(key + " masked", "DMAC: channel " + std::to_string(channel) +
-                              " completed while its interrupt is disabled");
+        Note(t.masked_key, t.masked);
         return;
     }
     if (RunHandlers(s.dmac_handlers, channel))
-        Note(key, "DMAC: channel " + std::to_string(channel) + " interrupt delivered");
+        Note(t.key, t.delivered);
     else
-        Note(key + " none", "DMAC: channel " + std::to_string(channel) + " interrupt has no handler");
+        Note(t.none_key, t.none);
 }
 
 void RaiseIntc(u32 cause) {

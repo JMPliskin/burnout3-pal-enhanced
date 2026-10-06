@@ -116,7 +116,7 @@ bool Plain(const Memory& m, u32 address) {
     return !m.watching() && ((address & 0x1FFFFFFFu) < 0x10000000u || (address >> 28) == 0x7);
 }
 
-std::string Scratchpad(const Channel& ch, u32 chcr) {
+std::string Scratchpad(const Channel& ch, u32 chcr, bool describe) {
     Memory& m = GuestMemory();
     u32 sadr = u32(m.Read(ch.base + kSadr, 4)) & 0x3FF0u;
     const u32 madr = u32(m.Read(ch.base + kMadr, 4)), qwc = u32(m.Read(ch.base + kQwc, 4));
@@ -135,6 +135,7 @@ std::string Scratchpad(const Channel& ch, u32 chcr) {
         *Register(ch.base + kMadr) = madr + 16 * qwc;
         *Register(ch.base + kQwc) = 0;
         *Register(ch.base + kSadr) = (sadr + 16 * qwc) & 0x3FF0u;
+        if (!describe) return {};
         std::snprintf(text, sizeof text, "%u quadwords from scratchpad 0x%04X", unsigned(qwc), unsigned(sadr));
         return text;
     }
@@ -154,14 +155,16 @@ std::string Scratchpad(const Channel& ch, u32 chcr) {
     *Register(ch.base + kTadr) = state.tadr;
     *Register(ch.base + kSadr) = sadr & 0x3FF0u;
     *Register(ch.base) = state.chcr;
+    if (!describe) return {};
     std::snprintf(text, sizeof text, "%llu quadwords to scratchpad", static_cast<unsigned long long>(outcome.quadwords));
     return text;
 }
 
-// Walks a started transfer and leaves the registers as it would; returns a note.
-std::string Walk(const Channel& ch, u32 chcr) {
+// Walks a started transfer and leaves the registers as it would; returns a
+// note (when `describe`: a transfer is noted only the first time).
+std::string Walk(const Channel& ch, u32 chcr, bool describe) {
     Memory& m = GuestMemory();
-    if (ch.base == 0x1000D000u || ch.base == 0x1000D400u) return Scratchpad(ch, chcr);
+    if (ch.base == 0x1000D000u || ch.base == 0x1000D400u) return Scratchpad(ch, chcr, describe);
     DmaChannelState state{chcr, u32(m.Read(ch.base + kMadr, 4)), u32(m.Read(ch.base + kQwc, 4)),
                           u32(m.Read(ch.base + kTadr, 4)), u32(m.Read(ch.base + kAsr0, 4)),
                           u32(m.Read(ch.base + kAsr1, 4))};
@@ -173,11 +176,12 @@ std::string Walk(const Channel& ch, u32 chcr) {
     if (ch.base == 0x10008000u) sink = to_vif(Vif0());
     if (ch.base == 0x10009000u) sink = to_vif(Vif1());
     if (ch.base == 0x1000A000u) sink = Path3;
-    char text[160];
+    char text[160] = "";
     try {
         Timed timed(Section::Dma);      // (VU1 and the GS, which it drives, timed apart)
         const DmaOutcome outcome = SendDmaBlocks(state, sink);
-        std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
+        if (describe)
+            std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
                       static_cast<unsigned long long>(outcome.quadwords), outcome.tags,
                       outcome.ended ? "" : ", stopped: the chain does not end");
         if (ch.base == 0x1000A000u && (*Register(kGifStat) & kGifStatM3P)) {
@@ -260,6 +264,7 @@ bool UntilFrameReached() { return g_until_reached; }
 
 void FrameDone(u64 frame) {
     FrameTimes(frame);
+    SampleFrame(frame);
     // Time passes: unmasked, PATH3 sends what it still holds.
     if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
     // What reads the GS from here on - the picture, the GPU's frame, the
@@ -321,17 +326,20 @@ void InstallDevices() {
         m.OnWrite(chcr, [ch, madr, qwc, chcr](u32, u64 value) {
             if (!(value & 0x100)) return;                       // STR not set
             Memory& memory = GuestMemory();
-            char text[256];
-            std::snprintf(text, sizeof text,
-                          "DMA %s started: CHCR=0x%08X MADR=0x%08X QWC=%u TADR=0x%08X (completed at once)",
-                          ch.name, unsigned(value), unsigned(memory.Read(madr, 4)),
-                          unsigned(memory.Read(qwc, 4)), unsigned(memory.Read(ch.base + kTadr, 4)));
-            std::string note = text;
-            if (gs::TheGs().trace && (ch.base == 0x10009000u || ch.base == 0x1000A000u))
-                std::fprintf(stderr, "[dma] %s\n", text);
+            // The text only when it is logged: a DMA start is thousands a second.
+            const std::string key = std::string("dma ") + ch.name;
+            const bool traced = gs::TheGs().trace && (ch.base == 0x10009000u || ch.base == 0x1000A000u);
+            const bool describe = traced || Noting(key);
+            char text[256] = "";
+            if (describe)
+                std::snprintf(text, sizeof text,
+                              "DMA %s started: CHCR=0x%08X MADR=0x%08X QWC=%u TADR=0x%08X (completed at once)",
+                              ch.name, unsigned(value), unsigned(memory.Read(madr, 4)),
+                              unsigned(memory.Read(qwc, 4)), unsigned(memory.Read(ch.base + kTadr, 4)));
+            if (traced) std::fprintf(stderr, "[dma] %s\n", text);
             if (ch.base == 0x10009000u) ++g_vif1_transfers;
-            if (ch.walked) note += ": " + Walk(ch, u32(value));
-            Note(std::string("dma ") + ch.name, note);
+            const std::string walked = ch.walked ? Walk(ch, u32(value), describe) : std::string();
+            if (describe) Note(key, ch.walked ? std::string(text) + ": " + walked : std::string(text));
             *Register(chcr) &= ~0x100u;                         // done
             SetDStat(d_stat | (1u << ch.status_bit));
             PostDmac(ch.status_bit);
