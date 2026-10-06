@@ -1680,6 +1680,37 @@ run memcard_save checks the saved files' CRCs with its pictures.
 around it, 0x002499D0-0x0024AB10, is netcnfif's - "SceNetcnfifCallbackThread",
 "[fatal error] c_sema in netcnfif" - the network configuration's interface.)
 
+## A race frame, timed
+
+What a frame of the race does, from the device registers it touches and
+the wall-clock time between them (frames 9,300-9,302 of race_training, under
+--gpu, the port as of 2026-10-06):
+
+1. a GIF DMA (PATH3) as the frame starts;
+2. VIF1_STAT and GIF_STAT read, a VIFcode written straight into VIF1's FIFO
+   (0x06008000: MSKPATH3, masked), GIF_STAT read, GIF_MODE written, another
+   GIF DMA, GIF_STAT read - about a millisecond of work in all;
+3. one VIF1 DMA (CHCR 0x145, a chain) with the whole frame's geometry;
+4. nine VIF0 DMAs (VU0 micro mode), and the vertical blank.
+
+The game's own logic is a small part: in the port the VIF1 DMA of step 3 -
+VIF1, VU1's microprograms and the GS packets they kick - takes about 85% of
+a racing frame, everything else 15%. VU1 runs about 1.17 million
+instruction pairs a frame here (all of them compiled ahead of time, from 19
+programs), about 870 thousand XGKICKs over the race script. The EE never
+reads or writes VU memory directly (0x11000000-0x1100FFFF: no access in the
+whole script); it only reads VIF1_STAT, GIF_STAT and writes VIF1's FIFO.
+
+So the port's frame rate in a race is VU1's speed: running VU1 on a thread
+of its own would gain little, as the next frame starts by reading GIF_STAT,
+which depends on the MSKPATH3s inside the previous frame's VIF1 stream.
+
+The microcode depends on the VU's pipeline timing (engine/tools/vuhazards.py
+over the recorded programs): the main 3D programs (#52, #18, #21, #26) read
+Q before DIV's latency has passed (software pipelining) and read the CLIP
+and MAC flags, so the port's VU keeps the cycle-exact model; what is fast is
+how compiled code does it (PORTING.md, Speed).
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
