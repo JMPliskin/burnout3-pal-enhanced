@@ -12,18 +12,21 @@ first game the [engine](../../engine) was built on.
 | Executable analysed | `SLUS_210.50`, 4,073,088 bytes |
 | Functions discovered | 9,279 |
 | Image proven to be MIPS code | 87.1% |
-| **Verified code** (readable, derived source) | **15.55% of code bytes** |
-| **Machine-checked code** (verified, or lifted and checked) | **75.19% of code bytes** |
+| **Verified code** (readable, derived source) | **17.05% of code bytes** |
+| **Machine-checked code** (verified, or lifted and checked) | **80.18% of code bytes** |
 
 [docs/PROGRESS.md](docs/PROGRESS.md) is generated and has the live numbers.
 
 The native port runs the whole game: boot, the frontend, the garage, races,
-saves to a memory card kept as a directory. On a recent laptop, under
-`--gpu`, the menus run far faster than 60 frames a second and the heaviest
-race scenes (crashes, the glow) at roughly 25-45 - VU1's microcode is the
-limit (docs/FINDINGS.md, "A race frame, timed"). Missing: the movies (the
-IPU is not modelled yet; they play as blank pictures and end), and blend
-factors over 1 on the GPU (the race HUD's text is slightly darker).
+saves to a memory card kept as a directory. Played in real time on a recent
+laptop under `--gpu`, the game itself runs at full speed (57-60 vertical
+blanks a second) and draws its 2D screens at 60 pictures a second, but its
+3D scenes - the garage, the race - at 25-30: a picture every other vertical
+blank, where the PS2 draws one every blank. VU1's microcode is the limit
+(docs/FINDINGS.md, "A race frame, timed"; `--frame-times` reports both
+rates). Missing: the movies (the IPU is not modelled yet; they play as
+blank pictures and end), and blend factors over 1 on the GPU (the race
+HUD's text is slightly darker).
 
 The original compiler is known (`MW MIPS C Compiler (2.4.1.01)`, Metrowerks
 CodeWarrior, named in the executable's `.comment` section) but could not be

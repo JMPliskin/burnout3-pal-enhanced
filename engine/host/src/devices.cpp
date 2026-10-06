@@ -230,6 +230,7 @@ void SetUntilFrame(u64 frame) { g_until_frame = frame; }
 
 namespace {
 unsigned g_frame_times = 0;
+u64 g_vif1_transfers = 0;       // DMA to VIF1 started: a game's frame of geometry, usually one each
 }  // namespace
 
 void SetFrameTimes(unsigned every) { g_frame_times = every; }
@@ -238,15 +239,19 @@ void SetFrameTimes(unsigned every) { g_frame_times = every; }
 void FrameTimes(u64 frame) {
     using Clock = std::chrono::steady_clock;
     static Clock::time_point last = Clock::now();
-    static u64 last_frame = 0;
+    static u64 last_frame = 0, last_transfers = 0;
     if (!g_frame_times || frame < last_frame + g_frame_times) return;
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
-    std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second\n",
+    // Frames here are vertical blanks; a game that cannot keep up draws a
+    // picture every other one (or less), which the VIF1 transfers show.
+    std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second, %.1f VIF1 transfers a second\n",
                  static_cast<unsigned long long>(last_frame), static_cast<unsigned long long>(frame), seconds,
-                 seconds > 0 ? double(frame - last_frame) / seconds : 0.0);
+                 seconds > 0 ? double(frame - last_frame) / seconds : 0.0,
+                 seconds > 0 ? double(g_vif1_transfers - last_transfers) / seconds : 0.0);
     last = now;
     last_frame = frame;
+    last_transfers = g_vif1_transfers;
 }
 bool UntilFrameReached() { return g_until_reached; }
 
@@ -314,6 +319,7 @@ void InstallDevices() {
             std::string note = text;
             if (gs::TheGs().trace && (ch.base == 0x10009000u || ch.base == 0x1000A000u))
                 std::fprintf(stderr, "[dma] %s\n", text);
+            if (ch.base == 0x10009000u) ++g_vif1_transfers;
             if (ch.walked) note += ": " + Walk(ch, u32(value));
             Note(std::string("dma ") + ch.name, note);
             *Register(chcr) &= ~0x100u;                         // done
