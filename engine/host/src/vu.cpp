@@ -376,9 +376,27 @@ void Vu::Upper(u32 word, int* written_reg, u32* written_lanes, bool* set_flags, 
         *written_reg = target;
         *written_lanes = dest;
     }
+    if (flags && target == 0) {
+        // Into VF0: the flags are the result's, which went nowhere.
+        if (fmac) {
+            lifted::FmacResult(regs, *fmac, discarded_);
+        } else {
+            lifted::FmacOp decoded;
+            if (lifted::DecodeFmac(kCop2 | (word & 0x01FFFFFF), &decoded)) {
+                lifted::FmacResult(regs, decoded, discarded_);
+            } else if (funct == 0x2E) {                     // OPMSUB (it wrote nothing: its operands stand)
+                const u32 *a = regs.vf[Field(word, 11, 5)], *b = regs.vf[ft], *acc = regs.vacc;
+                const u32 out[3] = {lifted::Binary(lifted::kMsub, a[1], b[2], acc[0]),
+                                    lifted::Binary(lifted::kMsub, a[2], b[0], acc[1]),
+                                    lifted::Binary(lifted::kMsub, a[0], b[1], acc[2])};
+                for (int lane = 0; lane < 3; ++lane) discarded_[lane] = (dest & (8u >> lane)) ? out[lane] : 0;
+                discarded_[3] = 0;
+            }
+        }
+    }
     if (flags) {
         // MAC: zero (bits 3-0) and sign (7-4) of each written field, x highest.
-        const u32* out = target >= 0 ? regs.vf[target] : regs.vacc;
+        const u32* out = target > 0 ? regs.vf[target] : target == 0 ? discarded_ : regs.vacc;
         u32 m = 0;
         for (int lane = 0; lane < 4; ++lane) {
             if (!(dest & (8u >> lane))) continue;

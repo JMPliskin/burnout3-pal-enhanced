@@ -135,6 +135,10 @@ struct FmacOp {
 };
 bool DecodeFmac(u32 word, FmacOp* out);
 void RunFmac(Context& c, const FmacOp& op);
+/* Its result alone, the fields dest names (the rest 0), written nowhere: for
+   an operation into VF0, which keeps 0, 0, 0, 1 but whose flags are this
+   result's. */
+void FmacResult(const Context& c, const FmacOp& op, u32 out[4]);
 /* The same, a lane at a time through the arithmetic model (vu_math.h):
    what RunFmac's four lanes at once must equal. */
 void RunFmacScalar(Context& c, const FmacOp& op);

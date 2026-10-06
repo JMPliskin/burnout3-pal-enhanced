@@ -870,6 +870,30 @@ void VuTimingIsVisible() {
     Check(vu.regs.vf[5][3] == f(3) && vu.regs.vf[6][3] == f(5), "VU: an upper beside LOI reads the old I");
 }
 
+// An upper operation into VF0 writes nowhere, but its flags are its result's:
+// Burnout 3 tests a box against planes with `msubz.xyzw vf00, ...` and FMAND,
+// and with VF0's 0, 0, 0, 1 read back instead culled and clipped nothing.
+void VuFlagsOfAResultIntoVf0() {
+    ps2host::Vu vu(0);
+    auto f = [](float x) { std::uint32_t u; std::memcpy(&u, &x, 4); return u; };
+    const std::uint32_t kNopU = 0x000002FF, kNopL = 0x8000033C, kEnd = 0x40000000;
+    const std::uint32_t program[] = {
+        0x100200FF, 0x01E1002C,         // iaddiu vi2, vi0, 0xFF    sub.xyzw vf0, vf0, vf1
+        kNopL, kNopU,
+        kNopL, kNopU,
+        kNopL, kNopU,
+        0x34011000, kNopU,              // fmand vi1, vi2: the sub's flags
+        kNopL, kEnd | kNopU,
+        kNopL, kNopU};
+    std::memcpy(vu.micro.data(), program, sizeof program);
+    const std::uint32_t vf1[4] = {f(1), f(-2), f(0), f(3)};
+    std::memcpy(vu.regs.vf[1], vf1, sizeof vf1);
+    vu.Run(0);
+    // 0 - (1, -2, 0, 3): x and w negative (MAC 0x80, 0x10), z zero (0x02).
+    Check(vu.regs.vc[1] == 0x92, "VU: an upper into VF0 sets the flags of its result");
+    Check(vu.regs.vf[0][0] == 0 && vu.regs.vf[0][2] == 0 && vu.regs.vf[0][3] == f(1), "VU: VF0 stays 0, 0, 0, 1");
+}
+
 // The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
 // instruction per vector (engine/tools/iop_vectors.py).
 struct CpuVector {
@@ -1008,6 +1032,7 @@ int main() {
     VuLanesAreTheModel();
     VuCompiledIsTheInterpreter();
     VuTimingIsVisible();
+    VuFlagsOfAResultIntoVf0();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);

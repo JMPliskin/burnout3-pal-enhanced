@@ -313,7 +313,8 @@ struct VuCore {
     // ------------------------------------------------------------ upper
 #if PS2RT_VU_SSE
     /* An FMAC operation: Op (vu_math.h's), Operand (0-3 a lane of ft, 4 Q,
-       5 I, 6 ft), into To (-1 ACC; 0 nowhere: VF0 stays). */
+       5 I, 6 ft), into To (-1 ACC; 0 VF0, which stays: the result goes to
+       discarded_, for the flags). */
     template <int Op, int Operand, int To, u32 Dest, int Known = 0>
     static PS2HOST_VU_INLINE void Fmac(Vu& v, int fs, int ft) {
         lifted::Context& c = v.regs;
@@ -334,7 +335,10 @@ struct VuCore {
         const __m128i acc = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vacc));
         const __m128i result = lifted::LanesSse<Op, Known | 3>(a, b, acc);
         if constexpr (To > 0 && Dest == 15) v.unclean_ &= ~(1u << To);    // all four fields, clean
-        if constexpr (To == 0 || Dest == 0) {
+        if constexpr (To == 0) {
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(v.discarded_), result);
+            return;
+        } else if constexpr (Dest == 0) {
             return;
         } else {
             u32* to = To < 0 ? c.vacc : c.vf[To];
@@ -356,7 +360,8 @@ struct VuCore {
         f.fs = u32(fs);
         f.ft = u32(ft);
         f.dest = Dest;
-        lifted::RunFmac(v.regs, f);
+        if constexpr (To == 0) lifted::FmacResult(v.regs, f, v.discarded_);
+        else lifted::RunFmac(v.regs, f);
     }
 #endif
     /* Macro mode's COP2 operations, as it runs them (vu0.cpp's Cop2), without
@@ -378,7 +383,11 @@ struct VuCore {
         const u32 out[3] = {lifted::Binary(lifted::kMsub, a[1], b[2], acc[0]),
                             lifted::Binary(lifted::kMsub, a[2], b[0], acc[1]),
                             lifted::Binary(lifted::kMsub, a[0], b[1], acc[2])};
-        if (fd == 0) return;
+        if (fd == 0) {                                  // the flags' alone
+            for (int lane = 0; lane < 3; ++lane) v.discarded_[lane] = out[lane];
+            v.discarded_[3] = 0;
+            return;
+        }
         if constexpr ((Dest & 8) != 0) v.regs.vf[fd][0] = out[0];
         if constexpr ((Dest & 4) != 0) v.regs.vf[fd][1] = out[1];
         if constexpr ((Dest & 2) != 0) v.regs.vf[fd][2] = out[2];
@@ -437,17 +446,17 @@ struct VuCore {
         v.clip_latest_ = ((v.clip_latest_ << 6) | judgement) & 0xFFFFFF;
     }
     /* MAC: zero (bits 3-0) and sign (7-4) of each written field, x highest;
-       `out` the register the upper wrote (Target: -1 ACC). */
+       `out` the register the upper wrote (Target: -1 ACC, 0 VF0 - the result
+       itself, which VF0 does not keep). */
     template <int Target, u32 Dest>
     static PS2HOST_VU_INLINE void Flags(Vu& v) {
-        const u32* out = Target >= 0 ? v.regs.vf[Target] : v.regs.vacc;
+        const u32* out = Target > 0 ? v.regs.vf[Target] : Target == 0 ? v.discarded_ : v.regs.vacc;
 #if PS2RT_VU_SSE
         // The four lanes at once: which are zero and which negative, lane x
         // the highest bit as the MAC flag has it. No Clean, as the
         // interpreter has: every operation that sets the flags leaves its
         // fields clean (the FMAC through LanesSse, the rest through
-        // lifted::Result; VF0, the target of none, is 0, 0, 0, 1) - Clean
-        // would hand back the same bits.
+        // lifted::Result) - Clean would hand back the same bits.
         static constexpr u32 kReversed[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
         const __m128i bits = _mm_loadu_si128(reinterpret_cast<const __m128i*>(out));
         const __m128i magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));
@@ -474,7 +483,7 @@ struct VuCore {
        are kept. */
     template <int Target, u32 Dest>
     static PS2HOST_VU_INLINE void StickyFlags(Vu& v) {
-        const u32* out = Target >= 0 ? v.regs.vf[Target] : v.regs.vacc;
+        const u32* out = Target > 0 ? v.regs.vf[Target] : Target == 0 ? v.discarded_ : v.regs.vacc;
 #if PS2RT_VU_SSE
         const __m128i bits = _mm_loadu_si128(reinterpret_cast<const __m128i*>(out));
         const __m128i magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));

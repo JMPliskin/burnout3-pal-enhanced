@@ -1735,6 +1735,34 @@ Q before DIV's latency has passed (software pipelining) and read the CLIP
 and MAC flags, so the port's VU keeps the cycle-exact model; what is fast is
 how compiled code does it (PORTING.md, Speed).
 
+## Exploded geometry: the flags of a result into VF0
+
+Every 3D scene drew spikes: triangles behind the camera projected through
+w < 0, strips wrapping past the GS's 4096-pixel range. Not a regression -
+the race pictures of 2026-10-04 had them too - and not the GPU (the software
+GS drew the same) nor the VU compiler (interpreted, the same).
+
+The VU1 output vertices matched an independent projection of the input
+exactly; what was wrong was the choice of path. The object header at VU1
+address 1005 says whether a batch needs clipping, and the EE set it to 0
+("wholly inside") for everything. The EE decides with a VU0 microprogram
+(vcallms 0xA18, called from 0x0026AF50 and its kin): the eight corners of
+the bounding box against six planes, each a row of
+
+    mulaw.xyzw ACC, vf12, vf00w
+    msubax/msubay ...
+    msubz.xyzw vf00, vf11, vfNNz     ; distances, into VF0: kept nowhere
+    fmand vi03, vi02                 ; their signs, four cycles on
+
+The result goes to VF0, which stays 0, 0, 0, 1, but the MAC flags are the
+result's. The VU model (interpreter and compiled code alike) took the flags
+from the destination register after the write - VF0's constants: never a
+sign, so no box was ever outside a plane, nothing was culled and nothing
+clipped. The VU1 microcode's own box test (`msub.. vf00`) had the same
+blindness. Now a result into VF0 goes to `Vu::discarded_` for the flags
+(host test VuFlagsOfAResultIntoVf0); the garage and the race draw their
+scenery whole.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

@@ -123,6 +123,11 @@ private:
     // cleans only those operands. Every bit is set as a run starts and when
     // the interpreter runs (it does not keep them); VF0 is always clean.
     u32 unclean_ = ~1u;
+    // An upper operation's result whose destination is VF0: the register
+    // keeps 0, 0, 0, 1, but the MAC and status flags are this result's (a
+    // test that only wants the signs - `msubz.xyzw vf00, ...` then FMAND -
+    // writes nowhere).
+    u32 discarded_[4] = {};
 
     /* Timing, in cycles (one per pair issued, plus stalls). */
     u64 cycle_ = 0;

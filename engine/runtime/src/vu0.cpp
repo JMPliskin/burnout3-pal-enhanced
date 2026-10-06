@@ -162,6 +162,20 @@ void RunFmacScalar(Context& c, const FmacOp& f) {
         if (f.dest & (8u >> lane)) to[lane] = out[lane];
 }
 
+void FmacResult(const Context& c, const FmacOp& f, u32 out[4]) {
+    u32 lanes[4] = {};
+    switch (f.op) {
+        case kAdd: Lanes<kAdd>(c, f, lanes); break;
+        case kSub: Lanes<kSub>(c, f, lanes); break;
+        case kMul: Lanes<kMul>(c, f, lanes); break;
+        case kMadd: Lanes<kMadd>(c, f, lanes); break;
+        case kMsub: Lanes<kMsub>(c, f, lanes); break;
+        case kMax_: Lanes<kMax_>(c, f, lanes); break;
+        default: Lanes<kMini>(c, f, lanes); break;
+    }
+    for (int lane = 0; lane < 4; ++lane) out[lane] = (f.dest & (8u >> lane)) ? lanes[lane] : 0;
+}
+
 void RunFmac(Context& c, const FmacOp& f) {
     // Every lane is read before any is written (fd may be fs or ft); a lane
     // dest leaves alone is not computed at all - the arithmetic has no other
