@@ -843,6 +843,14 @@ _TAKES_CONTEXT = re.compile(r"\b(?:lifted::)?(Call|TailCall|Syscall|Cop2Move|Vca
 # calling convention: the results, the stack and global pointers, and the
 # callee-saved registers (kept as locals that are never written back).
 ABI_RETURNED = ("v0", "v1", "sp", "gp", "f0", "f1")
+# What a caller relies on finding as it left it: the callee-saved registers,
+# integer and float. A structured function keeps them in locals; any it hands
+# to its callees through the context (out(), before each call) it must hand
+# back as it returns - its epilogue having restored the locals - or its caller
+# sees the values it worked with. 0x0042DAE0 used $f20 and $f21 that way,
+# restored them into its locals and returned without them: the car select's
+# cars were not drawn. Its tests never took a path with a call.
+ABI_PRESERVED = ("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "fp") + tuple("f%d" % i for i in range(20, 32))
 
 
 def _prepare_readable(blocks, elide, slots=None):
@@ -875,7 +883,7 @@ def _prepare_readable(blocks, elide, slots=None):
     gprs.discard(0)
     synced = {GPR_NAMES[i] for i in gprs if not (elide and i in CALLEE_SAVED)}
     synced |= {"f%d" % i for i in fprs} | set(scalars)
-    returned = set(ABI_RETURNED) & synced
+    returned = (set(ABI_RETURNED) | set(ABI_PRESERVED)) & synced
     succs = {a: _successors(b, blocks) for a, b in blocks.items()}
     live = liveness.live_out(blocks, succs, synced, returned,
                              lambda b: b.condition, lambda b: b.slot)
@@ -971,7 +979,7 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     synced = [(n, src) for n, src in names if (n, src) not in locals_only]
     returned = [(n, src) for n, src in synced if n != "ra"]
     if readable:
-        returned = [(n, src) for n, src in returned if n in ABI_RETURNED]
+        returned = [(n, src) for n, src in returned if n in ABI_RETURNED or n in ABI_PRESERVED]
     lines.append("    auto out = [&] { %s };" % " ".join("%s = %s;" % (s, n) for n, s in synced))
     # On return the caller sees its own $ra again, whatever links calls left in it.
     lines.append("    auto leave = [&] { %s c.r[31] = entry_ra; };"
