@@ -59,7 +59,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name, and where it was running by source file and line (inlined code by the line inlined: a VU step in vu_core.h, not the block) - the port builds with symbols for it |
 | `--gs-inline` | the GS model (and the GPU renderer behind it) on the EE's thread rather than its own (`gs_thread.cpp`): for debugging, and for `--sample` to see the GS's share |
 | `--frame-times N` | every N frames, how long they took in wall-clock time and the frame rate (`regress.py --frame-times N` prints them): the menus and the race are very different loads |
-| `--audio` | the SPU2's mixed output on the sound device (no reverb yet) |
+| `--audio` | the SPU2's mixed output on the sound device, reverb included |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
 | `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
 | `--vu-record FILE`, `--vu-interpret` | record the VU microprograms a run starts, for compiling ahead of time; run them interpreted (see below) |
@@ -357,7 +357,7 @@ so a new game gets them as soon as its routines are named.
    MSCAL, and its XGKICKs are PATH1; VU0 micro mode runs `vcallms`. The
    GPU renderer is under way: engine/docs/GPU.md.
 6. **Audio** (begun): the SPU2 (`spu2.cpp`) decodes, envelopes and mixes its
-   voices at 48 kHz; `--audio` plays them and `--audio-wav` records them.
+   voices at 48 kHz, with the reverb libsd sets; `--audio` plays them and `--audio-wav` records them.
    **Input**: a DualShock 2 on the keyboard (`dbc.cpp`). Then saves and
    enhancements.
 
