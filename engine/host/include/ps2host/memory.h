@@ -60,6 +60,7 @@ public:
     void OnWrite(u32 address, WriteHook hook);
 
     u8* rdram() { return rdram_.data(); }
+    u8* scratchpad() { return scratchpad_.data(); }
 
     /* Log every store that touches one of these guest addresses (--watch-write),
        with the value and the function storing it. */

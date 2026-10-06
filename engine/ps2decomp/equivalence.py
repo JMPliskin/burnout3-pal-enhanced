@@ -81,6 +81,7 @@ u64 Mix(u64 x) { x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29; return 
 namespace generated {
 u8* ram_base = nullptr;
 bool ram_watched = false;
+u8* scratchpad_base = nullptr;
 u64 PortRead(u32 a, u32 n, bool is_signed) {
     const u64 v = Load(a, n);
     if (!is_signed || n == 8) return v;

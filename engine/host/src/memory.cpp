@@ -140,7 +140,8 @@ Memory& GuestMemory() {
 
 // Main RAM for the derived code's inline loads and stores (generated.h).
 namespace {
-const bool g_ram_given = (generated::ram_base = GuestMemory().rdram(), true);
+const bool g_ram_given = (generated::ram_base = GuestMemory().rdram(),
+                          generated::scratchpad_base = GuestMemory().scratchpad(), true);
 }  // namespace
 
 }  // namespace ps2host
@@ -151,6 +152,7 @@ namespace generated {
 
 u8* ram_base = nullptr;
 bool ram_watched = false;
+u8* scratchpad_base = nullptr;
 
 u64 PortRead(u32 address, u32 size, bool is_signed) {
     u64 value = ps2host::GuestMemory().Read(address, size);

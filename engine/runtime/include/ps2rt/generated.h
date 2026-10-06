@@ -48,10 +48,16 @@ namespace generated {
  */
 extern u8* ram_base;
 extern bool ram_watched;
+/* The scratchpad's 16 KB at 0x70000000, given the same way (or null). */
+extern u8* scratchpad_base;
 
 inline u8* RamPointer(u32 address, u32 size) {
     if (address - 0x80000000u < 0x40000000u) address &= 0x1FFFFFFFu;
     const u32 window = address >> 28;
+    if (window == 7) {
+        const u32 offset = address - 0x70000000u;
+        return scratchpad_base && offset + size <= 0x4000u ? scratchpad_base + offset : nullptr;
+    }
     if (!ram_base || (window != 0 && window != 2 && window != 3)) return nullptr;
     const u32 offset = address & 0x0FFFFFFFu;
     return offset + size <= (32u << 20) ? ram_base + offset : nullptr;

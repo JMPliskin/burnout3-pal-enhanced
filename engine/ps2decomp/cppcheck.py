@@ -116,6 +116,7 @@ def port_memory(read: str, write: str) -> list:
     return [
         "u8* ram_base = nullptr;",
         "bool ram_watched = false;",
+        "u8* scratchpad_base = nullptr;",
         "u64 PortRead(u32 a, u32 size, bool is_signed) { return %s; }" % read,
         "void PortWrite(u32 a, u64 v, u32 size) { %s; }" % write,
         # Only cases the original completes are run, so no trap is reached.
