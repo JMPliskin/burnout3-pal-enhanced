@@ -124,8 +124,7 @@ private:
     void NextBlock(Core& c, u32 index, const std::function<void(u32)>& irq);
     void Envelope(Voice& v);
     void Reverb(Core& c, s32 in_left, s32 in_right);
-    s32 ReverbRead(const Core& c, u32 offset) const;
-    void ReverbWrite(const Core& c, u32 offset, s32 value);
+    u32 EffectEnd(const Core& c) const;
     std::vector<u32> pending_irqs_;
 };
 

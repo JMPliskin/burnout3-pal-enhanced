@@ -270,31 +270,37 @@ void Spu2::GetEffectAttr(u32 core, u32* mode, s32* depth_left, s32* depth_right,
     *feedback = c.effect_feedback;
 }
 
-// A sample of the work area, `offset` bytes past where the reverb now is,
-// wrapping within [ESA, EEA].
-Spu2::s32 Spu2::ReverbRead(const Core& c, u32 offset) const {
-    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
-    const u32 size = eea + 1 - c.esa;
-    const u32 at = c.esa + (c.reverb_position + offset) % size;
-    return s16(u16(ram_[at & kRamMask & ~1u] | (ram_[(at | 1) & kRamMask] << 8)));
-}
-
-void Spu2::ReverbWrite(const Core& c, u32 offset, s32 value) {
-    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
-    const u32 size = eea + 1 - c.esa;
-    const u32 at = c.esa + (c.reverb_position + offset) % size;
-    const u16 v = u16(s16(Clamp16(value)));
-    ram_[at & kRamMask & ~1u] = u8(v);
-    ram_[(at | 1) & kRamMask] = u8(v >> 8);
+// The work area's end (EEA), libsd's default where the game set none.
+Spu2::u32 Spu2::EffectEnd(const Core& c) const {
+    return c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
 }
 
 // One step of the reverb (24 kHz): psx-spx's "SPU Reverb Formula". Offsets
 // are in 8-byte units; "-2" there is the sample before (two bytes).
 void Spu2::Reverb(Core& c, s32 in_left, s32 in_right) {
     const u16* r = c.reverb;
-    auto at = [&](int reg) { return u32(r[reg]) * 8; };
-    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
-    const u32 size = eea + 1 - c.esa;
+    const u32 size = EffectEnd(c) + 1 - c.esa;
+    if (!size || size > ram_.size()) return;
+    // A sample of the work area `offset` bytes past where the reverb is now,
+    // wrapping within [ESA, EEA].
+    const u32 position = c.reverb_position, esa = c.esa;
+    u8* ram = ram_.data();
+    auto place = [&](u32 offset) {
+        u32 a = position + offset;
+        if (a >= size) a = a - size < size ? a - size : a % size;
+        return (esa + a) & kRamMask & ~1u;
+    };
+    auto ReverbRead = [&](const Core&, u32 offset) {
+        const u32 a = place(offset);
+        return s32(s16(u16(ram[a] | (ram[a + 1] << 8))));
+    };
+    auto ReverbWrite = [&](const Core&, u32 offset, s32 value) {
+        const u32 a = place(offset);
+        const u16 v = u16(s16(Clamp16(value)));
+        ram[a] = u8(v);
+        ram[a + 1] = u8(v >> 8);
+    };
+    auto at = [&](int reg) { return (u32(r[reg]) * 8) % size; };
     auto before = [&](int reg) { return (at(reg) + size - 2) % size; };
     const s32 lin = Mul(in_left, r[kVLIn]), rin = Mul(in_right, r[kVRIn]);
     // Same side, then the other side's reflection.
