@@ -182,6 +182,20 @@ Each of these has already produced plausible wrong output once:
 
 ## Working practices that paid off
 
+- A verified function is only verified on the inputs its tests reached. When
+  a port's picture looks wrong, build it once from the plain lifted form
+  (`lift.py --emit` without `--structure`) and compare: the plain form is
+  mechanical and the better reference. Where they differ,
+  `engine/tools/bisect_lifted.py` finds the function in a dozen builds, and
+  an override running both forms from the same state shows the register that
+  differs. Burnout 3's garage lost its cars this way - a structured form
+  that never handed back $f20/$f21, whose tests never took a path with a call
+  - and the recorded regression pictures had the bug in them too.
+- Measure the frame rate where the game is heavy (`--frame-times N`), not the
+  run's total: menus at hundreds of frames a second hide a race at twenty.
+  `--sample` gives functions and source lines; for compiled VU code, the
+  assembly (`cl /FAs` of a generated file) showed what a pair costs.
+
 - Never just wait on a long run. Start a watchdog beside it -
   `python engine/tools/watchdog.py --log <its log> --done <its last line>` under
   a monitor - which reports a log silent too long, memory past a limit, or a
