@@ -15,6 +15,10 @@ lifted code (runtime/src/vu0.cpp) follows bit for bit:
   the correctly rounded single result; a result that overflows saturates to the
   largest finite magnitude, and one that is denormal becomes zero.
 * Multiply-add rounds the product before the addition.
+* MAX and MINI compare their operands as sign-and-magnitude integers and hand
+  back one of them as it is, uncleaned: a denormal stays (a program builds
+  integer constants with `loi` and `maxi` - Burnout 3's GIF tags), and an
+  exponent of 255 is simply the largest.
 
 That follows PCSX2's interpreter rather than the hardware, which truncates
 rather than rounds in places, so a result can differ from the console's in the
@@ -153,10 +157,16 @@ def _binary(op: str, a: int, b: int, acc: int = 0) -> int:
     if op == "msub":
         return result(value(acc) - value(result(x * y)))
     if op == "max":
-        return clean(b) if x < y else clean(a)
+        return (b if _order(a) < _order(b) else a) & MASK32
     if op == "mini":
-        return clean(b) if y < x else clean(a)
+        return (b if _order(b) < _order(a) else a) & MASK32
     raise Refused(op)
+
+
+def _order(bits: int) -> int:
+    """MAX's and MINI's key: the bits as a sign-and-magnitude integer."""
+    magnitude = bits & 0x7FFFFFFF
+    return -magnitude if bits & SIGN else magnitude
 
 
 _FMAC = ("madd", "msub", "mini", "max", "add", "sub", "mul")

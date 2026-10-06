@@ -64,16 +64,24 @@ enum Op { kAdd, kSub, kMul, kMadd, kMsub, kMax_, kMini };
 
 /* One operation, chosen at compile time: RunFmac picks it once an
    instruction rather than once a lane. */
+/* MAX's and MINI's key: the bits as a sign-and-magnitude integer. They
+   compare so and hand back an operand as it is - no Clean: a denormal stays
+   (programs build integer constants with LOI and MAXI). */
+PS2RT_VU_INLINE s32 Order(u32 bits) {
+    const s32 magnitude = s32(bits & 0x7FFFFFFFu);
+    return (bits & kSign) ? -magnitude : magnitude;
+}
+
 template <int Op>
 inline u32 BinaryOf(u32 a, u32 b, u32 acc) {
+    if constexpr (Op == kMax_) return Order(a) < Order(b) ? b : a;
+    else if constexpr (Op == kMini) return Order(b) < Order(a) ? b : a;
     const double x = Value(a), y = Value(b);
     if constexpr (Op == kAdd) return Result(x + y);
     else if constexpr (Op == kSub) return Result(x - y);
     else if constexpr (Op == kMul) return Result(x * y);
     else if constexpr (Op == kMadd) return Result(Value(acc) + Value(Result(x * y)));
-    else if constexpr (Op == kMsub) return Result(Value(acc) - Value(Result(x * y)));
-    else if constexpr (Op == kMax_) return x < y ? Clean(b) : Clean(a);
-    else return y < x ? Clean(b) : Clean(a);
+    else return Result(Value(acc) - Value(Result(x * y)));
 }
 
 inline u32 Binary(int op, u32 a, u32 b, u32 acc) {
@@ -117,8 +125,21 @@ inline __m128i AsBits(__m128 v) { return _mm_castps_si128(v); }
    a, bit 1 b, bit 2 acc) in the lanes it keeps: Clean would leave them as
    they are. Compiled VU code knows it of fields an FMAC wrote earlier in
    the same block (vurecomp.py, `clean`). */
+PS2RT_VU_INLINE __m128i OrderLanes(__m128i v) {
+    const __m128i negative = _mm_srai_epi32(v, 31);
+    const __m128i magnitude = _mm_and_si128(v, _mm_set1_epi32(0x7FFFFFFF));
+    return _mm_sub_epi32(_mm_xor_si128(magnitude, negative), negative);
+}
+
 template <int Op, int Known = 0>
 PS2RT_VU_INLINE __m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
+    if constexpr (Op == kMax_ || Op == kMini) {
+        // MAX takes b where a < b, MINI where b < a; otherwise a - by Order,
+        // the operands as they are.
+        const __m128i take_b = Op == kMax_ ? _mm_cmplt_epi32(OrderLanes(a), OrderLanes(b))
+                                           : _mm_cmplt_epi32(OrderLanes(b), OrderLanes(a));
+        return _mm_or_si128(_mm_andnot_si128(take_b, a), _mm_and_si128(take_b, b));
+    }
     if constexpr ((Known & 1) == 0) a = CleanLanes(a);
     if constexpr ((Known & 2) == 0) b = CleanLanes(b);
     if constexpr (Op == kAdd) return CleanLanes(AsBits(_mm_add_ps(AsFloats(a), AsFloats(b))));
@@ -129,12 +150,6 @@ PS2RT_VU_INLINE __m128i LanesSse(__m128i a, __m128i b, __m128i acc) {
         const __m128 total = AsFloats((Known & 4) != 0 ? acc : CleanLanes(acc));
         return CleanLanes(AsBits(Op == kMadd ? _mm_add_ps(total, AsFloats(product))
                                              : _mm_sub_ps(total, AsFloats(product))));
-    } else {
-        // MAX takes b where a < b, MINI where b < a; otherwise a.
-        const __m128 less = Op == kMax_ ? _mm_cmplt_ps(AsFloats(a), AsFloats(b))
-                                        : _mm_cmplt_ps(AsFloats(b), AsFloats(a));
-        const __m128i take_b = _mm_castps_si128(less);
-        return _mm_or_si128(_mm_andnot_si128(take_b, a), _mm_and_si128(take_b, b));
     }
 }
 #endif

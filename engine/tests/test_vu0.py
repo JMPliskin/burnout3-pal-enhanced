@@ -82,6 +82,16 @@ class TestArithmetic(unittest.TestCase):
                 args)
         self.assertEqual(lanes(m, 2), [big] * 4)
 
+    def test_max_and_mini_hand_back_an_operand_uncleaned(self):
+        # MAXI with I = 0x412, a denormal: it stays 0x412 (a GIF tag's REGS).
+        self.assertEqual(vu0.vu_binary("max", 0, 0x412), 0x412)
+        self.assertEqual(vu0.vu_binary("mini", 0, 0x412), 0)
+        # Sign and magnitude: -2 < -1 < 0 < 1, the exponent of 255 the largest.
+        self.assertEqual(vu0.vu_binary("max", f(-2.0), f(-1.0)), f(-1.0))
+        self.assertEqual(vu0.vu_binary("mini", f(-2.0), f(-1.0)), f(-2.0))
+        self.assertEqual(vu0.vu_binary("max", 0x7F800001, f(1.0)), 0x7F800001)
+        self.assertEqual(vu0.vu_binary("mini", 0x80000412, 0), 0x80000412)
+
 
 class TestRefusals(unittest.TestCase):
     def test_reading_the_mac_flags_is_refused(self):

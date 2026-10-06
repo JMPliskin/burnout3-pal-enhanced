@@ -365,13 +365,14 @@ def known_clean(word: int, clean: dict) -> int:
 
 def clean_writes(word: int) -> list:
     """(register or 'acc', lanes, clean) the upper instruction writes: the
-    FMAC, OPMULA, OPMSUB, ITOF and ABS leave their fields clean; FTOI leaves
-    integers, anything else is not known."""
+    FMAC, OPMULA, OPMSUB, ITOF and ABS leave their fields clean - but MAX and
+    MINI hand an operand back as it is; FTOI leaves integers, anything else is
+    not known."""
     funct, dest = word & 0x3F, field(word, 21, 4)
     ft, fs, fd = field(word, 16, 5), field(word, 11, 5), field(word, 6, 5)
     fmac = decode_fmac(word)
     if fmac:
-        return [("acc" if fmac[2] else fd, dest, True)]
+        return [("acc" if fmac[2] else fd, dest, OP_NAMES[fmac[0]] not in ("lifted::kMax_", "lifted::kMini"))]
     if funct < 0x3C:
         if funct == 0x2E:
             return [(fd, dest & 0xE, True)]                             # OPMSUB

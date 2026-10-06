@@ -1763,6 +1763,26 @@ blindness. Now a result into VF0 goes to `Vu::discarded_` for the flags
 (host test VuFlagsOfAResultIntoVf0); the garage and the race draw their
 scenery whole.
 
+## No cars: MAXI and a denormal
+
+With the scenery whole, no car was drawn - not the garage's selected car,
+not one in the race; their shadows were. The car microcode's packets reached
+the GS (TEX0_2 named the reflection map the EE draws each frame) but every
+quadword went to PRIM: the GIF tags had NREG 3 and REGS 0. The program
+builds its tag's second half once, at the start:
+
+    addx.w vf01, vf00, vf00x
+    maxi.y vf01, vf00, I        ; I = 0x302E4000 (loi): PRE, PRIM, NREG
+    maxi.z vf01, vf00, I        ; I = 0x00000412 (loi): ST RGBA XYZF2
+    sq.yzw vf01, 0(vi13)
+
+0x412 is a denormal as a float. The model cleaned MAX's and MINI's operands
+like any FMAC's, so 0x412 became 0. The VU compares them as sign-and-
+magnitude integers and hands one back as it is, which programs use to load
+integer constants; vu0.py, vu_math.h (scalar and SSE) and the compiled
+code's operand cleaning now do so (test_vu0, host test VuMaxKeepsADenormal),
+and vurecomp no longer counts a MAX or MINI result as clean.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

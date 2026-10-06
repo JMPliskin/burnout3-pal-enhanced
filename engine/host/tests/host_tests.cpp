@@ -894,6 +894,24 @@ void VuFlagsOfAResultIntoVf0() {
     Check(vu.regs.vf[0][0] == 0 && vu.regs.vf[0][2] == 0 && vu.regs.vf[0][3] == f(1), "VU: VF0 stays 0, 0, 0, 1");
 }
 
+// MAX and MINI hand back an operand as it is: Burnout 3's car microcode
+// builds its GIF tag's REGS (0x412, a denormal as a float) with LOI and MAXI;
+// cleaned to 0, every vertex went to PRIM and no car was drawn.
+void VuMaxKeepsADenormal() {
+    ps2host::Vu vu(0);
+    const std::uint32_t kNopU = 0x000002FF, kNopL = 0x8000033C, kI = 0x80000000, kEnd = 0x40000000;
+    const std::uint32_t program[] = {
+        0x00000412, kI | kNopU,         // loi 0x412
+        kNopL, 0x0040005D,              //                          maxi.z vf1, vf0, I
+        0x00000412, kI | kNopU,         // loi 0x412
+        kNopL, 0x0040009F,              //                          minii.z vf2, vf0, I
+        kNopL, kEnd | kNopU,
+        kNopL, kNopU};
+    std::memcpy(vu.micro.data(), program, sizeof program);
+    vu.Run(0);
+    Check(vu.regs.vf[1][2] == 0x412 && vu.regs.vf[2][2] == 0, "VU: MAXI and MINII compare and keep the bits");
+}
+
 // The IOP interpreter against emu.py, the verified R5900 interpreter: one MIPS I
 // instruction per vector (engine/tools/iop_vectors.py).
 struct CpuVector {
@@ -1033,6 +1051,7 @@ int main() {
     VuCompiledIsTheInterpreter();
     VuTimingIsVisible();
     VuFlagsOfAResultIntoVf0();
+    VuMaxKeepsADenormal();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);

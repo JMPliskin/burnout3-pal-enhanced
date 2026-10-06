@@ -326,15 +326,19 @@ struct VuCore {
         else b = _mm_set1_epi32(int(c.vf[ft][Operand]));
         // Cleaned here where the block does not know them clean and the run
         // has not found them clean (unclean_); LanesSse then cleans neither.
-        if constexpr ((Known & 1) == 0)
+        // MAX and MINI take their operands as they are, and may leave a
+        // field unclean.
+        constexpr bool kRaw = Op == lifted::kMax_ || Op == lifted::kMini;
+        if constexpr ((Known & 1) == 0 && !kRaw)
             if ((v.unclean_ >> fs) & 1) a = lifted::CleanLanes(a);
-        if constexpr ((Known & 2) == 0) {
+        if constexpr ((Known & 2) == 0 && !kRaw) {
             if constexpr (Operand == 4 || Operand == 5) b = lifted::CleanLanes(b);
             else if ((v.unclean_ >> ft) & 1) b = lifted::CleanLanes(b);
         }
         const __m128i acc = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vacc));
         const __m128i result = lifted::LanesSse<Op, Known | 3>(a, b, acc);
-        if constexpr (To > 0 && Dest == 15) v.unclean_ &= ~(1u << To);    // all four fields, clean
+        if constexpr (To > 0 && kRaw) v.unclean_ |= 1u << To;
+        else if constexpr (To > 0 && Dest == 15) v.unclean_ &= ~(1u << To);    // all four fields, clean
         if constexpr (To == 0) {
             _mm_storeu_si128(reinterpret_cast<__m128i*>(v.discarded_), result);
             return;
