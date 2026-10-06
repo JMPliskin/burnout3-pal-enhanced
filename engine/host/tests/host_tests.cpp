@@ -952,6 +952,33 @@ void SpuDecodesAdpcmAndPlaysAVoice() {
           "SPU2: a voice sounds at its volume");
     Check(spu.GetSwitch(0x1700) & 1, "SPU2: ENDX after the loop's end");
     Check(spu.GetParam(0x0500) == 0x7FFF, "SPU2: ENVX after the attack");
+
+    // The reverb: one loud sample sent only to it (VMIXEL/VMIXER, not the dry
+    // mix) comes out later, and keeps coming out after the voice has ended.
+    Spu2 wet;
+    Spu2::u8 burst[16] = {0x00, 0x01};              // loop end, no repeat: one block, then silence
+    for (int i = 2; i < 16; ++i) burst[i] = 0x77;   // 28 loud samples (the envelope rises through them)
+    wet.Write(0x5000, burst, 16);
+    std::vector<Spu2::s16> tail;
+    wet.SetOutput([&](const Spu2::s16* frames, Spu2::u32 count) { tail.assign(frames, frames + 2 * count); });
+    wet.SetAddr(0x2000, 0x5000);
+    wet.SetParam(0x0000, 0x3FFF);
+    wet.SetParam(0x0100, 0x3FFF);
+    wet.SetParam(0x0200, 0x1000);
+    wet.SetParam(0x0300, 0x000F);
+    wet.SetParam(0x0400, 0x1FC0);
+    wet.SetSwitch(0x1900, 1);                       // VMIXEL
+    wet.SetSwitch(0x1B00, 1);                       // VMIXER
+    Check(wet.SetEffectAttr(0, 0x101, 0x3FFF, 0x3FFF, 0, 0) == 0, "SPU2: the Room preset, its work area cleared");
+    wet.SetCoreAttr(0x2, 1);                        // SD_CORE_EFFECT_ENABLE
+    wet.SetSwitch(0x1500, 1);
+    wet.Advance(1000, none);
+    wet.Advance(201000, none);                      // 200 ms
+    int loud_late = 0;
+    for (std::size_t i = 2 * 4800; i < tail.size(); ++i) loud_late += std::abs(int(tail[i])) > 8;
+    Check(tail.size() == 2 * 9600 && tail[0] == 0, "SPU2: nothing dry");
+    Check(loud_late > 100, "SPU2: the reverb's tail, long after the sound ended");
+    Check(wet.SetEffectAttr(0, 10, 0, 0, 0, 0) == -1, "SPU2: no eleventh preset");
 }
 
 int main() {

@@ -821,9 +821,25 @@ Outcome SdGetTransIntrHandlerArgument(Vm&, Context& c) { return Ret(c, S().trans
 Outcome SdGetSpu2IntrHandlerArgument(Vm&, Context& c) { return Ret(c, S().spu2.arg); }
 Outcome SdReturnsPrevious(Vm&, Context& c) { return Ret(c, 0); }
 
+// sceSdEffectAttr: int core, int mode, short depth_L, short depth_R, int delay, int feedback.
+Outcome SdSetEffectAttr(Vm& vm, Context& c) {
+    const u32 p = A(vm, c, 1);
+    const s32 depth_left = s32(std::int16_t(vm.Read(p + 8, 2))), depth_right = s32(std::int16_t(vm.Read(p + 10, 2)));
+    return Ret(c, u32(S().spu.SetEffectAttr(c.r[4] & 1, vm.Read(p + 4, 4), depth_left, depth_right,
+                                            vm.Read(p + 12, 4), vm.Read(p + 16, 4))));
+}
+
 Outcome SdGetEffectAttr(Vm& vm, Context& c) {
-    const u32 p = A(vm, c, 1);               // sceSdEffectAttr: core, mode, depth_L, depth_R, delay, feedback
-    for (u32 i = 0; i < 6; ++i) vm.Write(p + 4 * i, 0, 4);
+    const u32 p = A(vm, c, 1);
+    u32 mode = 0, delay = 0, feedback = 0;
+    s32 depth_left = 0, depth_right = 0;
+    S().spu.GetEffectAttr(c.r[4] & 1, &mode, &depth_left, &depth_right, &delay, &feedback);
+    vm.Write(p, c.r[4] & 1, 4);
+    vm.Write(p + 4, mode, 4);
+    vm.Write(p + 8, u32(depth_left) & 0xFFFF, 2);
+    vm.Write(p + 10, u32(depth_right) & 0xFFFF, 2);
+    vm.Write(p + 12, delay, 4);
+    vm.Write(p + 16, feedback, 4);
     return Ret(c, 0);
 }
 
@@ -888,7 +904,7 @@ const Map& Table() {
         {{"libsd", 17}, SdVoiceTrans}, {{"libsd", 18}, SdBlockTrans},
         {{"libsd", 19}, SdVoiceTransStatus}, {{"libsd", 20}, SdBlockTransStatus},
         {{"libsd", 21}, SdReturnsPrevious}, {{"libsd", 22}, SdReturnsPrevious},
-        {{"libsd", 23}, Succeed}, {{"libsd", 24}, SdGetEffectAttr},
+        {{"libsd", 23}, SdSetEffectAttr}, {{"libsd", 24}, SdGetEffectAttr},
         {{"libsd", 25}, Succeed}, {{"libsd", 26}, SdSetTransIntrHandler},
         {{"libsd", 27}, SdSetSpu2IntrHandler}, {{"libsd", 28}, SdGetTransIntrHandlerArgument},
         {{"libsd", 29}, SdGetSpu2IntrHandlerArgument}, {{"libsd", 30}, SdStopTrans},

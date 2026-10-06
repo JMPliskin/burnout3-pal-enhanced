@@ -13,9 +13,15 @@
  * bit 0 loop end, bit 1 repeat (go back to the loop start rather than stop),
  * bit 2 loop start. A voice plays at pitch/4096 of 48 kHz.
  *
- * Not modelled yet: reverb, volume sweeps (a sweeping volume plays at its
- * maximum), noise, pitch modulation, and the cores' external and sound-data
- * inputs.
+ * Reverb (the effect unit): each core's voices with VMIXEL/VMIXER set feed it;
+ * it runs at 24 kHz on its work area at the top of SPU RAM, with the
+ * registers libsd's presets set (SetEffectAttr: sceSdSetEffectAttr), and its
+ * output joins the core's at EVOL. The algorithm is the PS1 SPU's, which the
+ * SPU2 kept (no-cash psx-spx, "SPU Reverb Formula").
+ *
+ * Not modelled yet: volume sweeps (a sweeping volume plays at its maximum),
+ * noise, pitch modulation, and the cores' external and sound-data inputs
+ * (core 0's output into core 1's reverb included).
  *
  * libsd's entries (ps2sdk libsd-common.h): a voice parameter or address is
  * (param << 8) | core | voice << 1; a switch or core address (n << 8) | core.
@@ -50,6 +56,12 @@ public:
     u32 GetAddr(u32 entry) const;
     void SetCoreAttr(u32 entry, u32 value);
     u32 GetCoreAttr(u32 entry) const;
+    /* sceSdSetEffectAttr: a reverb preset (SD_EFFECT_MODE_*, 0x100 to clear
+       the work area), its depth, and for echo and delay their delay and
+       feedback - as libsd programs the registers. -1 for a bad mode. */
+    int SetEffectAttr(u32 core, u32 mode, s32 depth_left, s32 depth_right, u32 delay, u32 feedback);
+    /* What the last SetEffectAttr was given (libsd keeps it). */
+    void GetEffectAttr(u32 core, u32* mode, s32* depth_left, s32* depth_right, u32* delay, u32* feedback) const;
 
     /* Data into (or out of) SPU RAM at a byte address, as a transfer would. */
     void Write(u32 address, const u8* data, u32 size);
@@ -85,6 +97,16 @@ private:
         u32 switches[16] = {};          // by switch number - 0x13
         u32 mvoll = 0x3FFF, mvolr = 0x3FFF;
         bool irq_enabled = false;
+        // Reverb: the registers (libsd's order: dAPF1, dAPF2, vIIR, vCOMB1-4,
+        // vWALL, vAPF1, vAPF2, then the 20 buffer offsets in 8-byte units,
+        // vLIN, vRIN), EVOL, where it is in its work area, what feeds it.
+        u16 reverb[32] = {};
+        u32 evoll = 0, evolr = 0;
+        u32 effect_mode = 0, effect_delay = 0, effect_feedback = 0;
+        s32 effect_depth_left = 0, effect_depth_right = 0;
+        u32 reverb_position = 0;        // bytes into the work area
+        s32 reverb_in_left = 0, reverb_in_right = 0;     // the first of each pair of samples
+        s32 reverb_out_left = 0, reverb_out_right = 0;   // held for the pair
     };
     Core cores_[2];
     std::vector<u8> ram_;
@@ -101,6 +123,9 @@ private:
     void Decode(Voice& v);
     void NextBlock(Core& c, u32 index, const std::function<void(u32)>& irq);
     void Envelope(Voice& v);
+    void Reverb(Core& c, s32 in_left, s32 in_right);
+    s32 ReverbRead(const Core& c, u32 offset) const;
+    void ReverbWrite(const Core& c, u32 offset, s32 value);
     std::vector<u32> pending_irqs_;
 };
 

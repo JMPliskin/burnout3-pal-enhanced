@@ -18,6 +18,7 @@ constexpr double kRate = 48000.0;
 constexpr Spu2::u32 kSamplesPerBlock = 28, kBlockBytes = 16;
 constexpr Spu2::u32 kBlockSpan = kSamplesPerBlock << 12;    // a block in counter units
 constexpr Spu2::u32 kVmixl = 0x18 - 0x13, kVmixr = 0x1A - 0x13;
+constexpr Spu2::u32 kVmixel = 0x19 - 0x13, kVmixer = 0x1B - 0x13;   // into the reverb
 
 Spu2::s32 Clamp16(Spu2::s32 v) { return std::min(32767, std::max(-32768, v)); }
 
@@ -62,7 +63,9 @@ void Spu2::SetParam(u32 entry, u32 value) {
         case 0x04: v.adsr2 = value; break;
         case 0x09: c.mvoll = value; break;             // SD_P_MVOLL
         case 0x0A: c.mvolr = value; break;             // SD_P_MVOLR
-        default: break;                         // effects, external input: not yet
+        case 0x0B: c.evoll = value; break;             // SD_P_EVOLL: the reverb's output
+        case 0x0C: c.evolr = value; break;             // SD_P_EVOLR
+        default: break;                         // external input: not yet
     }
 }
 
@@ -80,6 +83,8 @@ Spu2::u32 Spu2::GetParam(u32 entry) const {
         case 0x07: return u32(Volume(v.volr) & 0xFFFF);
         case 0x09: return c.mvoll;
         case 0x0A: return c.mvolr;
+        case 0x0B: return c.evoll;
+        case 0x0C: return c.evolr;
         default: return 0;
     }
 }
@@ -176,6 +181,158 @@ Spu2::u32 Spu2::GetCoreAttr(u32 entry) const {
     const Core& c = cores_[CoreOf(entry)];
     if ((entry & ~1u) == 0x4) return c.irq_enabled ? 1 : 0;
     return (c.attr >> (entry & ~1u)) & 1;
+}
+
+// ---------------------------------------------------------------- reverb
+
+namespace {
+
+// libsd's reverb presets (SD_EFFECT_MODE_OFF ... PIPE), as it programs them:
+// 32 halfwords each in its register order; and each one's work area, in
+// 16-byte units, ending at EEA. (The same values as ps2sdk's libsd, which
+// took them from Sony's; close to the PS1's.)
+const Spu2::u32 kEffectSizes[10] = {0x1, 0x26C, 0x1F4, 0x484, 0x6FE, 0xADE, 0xF6C, 0x1804, 0x1804, 0x3C0};
+const Spu2::u32 kEffectParams[10][16] = {
+    {0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00010001, 0x00000000, 0x00000000,
+     0x00000000, 0x00010001, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
+    {0x005B007D, 0x54B86D80, 0x0000BED0, 0xBA800000, 0x53005800, 0x033304D6, 0x022703F0, 0x01EF0374,
+     0x01B70336, 0x01B60335, 0x01B50334, 0x01B50334, 0x01B50334, 0x013601B4, 0x005C00B8, 0x80008000},
+    {0x00250033, 0x4FA870F0, 0x4410BCE0, 0x9C00C0F0, 0x4EC05280, 0x031B03E4, 0x02AF03A4, 0x02660372,
+     0x025D031C, 0x018E025C, 0x0135022F, 0x00B701D2, 0x00B5018F, 0x008000B4, 0x0026004C, 0x80008000},
+    {0x007F00B1, 0x4FA870F0, 0x4510BCE0, 0xB4C0BEF0, 0x4EC05280, 0x076B0904, 0x065F0824, 0x061607A2,
+     0x05ED076C, 0x042E05EC, 0x0305050F, 0x02B70462, 0x0265042F, 0x01B20264, 0x00800100, 0x80008000},
+    {0x00A900E3, 0x4FA86F60, 0x4510BCE0, 0xA680BEF0, 0x52C05680, 0x0B580DFB, 0x0A3C0D09, 0x09730BD9,
+     0x08DA0B59, 0x05E908D9, 0x04B007EC, 0x03D206EF, 0x031D05EA, 0x0238031C, 0x00AA0154, 0x80008000},
+    {0x013901A5, 0x50006000, 0xB8004C00, 0xC000BC00, 0x5C006000, 0x11BB15BA, 0x10BD14C2, 0x0DC111BC,
+     0x0DC311C0, 0x09C10DC0, 0x07C10BC4, 0x06CD0A00, 0x05C109C2, 0x041A05C0, 0x013A0274, 0x80008000},
+    {0x0231033D, 0x50007E00, 0xB000B400, 0xB0004C00, 0x54006000, 0x1A311ED6, 0x183B1D14, 0x16B21BC2,
+     0x15EF1A32, 0x105515EE, 0x0F2D1334, 0x0C5D11F6, 0x0AE11056, 0x07A20AE0, 0x02320464, 0x80008000},
+    {0x00030003, 0x7FFF7FFF, 0x00000000, 0x81000000, 0x00000000, 0x0FFD1FFD, 0x00091009, 0x00000000,
+     0x00091009, 0x1FFF1FFF, 0x1FFE1FFE, 0x1FFE1FFE, 0x1FFE1FFE, 0x10041008, 0x00040008, 0x80008000},
+    {0x00030003, 0x7FFF7FFF, 0x00000000, 0x00000000, 0x00000000, 0x0FFD1FFD, 0x00091009, 0x00000000,
+     0x00091009, 0x1FFF1FFF, 0x1FFE1FFE, 0x1FFE1FFE, 0x1FFE1FFE, 0x10041008, 0x00040008, 0x80008000},
+    {0x00130017, 0x4FA870F0, 0x4510BCE0, 0x8500BEF0, 0x54C05F80, 0x02AF0371, 0x01DF02E5, 0x01D702B0,
+     0x026A0358, 0x011E01D6, 0x00B1012D, 0x0059011F, 0x00E301A0, 0x00400058, 0x00140028, 0x80008000},
+};
+
+// Where the registers sit in Core::reverb.
+enum : int { kDApf1 = 0, kDApf2 = 1, kVIir = 2, kVComb1 = 3, kVComb2 = 4, kVComb3 = 5, kVComb4 = 6, kVWall = 7,
+             kVApf1 = 8, kVApf2 = 9, kMLSame = 10, kMRSame = 11, kMLComb1 = 12, kMRComb1 = 13, kMLComb2 = 14,
+             kMRComb2 = 15, kDLSame = 16, kDRSame = 17, kMLDiff = 18, kMRDiff = 19, kMLComb3 = 20, kMRComb3 = 21,
+             kMLComb4 = 22, kMRComb4 = 23, kDLDiff = 24, kDRDiff = 25, kMLApf1 = 26, kMRApf1 = 27, kMLApf2 = 28,
+             kMRApf2 = 29, kVLIn = 30, kVRIn = 31 };
+
+Spu2::s32 Mul(Spu2::s32 a, Spu2::u16 coefficient) {
+    return Spu2::s32((std::int64_t(a) * Spu2::s16(coefficient)) >> 15);
+}
+
+}  // namespace
+
+int Spu2::SetEffectAttr(u32 core, u32 mode, s32 depth_left, s32 depth_right, u32 delay, u32 feedback) {
+    Core& c = cores_[core & 1];
+    const bool clear = (mode & 0x100) != 0;
+    mode &= ~0x100u;
+    if (mode > 9) return -1;
+    u16 data[32];
+    std::memcpy(data, kEffectParams[mode], sizeof data);
+    c.effect_mode = mode;
+    c.effect_depth_left = depth_left;
+    c.effect_depth_right = depth_right;
+    c.effect_delay = mode == 7 || mode == 8 ? 0x80 : 0;          // as libsd keeps them
+    c.effect_feedback = mode == 7 ? 0x80 : 0;
+    if (mode == 7 || mode == 8) {                               // echo, delay: their own delay and feedback
+        const u16 d = u16((delay + 1) << 5);
+        data[7] = u16((((feedback << 7) + feedback) << 1));
+        data[10] = u16((d << 1) - data[0]);
+        data[11] = u16(d - data[1]);
+        data[16] = u16(data[17] + d);
+        data[12] = u16(data[13] + d);
+        data[27] = u16(data[29] + d);
+        data[26] = u16(data[28] + d);
+    }
+    std::memcpy(c.reverb, data, sizeof data);
+    c.evoll = u32(depth_left) & 0xFFFF;
+    c.evolr = u32(depth_right) & 0xFFFF;
+    const u32 eea = c.eea ? c.eea : (core & 1 ? 0x1FFFFFu : 0x1DFFFFu);
+    c.esa = (eea - ((kEffectSizes[mode] << 4) - 2)) & kRamMask;
+    c.reverb_position = 0;
+    if (clear)
+        for (u32 a = c.esa; a <= eea && a < ram_.size(); ++a) ram_[a] = 0;
+    return 0;
+}
+
+void Spu2::GetEffectAttr(u32 core, u32* mode, s32* depth_left, s32* depth_right, u32* delay, u32* feedback) const {
+    const Core& c = cores_[core & 1];
+    *mode = c.effect_mode;
+    *depth_left = c.effect_depth_left;
+    *depth_right = c.effect_depth_right;
+    *delay = c.effect_delay;
+    *feedback = c.effect_feedback;
+}
+
+// A sample of the work area, `offset` bytes past where the reverb now is,
+// wrapping within [ESA, EEA].
+Spu2::s32 Spu2::ReverbRead(const Core& c, u32 offset) const {
+    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
+    const u32 size = eea + 1 - c.esa;
+    const u32 at = c.esa + (c.reverb_position + offset) % size;
+    return s16(u16(ram_[at & kRamMask & ~1u] | (ram_[(at | 1) & kRamMask] << 8)));
+}
+
+void Spu2::ReverbWrite(const Core& c, u32 offset, s32 value) {
+    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
+    const u32 size = eea + 1 - c.esa;
+    const u32 at = c.esa + (c.reverb_position + offset) % size;
+    const u16 v = u16(s16(Clamp16(value)));
+    ram_[at & kRamMask & ~1u] = u8(v);
+    ram_[(at | 1) & kRamMask] = u8(v >> 8);
+}
+
+// One step of the reverb (24 kHz): psx-spx's "SPU Reverb Formula". Offsets
+// are in 8-byte units; "-2" there is the sample before (two bytes).
+void Spu2::Reverb(Core& c, s32 in_left, s32 in_right) {
+    const u16* r = c.reverb;
+    auto at = [&](int reg) { return u32(r[reg]) * 8; };
+    const u32 eea = c.eea ? c.eea : (&c == &cores_[1] ? 0x1FFFFFu : 0x1DFFFFu);
+    const u32 size = eea + 1 - c.esa;
+    auto before = [&](int reg) { return (at(reg) + size - 2) % size; };
+    const s32 lin = Mul(in_left, r[kVLIn]), rin = Mul(in_right, r[kVRIn]);
+    // Same side, then the other side's reflection.
+    const s32 lsame = Mul(lin + Mul(ReverbRead(c, at(kDLSame)), r[kVWall]) - ReverbRead(c, before(kMLSame)),
+                          r[kVIir]) + ReverbRead(c, before(kMLSame));
+    const s32 rsame = Mul(rin + Mul(ReverbRead(c, at(kDRSame)), r[kVWall]) - ReverbRead(c, before(kMRSame)),
+                          r[kVIir]) + ReverbRead(c, before(kMRSame));
+    const s32 ldiff = Mul(lin + Mul(ReverbRead(c, at(kDRDiff)), r[kVWall]) - ReverbRead(c, before(kMLDiff)),
+                          r[kVIir]) + ReverbRead(c, before(kMLDiff));
+    const s32 rdiff = Mul(rin + Mul(ReverbRead(c, at(kDLDiff)), r[kVWall]) - ReverbRead(c, before(kMRDiff)),
+                          r[kVIir]) + ReverbRead(c, before(kMRDiff));
+    ReverbWrite(c, at(kMLSame), lsame);
+    ReverbWrite(c, at(kMRSame), rsame);
+    ReverbWrite(c, at(kMLDiff), ldiff);
+    ReverbWrite(c, at(kMRDiff), rdiff);
+    // Early echo: the combs.
+    s32 lout = Mul(ReverbRead(c, at(kMLComb1)), r[kVComb1]) + Mul(ReverbRead(c, at(kMLComb2)), r[kVComb2]) +
+               Mul(ReverbRead(c, at(kMLComb3)), r[kVComb3]) + Mul(ReverbRead(c, at(kMLComb4)), r[kVComb4]);
+    s32 rout = Mul(ReverbRead(c, at(kMRComb1)), r[kVComb1]) + Mul(ReverbRead(c, at(kMRComb2)), r[kVComb2]) +
+               Mul(ReverbRead(c, at(kMRComb3)), r[kVComb3]) + Mul(ReverbRead(c, at(kMRComb4)), r[kVComb4]);
+    // Late reverb: two all-pass filters.
+    const u32 apf1 = at(kDApf1), apf2 = at(kDApf2);
+    auto delayed = [&](int reg, u32 by) { return (at(reg) + size - by % size) % size; };
+    lout = Clamp16(lout - Mul(ReverbRead(c, delayed(kMLApf1, apf1)), r[kVApf1]));
+    ReverbWrite(c, at(kMLApf1), lout);
+    lout = Mul(lout, r[kVApf1]) + ReverbRead(c, delayed(kMLApf1, apf1));
+    rout = Clamp16(rout - Mul(ReverbRead(c, delayed(kMRApf1, apf1)), r[kVApf1]));
+    ReverbWrite(c, at(kMRApf1), rout);
+    rout = Mul(rout, r[kVApf1]) + ReverbRead(c, delayed(kMRApf1, apf1));
+    lout = Clamp16(lout - Mul(ReverbRead(c, delayed(kMLApf2, apf2)), r[kVApf2]));
+    ReverbWrite(c, at(kMLApf2), lout);
+    lout = Mul(lout, r[kVApf2]) + ReverbRead(c, delayed(kMLApf2, apf2));
+    rout = Clamp16(rout - Mul(ReverbRead(c, delayed(kMRApf2, apf2)), r[kVApf2]));
+    ReverbWrite(c, at(kMRApf2), rout);
+    rout = Mul(rout, r[kVApf2]) + ReverbRead(c, delayed(kMRApf2, apf2));
+    c.reverb_out_left = Clamp16(lout);
+    c.reverb_out_right = Clamp16(rout);
+    c.reverb_position = (c.reverb_position + 2) % size;
 }
 
 void Spu2::CheckIrq(u32 core_hint, u32 from, u32 to, const std::function<void(u32)>& irq) {
@@ -322,7 +479,7 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
         s32 left = 0, right = 0;
         for (u32 core = 0; core < 2; ++core) {
             Core& c = cores_[core];
-            s32 core_left = 0, core_right = 0;
+            s32 core_left = 0, core_right = 0, wet_left = 0, wet_right = 0;
             for (u32 i = 0; i < 24; ++i) {
                 Voice& v = c.voices[i];
                 if (!v.pitch) continue;
@@ -331,8 +488,11 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
                     const s32 current = v.samples[index];
                     const s32 sample = v.previous + ((current - v.previous) * s32(v.counter & 0xFFF) >> 12);
                     const s32 shaped = (sample * v.level) >> 15;
-                    if (c.switches[kVmixl] & (1u << i)) core_left += (shaped * Volume(v.voll)) >> 15;
-                    if (c.switches[kVmixr] & (1u << i)) core_right += (shaped * Volume(v.volr)) >> 15;
+                    const s32 sent_left = (shaped * Volume(v.voll)) >> 15, sent_right = (shaped * Volume(v.volr)) >> 15;
+                    if (c.switches[kVmixl] & (1u << i)) core_left += sent_left;
+                    if (c.switches[kVmixr] & (1u << i)) core_right += sent_right;
+                    if (c.switches[kVmixel] & (1u << i)) wet_left += sent_left;
+                    if (c.switches[kVmixer] & (1u << i)) wet_right += sent_right;
                     Envelope(v);
                 }
                 const u32 before_index = v.counter >> 12;
@@ -348,6 +508,15 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
                 const u32 index = v.counter >> 12;
                 if (crossed || index != before_index)
                     v.previous = index ? v.samples[index - 1] : last;
+            }
+            // The reverb (SD_CORE_EFFECT_ENABLE, attr bit 2): a step every
+            // other sample, on the pair's first input; its output held for
+            // the pair.
+            if (c.attr & 4) {
+                if ((u64(clock_) + n) & 1) Reverb(c, Clamp16(c.reverb_in_left), Clamp16(c.reverb_in_right));
+                else { c.reverb_in_left = wet_left; c.reverb_in_right = wet_right; }
+                core_left += (c.reverb_out_left * Volume(c.evoll)) >> 15;
+                core_right += (c.reverb_out_right * Volume(c.evolr)) >> 15;
             }
             left += (core_left * Volume(c.mvoll)) >> 15;
             right += (core_right * Volume(c.mvolr)) >> 15;
