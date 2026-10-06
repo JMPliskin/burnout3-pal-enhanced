@@ -22,6 +22,17 @@ them in turn, keeping the first under which the original executes:
 
 Trying all four took the loop-only set from 181 executable functions to 247.
 
+Three more come last, for loops the others never end:
+
+  zero       all zeros: a search for a key stops at once (the key read is 0 as
+             well), a count read from memory is 0, a null link ends a list
+  zero-self  each even word its own address, odd words 0
+  self       each word its own address: an intrusive circular list whose
+             links point back at its head (RenderWare's) is empty
+
+Sampled on functions untestable for running out of instructions, these let
+one in eight finish.
+
 The choice of profile changes only what the test can *reach*, never what it
 concludes: the original and the derivation always read the same memory.
 """
@@ -42,7 +53,7 @@ from . import layout
 # shape lets finish - typically list walks, which loop forever on the cycles that
 # random pointers make. Their pointers only point further on, or are null, so every
 # chain followed through them ends.
-PROFILES = ("mixed", "noise", "small", "pointers", "forward", "forward-mixed")
+PROFILES = ("mixed", "noise", "small", "pointers", "forward", "forward-mixed", "zero", "zero-self", "self")
 
 # Small integers stay below this so a count read from memory gives a short loop.
 SMALL_LIMIT = 16
@@ -97,6 +108,12 @@ def _build(kind: str, seed: int) -> bytes:
             return (address + rng.randrange(16, 0x200)) & ~15
         words = [rng.randrange(SMALL_LIMIT) if kind == "forward-mixed" and i % 2
                  else forward(i) for i in range(count)]
+    elif kind == "zero":
+        words = [0] * count
+    elif kind == "zero-self":
+        words = [SCRATCH + 4 * i if i % 2 == 0 else 0 for i in range(count)]
+    elif kind == "self":
+        words = [SCRATCH + 4 * i for i in range(count)]
     else:
         raise ValueError("unknown memory profile %r" % kind)
     return struct.pack("<%dI" % count, *words)

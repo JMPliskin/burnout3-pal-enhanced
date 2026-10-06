@@ -97,6 +97,14 @@ u64 StackEnter(u32 size);
 void StackLeave(u32 size);
 
 /*
+ * A `break` the original executes: a trap (an assertion's failure, usually).
+ * The derivation ends that path here; whatever hosts derived code stops the
+ * run there, as the console raises the exception. It does not return. (Not
+ * `Trap`: lifted::Trap is the lifted code's, and structured code sees both.)
+ */
+void TrapAt(u32 address);
+
+/*
  * A call through a function pointer or a virtual method: `address` is the guest
  * address the original code jumps to. A port maps guest addresses to its own
  * functions; the arguments are the full register argument vector - eight integer,

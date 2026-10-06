@@ -501,6 +501,11 @@ class StatementEmitter:
                 lines.append("break;")
             elif kind == "unreachable":
                 continue
+            elif kind == "trap":
+                # The original raises an exception here (paths.py); so does
+                # the host's Trap, which does not return.
+                lines.append("TrapAt(0x%08Xu);" % statement[1])
+                lines.append("return;" if self.void else "return 0;")
             elif kind == "if":
                 lines.append("if (%s) {" % render_cpp(self._apply(statement[1])))
                 # A local captured inside one branch does not exist in the other, so

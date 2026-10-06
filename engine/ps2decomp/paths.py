@@ -183,7 +183,8 @@ class Path:
     marks: tuple = ()
     # How a path inside a loop body ends, instead of returning: ("continue", loop,
     # assignments), ("break", loop, exit) - or ("unreachable",) after a loop that
-    # can only be left by returning.
+    # can only be left by returning; and on any path, ("trap", address) at a
+    # `break` instruction, which the original raises as an exception there.
     leaf: tuple = None
 
     def end(self) -> tuple:
@@ -284,6 +285,8 @@ class PathDerivation:
 
     def _render_return(self, path) -> list:
         """The return statement for a path, or nothing when the function is void."""
+        if path.leaf is not None and path.leaf[0] == "trap":
+            return ["TrapAt(0x%08Xu);" % path.leaf[1]]
         if path.expression is None:
             return []
         return ["return %s;" % simplify(path.expression).render()]
@@ -329,6 +332,8 @@ class PathDerivation:
         path = self.select(args, read)
         if path is None:
             raise Unsupported("no path matched: the condition set is incomplete")
+        if path.leaf is not None and path.leaf[0] == "trap":
+            raise Unsupported("reached the trap at 0x%08X" % path.leaf[1])
         if path.expression is None:
             return None
         return _sign32(simplify(path.expression).evaluate(args, read) & MASK32)
@@ -337,6 +342,8 @@ class PathDerivation:
         path = self.select(args, read)
         if path is None:
             raise Unsupported("no path matched: the condition set is incomplete")
+        if path.leaf is not None and path.leaf[0] == "trap":
+            raise Unsupported("reached the trap at 0x%08X" % path.leaf[1])
         out = []
         for store in path.stores:
             address = simplify(store.address).evaluate(args, read) & MASK32
@@ -448,6 +455,8 @@ def _run_tree(statements, args, execution):
             return _BREAK
         elif kind == "unreachable":
             return None
+        elif kind == "trap":
+            raise Unsupported("reached the trap at 0x%08X" % statement[1])
         else:
             expression = statement[1]
             if expression is None:
@@ -1231,10 +1240,28 @@ def _apply_callee_path(callee_path, arguments, stores: list, memory: dict,
     )
 
 
-def derive_paths(image: bytes, base: int, start: int, end: int,
+class FloatResult(Unsupported):
+    """The function leaves $v0 as a callee left it and computes $f0, and no
+    caller says which it returns: derive_paths tries it as returning $f0."""
+
+
+def derive_paths(image: bytes, base: int, start: int, end: int, *args, **kwargs) -> "PathDerivation":
+    """_derive_paths, and again as returning a float when that is the one
+    question left (FloatResult): a function whose $v0 is only a callee's
+    leftover while its own code computes $f0, which no caller reads $v0 after
+    (calls.int_returning) - typically a virtual method, which has no direct
+    callers to say. Its test then compares $f0, as for any float-returning
+    function, and a caller that did read $v0 would fail its own."""
+    try:
+        return _derive_paths(image, base, start, end, *args, **kwargs)
+    except FloatResult:
+        return _derive_paths(image, base, start, end, *args, force_float=True, **kwargs)
+
+
+def _derive_paths(image: bytes, base: int, start: int, end: int,
                  gp_value: int = None, known: dict = None,
                  parameters: dict = None, loops: bool = False,
-                 merge: bool = False) -> PathDerivation:
+                 merge: bool = False, force_float: bool = False) -> PathDerivation:
     """Derive a function as guarded paths, handling acyclic control flow.
 
     `known` maps an address to an already-derived `PathDerivation`. A call to one of
@@ -1248,7 +1275,7 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
         gp_value = layout.CURRENT.gp
     # Whether this function returns a float: its callers read $f0 after calling it
     # (calls.float_returning).
-    returns_float = start in getattr(parameters, "returns_float", ())
+    returns_float = force_float or start in getattr(parameters, "returns_float", ())
 
     def word_at(addr: int) -> int:
         if not (base <= addr < base + len(image) - 3):
@@ -1492,6 +1519,13 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 addr += 4
                 continue
 
+            if m == "break":
+                # A trap: the original raises an exception here and never
+                # comes back. The path ends with it.
+                marks = _drain(memory, marks)
+                sink.append(Path(conditions, None, tuple(stores), marks, leaf=("trap", addr)))
+                return
+
             if m == "jr":
                 if not ins.is_return:
                     raise Unsupported("indirect jump")
@@ -1517,6 +1551,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # about what it really returns.
                 if (isinstance(result, CallResult) and result.register == 2
                         and regs.get(fpr(0)) is not None):
+                    if start not in getattr(parameters, "returns_int", ()):
+                        raise FloatResult("returns a float in $f0")
                     raise Unsupported("returns a float in $f0")
                 sink.append(Path(conditions, result, tuple(stores), marks))
                 return
@@ -1531,20 +1567,32 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # that can never be taken can still be chosen, which is how a
                 # function that stores a flag and immediately branches on it came
                 # out wrong. Folding also keeps `if (1 != 0)` out of the output.
+                # A `break` in the delay slot: the compiler's division-by-zero
+                # guard (`beql $divisor, $zero, next; break`). Where the slot
+                # runs, the path ends in the trap.
+                slot_traps = slot.mnemonic == "break"
                 decided = _constant_truth(predicate)
                 if decided is True:
+                    if slot_traps:
+                        sink.append(Path(conditions, None, tuple(stores), _drain(memory, marks),
+                                         leaf=("trap", addr + 4)))
+                        return
                     _step(regs, stores, frame, memory, slot, get, epoch)
                     marks = _drain(memory, marks)
                     addr = ins.target
                     continue
                 if decided is False:
                     if not ins.is_likely:
+                        if slot_traps:
+                            sink.append(Path(conditions, None, tuple(stores), _drain(memory, marks),
+                                             leaf=("trap", addr + 4)))
+                            return
                         _step(regs, stores, frame, memory, slot, get, epoch)
                     marks = _drain(memory, marks)
                     addr += 8
                     continue
 
-                if joins:
+                if joins and not slot_traps:
                     merged = merge_branch(addr, ins, predicate, slot, regs, stores, frame,
                                           memory, conditions, visited, marks, loop)
                     if merged is not None:
@@ -1554,20 +1602,30 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
                 # Taken: the delay slot runs, then control moves to the target.
                 taken_regs, taken_stores = dict(regs), list(stores)
                 taken_frame, taken_memory = frame.fork(), memory.fork()
-                _step(taken_regs, taken_stores, taken_frame, taken_memory,
-                      slot, _getter(taken_regs), epoch)
-                walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
-                     conditions + (predicate,), visited,
-                     _drain(taken_memory, marks + ((len(stores), "cond", predicate),)),
-                     loop=loop, sink=sink, stop=stop)
+                if slot_traps:
+                    sink.append(Path(conditions + (predicate,), None, tuple(stores),
+                                     _drain(taken_memory, marks + ((len(stores), "cond", predicate),)),
+                                     leaf=("trap", addr + 4)))
+                else:
+                    _step(taken_regs, taken_stores, taken_frame, taken_memory,
+                          slot, _getter(taken_regs), epoch)
+                    walk(ins.target, taken_regs, taken_stores, taken_frame, taken_memory,
+                         conditions + (predicate,), visited,
+                         _drain(taken_memory, marks + ((len(stores), "cond", predicate),)),
+                         loop=loop, sink=sink, stop=stop)
 
                 # Not taken: a "likely" branch nullifies its delay slot.
                 fall_regs, fall_stores = dict(regs), list(stores)
                 fall_frame, fall_memory = frame.fork(), memory.fork()
+                negated = predicate.negate()
                 if not ins.is_likely:
+                    if slot_traps:
+                        sink.append(Path(conditions + (negated,), None, tuple(stores),
+                                         _drain(fall_memory, marks + ((len(stores), "cond", negated),)),
+                                         leaf=("trap", addr + 4)))
+                        return
                     _step(fall_regs, fall_stores, fall_frame, fall_memory,
                           slot, _getter(fall_regs), epoch)
-                negated = predicate.negate()
                 walk(addr + 8, fall_regs, fall_stores, fall_frame, fall_memory,
                      conditions + (negated,), visited,
                      _drain(fall_memory, marks + ((len(stores), "cond", negated),)),
@@ -1737,6 +1795,8 @@ def derive_paths(image: bytes, base: int, start: int, end: int,
 
     if not paths:
         raise Unsupported("no return reached")
+    if all(path.leaf is not None and path.leaf[0] == "trap" for path in paths):
+        raise Unsupported("every path traps")
     # A tail call to an underived function hands on whatever the callee left in
     # $v0. In a function whose other paths return nothing, that is no value either.
     if any(path.expression is None for path in paths):

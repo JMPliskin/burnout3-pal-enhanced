@@ -83,10 +83,12 @@ def float_argument_use(database, image, base) -> set:
 class Parameters(dict):
     """{function: argument-vector indices it reads}, plus `preserves_v0`: the
     functions after a call to which $v0 still holds the caller's value, and
-    `returns_float`: the functions whose callers read their result from $f0."""
+    `returns_float`: the functions whose callers read their result from $f0;
+    `returns_int`: those whose callers read $v0 after calling them."""
 
     preserves_v0 = frozenset()
     returns_float = frozenset()
+    returns_int = frozenset()
 
 
 def parameters(database, image, base) -> dict:
@@ -98,6 +100,7 @@ def parameters(database, image, base) -> dict:
     found = Parameters(live_parameters(database, image, base))
     found.preserves_v0 = v0_preserving(database, image, base)
     found.returns_float = float_returning(database, image, base)
+    found.returns_int = int_returning(database, image, base)
     return found
 
 
@@ -139,6 +142,44 @@ def float_returning(database, image, base) -> frozenset:
                     found.add(ins.target)
                     break
                 if 0 in written:
+                    break
+    work = list(found)
+    while work:
+        for target in tails.get(work.pop(), ()):
+            if target not in found:
+                found.add(target)
+                work.append(target)
+    return frozenset(found)
+
+
+def int_returning(database, image, base) -> frozenset:
+    """Functions some caller reads $v0 after calling, before anything writes
+    it: evidence of a result in $v0, found as float_returning finds a result
+    in $f0 (straight-line after the call; it can miss evidence, never invent
+    it). Passed down tail calls the same way."""
+    from .structs import _read_registers, _written_register
+
+    functions = {f["addr"]: f for f in database["functions"] if f["size"]}
+
+    def decode(pc):
+        return DISASM.decode(struct.unpack_from("<I", image, pc - base)[0], pc)
+
+    found, tails = set(), collections.defaultdict(set)
+    for func in functions.values():
+        start, end = func["addr"], func["end"]
+        for pc in range(start, end, 4):
+            ins = decode(pc)
+            if ins.is_jump and ins.mnemonic == "j" and ins.target in functions \
+                    and not (start <= ins.target < end):
+                tails[start].add(ins.target)
+            if not ins.is_call or ins.target not in functions:
+                continue
+            for after in range(pc + 8, min(end, pc + 8 + 4 * _RESULT_WINDOW), 4):
+                step = decode(after)
+                if 2 in _read_registers(step):
+                    found.add(ins.target)
+                    break
+                if step.is_branch or step.is_jump or step.is_call or _written_register(step) == 2:
                     break
     work = list(found)
     while work:

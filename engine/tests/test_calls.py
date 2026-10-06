@@ -504,5 +504,97 @@ class TestBranchMerging(unittest.TestCase):
                              machine.call(BASE, (a0, a1)))
 
 
+class TestFloatResultWithoutEvidence(unittest.TestCase):
+    """f(p, n): callee(p, n); return *(float *)(p + 8) - in $f0, while $v0 is
+    only what the callee left. No caller says which is the result."""
+
+    def setUp(self):
+        callee = BASE
+        self.f = BASE + 4 * len(CALLEE)
+        lwc1 = i_type(0x31, S0, 0, 8)                     # lwc1 $f0, 8($s0)
+        self.words = CALLEE + [
+            addiu(SP, SP, -16),
+            sd(RA, 0, SP),
+            sd(S0, 8, SP),
+            jal(callee),
+            move(S0, A0),
+            lwc1,
+            ld(RA, 0, SP),
+            ld(S0, 8, SP),
+            JR_RA,
+            addiu(SP, SP, 16),
+        ]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+        self.callee = callee
+
+    def derive(self, returns_int):
+        from ps2decomp.calls import Parameters
+
+        parameters = Parameters({self.callee: (0, 1), self.f: (0, 1)})
+        parameters.returns_int = frozenset({self.f} if returns_int else ())
+        return derive_paths(self.image, BASE, self.f, BASE + 4 * len(self.words), known={},
+                            parameters=parameters)
+
+    def test_without_evidence_it_returns_the_float(self):
+        self.assertTrue(self.derive(returns_int=False).returns_float)
+
+    def test_a_caller_reading_v0_keeps_it_refused(self):
+        from ps2decomp.symexec import Unsupported
+
+        with self.assertRaises(Unsupported):
+            self.derive(returns_int=True)
+
+
+class TestTrapPath(unittest.TestCase):
+    """f(n): if (n == 0) break; return n + 1 - an assertion: the path to the
+    `break` ends there, and the function still derives."""
+
+    def setUp(self):
+        bne = i_type(0x05, A0, 0, 2)                 # bne $a0, $zero, +2
+        self.words = [bne, NOP, 0x0000000D, JR_RA, addiu(V0, A0, 1)]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+
+    def derive(self):
+        return derive_paths(self.image, BASE, BASE, BASE + 4 * len(self.words), known={},
+                            parameters={BASE: (0,)})
+
+    def test_the_trap_ends_its_path(self):
+        derivation = self.derive()
+        leaves = [path.leaf for path in derivation.paths]
+        self.assertIn(("trap", BASE + 8), leaves)
+        read = lambda a, size, signed: 0
+        self.assertEqual(derivation.evaluate((5,) + (0,) * 15, read), 6)
+
+    def test_reaching_the_trap_is_not_a_result(self):
+        from ps2decomp.symexec import Unsupported
+
+        read = lambda a, size, signed: 0
+        with self.assertRaises(Unsupported):
+            self.derive().evaluate((0,) * 16, read)
+
+
+class TestDivisionGuard(unittest.TestCase):
+    """f(a, b): a / b, with the compiler's guard - beql b, zero, next; break -
+    the trap in a branch-likely's delay slot, run only when b is zero."""
+
+    def setUp(self):
+        beql = i_type(0x14, A1, 0, 1)                # beql $a1, $zero, +1 (the next pair)
+        div = r_type(A0, A1, 0, 0x1A)                # div $a0, $a1
+        mflo = r_type(0, 0, V0, 0x12)                # mflo $v0
+        self.words = [beql, 0x0000000D, div, mflo, JR_RA, NOP]
+        self.image = struct.pack("<%dI" % len(self.words), *self.words)
+
+    def test_the_guard_traps_only_on_zero(self):
+        from ps2decomp.symexec import Unsupported
+
+        derivation = derive_paths(self.image, BASE, BASE, BASE + 4 * len(self.words), known={},
+                                  parameters={BASE: (0, 1)})
+        self.assertIn(("trap", BASE + 4), [path.leaf for path in derivation.paths])
+        read = lambda a, size, signed: 0
+        self.assertEqual(derivation.evaluate((7, 2) + (0,) * 14, read), 3)
+        with self.assertRaises(Unsupported):
+            derivation.evaluate((7, 0) + (0,) * 14, read)
+
+
 if __name__ == "__main__":
     unittest.main()
