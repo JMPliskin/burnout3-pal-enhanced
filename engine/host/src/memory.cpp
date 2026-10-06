@@ -52,20 +52,20 @@ u8* Memory::Translate(u32 address, u32 size) {
         default:
             break;
     }
-    struct Window { u32 base, size; std::vector<u8>* bytes; };
-    Window windows[] = {
-        {kScratchpadBase, kScratchpadSize, &scratchpad_},
-        {kEeRegisterBase, kEeRegisterSize, &ee_registers_},
-        {kVuMemoryBase, kVuMemorySize, &vu_memory_},
-        {kGsRegisterBase, kGsRegisterSize, &gs_registers_},
-        {kIopRamBase, kIopRamSize, &iop_ram_},
-        {kBiosBase, kBiosSize, &bios_},
+    // The other windows, by the address's top byte (each lies within one):
+    // the scratchpad and the device registers are reached a great deal.
+    auto in = [&](u32 base, u32 size, std::vector<u8>& bytes) -> u8* {
+        return address - base < size && last - base < size ? bytes.data() + (address - base) : nullptr;
     };
-    for (const Window& w : windows) {
-        if (address - w.base < w.size && last - w.base < w.size)
-            return w.bytes->data() + (address - w.base);
+    switch (address >> 24) {
+        case kScratchpadBase >> 24: return in(kScratchpadBase, kScratchpadSize, scratchpad_);
+        case kEeRegisterBase >> 24: return in(kEeRegisterBase, kEeRegisterSize, ee_registers_);
+        case kVuMemoryBase >> 24: return in(kVuMemoryBase, kVuMemorySize, vu_memory_);
+        case kGsRegisterBase >> 24: return in(kGsRegisterBase, kGsRegisterSize, gs_registers_);
+        case 0x1C: case 0x1D: return in(kIopRamBase, kIopRamSize, iop_ram_);
+        case 0x1F: return in(kBiosBase, kBiosSize, bios_);
+        default: return nullptr;
     }
-    return nullptr;
 }
 
 u64 Memory::Read(u32 address, u32 size) {
