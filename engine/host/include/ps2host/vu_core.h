@@ -111,7 +111,7 @@ struct VuCore {
     static constexpr int kFmacLatency = 4;
 
     // ------------------------------------------------------------ stalls
-    static PS2HOST_VU_INLINE u64 Now(const Vu& v) { return v.cycle_; }
+    static PS2HOST_VU_INLINE u64& Cycle(Vu& v) { return v.cycle_; }
     static PS2HOST_VU_INLINE void Wait(u64& t, const Vu& v, int reg, int lane) {
         t = std::max(t, v.vf_ready_[reg][lane]);
     }
@@ -126,12 +126,18 @@ struct VuCore {
        order. A full queue lands what has arrived before taking more, and a
        run lands everything as it ends (Run's LandAll). Q and P still land
        here. */
-    static PS2HOST_VU_INLINE void Issue(Vu& v, u64 t) {
-        v.cycle_ = t;
-        if ((v.q_busy_ && v.q_ready_ <= t) || (v.p_busy_ && v.p_ready_ <= t)) v.LandNow();
+    /* The cycle is the block's own (a local the generated code keeps, and
+       writes back to cycle_ as it leaves): MSVC read cycle_ again after every
+       store otherwise. LandNow reads cycle_, so it is written back first. */
+    static PS2HOST_VU_INLINE void Issue(Vu& v, u64& cycle, u64 t) {
+        cycle = t;
+        if ((v.q_busy_ && v.q_ready_ <= t) || (v.p_busy_ && v.p_ready_ <= t)) {
+            v.cycle_ = t;
+            v.LandNow();
+        }
     }
-    static PS2HOST_VU_INLINE void LandFlags(Vu& v) {
-        while (v.flag_count_ && v.flag_queue_[v.flag_head_].ready <= v.cycle_) {
+    static PS2HOST_VU_INLINE void LandFlags(Vu& v, u64 cycle) {
+        while (v.flag_count_ && v.flag_queue_[v.flag_head_].ready <= cycle) {
             const Vu::FlagWrite& f = v.flag_queue_[v.flag_head_];
             if (f.sets_mac) {
                 v.mac = f.mac;
@@ -268,11 +274,11 @@ struct VuCore {
         return lifted::Value(v.regs.vf[reg][lane]);
     }
     // The flag instructions read and set these (landed first: see Issue).
-    static PS2HOST_VU_INLINE u32& Clip(Vu& v) { LandFlags(v); return v.clip; }
+    static PS2HOST_VU_INLINE u32& Clip(Vu& v, u64 cycle) { LandFlags(v, cycle); return v.clip; }
     static PS2HOST_VU_INLINE u32& ClipLatest(Vu& v) { return v.clip_latest_; }
-    static PS2HOST_VU_INLINE u32& Status(Vu& v) { LandFlags(v); return v.status; }
+    static PS2HOST_VU_INLINE u32& Status(Vu& v, u64 cycle) { LandFlags(v, cycle); return v.status; }
     static PS2HOST_VU_INLINE u32& StatusLatest(Vu& v) { return v.status_latest_; }
-    static PS2HOST_VU_INLINE u32 Mac(Vu& v) { LandFlags(v); return v.mac; }
+    static PS2HOST_VU_INLINE u32 Mac(Vu& v, u64 cycle) { LandFlags(v, cycle); return v.mac; }
 
     // ------------------------------------------------------------ upper
 #if PS2RT_VU_SSE
@@ -419,10 +425,9 @@ struct VuCore {
     // ------------------------------------------------------------ the pair's end
     /* As Run after the two halves: the lower's held writes (giving way to the
        upper's fields), when the fields land, the flags on their way, Q and P. */
-    static PS2HOST_VU_INLINE void Finish(Vu& v, Vu::Pending& pending, int written, u32 lanes, bool set_flags,
-                                         bool sets_mac, bool sets_clip) {
-        // Once: MSVC reads cycle_ again after every store otherwise.
-        const u64 ready = v.cycle_ + kFmacLatency;
+    static PS2HOST_VU_INLINE void Finish(Vu& v, u64& cycle, Vu::Pending& pending, int written, u32 lanes,
+                                         bool set_flags, bool sets_mac, bool sets_clip) {
+        const u64 ready = cycle + kFmacLatency;
         if (pending.vf > 0) {
             for (int lane = 0; lane < 4; ++lane) {
                 const u32 bit = 8u >> lane;
@@ -432,30 +437,30 @@ struct VuCore {
                 }
             }
         }
-        FinishUpper(v, written, lanes, set_flags, sets_mac, sets_clip);
+        FinishUpper(v, cycle, written, lanes, set_flags, sets_mac, sets_clip);
         if (pending.q_latency) {
             v.q_next_ = pending.q_set ? pending.q_value
                       : pending.vc    ? pending.vc_after[lifted::kRegQ] : v.regs.vc[lifted::kRegQ];
-            v.q_ready_ = v.cycle_ + u64(pending.q_latency);
+            v.q_ready_ = cycle + u64(pending.q_latency);
             v.q_busy_ = true;
             if (pending.vc) pending.vc_after[lifted::kRegQ] = v.regs.vc[lifted::kRegQ];
         }
         if (pending.vc) std::memcpy(v.regs.vc, pending.vc_after, sizeof pending.vc_after);
         if (pending.p) {
             v.p_next_ = pending.p_value;
-            v.p_ready_ = v.cycle_ + u64(pending.p_latency ? pending.p_latency : 1);
+            v.p_ready_ = cycle + u64(pending.p_latency ? pending.p_latency : 1);
             v.p_busy_ = true;
         }
-        End(v);
+        End(v, cycle);
     }
     /* The same for a pair whose lower left nothing (FinishUpper, then End). */
-    static PS2HOST_VU_INLINE void FinishUpper(Vu& v, int written, u32 lanes, bool set_flags, bool sets_mac,
-                                              bool sets_clip) {
-        const u64 ready = v.cycle_ + kFmacLatency;
+    static PS2HOST_VU_INLINE void FinishUpper(Vu& v, u64 cycle, int written, u32 lanes, bool set_flags,
+                                              bool sets_mac, bool sets_clip) {
+        const u64 ready = cycle + kFmacLatency;
         if (written > 0)
             for (int lane = 0; lane < 4; ++lane)
                 if (lanes & (8u >> lane)) v.vf_ready_[written][lane] = ready;
-        if (set_flags && v.flag_count_ == 8) LandFlags(v);   // as eager landing would have, at this issue
+        if (set_flags && v.flag_count_ == 8) LandFlags(v, cycle);   // as eager landing would have, at this issue
         if (set_flags && v.flag_count_ < 8) {
             // Straight into the queue's slot (PushFlags, without the copy).
             Vu::FlagWrite& f = v.flag_queue_[(v.flag_head_ + v.flag_count_++) & 7];
@@ -467,9 +472,9 @@ struct VuCore {
             f.sets_clip = sets_clip;
         }
     }
-    static PS2HOST_VU_INLINE void End(Vu& v) {
+    static PS2HOST_VU_INLINE void End(Vu& v, u64& cycle) {
         v.regs.vc[0] = 0;
-        ++v.cycle_;
+        ++cycle;
     }
 };
 

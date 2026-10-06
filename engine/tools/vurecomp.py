@@ -298,31 +298,31 @@ def emit_lower(word: int, pc: int, mask: int):
         return setvi(it, "%s - 0x%Xu" % (vi(is_), unsigned)), False, None
     low24 = word & 0xFFFFFF
     if op == 0x10:
-        return setvi(1, "u32((C::Clip(v) & 0xFFFFFF) == 0x%Xu)" % low24), False, None
+        return setvi(1, "u32((C::Clip(v, cyc) & 0xFFFFFF) == 0x%Xu)" % low24), False, None
     if op == 0x11:
-        return ["C::Clip(v) = C::ClipLatest(v) = 0x%Xu;" % low24], False, None
+        return ["C::Clip(v, cyc) = C::ClipLatest(v) = 0x%Xu;" % low24], False, None
     if op == 0x12:
-        return setvi(1, "u32((C::Clip(v) & 0x%Xu) != 0)" % low24), False, None
+        return setvi(1, "u32((C::Clip(v, cyc) & 0x%Xu) != 0)" % low24), False, None
     if op == 0x13:
-        return setvi(1, "u32(((C::Clip(v) | 0x%Xu) & 0xFFFFFF) == 0xFFFFFF)" % low24), False, None
+        return setvi(1, "u32(((C::Clip(v, cyc) | 0x%Xu) & 0xFFFFFF) == 0xFFFFFF)" % low24), False, None
     if 0x14 <= op <= 0x17:
         imm = (field(word, 21, 1) << 11) | field(word, 0, 11)
         if op == 0x14:
-            return setvi(it, "u32((C::Status(v) & 0xFFF) == 0x%Xu)" % imm), False, None
+            return setvi(it, "u32((C::Status(v, cyc) & 0xFFF) == 0x%Xu)" % imm), False, None
         if op == 0x15:
-            return ["C::Status(v) = (C::Status(v) & 0x3F) | 0x%Xu;" % (imm & 0xFC0),
+            return ["C::Status(v, cyc) = (C::Status(v, cyc) & 0x3F) | 0x%Xu;" % (imm & 0xFC0),
                     "C::StatusLatest(v) = (C::StatusLatest(v) & 0x3F) | 0x%Xu;" % (imm & 0xFC0)], False, None
         if op == 0x16:
-            return setvi(it, "C::Status(v) & 0x%Xu" % imm), False, None
-        return setvi(it, "u32(((C::Status(v) | 0x%Xu) & 0xFFF) == 0xFFF)" % imm), False, None
+            return setvi(it, "C::Status(v, cyc) & 0x%Xu" % imm), False, None
+        return setvi(it, "u32(((C::Status(v, cyc) | 0x%Xu) & 0xFFF) == 0xFFF)" % imm), False, None
     if op == 0x18:
-        return setvi(it, "u32((%s & 0xFFFF) == (C::Mac(v) & 0xFFFF))" % vi(is_)), False, None
+        return setvi(it, "u32((%s & 0xFFFF) == (C::Mac(v, cyc) & 0xFFFF))" % vi(is_)), False, None
     if op == 0x1A:
-        return setvi(it, "%s & C::Mac(v)" % vi(is_)), False, None
+        return setvi(it, "%s & C::Mac(v, cyc)" % vi(is_)), False, None
     if op == 0x1B:
-        return setvi(it, "%s | C::Mac(v)" % vi(is_)), False, None
+        return setvi(it, "%s | C::Mac(v, cyc)" % vi(is_)), False, None
     if op == 0x1C:
-        return setvi(it, "C::Clip(v) & 0xFFF"), False, None
+        return setvi(it, "C::Clip(v, cyc) & 0xFFF"), False, None
     if op == 0x20:
         return ["branch = 0x%Xu;" % target], False, "static"
     if op == 0x21:
@@ -467,6 +467,10 @@ def needless_wait(r: int, lane: int, index: int, written: dict) -> bool:
     return index - j >= 4 if j is not None else index >= 3
 
 
+# How a block leaves: its locals back where the driver and the Vu keep them.
+LEAVE = "s.count = count; s.stopping = stopping; s.delayed = delayed; C::Cycle(v) = cyc; return;"
+
+
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
               written: dict = None, clean: dict = None) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
@@ -479,7 +483,7 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     immediate = bool(upper & 0x80000000)
     end = bool(upper & 0x40000000)
     reads = upper_reads(upper) + ([] if immediate else lower_reads(lower))
-    out = ["    if (s.count >= limit) { s.pc = 0x%Xu; return; }" % pc, "    {"]
+    out = ["    if (count >= limit) { s.pc = 0x%Xu; %s }" % (pc, LEAVE), "    {"]
     body = []
     waits = []
     for r, lanes in reads:
@@ -489,15 +493,15 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     q_waits = not immediate and (is_divide(lower) or is_wait(lower, 0x3B))
     p_waits = not immediate and (is_efu(lower) or is_wait(lower, 0x7B))
     if waits or q_waits or p_waits:
-        body.append("u64 t = C::Now(v);")
+        body.append("u64 t = cyc;")
         body += ["C::Wait(t, v, %d, %d);" % w for w in waits]
         if q_waits:
             body.append("C::WaitQ(t, v);")
         if p_waits:
             body.append("C::WaitP(t, v);")
-        body.append("C::Issue(v, t);")
+        body.append("C::Issue(v, cyc, t);")
     else:
-        body.append("C::Issue(v, C::Now(v));")
+        body.append("C::Issue(v, cyc, cyc);")
     lower_lines, pending, branch = ([], False, None) if immediate else emit_lower(lower, pc, mask)
     if pending:
         body.append("C::Pending pd;")
@@ -528,24 +532,25 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     sets_clip = "true" if (upper & 0x7FF) == 0x1FF else "false"
     flags = "true" if set_flags else "false"
     if pending:
-        body.append("C::Finish(v, pd, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac, sets_clip))
+        body.append("C::Finish(v, cyc, pd, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac,
+                                                                    sets_clip))
     else:
         if written_reg > 0 or set_flags:
-            body.append("C::FinishUpper(v, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac,
-                                                                     sets_clip))
-        body.append("C::End(v);")
+            body.append("C::FinishUpper(v, cyc, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac,
+                                                                          sets_clip))
+        body.append("C::End(v, cyc);")
     next_pc = (pc + 8) & mask
-    body.append("++s.count;")
-    body.append("if (s.stopping) { s.pc = 0x%Xu; s.done = true; return; }" % next_pc)
+    body.append("++count;")
+    body.append("if (stopping) { s.pc = 0x%Xu; s.done = true; %s }" % (next_pc, LEAVE))
     if end:
-        body.append("s.stopping = true;")
+        body.append("stopping = true;")
     new_delayed = "branch" if branch else "kNone"
-    body.append("if (s.delayed != kNone) { s.pc = s.delayed; s.delayed = %s; return; }" % new_delayed)
+    body.append("if (delayed != kNone) { s.pc = delayed; delayed = %s; %s }" % (new_delayed, LEAVE))
     if branch:
-        body.append("s.delayed = branch;")
+        body.append("delayed = branch;")
     if last:
         body.append("s.pc = 0x%Xu;" % next_pc)
-        body.append("return;")
+        body.append(LEAVE)
     out += ["        " + line for line in body]
     out.append("    }")
     return out
@@ -593,7 +598,12 @@ def blocks_of(pairs: dict, entries: list, mask: int) -> list:
 
 
 def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
-    out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name]
+    # The run's state and the cycle as locals, written back where the block
+    # leaves (LEAVE): nothing the block does can reach them through memory.
+    out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name,
+           "    u64 count = s.count, cyc = C::Cycle(v);",
+           "    bool stopping = s.stopping;",
+           "    u32 delayed = s.delayed;"]
     written, clean = {}, {}
     for i, pc in enumerate(block):
         out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean)
