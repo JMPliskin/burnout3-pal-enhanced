@@ -217,6 +217,32 @@ byte of data memory; delaying one result by a cycle fails it in 397 of 720
 runs. The report's VU line says how many pairs ran compiled, how many
 programs were entered and how many were found stale.
 
+Since: what the compiled code does is still the interpreter's model to the
+cycle (VuCompiledIsTheInterpreter compares every register, flag, pipeline
+and cycle), but much less of it is done at run time. Each step was argued
+sound and checked by that test and the scripted runs' pictures:
+
+* a stall check that can never stall is left out: VF0; a field written four
+  or more pairs before in the block (a pair takes a cycle at least, a result
+  lands four after its issue); a field the block has not written, from its
+  fourth pair (one written before the block lands by the entry cycle + 3);
+* the MAC flags are found four lanes at once, and not cleaned again (every
+  operation that sets them leaves clean fields);
+* flags land lazily - when a lower instruction reads or sets them, the queue
+  is full, or the run ends - which is what eager landing would have left;
+* operands an earlier FMAC of the block left clean are not cleaned again
+  (vurecomp tracks it field by field);
+* a block keeps the cycle and the run's state in locals (MSVC re-read them
+  from memory after every store), and runs whole or not at all - so its
+  pairs check no limit, and an FMAC's flags that a later FMAC of the block
+  (four or more pairs from its end) pushes over, with no flag instruction
+  between, are never pushed: only STATUS's sticky bits are gathered;
+* a program is compared with instruction memory only when it has been
+  written since (an MPG or a store into it), not on every entry.
+
+Building for AVX2 was tried: compiled programs then differ from the
+interpreter in 4 of 720 random runs, so the port stays on SSE2.
+
 The pairs macro mode shares (MOVE, MR32, MFIR, MTIR, DIV, SQRT, RSQRT;
 OPMULA, OPMSUB, ITOF, FTOI, ABS) are VuCore steps of their own rather than
 a trip through macro mode's COP2; the R register's few go that way still.

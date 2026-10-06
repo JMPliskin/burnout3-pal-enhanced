@@ -1680,6 +1680,30 @@ run memcard_save checks the saved files' CRCs with its pictures.
 around it, 0x002499D0-0x0024AB10, is netcnfif's - "SceNetcnfifCallbackThread",
 "[fatal error] c_sema in netcnfif" - the network configuration's interface.)
 
+## The garage without its cars: a fourth structuring bug
+
+The car select's garage had been drawn without its cars - in every recorded
+regression picture too, so nothing flagged it. Rebuilding the port from the
+plain lifted form (one statement per instruction) drew them. Bisecting
+between the plain and the structured emission function by function (12
+builds of the port, frame 7750 of car_select each time) ended at 0x0042DAE0;
+running both of its forms from the same state in the port, only $f20 and
+$f21 differed on return: 60.0 and 120.0, the values its body works with.
+
+The readable structured form keeps registers in locals and writes them to
+the context before each call; on return it gave back only what the
+convention returns ($v0, $v1, $sp, $gp, $f0, $f1). 0x0042DAE0 saves $f20 and
+$f21, uses them as scratch across calls, restores them from the stack into
+its locals - and returned without writing them back, so its caller kept the
+scratch values. Every test of it took a path without a call (its loop runs
+only for some inputs), so the context was never written and the comparison
+of callee-saved registers passed.
+
+Now a structured function writes back on return every callee-saved register
+it hands to its callees (structure.py, ABI_PRESERVED), and liveness keeps
+their restores. The plain form was right all along: it is the reference a
+picture disagreement should be checked against first.
+
 ## A race frame, timed
 
 What a frame of the race does, from the device registers it touches and
