@@ -361,5 +361,29 @@ so a new game gets them as soon as its routines are named.
    **Input**: a DualShock 2 on the keyboard (`dbc.cpp`). Then saves and
    enhancements.
 
+7. **The IPU** (not yet; movies play as blank pictures through a port
+   override of libmpeg's sceMpegGetPicture). What it will take, from reading
+   the hardware's documented behaviour and an existing emulator's:
+   * registers IPU_CMD (a command written; read back, VDEC's and FDEC's
+     result and BUSY in bit 63), IPU_CTRL (IFC, OFC, CBP, ECD, SCD, IDP, AS,
+     IVF, QST, MP1, PCT, RST, BUSY), IPU_BP (BP, IFC, FP), IPU_TOP (the next
+     32 bits, BUSY): libmpeg polls them;
+   * the commands BCLR, IDEC, BDEC, VDEC (macroblock address increment,
+     macroblock type, motion code, dual-prime vector), FDEC, SETIQ, SETVQ,
+     CSC, PACK, SETTH, each able to stop mid-bitstream and go on when more
+     data arrives;
+   * the MPEG-1/2 tables (B.14 and B.15 DCT coefficients, the DC sizes,
+     macroblock types, coded block pattern, motion codes), the zig-zag and
+     alternate scans, dequantisation and the IDCT; YCbCr to RGB32/RGB16 with
+     dithering and the alpha thresholds;
+   * DMA to the IPU (channel 4) cannot complete at once as the other
+     channels do: it has to drain as the IPU takes the bitstream (an 8-quadword
+     FIFO), its MADR and QWC moving with it - a decoder may read them back
+     to know what was consumed - and its interrupt come when it is empty;
+     BDEC's and IDEC's output waits in the 8-quadword output FIFO for DMA
+     from the IPU (channel 3).
+   Behind a `--ipu` option until movies play, so the scripted runs keep
+   their pictures meanwhile.
+
 Each stage is measured the same way: run, read the report, implement what
 stopped it.
