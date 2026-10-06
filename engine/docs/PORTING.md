@@ -100,6 +100,20 @@ passes to find the pass; dump GS memory from both renderers after that frame
 to see which buffer differs, and from it which rule of the GS the GPU path
 does not keep.
 
+### When a picture is wrong because a translation is
+
+Every lifted form was checked against the original, but only on the inputs
+the tests reached. Build the port from the plain lifted form as well (lift.py
+without --structure) and compare the scripted run's pictures with the
+structured build's: the plain form is mechanical and the better reference.
+Where they differ, `engine/tools/bisect_lifted.py` finds the function: it
+builds the port from one emission with chosen functions' bodies from the
+other, renders the frame, and halves the candidates (the functions the run
+calls whose two forms differ) until one is left - twelve builds for the car
+select's missing cars (0x0042DAE0, FINDINGS.md). To see how the culprit's
+two forms differ, override it in the port with a function that runs both
+from the same registers and memory and prints the first difference.
+
 ## Speed
 
 Where the time goes: the report's `time:` line (sections, timed with the
