@@ -236,7 +236,7 @@ def build(generated_path: str, runtime_sources, include_dir: str, work_dir: str)
         handle.write("@echo off\n")
         handle.write('call "%s" >nul\n' % vcvars)
         handle.write('cd /d "%s"\n' % work_dir)
-        handle.write('cl /nologo /std:c++17 /O2 /W3 /LD /I"%s" /I"%s" %s /Fe"%s" >build.log 2>&1\n'
+        handle.write('cl /nologo /std:c++17 /O2 /W3 /bigobj /LD /I"%s" /I"%s" %s /Fe"%s" >build.log 2>&1\n'
                      % (os.path.abspath(include_dir), generated_dir,
                         " ".join('"%s"' % path for path in sources), dll))
         handle.write("exit /b %errorlevel%\n")
