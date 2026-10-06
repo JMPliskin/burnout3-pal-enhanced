@@ -29,9 +29,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <timeapi.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 #include <cstdio>
 #include <exception>
@@ -117,6 +119,7 @@ struct Scheduler {
     bool virtual_time = false;
     u64 next_vblank_ns = 0;
     std::atomic<bool> vblank_due{false};    // set by the timer, taken by LoopHead
+    std::atomic<u32> vblank_owed{0};        // real time: more that came while one was due (TakeVblank)
     std::atomic<bool> timer_due{false};     // an EE timer's interrupt time has come
     std::atomic<lifted::Context*> running{nullptr};     // the thread on the processor
     bool delivery_requested = false;        // the current thread's budget was zeroed
@@ -288,13 +291,48 @@ void SpendBudget(lifted::Context& c) {
 
 std::atomic<u64> g_lost_vblanks{0};
 
+// A vertical blank that comes while the last is still undelivered is owed,
+// not dropped: the game counts blanks for its time (a movie's pictures
+// among it) while the sound keeps the real clock, so each one lost put the
+// picture further behind. Up to this many wait; past them the EE is that far
+// behind, and they are lost (--frame-times counts them).
+constexpr u32 kOwedVblanks = 3;
+
+// The timer thread, stopped and joined as the process exits: left running,
+// it read the scheduler while the statics were being destroyed (a crash at
+// exit, after the run's report).
+std::atomic<bool> g_timer_stop{false};
+std::thread& TimerThread() {
+    static std::thread thread;
+    return thread;
+}
+void StopTimer() {
+    g_timer_stop = true;
+    if (TimerThread().joinable()) TimerThread().join();
+}
+
+// Takes a due vertical blank, leaving the next one due at once if one is owed.
+bool TakeVblank(Scheduler& s) {
+    if (!s.vblank_due.exchange(false)) return false;
+    u32 owed = s.vblank_owed.load();
+    while (owed && !s.vblank_owed.compare_exchange_weak(owed, owed - 1)) {
+    }
+    if (owed) s.vblank_due = true;
+    return true;
+}
+
 // Raises the vertical blank in real time: marks a frame due and spends the
-// running thread's budget, so its next loop head delivers it.
+// running thread's budget, so its next loop head delivers it. Windows sleeps
+// to its timer's resolution (15.6 ms unless raised; the scheduler raises it
+// to 1 ms in real time), so the thread sleeps to just short of the moment
+// and yields to it: a blank two milliseconds late was a blank the EE took
+// with the next, and lost.
 void VblankTimer() {
     using clock = std::chrono::steady_clock;
     const auto period = std::chrono::microseconds(16683);      // NTSC, 59.94 Hz
+    const auto margin = std::chrono::microseconds(1500);
     auto next = clock::now() + period;
-    while (!StopRequested()) {
+    while (!StopRequested() && !g_timer_stop) {
         // Sleep to the next vertical blank, or to an EE timer's interrupt if that
         // comes first.
         auto wake = next;
@@ -302,13 +340,16 @@ void VblankTimer() {
         const s64 alarm = NanosToNextAlarm();
         if (alarm >= 0 && (timer < 0 || alarm < timer)) timer = alarm;
         if (timer >= 0) wake = std::min(wake, clock::now() + std::chrono::nanoseconds(timer));
-        std::this_thread::sleep_until(wake);
+        if (wake - clock::now() > margin) std::this_thread::sleep_until(wake - margin);
+        while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
         Scheduler& s = S();
         if (clock::now() >= next) {
             next += period;
-            // One still undelivered: the EE was busy through a whole frame,
-            // and this one is lost (--frame-times counts them).
-            if (s.vblank_due.exchange(true)) g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
+            if (clock::now() >= next + period) next = clock::now() + period;   // a stall: start again from now
+            if (s.vblank_due.exchange(true)) {
+                if (s.vblank_owed.load() < kOwedVblanks) s.vblank_owed.fetch_add(1);
+                else g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
+            }
         }
         if (timer >= 0) s.timer_due = true;
         if (lifted::Context* c = s.running.load()) SpendBudget(*c);
@@ -361,7 +402,7 @@ void LoopHead(lifted::Context& c, u32 address) {
         if (VblankReached()) s.vblank_due = true;
         s.timer_due = true;                 // DeliverTimers raises only what is due
     }
-    const bool frame = s.vblank_due.exchange(false);
+    const bool frame = TakeVblank(s);
     const bool timers = s.timer_due.exchange(false);
     const bool requested = s.delivery_requested;
     // With a real-time timer a budget can be spent for a frame another loop head
@@ -465,7 +506,13 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     lifted::loop_head_hook = LoopHead;
     s.virtual_time = VirtualClock();
     s.realtime = loop_budget == INT64_MAX && !s.virtual_time;
-    if (s.realtime) std::thread(VblankTimer).detach();
+    if (s.realtime) {
+        timeBeginPeriod(1);             // sleeps to the millisecond, not Windows' 15.6 ms
+        if (!TimerThread().joinable()) {
+            TimerThread() = std::thread(VblankTimer);
+            std::atexit(StopTimer);
+        }
+    }
     s.next_vblank_ns = ClockNs() + kFrameNs;
     s.host_fiber = ConvertThreadToFiber(nullptr);
     auto main = std::make_unique<Thread>();
@@ -509,7 +556,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
                     DeliverTimers();
                     DeliverAlarms();
                 }
-                if (!s.vblank_due.exchange(false)) continue;
+                if (!TakeVblank(s)) continue;
             }
             DeliverFrame();
             if (++idle > kIdleFrames) {
@@ -529,7 +576,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
         SwitchToFiber(next->fiber);
         s.running = nullptr;
         s.current = nullptr;
-        if (s.vblank_due.exchange(false)) DeliverFrame();
+        if (TakeVblank(s)) DeliverFrame();
         if (s.timer_due.exchange(false)) {
             DeliverTimers();
             DeliverAlarms();

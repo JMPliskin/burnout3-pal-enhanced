@@ -45,8 +45,18 @@ struct Device {
     std::FILE* wav = nullptr;
     unsigned long long wav_frames = 0;
 
-    // The WAV header's sizes are known only at the end.
+    // The WAV header's sizes are known only at the end. The device is
+    // stopped and closed before the buffers go: the system's audio thread
+    // was still copying from the queued ones as the process freed them (a
+    // crash at exit, one run in two).
     ~Device() {
+        if (out) {
+            waveOutReset(out);
+            for (WAVEHDR& h : headers)
+                if (h.dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(out, &h, sizeof h);
+            waveOutClose(out);
+            out = nullptr;
+        }
         if (!wav) return;
         const unsigned data = unsigned(wav_frames * 4);
         WriteHeader(data);

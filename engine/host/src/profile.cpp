@@ -319,8 +319,57 @@ std::string SampleReport(int top) {
     return out;
 }
 
+namespace {
+
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
+    static std::atomic<bool> reported{false};
+    if (reported.exchange(true)) return EXCEPTION_CONTINUE_SEARCH;
+    const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    std::fprintf(stderr, "[crash] exception 0x%08lX at %p on thread %lu", r->ExceptionCode, r->ExceptionAddress,
+                 GetCurrentThreadId());
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        std::fprintf(stderr, " (%s 0x%llX)", r->ExceptionInformation[0] ? "write" : "read",
+                     static_cast<unsigned long long>(r->ExceptionInformation[1]));
+    std::fprintf(stderr, "\n");
+    HANDLE process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitialize(process, nullptr, TRUE);
+    CONTEXT context = *info->ContextRecord;
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    for (int i = 0; i < 24; ++i) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, &context, nullptr,
+                         SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || !frame.AddrPC.Offset)
+            break;
+        alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof line;
+        DWORD line_displacement = 0;
+        const bool named = SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol);
+        const bool lined = SymGetLineFromAddr64(process, frame.AddrPC.Offset, &line_displacement, &line);
+        std::fprintf(stderr, "[crash]   %s%s%s:%lu\n", named ? symbol->Name : "?", lined ? "  " : "",
+                     lined ? line.FileName : "", lined ? line.LineNumber : 0ul);
+    }
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+}  // namespace
+
+void InstallCrashReport() { SetUnhandledExceptionFilter(CrashFilter); }
+
 #else
 
+void InstallCrashReport() {}
 void StartSampler() {}
 std::string SampleReport(int) { return ""; }
 

@@ -35,6 +35,9 @@ std::string ProfileSummary();
    often on the stack at all ("total"), by name from the executable's
    symbols. Windows only (elsewhere it reports nothing). */
 void StartSampler();
+/* A host crash (an access violation and the like, on any thread): its code,
+   address and the stack by name, to stderr, before the process ends. */
+void InstallCrashReport();
 /* --sample-from N: no samples until frame N (devices.cpp calls this each frame). */
 void SetSampleFrom(unsigned long long frame);
 void SampleFrame(unsigned long long frame);

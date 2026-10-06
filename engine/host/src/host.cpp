@@ -383,6 +383,7 @@ int Run(const Options& options) {
     g_trace = options.trace_calls;
     g_all_notes = options.all_notes;
     GuestMemory().WatchWrites(options.watch_writes);
+    InstallCrashReport();
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
