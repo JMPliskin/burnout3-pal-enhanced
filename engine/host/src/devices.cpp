@@ -347,6 +347,7 @@ void InstallDevices() {
     Vif1().double_buffered = true;
     Vif0().vu = &Vu0();
     Vu1().on_kick = [](u64 low, u64 high) { GsQword(1, low, high); };
+    Vu1().on_kick_block = [](const u32* words, u32 count) { GsWords(1, words, count); };
     // The GS's privileged registers: what is displayed. A 64-bit store reaches
     // both words; each passes the whole register on.
     for (u32 reg : {0x12000000u, 0x12000070u, 0x12000080u, 0x12000090u, 0x120000A0u, 0x120000E0u}) {

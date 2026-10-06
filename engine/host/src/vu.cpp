@@ -313,6 +313,17 @@ void Vu::Kick(u32 address) {
         const u32 nloop = u32(low & 0x7FFF), eop = u32(low >> 15) & 1, flg = u32(low >> 58) & 3;
         const u32 nreg = u32(low >> 60) ? u32(low >> 60) : 16;
         const u32 qwords = flg == 0 ? nloop * nreg : flg == 1 ? (nloop * nreg + 1) / 2 : nloop;
+        if (on_kick_block) {
+            // The tag and its data, in runs up to where data memory wraps.
+            for (u32 left = 1 + qwords; left;) {
+                const u32 run = std::min(left, data_mask_ + 1 - address);
+                on_kick_block(Quad(address), run * 4);
+                address = (address + run) & data_mask_;
+                left -= run;
+            }
+            if (eop) return;
+            continue;
+        }
         if (on_kick) on_kick(low, high);
         address = (address + 1) & data_mask_;
         for (u32 i = 0; i < qwords; ++i) {
@@ -586,8 +597,14 @@ bool Vu::RunCompiled(VuRunState& state, u64 limit) {
         }
         const VuCompiled* program = nullptr;
         for (const VuCompiled* candidate : found->second) {
+            u64& held_at = held_at_[candidate];
+            if (held_at == micro_generation_) { program = candidate; break; }
             compiled_checked_ += 4 * (candidate->code[2] + 2);
-            if (Holds(micro, candidate->code)) { program = candidate; break; }
+            if (Holds(micro, candidate->code)) {
+                held_at = micro_generation_;
+                program = candidate;
+                break;
+            }
         }
         if (!program) {
             ++compiled_stale_;

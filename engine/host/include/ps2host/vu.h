@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,12 @@ public:
 
     /* XGKICK: each quadword of the GIF packet, as PATH1 delivers it. */
     std::function<void(u64 low, u64 high)> on_kick;
+    /* ...or, when set, a packet's quadwords a contiguous run of words at a
+       time (as data memory holds them; a run ends where memory wraps). */
+    std::function<void(const u32* words, u32 count)> on_kick_block;
+    /* Instruction memory was written (MPG, or a store into it): compiled
+       programs are compared with it again before they next run. */
+    void MicroWritten() { ++micro_generation_; }
 
     /* Runs from instruction address `pc` (bytes) to the end of the program;
        returns the instruction pairs executed. Stops after `limit` regardless. */
@@ -105,6 +112,11 @@ private:
     u64 pairs_ = 0, kicks_ = 0, compiled_pairs_ = 0, compiled_entries_ = 0, compiled_stale_ = 0,
         compiled_checked_ = 0;
     std::map<u32, u64> starts_;
+    // Instruction memory's writes so far, and for each compiled program the
+    // count when it was last found in memory: unchanged since, it still is
+    // (2.3 million entries a race compared 4.4 GB of code otherwise).
+    u64 micro_generation_ = 1;
+    std::unordered_map<const void*, u64> held_at_;
 
     /* Timing, in cycles (one per pair issued, plus stalls). */
     u64 cycle_ = 0;

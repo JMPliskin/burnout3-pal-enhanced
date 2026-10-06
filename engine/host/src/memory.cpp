@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "ps2host/run.h"
+#include "ps2host/vu.h"
 #include "ps2rt/generated.h"
 
 namespace ps2host {
@@ -99,6 +100,12 @@ void Memory::Watched(u32 address, u64 value, u32 size) {
 
 void Memory::Write(u32 address, u64 value, u32 size) {
     address = Physical(address);
+    // Into VU0's or VU1's instruction memory: their compiled programs are
+    // compared with it again (Vu::MicroWritten).
+    if (address - 0x11000000u < 0x10000u && ((address >> 14) & 1) == 0) {
+        if (address < 0x11008000u) Vu0().MicroWritten();
+        else Vu1().MicroWritten();
+    }
     if (!watched_.empty())
         for (u32 w : watched_)
             if (w >= address && w < address + size) Watched(address, value, size);

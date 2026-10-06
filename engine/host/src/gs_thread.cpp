@@ -31,6 +31,7 @@
 #endif
 
 #include "ps2host/gs.h"
+#include "ps2host/profile.h"
 #include "ps2host/run.h"
 
 namespace ps2host {
@@ -100,6 +101,8 @@ struct Feed {
 
     void WaitFor(u32 words) {
         const u64 at = head.load(std::memory_order_relaxed);
+        if (at + words - tail.load(std::memory_order_acquire) <= kRing) return;
+        Timed timed(Section::GsWait);
         while (at + words - tail.load(std::memory_order_acquire) > kRing) {
             Rethrow();
             std::this_thread::yield();
@@ -116,6 +119,8 @@ struct Feed {
 
     void Sync() {
         const u64 target = head.load(std::memory_order_relaxed);
+        if (tail.load(std::memory_order_acquire) >= target) return Rethrow();
+        Timed timed(Section::GsWait);
         for (int spins = 0; tail.load(std::memory_order_acquire) < target; ++spins) {
             Rethrow();
             if (spins < 4096) Pause();

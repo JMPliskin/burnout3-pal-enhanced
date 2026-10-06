@@ -199,6 +199,7 @@ void VifStream::Word(std::uint32_t word) {
                 if (vu) {
                     const std::size_t at = (mpg_address_ + 4 * index) & (vu->micro.size() - 1);
                     std::memcpy(vu->micro.data() + at, &word, 4);
+                    vu->MicroWritten();
                 }
                 break;
             case Data::Unpack: UnpackData(word); break;

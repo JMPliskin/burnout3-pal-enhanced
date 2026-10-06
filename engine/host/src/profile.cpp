@@ -102,7 +102,7 @@ Timed::~Timed() {
 std::string ProfileSummary() {
     static const char* const kNames[] = {"GS drawing", "GS image transfers", "VU1", "VU0",
                                          "GPU bookkeeping", "GPU drawing", "GPU and memory in step",
-                                         "DMA and VIF", "IOP", "SPU2"};
+                                         "DMA and VIF", "IOP", "SPU2", "waiting for the GS thread"};
     const double total = Elapsed(g_start, Clock::now());
     const double seconds_per_tick = total / double(std::max<std::uint64_t>(1, Ticks() - g_start_ticks));
     std::string out = "time:";
