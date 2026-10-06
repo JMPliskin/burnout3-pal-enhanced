@@ -129,6 +129,54 @@ void VifStream::UnpackRun(const std::uint32_t* words, std::uint32_t count) {
     Unpack& u = unpack_;
     const std::uint32_t vl = u.format & 3, vn = (u.format >> 2) & 3;
     const std::uint32_t size = (vn == 3 && vl == 3) ? 2 : (vn + 1) * (4u >> vl);
+    // The usual case, in one loop: unmasked, no addition (STMOD 0), CL >= WL
+    // (no filling writes), elements of whole words, none part-read - each
+    // stored as WriteElement would, its address kept by counting rather than
+    // dividing.
+    if (u.bytes.empty() && size % 4 == 0 && !u.masked && mode == 0 && vu && write_length_ != 0 &&
+        write_length_ <= cycle_length_ && (u.format == 0xC || u.format == 0x8 || u.format == 0x4 ||
+                                           u.format == 0x0 || u.format == 0xD || u.format == 0x5 ||
+                                           u.format == 0xE)) {
+        const std::uint32_t per = size / 4, wl = write_length_, cl = cycle_length_;
+        std::uint32_t k = u.written, in_cycle = k % wl, base = u.address + (k / wl) * cl, used = 0;
+        const bool zero_extend = u.unsigned_;
+        auto half = [zero_extend](std::uint32_t h) {
+            return zero_extend ? (h & 0xFFFF) : std::uint32_t(std::int32_t(std::int16_t(std::uint16_t(h))));
+        };
+        auto byte = [zero_extend](std::uint32_t b) {
+            return zero_extend ? (b & 0xFF) : std::uint32_t(std::int32_t(std::int8_t(std::uint8_t(b))));
+        };
+        while (count - used >= per && k < u.num) {
+            std::uint32_t* q = vu->Quad(base + in_cycle);
+            const std::uint32_t* w = words + used;
+            switch (u.format) {
+                case 0xC: std::memcpy(q, w, 16); break;                             // V4-32
+                case 0x8: std::memcpy(q, w, 12); break;                             // V3-32: w stays
+                case 0x4: q[0] = w[0]; q[1] = w[1]; q[2] = w[0]; q[3] = w[1]; break; // V2-32: x y x y
+                case 0x0: q[0] = q[1] = q[2] = q[3] = w[0]; break;                  // S-32
+                case 0xD:                                                           // V4-16
+                    q[0] = half(w[0]); q[1] = half(w[0] >> 16); q[2] = half(w[1]); q[3] = half(w[1] >> 16);
+                    break;
+                case 0x5: {                                                         // V2-16
+                    const std::uint32_t x = half(w[0]), y = half(w[0] >> 16);
+                    q[0] = x; q[1] = y; q[2] = x; q[3] = y;
+                    break;
+                }
+                default:                                                            // V4-8
+                    q[0] = byte(w[0]); q[1] = byte(w[0] >> 8); q[2] = byte(w[0] >> 16); q[3] = byte(w[0] >> 24);
+                    break;
+            }
+            used += per;
+            ++k;
+            if (++in_cycle == wl) {
+                in_cycle = 0;
+                base += cl;
+            }
+        }
+        u.written = k;
+        words += used;
+        count -= used;
+    }
     // Elements of whole words, none part-read: straight from the words (the
     // bytes are the same; the byte buffer would hold just these).
     if (u.bytes.empty() && size % 4 == 0) {
