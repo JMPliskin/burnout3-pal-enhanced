@@ -10,13 +10,20 @@ first game the [engine](../../engine) was built on.
 | | |
 | --- | ---: |
 | Executable analysed | `SLUS_210.50`, 4,073,088 bytes |
-| Functions discovered | 10,032 |
-| Image proven to be MIPS code | 86.4% |
-| VU microcode located | 108,096 bytes |
-| Functions derived and verified automatically | 2,811 |
-| **Verified code** | **8.06% of code bytes** |
+| Functions discovered | 9,279 |
+| Image proven to be MIPS code | 87.1% |
+| **Verified code** (readable, derived source) | **15.55% of code bytes** |
+| **Machine-checked code** (verified, or lifted and checked) | **75.19% of code bytes** |
 
 [docs/PROGRESS.md](docs/PROGRESS.md) is generated and has the live numbers.
+
+The native port runs the whole game: boot, the frontend, the garage, races,
+saves to a memory card kept as a directory. On a recent laptop, under
+`--gpu`, the menus run far faster than 60 frames a second and the heaviest
+race scenes (crashes, the glow) at roughly 25-45 - VU1's microcode is the
+limit (docs/FINDINGS.md, "A race frame, timed"). Missing: the movies (the
+IPU is not modelled yet; they play as blank pictures and end), and blend
+factors over 1 on the GPU (the race HUD's text is slightly darker).
 
 The original compiler is known (`MW MIPS C Compiler (2.4.1.01)`, Metrowerks
 CodeWarrior, named in the executable's `.comment` section) but could not be
@@ -34,6 +41,33 @@ python engine/tools/isotool.py extract "Burnout 3 - Takedown.iso" DATA/VDB.XML -
 python engine/tools/analyze.py
 python engine/tools/derive.py --emit --csv
 python engine/tools/progress.py --markdown > games/burnout3/docs/PROGRESS.md
+```
+
+## Playing the port
+
+With the disc image in place and the setup above done:
+
+```sh
+python engine/tools/lift.py --game games/burnout3 --structure --emit --csv    # the game's code as C++ (about an hour)
+python engine/tools/port.py --game games/burnout3 build                        # Visual Studio's CMake and Ninja
+python engine/tools/port.py --game games/burnout3 run -- --window --gpu --audio --memcard games/burnout3/build/memcard --timeout 86400
+```
+
+`--window` opens the game in a window (SDL3 and Vulkan), `--gpu` draws on
+the GPU (without it the software GS draws, much more slowly), `--audio`
+plays the sound, `--memcard DIR` gives it a memory card kept as files in
+DIR, and `--timeout` is how many seconds it may run (the default suits
+tests: 30). The keyboard is the controller: arrows for the D-pad, Enter
+Start, Backspace Select, X Cross, C Circle, Z Square, V Triangle, Q and E
+L1 and R1, 1 and 3 L2 and R2.
+
+For speed, the VU microprograms the game runs are compiled ahead of time
+from a recording (engine/docs/PORTING.md): record once, then build again.
+
+```sh
+burnout3.exe <extracted SLUS_210.50> --disc "Burnout 3 - Takedown.iso" $(cat games/burnout3/port/runs/race_training.args) \
+    --vu-interpret --vu-record games/burnout3/build/vu_programs.txt
+python engine/tools/port.py --game games/burnout3 build
 ```
 
 ## What is specific to this game
