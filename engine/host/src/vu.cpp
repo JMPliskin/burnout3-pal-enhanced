@@ -575,6 +575,7 @@ Vu::u64 Vu::Run(u32 pc, u64 limit) {
     if (g_record) RecordProgram(micro, unit, pc);
     VuRunState state;
     state.pc = pc;
+    unclean_ = ~1u;                     // nothing known about the registers yet
     RunCompiled(state, limit);
     if (!state.done) Interpret(state, limit);
     LandAll();
@@ -629,6 +630,7 @@ bool Vu::RunCompiled(VuRunState& state, u64 limit) {
 }
 
 void Vu::Interpret(VuRunState& state, u64 limit) {
+    unclean_ = ~1u;                     // the interpreter does not keep track
     u64 count = state.count;
     u32 delayed = state.delayed;
     bool stopping = state.stopping;

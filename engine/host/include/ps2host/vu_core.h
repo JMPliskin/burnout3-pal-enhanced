@@ -42,6 +42,7 @@ struct Vu::Pending {
     int q_latency = 0;              // DIV, SQRT, RSQRT's
     bool q_set = false;             // compiled code: Q's next value (q_value), not through vc_after
     u32 q_value = 0;
+    bool clean = false;             // compiled code: every field of `value` as Clean leaves it
 };
 
 inline void Vu::LandNow() {
@@ -162,6 +163,24 @@ struct VuCore {
         out.vf = it;
         out.lanes = dest;
         std::memcpy(out.value, q, 16);
+        out.clean = Clean4(q);
+    }
+    /* Whether Clean leaves all four fields as they are: no infinity or NaN
+       exponent, and no denormal (a zero exponent with a mantissa). */
+    static PS2HOST_VU_INLINE bool Clean4(const u32* q) {
+#if PS2RT_VU_SSE
+        const __m128i x = _mm_loadu_si128(reinterpret_cast<const __m128i*>(q));
+        const __m128i exponent = _mm_and_si128(x, _mm_set1_epi32(0x7F800000));
+        const __m128i zero = _mm_setzero_si128();
+        const __m128i huge = _mm_cmpeq_epi32(exponent, _mm_set1_epi32(0x7F800000));
+        const __m128i denormal = _mm_andnot_si128(
+            _mm_cmpeq_epi32(_mm_and_si128(x, _mm_set1_epi32(0x007FFFFF)), zero), _mm_cmpeq_epi32(exponent, zero));
+        return _mm_movemask_epi8(_mm_or_si128(huge, denormal)) == 0;
+#else
+        for (int lane = 0; lane < 4; ++lane)
+            if (lifted::Clean(q[lane]) != q[lane]) return false;
+        return true;
+#endif
     }
     template <u32 Dest>
     static PS2HOST_VU_INLINE void Store(Vu& v, u32 address, int fs) {
@@ -226,12 +245,23 @@ struct VuCore {
     }
     static PS2HOST_VU_INLINE void Move(Vu& v, Vu::Pending& out, int it, int fs, u32 dest) {
         const u32 value[4] = {v.regs.vf[fs][0], v.regs.vf[fs][1], v.regs.vf[fs][2], v.regs.vf[fs][3]};
+        out.clean = !((v.unclean_ >> fs) & 1);
         HoldVf(v, out, it, dest, value);
     }
     static PS2HOST_VU_INLINE void Mr32(Vu& v, Vu::Pending& out, int it, int fs, u32 dest) {
         const u32* a = v.regs.vf[fs];
         const u32 value[4] = {a[1], a[2], a[3], a[0]};
+        out.clean = !((v.unclean_ >> fs) & 1);
         HoldVf(v, out, it, dest, value);
+    }
+    /* An upper write of Dest's fields into `reg`: clean ones clean the
+       register when they are all of it (else it stays as it was); others
+       make it unknown. */
+    template <u32 Dest>
+    static PS2HOST_VU_INLINE void Wrote(Vu& v, int reg, bool clean) {
+        if (reg <= 0) return;
+        if (!clean) v.unclean_ |= 1u << reg;
+        else if constexpr (Dest == 15) v.unclean_ &= ~(1u << reg);
     }
     static PS2HOST_VU_INLINE void Mfir(Vu& v, Vu::Pending& out, int it, int is, u32 dest) {
         u32 x = v.regs.vc[is] & 0xFFFF;
@@ -287,14 +317,23 @@ struct VuCore {
     template <int Op, int Operand, int To, u32 Dest, int Known = 0>
     static PS2HOST_VU_INLINE void Fmac(Vu& v, int fs, int ft) {
         lifted::Context& c = v.regs;
-        const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[fs]));
+        __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[fs]));
         __m128i b;
         if constexpr (Operand == 6) b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[ft]));
         else if constexpr (Operand == 4) b = _mm_set1_epi32(int(c.vc[lifted::kRegQ]));
         else if constexpr (Operand == 5) b = _mm_set1_epi32(int(c.vc[lifted::kRegI]));
         else b = _mm_set1_epi32(int(c.vf[ft][Operand]));
+        // Cleaned here where the block does not know them clean and the run
+        // has not found them clean (unclean_); LanesSse then cleans neither.
+        if constexpr ((Known & 1) == 0)
+            if ((v.unclean_ >> fs) & 1) a = lifted::CleanLanes(a);
+        if constexpr ((Known & 2) == 0) {
+            if constexpr (Operand == 4 || Operand == 5) b = lifted::CleanLanes(b);
+            else if ((v.unclean_ >> ft) & 1) b = lifted::CleanLanes(b);
+        }
         const __m128i acc = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vacc));
-        const __m128i result = lifted::LanesSse<Op, Known>(a, b, acc);
+        const __m128i result = lifted::LanesSse<Op, Known | 3>(a, b, acc);
+        if constexpr (To > 0 && Dest == 15) v.unclean_ &= ~(1u << To);    // all four fields, clean
         if constexpr (To == 0 || Dest == 0) {
             return;
         } else {
@@ -352,6 +391,7 @@ struct VuCore {
         u32 out[4];
         for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::Result(double(std::int32_t(a[lane])) / kScale[Shift]);
         WriteVf<Dest>(v, ft, out);
+        Wrote<Dest>(v, ft, true);
     }
     template <u32 Dest, int Shift>
     static PS2HOST_VU_INLINE void Ftoi(Vu& v, int ft, int fs) {
@@ -360,6 +400,7 @@ struct VuCore {
         u32 out[4];
         for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::FloatToInt(lifted::Value(a[lane]) * kScale[Shift]);
         WriteVf<Dest>(v, ft, out);
+        Wrote<Dest>(v, ft, false);                      // integers
     }
     template <u32 Dest>
     static PS2HOST_VU_INLINE void Abs(Vu& v, int ft, int fs) {
@@ -367,6 +408,7 @@ struct VuCore {
         u32 out[4];
         for (int lane = 0; lane < 4; ++lane) out[lane] = lifted::Clean(a[lane]) & ~lifted::kSign;
         WriteVf<Dest>(v, ft, out);
+        Wrote<Dest>(v, ft, true);
     }
     template <u32 Dest>
     static PS2HOST_VU_INLINE void WriteVf(Vu& v, int reg, const u32 out[4]) {
@@ -377,7 +419,11 @@ struct VuCore {
         if constexpr ((Dest & 1) != 0) v.regs.vf[reg][3] = out[3];
     }
     /* Any other upper operation, as macro mode's COP2 runs it. */
-    static void Cop2(Vu& v, u32 word) { lifted::Cop2(v.regs, 0x4A000000u | (word & 0x01FFFFFF)); }
+    static void Cop2(Vu& v, u32 word) {
+        lifted::Cop2(v.regs, 0x4A000000u | (word & 0x01FFFFFF));
+        // Whatever it wrote is not known clean: fd's and ft's fields.
+        v.unclean_ |= ((1u << ((word >> 6) & 31)) | (1u << ((word >> 16) & 31))) & ~1u;
+    }
     /* CLIP: fs.xyz against |ft.w|. */
     static void ClipJudge(Vu& v, int fs, int ft) {
         const u32* f = v.regs.vf[fs];
@@ -461,6 +507,14 @@ struct VuCore {
                     v.vf_ready_[pending.vf][lane] = ready;
                 }
             }
+            // Clean only if what lands is, and either it is all of the
+            // register or the rest was clean; with the upper writing the same
+            // register too, not known.
+            const u32 reg = 1u << pending.vf;
+            if (pending.clean && written != pending.vf && (pending.lanes == 15 || !(v.unclean_ & reg)))
+                v.unclean_ &= ~reg;
+            else
+                v.unclean_ |= reg;
         }
         FinishUpper(v, cycle, written, lanes, set_flags, sets_mac, sets_clip);
         if (pending.q_latency) {

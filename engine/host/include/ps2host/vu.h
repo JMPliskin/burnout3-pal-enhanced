@@ -118,6 +118,12 @@ private:
     u64 micro_generation_ = 1;
     std::unordered_map<const void*, u64> held_at_;
 
+    // Compiled code: the vector registers that may hold fields the model's
+    // Clean would change (bit r for VF r) - loaded so, or not known; the FMAC
+    // cleans only those operands. Every bit is set as a run starts and when
+    // the interpreter runs (it does not keep them); VF0 is always clean.
+    u32 unclean_ = ~1u;
+
     /* Timing, in cycles (one per pair issued, plus stalls). */
     u64 cycle_ = 0;
     u64 vf_ready_[32][4] = {};      /* when each vector field's pending write lands */
