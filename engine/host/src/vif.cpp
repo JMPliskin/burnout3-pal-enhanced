@@ -198,8 +198,13 @@ void VifStream::Word(std::uint32_t word) {
             case Data::Mpg:
                 if (vu) {
                     const std::size_t at = (mpg_address_ + 4 * index) & (vu->micro.size() - 1);
-                    std::memcpy(vu->micro.data() + at, &word, 4);
-                    vu->MicroWritten();
+                    // Games upload the same microcode again and again (Burnout 3
+                    // every frame): only a word that changes makes the compiled
+                    // programs be compared again.
+                    if (std::memcmp(vu->micro.data() + at, &word, 4) != 0) {
+                        std::memcpy(vu->micro.data() + at, &word, 4);
+                        vu->MicroWritten();
+                    }
                 }
                 break;
             case Data::Unpack: UnpackData(word); break;
