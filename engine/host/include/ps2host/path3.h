@@ -43,17 +43,31 @@ public:
             }
             end = std::min(at, held);
         }
-        // Taken off before the sink runs: what it does may hold more.
-        std::vector<std::uint32_t> going(words, words + end);
+        // Taken off before the sink runs: what it does may hold more. Into a
+        // buffer kept for it, and what is left moved down only once a good
+        // deal has gone (Burnout 3 holds a picture's textures here, 160,000
+        // words, and lets them go a group at a time).
+        // (A release within a release - the sink letting more go - takes a
+        // buffer of its own: the outer one's sink is still reading going_.)
+        std::vector<std::uint32_t> nested;
+        std::vector<std::uint32_t>& buffer = releasing_ ? nested : going_;
+        buffer.assign(words, words + end);
         head_ += end;
         if (head_ == held_.size()) {
             held_.clear();
             head_ = 0;
-        } else if (head_ > held_.size() / 2) {
+        } else if (head_ > held_.size() / 2 && head_ >= 65536) {
             held_.erase(held_.begin(), held_.begin() + std::ptrdiff_t(head_));
             head_ = 0;
         }
-        if (!going.empty()) sink(going.data(), going.size());
+        if (buffer.empty()) return;
+        if (&buffer == &nested) {
+            sink(nested.data(), nested.size());
+            return;
+        }
+        releasing_ = true;
+        struct Done { bool& flag; ~Done() { flag = false; } } done{releasing_};
+        sink(going_.data(), going_.size());
     }
 
     /* The same, a word at a time. */
@@ -67,6 +81,8 @@ public:
 private:
     std::vector<std::uint32_t> held_;
     std::size_t head_ = 0;                  // words before it have gone
+    std::vector<std::uint32_t> going_;      // what ReleaseBlock hands on
+    bool releasing_ = false;
 };
 
 }  // namespace ps2host
