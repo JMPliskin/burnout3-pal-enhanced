@@ -1,6 +1,6 @@
 /*
- * The port's display: a window showing the console's picture, and the keyboard
- * and window events that come with it.
+ * The port's display: a window showing the console's picture, and the keyboard,
+ * game controller and window events that come with it.
  *
  * Display is what the host talks to; VulkanDisplay (SDL3 + Vulkan) is the one
  * implementation so far. Stage one presents a finished picture - the software
@@ -32,6 +32,17 @@ public:
        scancode (SDL_SCANCODE_*), which names keys by position. */
     virtual bool Focused() const = 0;
     virtual bool KeyDown(int scancode) const = 0;
+
+    /* The first game controller, as a DualShock 2 reads: false when none is
+       plugged in. */
+    struct PadState {
+        std::uint16_t buttons = 0;      // bit n: DualShock 2 input n held (libpad's order:
+                                        // Select L3 R3 Start Up Right Down Left L2 R2 L1 R1
+                                        // Triangle Circle Cross Square)
+        std::uint8_t sticks[4] = {0x80, 0x80, 0x80, 0x80};   // right X, Y, left X, Y; 0x80 centred
+        std::uint8_t l2 = 0, r2 = 0;    // the triggers' travel, 0-255
+    };
+    virtual bool Pad(PadState* state) const { (void)state; return false; }
 
     /* The GPU and driver, for the report. */
     virtual std::string Describe() const = 0;

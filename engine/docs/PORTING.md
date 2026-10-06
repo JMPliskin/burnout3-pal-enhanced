@@ -358,7 +358,7 @@ so a new game gets them as soon as its routines are named.
    GPU renderer is under way: engine/docs/GPU.md.
 6. **Audio** (begun): the SPU2 (`spu2.cpp`) decodes, envelopes and mixes its
    voices at 48 kHz, with the reverb libsd sets; `--audio` plays them and `--audio-wav` records them.
-   **Input**: a DualShock 2 on the keyboard (`dbc.cpp`). Then saves and
+   **Input**: a DualShock 2 on the window's game controller (SDL3) and the keyboard (`dbc.cpp`). Then saves and
    enhancements.
 
 7. **The IPU** (not yet; movies play as blank pictures through a port

@@ -1,7 +1,8 @@
 /*
  * The IOP's controller manager, dbcman (server 0x80001300), on the host: the
  * devices behind the SDK's libdbc and, above it, libpad2. One DualShock 2 is
- * attached on port 0, driven by the keyboard while the window has focus.
+ * attached on port 0, driven by the window's game controller (SDL3, any one
+ * SDL knows) and by the keyboard while the window has focus.
  *
  * The protocol, as Burnout 3's copies of libdbc (0x00215F18-0x00216D20) and
  * libpad2 (0x00215620-0x00215EE0) speak it:
@@ -31,6 +32,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -103,16 +105,22 @@ void PadData(u8* data) {
         if (Pressed(key)) buttons &= u16(~(1u << input));
     for (const Press& p : Script())
         if (g_frame >= p.from && g_frame <= p.to) buttons &= u16(~(1u << p.input));
+    HostPadState pad;
+    const bool controller = HostPad(&pad);
+    buttons &= u16(~pad.buttons);
     data[0] = u8(buttons);
     data[1] = u8(buttons >> 8);
     // Then, as libpad's DualShock 2 report has them: the sticks (right X, Y,
-    // left X, Y), centred, and the pressure of the pressure-sensitive buttons -
-    // right, left, up, down, triangle, circle, cross, square, L1, R1, L2, R2 -
-    // full when pressed. (Sticks read as 0 are pushed fully up and left: with
-    // them there, the frontend saw input held and never a press.)
-    for (u32 i = 2; i < 6; ++i) data[i] = 0x80;
+    // left X, Y), centred without a controller, and the pressure of the
+    // pressure-sensitive buttons - right, left, up, down, triangle, circle,
+    // cross, square, L1, R1, L2, R2 - full when pressed, the triggers' own
+    // travel for L2 and R2. (Sticks read as 0 are pushed fully up and left:
+    // with them there, the frontend saw input held and never a press.)
+    for (u32 i = 2; i < 6; ++i) data[i] = controller ? pad.sticks[i - 2] : 0x80;
     static const int kPressure[12] = {5, 7, 4, 6, 12, 13, 14, 15, 10, 11, 8, 9};
     for (u32 i = 0; i < 12; ++i) data[6 + i] = (buttons >> kPressure[i]) & 1 ? 0 : 0xFF;
+    if (controller && pad.l2 && !(buttons & (1u << 8))) data[6 + 10] = std::max<u8>(pad.l2, 1);
+    if (controller && pad.r2 && !(buttons & (1u << 9))) data[6 + 11] = std::max<u8>(pad.r2, 1);
 }
 
 std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {

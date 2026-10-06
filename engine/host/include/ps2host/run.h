@@ -159,6 +159,15 @@ void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source)
 bool WindowFocused();
 /* Whether a key (a Win32 virtual key) is down, on the window's keyboard. */
 bool HostKeyDown(int key);
+/* The window's game controller, as a DualShock 2 reads (window.cpp): false
+   when none is plugged in. `buttons` bit n is input n held; the sticks are
+   right X, Y, left X, Y (0x80 centred); l2, r2 the triggers' travel. */
+struct HostPadState {
+    u16 buttons = 0;
+    u8 sticks[4] = {0x80, 0x80, 0x80, 0x80};
+    u8 l2 = 0, r2 = 0;
+};
+bool HostPad(HostPadState* state);
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
 /* --press: hold `button` (cross, start, up, ...) for 6 frames from `frame`. */

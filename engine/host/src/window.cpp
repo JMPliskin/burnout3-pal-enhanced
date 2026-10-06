@@ -150,6 +150,21 @@ bool HostKeyDown(int key) {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+bool HostPad(HostPadState* state) {
+#ifdef PS2HOST_VULKAN
+    ps2gpu::Display::PadState pad;
+    if (g_display && g_display->Pad(&pad)) {
+        state->buttons = pad.buttons;
+        for (int i = 0; i < 4; ++i) state->sticks[i] = pad.sticks[i];
+        state->l2 = pad.l2;
+        state->r2 = pad.r2;
+        return true;
+    }
+#endif
+    (void)state;
+    return false;   // the GDI window has none
+}
+
 namespace {
 // --gpu-show: where the window's picture comes from instead of the software GS.
 std::function<bool(std::vector<u32>*, u32*, u32*)> g_picture_source;

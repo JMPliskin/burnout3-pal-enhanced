@@ -34,6 +34,7 @@ public:
     bool Pump() override;
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
+    bool Pad(PadState* state) const override;
     std::string Describe() const override { return describe_; }
     Gpu* SharedGpu() override;
     const std::string& error() const { return error_; }
@@ -47,6 +48,7 @@ private:
     std::uint32_t FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const;
 
     SDL_Window* window_ = nullptr;
+    SDL_Gamepad* gamepad_ = nullptr;        // the first controller plugged in
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice gpu_ = VK_NULL_HANDLE;
@@ -100,6 +102,23 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         error_ = std::string("SDL_Init: ") + SDL_GetError();
         return false;
+    }
+    // Controllers: optional (the keyboard still plays), and read whichever
+    // window has focus - the console's pad does not care either.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        std::fprintf(stderr, "[window] no game controllers: %s\n", SDL_GetError());
+    } else {
+        int joysticks = 0, gamepads = 0;
+        // Wireless controllers can take a moment to be found.
+        for (int waited = 0; waited < 1000 && joysticks == 0; waited += 50) {
+            SDL_PumpEvents();
+            SDL_free(SDL_GetJoysticks(&joysticks));
+            if (joysticks == 0) SDL_Delay(50);
+        }
+        SDL_free(SDL_GetGamepads(&gamepads));
+        std::fprintf(stderr, "[window] %d controller(s) plugged in, %d of them with a known layout\n", joysticks,
+                     gamepads);
     }
     if (!Check(volkInitialize(), "volkInitialize (is there a Vulkan driver?)")) return false;
     window_ = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
@@ -436,8 +455,50 @@ bool VulkanDisplay::Pump() {
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) closed_ = true;
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) stale_ = true;
+        if (e.type == SDL_EVENT_GAMEPAD_ADDED && !gamepad_) {
+            gamepad_ = SDL_OpenGamepad(e.gdevice.which);
+            if (gamepad_) std::fprintf(stderr, "[window] controller: %s\n", SDL_GetGamepadName(gamepad_));
+        }
+        if (e.type == SDL_EVENT_GAMEPAD_REMOVED && gamepad_ && SDL_GetGamepadID(gamepad_) == e.gdevice.which) {
+            std::fprintf(stderr, "[window] controller unplugged\n");
+            SDL_CloseGamepad(gamepad_);
+            gamepad_ = nullptr;
+        }
     }
     return !closed_;
+}
+
+bool VulkanDisplay::Pad(PadState* state) const {
+    if (!gamepad_) return false;
+    // SDL's buttons by position (south is the DualShock's cross) to
+    // DualShock 2 inputs.
+    static const std::pair<SDL_GamepadButton, int> kButtons[] = {
+        {SDL_GAMEPAD_BUTTON_BACK, 0}, {SDL_GAMEPAD_BUTTON_LEFT_STICK, 1}, {SDL_GAMEPAD_BUTTON_RIGHT_STICK, 2},
+        {SDL_GAMEPAD_BUTTON_START, 3}, {SDL_GAMEPAD_BUTTON_DPAD_UP, 4}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 5},
+        {SDL_GAMEPAD_BUTTON_DPAD_DOWN, 6}, {SDL_GAMEPAD_BUTTON_DPAD_LEFT, 7},
+        {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 10}, {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 11},
+        {SDL_GAMEPAD_BUTTON_NORTH, 12}, {SDL_GAMEPAD_BUTTON_EAST, 13}, {SDL_GAMEPAD_BUTTON_SOUTH, 14},
+        {SDL_GAMEPAD_BUTTON_WEST, 15}};
+    PadState s;
+    for (const auto& [button, input] : kButtons)
+        if (SDL_GetGamepadButton(gamepad_, button)) s.buttons |= std::uint16_t(1u << input);
+    // Triggers (0-32767) are L2 and R2: pressed past a quarter of their travel.
+    const int l2 = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    const int r2 = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    s.l2 = std::uint8_t(std::clamp(l2, 0, 32767) >> 7);
+    s.r2 = std::uint8_t(std::clamp(r2, 0, 32767) >> 7);
+    if (l2 > 8192) s.buttons |= 1u << 8;
+    if (r2 > 8192) s.buttons |= 1u << 9;
+    // Sticks: -32768-32767 to 0-255, down and right the larger, as the
+    // DualShock's; a small dead zone reads as centred.
+    static const SDL_GamepadAxis kAxes[4] = {SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY,
+                                             SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY};
+    for (int i = 0; i < 4; ++i) {
+        const int v = SDL_GetGamepadAxis(gamepad_, kAxes[i]);
+        s.sticks[i] = (v > -4096 && v < 4096) ? 0x80 : std::uint8_t((v + 32768) >> 8);
+    }
+    *state = s;
+    return true;
 }
 
 bool VulkanDisplay::Focused() const {
@@ -463,6 +524,7 @@ VulkanDisplay::~VulkanDisplay() {
     }
     if (surface_) vkDestroySurfaceKHR(instance_, surface_, nullptr);
     if (instance_) vkDestroyInstance(instance_, nullptr);
+    if (gamepad_) SDL_CloseGamepad(gamepad_);
     if (window_) SDL_DestroyWindow(window_);
     SDL_Quit();
 }
