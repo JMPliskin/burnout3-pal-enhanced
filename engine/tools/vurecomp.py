@@ -636,17 +636,19 @@ def dead_flags(block: list, pairs: dict) -> set:
 def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     # The run's state and the cycle as locals, written back where the block
     # leaves (LEAVE): nothing the block does can reach them through memory.
-    # A block runs whole or not at all: with a branch or an E bit pending as
-    # it would start, or fewer pairs left to the limit than it has, it leaves
-    # the pairs to the interpreter (Vu::RunCompiled, no progress) - so no
-    # pair of it checks the limit, and dead_flags holds.
+    # A block starts only with as many pairs left to the limit as it has
+    # (else the interpreter takes them: Vu::RunCompiled, no progress), so no
+    # pair of it checks the limit. A branch or an E bit pending as it starts
+    # (a delay slot or the pair after an E bit that begins a block) ends it
+    # after its first pair - so from its second pair on it runs whole, which
+    # dead_flags relies on; the first pair's flags are never left out.
     out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name,
-           "    if (s.stopping || s.delayed != kNone || s.count + %d > limit) return;" % len(block),
+           "    if (s.count + %d > limit) return;" % len(block),
            "    u64 count = s.count, cyc = C::Cycle(v);",
-           "    bool stopping = false;",
-           "    u32 delayed = kNone;"]
+           "    bool stopping = s.stopping;",
+           "    u32 delayed = s.delayed;"]
     written, clean = {}, {}
-    dead = dead_flags(block, pairs)
+    dead = dead_flags(block, pairs) - {0}
     for i, pc in enumerate(block):
         out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean,
                          i in dead)
