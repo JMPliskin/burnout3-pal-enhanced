@@ -15,6 +15,7 @@
 #include "ps2host/disc.h"
 #include "ps2host/dma.h"
 #include "ps2host/gs.h"
+#include "ps2host/ipu.h"
 #include "iop_vm_internal.h"
 #include "spu2.h"
 #include "ps2host/mc2.h"
@@ -894,6 +895,69 @@ void VuFlagsOfAResultIntoVf0() {
     Check(vu.regs.vf[0][0] == 0 && vu.regs.vf[0][2] == 0 && vu.regs.vf[0][3] == f(1), "VU: VF0 stays 0, 0, 0, 1");
 }
 
+// The IPU: FDEC and VDEC on known bits, and BDEC on two intra macroblocks of
+// flat blocks (DC only), the second split over the input FIFO's quadwords
+// so that it runs out of data after its first block's DC - retried, the
+// DC predictor must not have moved (a retry once added the luma DC again
+// each time, and a movie's slice went white from there).
+void IpuDecodesAndRetriesCleanly() {
+    ps2host::InstallIpu();
+    ps2host::Memory& m = ps2host::GuestMemory();
+    auto command = [&](u32 word) { m.Write(0x10002000u, word, 4); };
+    auto busy = [&] { return (m.Read(0x10002000u, 8) >> 63) & 1; };
+    std::vector<u8> bytes;
+    auto pack = [&](const std::string& bits) {      // MSB first, as the stream is read
+        bytes.assign((bits.size() + 7) / 8, 0);
+        for (std::size_t i = 0; i < bits.size(); ++i)
+            if (bits[i] == '1') bytes[i / 8] |= u8(0x80 >> (i % 8));
+        bytes.resize((bytes.size() + 15) / 16 * 16, 0);
+    };
+    auto push = [&](std::size_t quadword) {
+        for (u32 w = 0; w < 4; ++w) {
+            u32 word = 0;
+            std::memcpy(&word, &bytes[quadword * 16 + w * 4], 4);
+            m.Write(0x10007010u + 4 * w, word, 4);
+        }
+    };
+    auto first_luma = [&] {                         // the macroblock's Y[0][0], the rest drained
+        const u64 q = m.Read(0x10007000u, 8);
+        m.Read(0x10007008u, 8);
+        for (int i = 1; i < 48; ++i) { m.Read(0x10007000u, 8); m.Read(0x10007008u, 8); }
+        return s16(q & 0xFFFF);
+    };
+    m.Write(0x10002010u, 1u << 30, 4);              // reset; MPEG-2, IDP 0, zig-zag, B.14
+    // FDEC and VDEC: 0x000001B3, then a 1-bit address increment of 1.
+    pack("00000000000000000000000110110011" "1");
+    command(0x00000000u);                           // BCLR, BP 0
+    push(0);
+    command(0x40000000u);                           // FDEC
+    Check(!busy() && u32(m.Read(0x10002000u, 4)) == 0x000001B3u, "IPU: FDEC reads 32 bits");
+    command(0x40000000u | 32);                      // FDEC past them
+    command(0x30000000u);                           // VDEC, address increment
+    Check(u32(m.Read(0x10002000u, 4)) == 0x00010001u, "IPU: VDEC gives the increment and its length");
+    // Two macroblocks: luma blocks "100" (DC size 0) "10" (end of block),
+    // chroma "00" "10"; the second's first luma DC "00" "1" (+1).
+    const std::string flat = std::string("10010") + "10010" + "10010" + "10010" + "0010" + "0010";
+    const std::string plus = std::string("00110") + "10010" + "10010" + "10010" + "0010" + "0010";
+    // The first at bit 210, the second at 238: its first DC in the second
+    // quadword, the end-of-block code after it running into the third.
+    // Then the slice's stuffing to the byte and a start code (SCD).
+    pack(std::string(210, '0') + flat + plus + "000000" + "00000000" "00000000" "00000001" "10110011");
+    command(0x0000007Fu);                           // BCLR, BP 127
+    push(0);
+    push(1);
+    command(0x40000000u | 63);                      // FDEC past 63 more: bit 190
+    command(0x2C000000u | 20);                      // BDEC past 20: intra, DC reset, QSC 0
+    Check(!busy() && first_luma() == 128, "IPU: BDEC of a flat intra block");
+    command(0x28000000u);                           // BDEC: intra
+    for (int i = 0; i < 5; ++i) busy();             // tried, and tried again, short of data
+    Check(busy(), "IPU: BDEC waits for data");
+    push(2);
+    Check(!busy() && first_luma() == 129, "IPU: a retried BDEC keeps its DC predictor");
+    Check(((m.Read(0x10002010u, 4) >> 15) & 1) && u32(m.Read(0x10002030u, 4)) == 0x000001B3u,
+          "IPU: BDEC goes over a slice's stuffing to the start code (SCD)");
+}
+
 // MAX and MINI hand back an operand as it is: Burnout 3's car microcode
 // builds its GIF tag's REGS (0x412, a denormal as a float) with LOI and MAXI;
 // cleaned to 0, every vertex went to PRIM and no car was drawn.
@@ -1052,6 +1116,7 @@ int main() {
     VuTimingIsVisible();
     VuFlagsOfAResultIntoVf0();
     VuMaxKeepsADenormal();
+    IpuDecodesAndRetriesCleanly();
     IopInstructionsMatchTheR5900();
     SpuDecodesAdpcmAndPlaysAVoice();
     std::printf(g_failures ? "host tests: %d failed\n" : "host tests: all passed\n", g_failures);

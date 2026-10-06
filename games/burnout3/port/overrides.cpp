@@ -8,7 +8,6 @@
  */
 
 #include <cstdio>
-#include <map>
 #include <string>
 
 #include "ps2host/host.h"
@@ -45,23 +44,6 @@ void TtyWrite(lifted::Context& c) {
     c.r[2] = length;
 }
 
-/* 0x00109F00, libmpeg's sceMpegGetPicture(mp, buffer, macroblocks): decodes the
-   next picture on the IPU. The host has no IPU yet (FINDINGS: movies), so a
-   movie plays as kMoviePictures blank pictures and then ends - sceMpegIsEnd
-   (0x0010A028) returns the first word of mp->sys, at mp+0x40. Ending at the
-   first picture left the frontend waiting on its background movie. */
-constexpr int kMoviePictures = 120;
-
-void MpegGetPicture(lifted::Context& c) {
-    static std::map<u32, int> pictures;          // by stream
-    const u32 mp = u32(c.r[4]);
-    if (++pictures[mp] >= kMoviePictures) {
-        pictures[mp] = 0;
-        generated::Write32(u32(generated::ReadU32(mp + 0x40)), 1);
-    }
-    c.r[2] = 0;
-}
-
 /* libmc2's command handlers (FINDINGS: "Memory cards"): with --memcard the
    host's card answers them (ps2host/mc2.h); without one the game's own run,
    and find no card, as a console with an empty slot. The worker dispatches
@@ -96,5 +78,4 @@ void RegisterGameOverrides() {
     ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
-    ps2host::Override(0x00109F00u, MpegGetPicture, "sceMpegGetPicture: blank movies (no IPU yet)");
 }

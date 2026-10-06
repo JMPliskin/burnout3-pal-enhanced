@@ -100,6 +100,9 @@ void RaiseDmac(u32 channel);
    thread's next loop head, or between threads - never inside the store that
    started the transfer, since code goes on to set up for the interrupt. */
 void PostDmac(u32 channel);
+/* A channel a device moves at its own pace (the IPU's) has finished: its
+   D_STAT bit, and its interrupt as PostDmac (devices.cpp). */
+void DmaChannelEnded(u32 channel);
 /* Set (before budgets are spent) when the run must end, so the loop-head hook
    does not take a spent budget for its own request. */
 std::atomic<bool>& StopRequested();
@@ -115,7 +118,7 @@ const char* SyscallName(s32 service);
 void InstallDevices();
 /* Each vertical blank: write the displayed picture to `dir` every `every`
    frames, at most `limit` of them (--frames). */
-void SetFrameDumps(const std::string& dir, int every, int limit);
+void SetFrameDumps(const std::string& dir, int every, int limit, u64 from = 0);
 /* The GPU renderer (gpu_bridge.cpp). Shadow: it draws beside the software GS;
    each frame its targets are compared with local memory (and written as BMP
    files into `dump_dir` when that is not empty); ShadowRtt also samples GPU

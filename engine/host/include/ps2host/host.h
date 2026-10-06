@@ -81,6 +81,7 @@ struct Options {
     std::vector<u32> watch_writes; /* guest addresses whose every store is logged */
     std::string frames_dir;        /* write the displayed picture here as BMP files */
     int frames_every = 30;         /* ...every this many frames */
+    long long frames_from = 0;     /* ...from this frame on (--frames-from) */
     bool window = false;           /* show the picture in a window as it runs */
     bool gs_trace = false;         /* log GS image transfers and textured primitives */
     long long gs_trace_frame = -1; /* ... during this frame only */

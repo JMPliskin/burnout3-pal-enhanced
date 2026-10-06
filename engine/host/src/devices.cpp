@@ -31,6 +31,7 @@
 
 #include "ps2host/dma.h"
 #include "ps2host/gs.h"
+#include "ps2host/ipu.h"
 #include "ps2host/memory.h"
 #include "ps2host/path3.h"
 #include "ps2host/run.h"
@@ -201,12 +202,14 @@ constexpr u32 kVif1Fifo = 0x10005000u;
 namespace {
 std::string g_frames_dir;
 int g_frames_every = 30, g_frames_limit = 100, g_frames_written = 0;
+u64 g_frames_from = 0;
 }  // namespace
 
-void SetFrameDumps(const std::string& dir, int every, int limit) {
+void SetFrameDumps(const std::string& dir, int every, int limit, u64 from) {
     g_frames_dir = dir;
     g_frames_every = every > 0 ? every : 1;
     g_frames_limit = limit;
+    g_frames_from = from;
 }
 
 namespace {
@@ -290,7 +293,8 @@ void FrameDone(u64 frame) {
     DbcFrame();
     PresentFrame();
     if (WindowClosed()) throw GuestExit{0};             // the user closed the window
-    const bool dump = !g_frames_dir.empty() && g_frames_written < g_frames_limit && frame % u64(g_frames_every) == 0;
+    const bool dump = !g_frames_dir.empty() && g_frames_written < g_frames_limit && frame >= g_frames_from &&
+                      frame % u64(g_frames_every) == 0;
     GpuShadowFrame(frame, dump ? g_frames_dir : std::string());
     if (!dump) return;
     char name[64];
@@ -304,9 +308,15 @@ void FrameDone(u64 frame) {
         }
 }
 
+void DmaChannelEnded(u32 channel) {
+    SetDStat(d_stat | (1u << channel));
+    PostDmac(channel);
+}
+
 void InstallDevices() {
     Memory& m = GuestMemory();
     for (const Channel& ch : kChannels) {
+        if (ch.base == 0x1000B000u || ch.base == 0x1000B400u) continue;     // the IPU's (ipu.cpp)
         const u32 chcr = ch.base, madr = ch.base + kMadr, qwc = ch.base + kQwc;
         m.OnWrite(chcr, [ch, madr, qwc, chcr](u32, u64 value) {
             if (!(value & 0x100)) return;                       // STR not set
@@ -374,6 +384,7 @@ void InstallDevices() {
         return (stored & ~u64(1u << 13)) | field | (1u << 3);   // VSINT pending
     });
     InstallTimers();
+    InstallIpu();
 }
 
 }  // namespace ps2host

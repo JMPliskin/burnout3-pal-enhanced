@@ -410,7 +410,8 @@ int Run(const Options& options) {
     if (sound) iop::EnableSound();
     for (const auto& [button, frame] : options.presses)
         if (!ScriptPress(button, frame)) std::fprintf(stderr, "--press: no button %s\n", button.c_str());
-    if (!options.frames_dir.empty()) SetFrameDumps(options.frames_dir, options.frames_every, 200);
+    if (!options.frames_dir.empty())
+        SetFrameDumps(options.frames_dir, options.frames_every, 200, u64(options.frames_from));
     g_watch = options.watch;
     InstallDevices();
     InstallIopServers();
@@ -492,6 +493,7 @@ int Main(int argc, char** argv) {
         }
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);
+        else if (arg == "--frames-from" && i + 1 < argc) options.frames_from = std::stoll(argv[++i]);
         else if (arg == "--budget" && i + 1 < argc) options.loop_budget = std::stoll(argv[++i]);
         else if (arg == "--limit" && i + 1 < argc) options.report_limit = std::stoi(argv[++i]);
         else if (arg == "--timeout" && i + 1 < argc) options.timeout_seconds = std::stoi(argv[++i]);

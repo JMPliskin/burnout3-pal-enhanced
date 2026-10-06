@@ -1429,8 +1429,8 @@ one missing piece of the machine:
   nothing but the pad. The game says no memory card is inserted and offers to
   start without saving.
 * **Movies.** Then it plays a movie through libmpeg, which waits on the IPU
-  (IPU_CTRL read 274 million times). Until the IPU is modelled,
-  sceMpegGetPicture marks a movie ended at once.
+  (IPU_CTRL read 274 million times). Until the IPU was modelled,
+  sceMpegGetPicture marked a movie ended at once (see "Movies").
 
 GetOsdConfigParam and SetOsdConfigParam (0x4B and 0x4A) were swapped in the
 host's kernel; the console now reports English, 4:3.
@@ -1782,6 +1782,44 @@ magnitude integers and hands one back as it is, which programs use to load
 integer constants; vu0.py, vu_math.h (scalar and SSE) and the compiled
 code's operand cleaning now do so (test_vu0, host test VuMaxKeepsADenormal),
 and vurecomp no longer counts a MAX or MINI result as clean.
+
+## Movies
+
+The movies are MPEG-2 elementary streams (`OVID/*.M2V`: the EA logo
+ENGLIS30.M2V, the Criterion and RenderWare logos CRI_RW30.M2V, the crash
+replays, the credits; the attract footage in MOVIE.RWS), 640x480 at 30
+pictures a second, GOPs of 15. The game's IOP module GTFSCDVD reads a file
+whole into memory; the EE copies it 64 KB at a time into a ring of 16
+blocks behind a ring of DMA tags (16 `ref`s and a `next` back), and fences
+the data with a `refe` it moves on as blocks are filled. libmpeg
+(sceMpegGetPicture, 0x00109F00) does the rest with the IPU: FDEC and VDEC
+for every header field and symbol, BDEC for each macroblock's
+coefficients, its own motion compensation on the EE, and CSC to turn each
+finished picture (in macroblock columns, 30 high) into RGB32 for a texture.
+
+Three things the IPU had to get right before the pictures did, each found
+by comparing the YCbCr libmpeg hands CSC with FFmpeg's decode of the same
+file:
+
+* **The channel's TAG field.** libmpeg suspends TO_IPU to send CSC's
+  input and the quantiser matrices over the same channel, and restarts it
+  rewound by IFC + FP quadwords. Restarted inside the fenced block, the
+  channel must end after it (CHCR keeps the last tag's ID); without that it
+  ran past the fence into the stale ring, the decoder found the movie's
+  start there again, and the EA logo played for ever.
+* **Retrying cleanly.** A macroblock whose bits had not all arrived is
+  decoded again when they do; the first attempt had already added its luma
+  DC differentials to the predictor, so the rest of the slice drifted to
+  white (the streaks along a row). A step now puts back what it changed.
+* **SCD.** After a macroblock, BDEC goes over the slice's zero stuffing to
+  the next start code, as PCSX2 does and libmpeg expects.
+
+The boot movies now match FFmpeg's decode picture for picture (the
+largest difference 20 levels, IDCT rounding). The game advances past a
+movie when libmpeg reports its end, so the scripted runs sit through the
+EA, Criterion and RenderWare logos and skip the intro with START; the first
+World Tour race plays its RACE TRAINING tutorial video, which no button
+skips.
 
 ## Open questions
 

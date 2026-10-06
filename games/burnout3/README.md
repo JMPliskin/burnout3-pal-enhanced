@@ -17,16 +17,16 @@ first game the [engine](../../engine) was built on.
 
 [docs/PROGRESS.md](docs/PROGRESS.md) is generated and has the live numbers.
 
-The native port runs the whole game: boot, the frontend, the garage, races,
-saves to a memory card kept as a directory. Played in real time on a recent
+The native port runs the whole game: boot and its movies, the frontend over
+its video backgrounds, the garage, races, saves to a memory card kept as a
+directory. Played in real time on a recent
 laptop under `--gpu`, the game itself runs at full speed (57-60 vertical
 blanks a second) and draws its 2D screens at 60 pictures a second, but its
 3D scenes - the garage, the race - at 25-30: a picture every other vertical
 blank, where the PS2 draws one every blank. VU1's microcode is the limit
 (docs/FINDINGS.md, "A race frame, timed"; `--frame-times` reports both
-rates). Missing: the movies (the IPU is not modelled yet; they play as
-blank pictures and end), and blend factors over 1 on the GPU (the race
-HUD's text is slightly darker).
+rates). Missing: blend factors over 1 on the GPU (the race HUD's text is
+slightly darker).
 
 The original compiler is known (`MW MIPS C Compiler (2.4.1.01)`, Metrowerks
 CodeWarrior, named in the executable's `.comment` section) but could not be

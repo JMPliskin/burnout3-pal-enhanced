@@ -58,6 +58,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--gs-dump-frame N` | GS local memory, all 4 MB, written to `gsmem_N.bin` (in the `--frames` directory) when frame N is done - under `--gpu`, as the GPU has it. `engine/tools/gsmem.py` shows a buffer from a dump, or compares two runs' dumps buffer by buffer |
 | `--sample` | a sampling profiler on the EE thread (a thousand samples a second, eight frames deep): at the end, the functions most often running and most often on the stack, by name, and where it was running by source file and line (inlined code by the line inlined: a VU step in vu_core.h, not the block) - the port builds with symbols for it |
 | `--gs-inline` | the GS model (and the GPU renderer behind it) on the EE's thread rather than its own (`gs_thread.cpp`): for debugging, and for `--sample` to see the GS's share |
+| `--frames-from N` | with `--frames`: only from frame N on (the dump keeps 200 pictures) |
 | `--frame-times N` | every N frames, how long they took in wall-clock time, the frame (vertical blank) rate and how many DMA transfers to VIF1 - a game's pictures of 3D, usually one each - went a second (`regress.py --frame-times N` prints them). In real time a game that cannot keep up draws every other blank: Burnout 3's race runs at 58 blanks and 25-30 pictures a second |
 | `--audio` | the SPU2's mixed output on the sound device, reverb included |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); repeatable |
@@ -361,29 +362,29 @@ so a new game gets them as soon as its routines are named.
    **Input**: a DualShock 2 on the window's game controller (SDL3) and the keyboard (`dbc.cpp`). Then saves and
    enhancements.
 
-7. **The IPU** (not yet; movies play as blank pictures through a port
-   override of libmpeg's sceMpegGetPicture). What it will take, from reading
-   the hardware's documented behaviour and an existing emulator's:
-   * registers IPU_CMD (a command written; read back, VDEC's and FDEC's
-     result and BUSY in bit 63), IPU_CTRL (IFC, OFC, CBP, ECD, SCD, IDP, AS,
-     IVF, QST, MP1, PCT, RST, BUSY), IPU_BP (BP, IFC, FP), IPU_TOP (the next
-     32 bits, BUSY): libmpeg polls them;
-   * the commands BCLR, IDEC, BDEC, VDEC (macroblock address increment,
-     macroblock type, motion code, dual-prime vector), FDEC, SETIQ, SETVQ,
-     CSC, PACK, SETTH, each able to stop mid-bitstream and go on when more
-     data arrives;
-   * the MPEG-1/2 tables (B.14 and B.15 DCT coefficients, the DC sizes,
-     macroblock types, coded block pattern, motion codes), the zig-zag and
-     alternate scans, dequantisation and the IDCT; YCbCr to RGB32/RGB16 with
-     dithering and the alpha thresholds;
-   * DMA to the IPU (channel 4) cannot complete at once as the other
-     channels do: it has to drain as the IPU takes the bitstream (an 8-quadword
-     FIFO), its MADR and QWC moving with it - a decoder may read them back
-     to know what was consumed - and its interrupt come when it is empty;
-     BDEC's and IDEC's output waits in the 8-quadword output FIFO for DMA
-     from the IPU (channel 3).
-   Behind a `--ipu` option until movies play, so the scripted runs keep
-   their pictures meanwhile.
+7. **The IPU** (`ipu.cpp`): the MPEG decoder libmpeg drives, so a game's
+   movies play. Registers IPU_CMD (BUSY in bit 63, VDEC's and FDEC's
+   result), IPU_CTRL, IPU_BP (BP, IFC, FP) and IPU_TOP; the FIFOs at
+   0x10007000/0x10007010; DMA channels 3 (FROM_IPU) and 4 (TO_IPU), which the
+   generic "completed at once" handling leaves to it. The commands BCLR,
+   BDEC, VDEC, FDEC, SETIQ, SETVQ, CSC, PACK and SETTH (IDEC is reported, not
+   modelled), over the MPEG-1/2 VLC tables (`ipu_tables.inc`, generated
+   from annex B) and an IEEE 1180 reference IDCT.
+   * A command runs in steps (a header field, a macroblock), each all or
+     nothing: it reads ahead through the FIFO and on into what channel 4 has
+     yet to transfer - its source chain walked on a copy - and only a step
+     that finishes takes the bits, MADR, QWC and TADR moving by the
+     quadwords taken. A step that runs out of data waits, BUSY; what it
+     changed is put back (the DC predictors), as it will run again.
+   * Channel 4 keeps the FIFO full; restarted in a block, the tag it came
+     from (CHCR's TAG field, kept as the hardware keeps it) says whether the
+     chain ends after it - a `refe` fence does. libmpeg stops and restarts
+     the channel around its other transfers and rewinds MADR by IFC + FP.
+   * After a macroblock, BDEC goes over a slice's zero stuffing to the next
+     start code and says so in SCD, as libmpeg expects.
+   Checked against FFmpeg's decode of the same streams (games/burnout3
+   FINDINGS, "Movies"): every picture of the boot movies within IDCT
+   rounding.
 
 Each stage is measured the same way: run, read the report, implement what
 stopped it.
