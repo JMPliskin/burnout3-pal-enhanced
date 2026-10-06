@@ -124,17 +124,26 @@ void Idct(const s32 in[64], s32 out[64]) {
                 c[x][u] = 0.5 * (u == 0 ? 1.0 / std::sqrt(2.0) : 1.0) * std::cos((2 * x + 1) * u * pi / 16.0);
         return c;
     }();
+    // Most coefficients are zero, and a zero term adds nothing to a sum (a
+    // signed zero at most, which no later sum or the rounding sees): only the
+    // others are summed, in the same order - the same result, bit for bit.
     double rows[64];
-    for (int v = 0; v < 8; ++v)
+    int terms[8], live[8], live_rows = 0;
+    for (int v = 0; v < 8; ++v) {
+        int n = 0;
+        for (int u = 0; u < 8; ++u)
+            if (in[v * 8 + u]) terms[n++] = u;
+        if (n) live[live_rows++] = v;
         for (int x = 0; x < 8; ++x) {
             double sum = 0;
-            for (int u = 0; u < 8; ++u) sum += basis[x][u] * in[v * 8 + u];
+            for (int k = 0; k < n; ++k) sum += basis[x][terms[k]] * in[v * 8 + terms[k]];
             rows[v * 8 + x] = sum;
         }
+    }
     for (int y = 0; y < 8; ++y)
         for (int x = 0; x < 8; ++x) {
             double sum = 0;
-            for (int v = 0; v < 8; ++v) sum += basis[y][v] * rows[v * 8 + x];
+            for (int k = 0; k < live_rows; ++k) sum += basis[y][live[k]] * rows[live[k] * 8 + x];
             out[y * 8 + x] = std::clamp(s32(std::floor(sum + 0.5)), -256, 255);
         }
 }
@@ -741,14 +750,25 @@ public:
         static const int kDither[4][4] = {{-4, 0, -3, 1}, {2, -2, 3, -1}, {-3, 1, -4, 0}, {3, -1, 2, -2}};
         u32 rgba[256];
         u16 packed[256];
+        static const auto kLuma = [] {
+            std::array<int, 256> t{};
+            for (int y = 0; y < 256; ++y) t[y] = (0x95 * std::max(0, y - 16)) >> 6;
+            return t;
+        }();
+        int red_of[64], green_of[64], blue_of[64];     // each chroma sample's terms
+        for (int i = 0; i < 64; ++i) {
+            const int cb = int(raw[256 + i]) - 128, cr = int(raw[320 + i]) - 128;
+            red_of[i] = ((0xCC * cr) >> 6) + 1;
+            green_of[i] = ((-0x68 * cr) >> 6) + ((-0x32 * cb) >> 6) + 1;
+            blue_of[i] = ((0x102 * cb) >> 6) + 1;
+        }
         for (int py = 0; py < 16; ++py)
             for (int px = 0; px < 16; ++px) {
-                const int luma = (0x95 * std::max(0, int(raw[py * 16 + px]) - 16)) >> 6;
-                const int cb = int(raw[256 + (py >> 1) * 8 + (px >> 1)]) - 128;
-                const int cr = int(raw[320 + (py >> 1) * 8 + (px >> 1)]) - 128;
-                const int red = std::clamp((luma + ((0xCC * cr) >> 6) + 1) >> 1, 0, 255);
-                const int green = std::clamp((luma + ((-0x68 * cr) >> 6) + ((-0x32 * cb) >> 6) + 1) >> 1, 0, 255);
-                const int blue = std::clamp((luma + ((0x102 * cb) >> 6) + 1) >> 1, 0, 255);
+                const int luma = kLuma[raw[py * 16 + px]];
+                const int c = (py >> 1) * 8 + (px >> 1);
+                const int red = std::clamp((luma + red_of[c]) >> 1, 0, 255);
+                const int green = std::clamp((luma + green_of[c]) >> 1, 0, 255);
+                const int blue = std::clamp((luma + blue_of[c]) >> 1, 0, 255);
                 const u8 alpha = Alpha(red, green, blue);
                 rgba[py * 16 + px] = u32(red) | u32(green) << 8 | u32(blue) << 16 | u32(alpha) << 24;
                 if (rgb16) {

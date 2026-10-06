@@ -104,14 +104,13 @@ u32 FloatFromInt(u32 bits_as_int) {
     return ToBits(static_cast<double>(static_cast<s32>(bits_as_int)));
 }
 
-/* Truncates toward zero and keeps the low 32 bits of the integer result. A float
-   of magnitude 2**63 or more is a multiple of 2**40, so its low word is zero. */
+/* Truncates toward zero below 2**31 in magnitude (an exponent up to 2**30's)
+   and saturates beyond, by the sign alone: the EE's cvt.w.s (emu.py's
+   float_to_word). */
 u32 IntFromFloat(u32 float_bits) {
-    const double value = FromBits(float_bits);
-    if (value != value || std::fabs(value) >= 9223372036854775808.0) {
-        return 0;
-    }
-    return static_cast<u32>(static_cast<u64>(static_cast<s64>(value)));
+    if ((float_bits & 0x7F800000u) <= 0x4E800000u)
+        return static_cast<u32>(static_cast<s32>(FromBits(float_bits)));
+    return (float_bits & 0x80000000u) ? 0x80000000u : 0x7FFFFFFFu;
 }
 
 float FloatValue(u32 bits) { return FromBits(bits); }

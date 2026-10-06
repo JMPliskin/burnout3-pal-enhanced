@@ -176,7 +176,9 @@ bool HostPad(HostPadState* state);
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
 /* --press: hold `button` (cross, start, up, ...) for 6 frames from `frame`. */
-bool ScriptPress(const std::string& button, u64 frame);
+bool ScriptPress(const std::string& button, u64 from, u64 to);
+/* Real time: vertical blanks that came while the last was still undelivered (threads.cpp). */
+u64 LostVblanks();
 /* The EE timers (timers.cpp): their registers, the host time to their next
    interrupt (< 0: none), and raising the interrupts that are due. */
 void InstallTimers();

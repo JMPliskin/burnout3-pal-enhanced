@@ -185,12 +185,12 @@ std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
 
 }  // namespace
 
-bool ScriptPress(const std::string& button, u64 frame) {
+bool ScriptPress(const std::string& button, u64 from, u64 to) {
     static const char* const kNames[16] = {"select", "l3", "r3", "start", "up", "right", "down", "left",
                                            "l2", "r2", "l1", "r1", "triangle", "circle", "cross", "square"};
     for (int i = 0; i < 16; ++i)
         if (button == kNames[i]) {
-            Script().push_back({i, frame, frame + 5});
+            Script().push_back({i, from, to});
             return true;
         }
     return false;

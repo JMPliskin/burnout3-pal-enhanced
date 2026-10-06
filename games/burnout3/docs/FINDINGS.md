@@ -1838,6 +1838,37 @@ only when what it reads could have changed - the command, IPU_CTRL, the
 buffer and FIFO, channel 4's registers, or the tag the chain ended on - and
 the boot movies run 1.6 times as fast.
 
+## cvt.w.s saturates
+
+The EE's float-to-word conversion truncates toward zero below 2^31 in
+magnitude and saturates beyond (0x7FFFFFFF, or 0x80000000 for a negative),
+whatever the exponent - PCSX2's CVT_W the same. The interpreter (emu.py), the
+deriver and the runtime all kept the low word of the integer instead, so they
+agreed with each other and verified; now all three saturate
+(emu.float_to_word, tests in test_symexec.py). Re-verified with no change in
+either number (VERIFIED 17.0486%, MACHINE-CHECKED 80.1820%), and no recorded
+picture changed.
+
+Still open in the FPU model, against the console (and PCSX2): division by
+zero gives zero here, where the EE gives the largest magnitude with the
+operands' sign; the square root of a negative number gives zero, where the EE
+takes the root of the magnitude; results round to nearest, where the EE
+rounds toward zero. Trying the first two in the runtime alone changed no
+picture of the race script.
+
+## Sun glare
+
+Accelerating through the first race (`--press cross@17650-19400`), the
+picture washes to white for about two thirds of a second near frame 17,960,
+the car too, as the row of shops on the left ends and the low sun comes out;
+the software GS draws the same frames as the GPU, so it is what the emulated
+code asks for, not a renderer's mistake. The large quads of that moment are
+screen-space flare elements (PATH1, VU1's; Q 62.5) in several tints.
+PCSX2's database notes for this game that the sun is to be hidden behind
+objects (its renderers need autoflush and a target used as a CLUT for it):
+whether the glare here is the game's own or a visibility test that should
+have hidden it is open.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

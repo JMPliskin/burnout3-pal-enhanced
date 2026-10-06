@@ -286,6 +286,8 @@ void SpendBudget(lifted::Context& c) {
     reinterpret_cast<std::atomic<s64>*>(&c.budget)->store(0);
 }
 
+std::atomic<u64> g_lost_vblanks{0};
+
 // Raises the vertical blank in real time: marks a frame due and spends the
 // running thread's budget, so its next loop head delivers it.
 void VblankTimer() {
@@ -304,7 +306,9 @@ void VblankTimer() {
         Scheduler& s = S();
         if (clock::now() >= next) {
             next += period;
-            s.vblank_due = true;
+            // One still undelivered: the EE was busy through a whole frame,
+            // and this one is lost (--frame-times counts them).
+            if (s.vblank_due.exchange(true)) g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
         }
         if (timer >= 0) s.timer_due = true;
         if (lifted::Context* c = s.running.load()) SpendBudget(*c);
@@ -769,5 +773,7 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
             return false;
     }
 }
+
+u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 
 }  // namespace ps2host

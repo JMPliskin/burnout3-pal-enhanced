@@ -945,5 +945,35 @@ class TestAliasing(unittest.TestCase):
         self.assertIsInstance(simplify(result.paths[0].expression), Load)
 
 
+class FloatToWordTest(unittest.TestCase):
+    """cvt.w.s truncates toward zero below 2**31 and saturates beyond, as the
+    EE does (PCSX2's CVT_W the same): the interpreter's float_to_word and the
+    deriver's FloatToInt agree on it."""
+
+    CASES = [
+        (0x3FC00000, 1),                # 1.5
+        (0xBFC00000, 0xFFFFFFFF),       # -1.5 -> -1
+        (0x4EFFFFFF, 0x7FFFFF80),       # the largest float below 2**31
+        (0xCEFFFFFF, 0x80000080),
+        (0x4F000000, 0x7FFFFFFF),       # 2**31: saturates
+        (0xCF000000, 0x80000000),       # -2**31
+        (0x4F32D05E, 0x7FFFFFFF),       # 3e9 (wrapped, it was 0xB2D05E00)
+        (0xCF32D05E, 0x80000000),
+        (0x7F800000, 0x7FFFFFFF),       # an infinity's pattern
+        (0xFFFFFFFF, 0x80000000),       # a NaN's, negative
+        (0x00000001, 0),                # a denormal
+    ]
+
+    def test_interpreter(self):
+        from ps2decomp.emu import float_to_word
+        for bits, word in self.CASES:
+            self.assertEqual(float_to_word(bits), word, hex(bits))
+
+    def test_deriver(self):
+        from ps2decomp.symexec import FloatToInt
+        for bits, word in self.CASES:
+            self.assertEqual(FloatToInt(Const(bits)).evaluate([], None), word, hex(bits))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

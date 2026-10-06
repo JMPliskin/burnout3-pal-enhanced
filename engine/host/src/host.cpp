@@ -413,8 +413,9 @@ int Run(const Options& options) {
         else std::fprintf(stderr, "cannot write %s\n", options.audio_wav.c_str());
     }
     if (sound) iop::EnableSound();
-    for (const auto& [button, frame] : options.presses)
-        if (!ScriptPress(button, frame)) std::fprintf(stderr, "--press: no button %s\n", button.c_str());
+    for (const auto& press : options.presses)
+        if (!ScriptPress(press.button, press.from, press.to))
+            std::fprintf(stderr, "--press: no button %s\n", press.button.c_str());
     if (!options.frames_dir.empty())
         SetFrameDumps(options.frames_dir, options.frames_every, 200, u64(options.frames_from));
     g_watch = options.watch;
@@ -497,8 +498,13 @@ int Main(int argc, char** argv) {
         else if (arg == "--press" && i + 1 < argc) {
             const std::string spec = argv[++i];
             const std::size_t at = spec.find('@');
-            if (at != std::string::npos)
-                options.presses.push_back({spec.substr(0, at), std::stoull(spec.substr(at + 1))});
+            if (at != std::string::npos) {
+                const std::string when = spec.substr(at + 1);
+                const std::size_t dash = when.find('-');
+                const u64 from = std::stoull(when.substr(0, dash));
+                const u64 to = dash == std::string::npos ? from + 5 : std::stoull(when.substr(dash + 1));
+                options.presses.push_back({spec.substr(0, at), from, to});
+            }
         }
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);

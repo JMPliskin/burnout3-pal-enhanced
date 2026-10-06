@@ -935,9 +935,21 @@ def _op_sqrt_s(m: Machine, ins) -> None:
     m.fpr[_fd(ins)] = _fp_bits(_f32(a ** 0.5 if a >= 0 else 0.0))
 
 
+def float_to_word(bits: int) -> int:
+    """`cvt.w.s` as the EE does it: truncating toward zero below 2**31 in
+    magnitude (an exponent up to 2**30's), and saturating beyond - 0x7FFFFFFF,
+    or 0x80000000 for a negative - whatever the rest of the bits (the FPU has
+    no infinities or NaNs). Wrapping to the low word instead turned particles
+    by the camera into garbage colours (FINDINGS.md, "cvt.w.s saturates")."""
+    bits &= MASK32
+    if (bits & 0x7F800000) <= 0x4E800000:
+        return int(_fp_from_bits(bits)) & MASK32
+    return 0x80000000 if bits & 0x80000000 else 0x7FFFFFFF
+
+
 def _op_cvt_w_s(m: Machine, ins) -> None:
-    """Float to fixed, truncating toward zero as the EE does."""
-    m.fpr[_fd(ins)] = int(_fp_from_bits(m.fpr[_fs(ins)])) & MASK32
+    """Float to fixed, truncating toward zero and saturating as the EE does."""
+    m.fpr[_fd(ins)] = float_to_word(m.fpr[_fs(ins)])
 
 
 def _op_cvt_s_w(m: Machine, ins) -> None:

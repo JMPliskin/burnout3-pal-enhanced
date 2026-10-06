@@ -795,7 +795,8 @@ class IntToFloat(Expr):
 
 @dataclasses.dataclass(frozen=True)
 class FloatToInt(Expr):
-    """`cvt.w.s`: convert a float to an integer, truncating toward zero."""
+    """`cvt.w.s`: convert a float to an integer, truncating toward zero and
+    saturating past 32 bits (emu.float_to_word)."""
 
     value: Expr
 
@@ -803,7 +804,10 @@ class FloatToInt(Expr):
         return "IntFromFloat(%s)" % _float_operand(self.value)
 
     def evaluate(self, args, read) -> int:
-        return int(_bits_to_float(self.value.evaluate(args, read))) & MASK32
+        bits = self.value.evaluate(args, read) & MASK32
+        if (bits & 0x7F800000) <= 0x4E800000:
+            return int(_bits_to_float(bits)) & MASK32
+        return 0x80000000 if bits & 0x80000000 else 0x7FFFFFFF
 
 
 @dataclasses.dataclass(frozen=True)
