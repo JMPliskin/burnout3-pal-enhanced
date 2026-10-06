@@ -422,6 +422,31 @@ struct VuCore {
         v.status_latest_ |= (v.status_latest_ & 3u) << 6;
     }
 
+    /* Flags no one can see (vurecomp.py, dead_flags): a later FMAC of the
+       block sets them over these before any flag instruction or the block's
+       end - but STATUS's sticky bits (6, 7) gather every result's, so those
+       are kept. */
+    template <int Target, u32 Dest>
+    static PS2HOST_VU_INLINE void StickyFlags(Vu& v) {
+        const u32* out = Target >= 0 ? v.regs.vf[Target] : v.regs.vacc;
+#if PS2RT_VU_SSE
+        const __m128i bits = _mm_loadu_si128(reinterpret_cast<const __m128i*>(out));
+        const __m128i magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));
+        constexpr u32 kLanes = ((Dest & 8) ? 1u : 0u) | ((Dest & 4) ? 2u : 0u) | ((Dest & 2) ? 4u : 0u) |
+                               ((Dest & 1) ? 8u : 0u);
+        const u32 zero = u32(_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(magnitude, _mm_setzero_si128())))) & kLanes;
+        const u32 sign = u32(_mm_movemask_ps(_mm_castsi128_ps(bits))) & kLanes;
+#else
+        u32 zero = 0, sign = 0;
+        for (int lane = 0; lane < 4; ++lane) {
+            if (!(Dest & (8u >> lane))) continue;
+            if ((out[lane] & 0x7FFFFFFFu) == 0) zero = 1;
+            if (out[lane] & 0x80000000u) sign = 1;
+        }
+#endif
+        v.status_latest_ |= ((zero ? 1u : 0u) | (sign ? 2u : 0u)) << 6;
+    }
+
     // ------------------------------------------------------------ the pair's end
     /* As Run after the two halves: the lower's held writes (giving way to the
        upper's fields), when the fields land, the flags on their way, Q and P. */

@@ -472,7 +472,7 @@ LEAVE = "s.count = count; s.stopping = stopping; s.delayed = delayed; C::Cycle(v
 
 
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
-              written: dict = None, clean: dict = None) -> list:
+              written: dict = None, clean: dict = None, dead_flags: bool = False) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
     driver with s.pc. `index` is its place in the block and `written` where
@@ -483,7 +483,7 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     immediate = bool(upper & 0x80000000)
     end = bool(upper & 0x40000000)
     reads = upper_reads(upper) + ([] if immediate else lower_reads(lower))
-    out = ["    if (count >= limit) { s.pc = 0x%Xu; %s }" % (pc, LEAVE), "    {"]
+    out = ["    {"]
     body = []
     waits = []
     for r, lanes in reads:
@@ -509,6 +509,9 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
         body.append("u32 branch = kNone;")
     body += lower_lines
     upper_lines, upper_written, lanes, set_flags = emit_upper(upper, clean)
+    if dead_flags:
+        upper_lines = [line.replace("C::Flags<", "C::StickyFlags<") for line in upper_lines]
+        set_flags = False
     body += upper_lines
     for r, dest in lower_writes(lower_lines) + [(upper_written, lanes)]:
         for lane in range(4):
@@ -597,16 +600,56 @@ def blocks_of(pairs: dict, entries: list, mask: int) -> list:
     return blocks
 
 
+def is_flag_instruction(lower: int, upper: int) -> bool:
+    """FCEQ ... FCGET, FSEQ ... FSOR, FMEQ, FMAND, FMOR: the lowers that read
+    or set the landed flags."""
+    return not (upper & 0x80000000) and 0x10 <= (lower >> 25) <= 0x1C
+
+
+def sets_mac(upper: int) -> bool:
+    """Whether the upper pushes MAC and STATUS flags (an FMAC; not CLIP)."""
+    return emit_upper(upper)[3] and (upper & 0x7FF) != 0x1FF
+
+
+def dead_flags(block: list, pairs: dict) -> set:
+    """The block's pairs whose MAC/STATUS flags no one can see: a later pair
+    j of the block pushes its own, which land over these; no flag
+    instruction reads or sets the landed flags after them in the block; and
+    j is four or more pairs from the block's end, so its flags have arrived
+    (four cycles; a pair takes one at least) before anything after the block
+    can look. The block runs whole (it does not start where it could not:
+    emit_block), so j does run. STATUS's sticky bits are still gathered."""
+    n = len(block)
+    flag_instruction_after = [False] * (n + 1)
+    for k in range(n - 1, -1, -1):
+        lower, upper = pairs[block[k]]
+        flag_instruction_after[k] = flag_instruction_after[k + 1] or is_flag_instruction(lower, upper)
+    dead = set()
+    for i in range(n):
+        if not sets_mac(pairs[block[i]][1]) or flag_instruction_after[i + 1]:
+            continue
+        if any(sets_mac(pairs[block[j]][1]) for j in range(i + 1, n - 3)):
+            dead.add(i)
+    return dead
+
+
 def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     # The run's state and the cycle as locals, written back where the block
     # leaves (LEAVE): nothing the block does can reach them through memory.
+    # A block runs whole or not at all: with a branch or an E bit pending as
+    # it would start, or fewer pairs left to the limit than it has, it leaves
+    # the pairs to the interpreter (Vu::RunCompiled, no progress) - so no
+    # pair of it checks the limit, and dead_flags holds.
     out = ["void %s(Vu& v, VuRunState& s, std::uint64_t limit) {" % name,
+           "    if (s.stopping || s.delayed != kNone || s.count + %d > limit) return;" % len(block),
            "    u64 count = s.count, cyc = C::Cycle(v);",
-           "    bool stopping = s.stopping;",
-           "    u32 delayed = s.delayed;"]
+           "    bool stopping = false;",
+           "    u32 delayed = kNone;"]
     written, clean = {}, {}
+    dead = dead_flags(block, pairs)
     for i, pc in enumerate(block):
-        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean)
+        out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean,
+                         i in dead)
     out.append("}")
     return out
 

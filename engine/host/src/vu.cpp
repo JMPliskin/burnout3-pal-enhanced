@@ -617,7 +617,9 @@ bool Vu::RunCompiled(VuRunState& state, u64 limit) {
         while (!state.done && state.count < limit) {
             const VuBlock block = table[(state.pc & u32(micro.size() - 1)) / 8];
             if (!block) break;
+            const u64 at = state.count;
             block(*this, state, limit);
+            if (state.count == at) break;   // it would not start here: the interpreter goes on
         }
         compiled_pairs_ += state.count - before;
         ran = true;
