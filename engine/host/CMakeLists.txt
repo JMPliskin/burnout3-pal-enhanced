@@ -61,7 +61,9 @@ endif()
 
 if(MSVC)
     # Translated code throws lifted::Abort; its chunks are large.
-    target_compile_options(ps2rt PUBLIC /EHsc /bigobj /W3 /wd4100 /wd4189)
+    # AVX2: three-operand SIMD for the VU's lanes and the rest (6% of a race;
+    # main.cpp says so on a processor without it).
+    target_compile_options(ps2rt PUBLIC /EHsc /bigobj /W3 /wd4100 /wd4189 /arch:AVX2)
     target_compile_definitions(ps2rt PUBLIC _CRT_SECURE_NO_WARNINGS)
     target_compile_options(ps2host PRIVATE /Z7)     # symbols for --sample, as the ports'
     target_compile_options(ps2rt PRIVATE /Z7)
