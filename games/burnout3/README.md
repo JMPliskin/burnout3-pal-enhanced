@@ -20,13 +20,14 @@ first game the [engine](../../engine) was built on.
 The native port runs the whole game: boot and its movies, the frontend over
 its video backgrounds, the garage, races, saves to a memory card kept as a
 directory. Played in real time on a recent
-laptop under `--gpu`, the game itself runs at full speed (57-60 vertical
-blanks a second) and draws its 2D screens at 60 pictures a second, but its
-3D scenes - the garage, the race - at 25-30: a picture every other vertical
-blank, where the PS2 draws one every blank. VU1's microcode is the limit
-(docs/FINDINGS.md, "A race frame, timed"; `--frame-times` reports both
-rates). Missing: blend factors over 1 on the GPU (the race HUD's text is
-slightly darker).
+laptop under `--gpu`, the game runs at full speed (60 vertical blanks a
+second, held to the millisecond) and draws at the console's own rates: the
+menus, the garage and the movies at 30 pictures a second, a race at 52-60
+(the console's 60, the busiest stretches a little under). VIF1 and VU1 run
+on a thread of their own and the GS and GPU bridge on another, as PCSX2's
+MTVU and MTGS do (docs/FINDINGS.md, "Frame rate: where a 3D frame's time
+goes"; `--frame-times` reports the rates and each thread's share). Missing:
+blend factors over 1 on the GPU (the race HUD's text is slightly darker).
 
 The original compiler is known (`MW MIPS C Compiler (2.4.1.01)`, Metrowerks
 CodeWarrior, named in the executable's `.comment` section) but could not be

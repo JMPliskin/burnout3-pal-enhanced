@@ -1891,8 +1891,23 @@ then about 37, as each wall came down:
   waits only to touch VIF1's or the GIF's registers or VU1's memory, and when
   the worker is two frames behind (30 -> ~37).
 
-Now VU1's own work, on the worker (~83% busy in the race, ~22 ms a picture
-there), is what holds the race below 60.
+Then the GS thread, which the worker fed faster than it could draw:
+
+* **PSMT8H from targets.** The glow and blur passes read their 32-bit
+  targets' alpha as PSMT8H textures through a CLUT the GPU drew (~900 a
+  picture): each a write-back, a decode out of GPU memory and full barriers.
+  The shader now samples the target and indexes the GPU's CLUT by its alpha
+  (37 -> 42).
+* **Stale rows.** A colour target reloads only the rows another view drew
+  over (the 1024x256 view over the glow buffers was unswizzled whole ~200
+  times a picture); depth buffers still reload whole (42 -> 48-60).
+* **Per-primitive work.** A primitive with the registers of the one before,
+  nothing changed since, reuses its state, target and depth buffer (the
+  lookups and checks were half the GS thread); the renderer sets only the
+  state that changed (-> 52-60).
+
+The race now runs at 60 for most of a lap; its busiest stretches, at the
+start, at ~52, the worker and the GS thread both near 80% busy.
 
 ## Open questions
 
