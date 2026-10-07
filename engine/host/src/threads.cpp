@@ -291,6 +291,7 @@ void SpendBudget(lifted::Context& c) {
 
 std::atomic<u64> g_lost_vblanks{0};
 std::atomic<u64> g_idle_ns{0};      // real time: the EE asleep, every thread waiting (--frame-times)
+bool g_vif1_worker_wanted = true;   // --vif1-sync turns it off
 
 // A vertical blank that comes while the last is still undelivered is owed,
 // not dropped: the game counts blanks for its time (a movie's pictures
@@ -513,6 +514,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
             TimerThread() = std::thread(VblankTimer);
             std::atexit(StopTimer);
         }
+        if (g_vif1_worker_wanted) StartVif1Worker();
     }
     s.next_vblank_ns = ClockNs() + kFrameNs;
     s.host_fiber = ConvertThreadToFiber(nullptr);
@@ -828,5 +830,6 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
+void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
 
 }  // namespace ps2host

@@ -153,6 +153,22 @@ void GsPrivileged(u32 address, u64 value);
    thread once the frame's packets are taken, so the EE need not wait for
    them. False when there is no handler: the EE syncs and does it itself. */
 void SetGsFrameHandler(std::function<void(u64)> handler);
+/* VIF1, VU1 and what feeds the GS on a thread of their own, in real time
+   (vif1_worker.cpp): Vif1Run queues a command the worker runs in order (at
+   once without the worker, or on it); JoinVif1 waits until all have run. */
+void StartVif1Worker();
+/* Whether real time runs VIF1 on its worker (default yes; --vif1-sync: no). */
+void SetVif1Worker(bool on);
+bool Vif1Async();
+bool OnVif1Worker();
+bool Vif1Busy();
+void Vif1Run(std::function<void()> command);
+/* Vif1Run for a frame's end: the EE waits while the worker is two frames
+   behind. */
+void Vif1RunFrame(std::function<void()> command);
+void JoinVif1();
+/* How long the worker has worked, in all (microseconds). */
+u64 Vif1BusyMicroseconds();
 bool GsFrame(u64 frame);
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */

@@ -68,15 +68,28 @@ u8* Memory::Translate(u32 address, u32 size) {
     }
 }
 
+namespace {
+/* Registers and memory VIF1's worker changes or reads (vif1_worker.cpp):
+   GIF and VIF1 registers and FIFOs, VU1's memories (not VU0's: the EE uses
+   them all the time). Not the DMA channels and the DMAC's D_STAT: a transfer
+   ends on the EE's thread, the worker running on from a copy of its data. */
+bool Vif1Sees(u32 a, bool write) {
+    (void)write;
+    return (a - 0x10003000u < 0x100u) || (a - 0x10003C00u < 0x400u) || (a - 0x10005000u < 0x2000u) ||
+           (a - 0x11008000u < 0x8000u);
+}
+}  // namespace
+
 u64 Memory::Read(u32 address, u32 size) {
     address = Physical(address);
+    if (Vif1Busy() && Vif1Sees(address, false)) JoinVif1();
     u8* bytes = Translate(address, size);
     if (!bytes) throw MemoryFault{address, false};
     u64 value = 0;
     std::memcpy(&value, bytes, size);        // the EE and the host are both little-endian
     const int index = HookIndex(address & ~3u);
     if (index >= 0) {
-        RunStats().register_reads[address & ~3u]++;
+        if (!OnVif1Worker()) RunStats().register_reads[address & ~3u]++;
         if (read_hooks_[index]) value = read_hooks_[index](address, value);
     }
     return value;
@@ -100,6 +113,7 @@ void Memory::Watched(u32 address, u64 value, u32 size) {
 
 void Memory::Write(u32 address, u64 value, u32 size) {
     address = Physical(address);
+    if (Vif1Busy() && Vif1Sees(address, true)) JoinVif1();
     // Into VU0's or VU1's instruction memory: their compiled programs are
     // compared with it again (Vu::MicroWritten).
     if (address - 0x11000000u < 0x10000u && ((address >> 14) & 1) == 0) {
@@ -118,7 +132,7 @@ void Memory::Write(u32 address, u64 value, u32 size) {
         const u32 word = (address & ~3u) + offset;
         const int index = HookIndex(word);
         if (index < 0) continue;
-        RunStats().register_writes[word]++;
+        if (!OnVif1Worker()) RunStats().register_writes[word]++;
         if (write_hooks_[index]) write_hooks_[index](word, offset ? value >> (8 * offset) : value);
     }
 }

@@ -155,7 +155,8 @@ std::unordered_map<std::uint64_t, std::vector<const VuCompiled*>>& Compiled() {
 
 // A program's blocks by pair address (null where none starts), made once.
 const std::vector<VuBlock>& BlockTable(const VuCompiled* program, std::size_t pairs) {
-    static std::unordered_map<const VuCompiled*, std::vector<VuBlock>> tables;
+    // A thread's own (VU1 runs on VIF1's worker, VU0 on the EE's).
+    thread_local std::unordered_map<const VuCompiled*, std::vector<VuBlock>> tables;
     std::vector<VuBlock>& table = tables[program];
     if (table.empty()) {
         table.assign(pairs, nullptr);

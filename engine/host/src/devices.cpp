@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <string>
 
 #include "ps2host/dma.h"
@@ -176,6 +177,20 @@ std::string Walk(const Channel& ch, u32 chcr, bool describe) {
     if (ch.base == 0x10008000u) sink = to_vif(Vif0());
     if (ch.base == 0x10009000u) sink = to_vif(Vif1());
     if (ch.base == 0x1000A000u) sink = Path3;
+    // With VIF1's worker, VIF1's and the GIF's words are copied as the chain
+    // is walked and handed to it in a command (the transfer ends here, as on
+    // the console its data is taken).
+    const bool queued = Vif1Async() && (ch.base == 0x10009000u || ch.base == 0x1000A000u);
+    struct Copy {
+        std::vector<u32> words;
+        std::vector<std::pair<u32, u32>> runs;      // (count, from) each, in order
+    };
+    auto copy = queued ? std::make_shared<Copy>() : nullptr;
+    if (queued)
+        sink = [copy](const u32* words, u32 count, u32 from) {
+            copy->words.insert(copy->words.end(), words, words + count);
+            copy->runs.emplace_back(count, from);
+        };
     char text[160] = "";
     try {
         Timed timed(Section::Dma);      // (VU1 and the GS, which it drives, timed apart)
@@ -184,9 +199,26 @@ std::string Walk(const Channel& ch, u32 chcr, bool describe) {
             std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
                       static_cast<unsigned long long>(outcome.quadwords), outcome.tags,
                       outcome.ended ? "" : ", stopped: the chain does not end");
-        if (ch.base == 0x1000A000u && (*Register(kGifStat) & kGifStatM3P)) {
-            const u32 held = outcome.quadwords < kGifFifoDepth ? u32(outcome.quadwords) : kGifFifoDepth;
-            *Register(kGifStat) = (*Register(kGifStat) & ~kGifStatFqc) | (held << kGifStatFqcShift);
+        const bool gif = ch.base == 0x1000A000u;
+        const u64 quadwords = outcome.quadwords;
+        auto fifo = [gif, quadwords] {
+            if (gif && (*Register(kGifStat) & kGifStatM3P)) {
+                const u32 held = quadwords < kGifFifoDepth ? u32(quadwords) : kGifFifoDepth;
+                *Register(kGifStat) = (*Register(kGifStat) & ~kGifStatFqc) | (held << kGifStatFqcShift);
+            }
+        };
+        if (queued) {
+            Vif1Run([copy, gif, fifo] {
+                const u32* at = copy->words.data();
+                for (const auto& [count, from] : copy->runs) {
+                    if (gif) Path3(at, count, from);
+                    else Vif1().Words(at, count, from);
+                    at += count;
+                }
+                fifo();
+            });
+        } else {
+            fifo();
         }
     } catch (const MemoryFault& fault) {
         std::snprintf(text, sizeof text, "stopped: read outside memory at 0x%08X", unsigned(fault.address));
@@ -246,11 +278,16 @@ void SetFrameTimes(unsigned every) { g_frame_times = every; }
 void FrameTimes(u64 frame) {
     using Clock = std::chrono::steady_clock;
     static Clock::time_point last = Clock::now();
-    static u64 last_frame = 0, last_transfers = 0, last_lost = 0, last_idle = 0;
+    static u64 last_frame = 0, last_transfers = 0, last_lost = 0, last_idle = 0, last_worker_us = 0;
     if (!g_frame_times || frame < last_frame + g_frame_times) return;
-    const u64 lost = LostVblanks(), idle = IdleNanoseconds();
+    const u64 lost = LostVblanks(), idle = IdleNanoseconds(), worker_us = Vif1BusyMicroseconds();
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
+    char job_text[64] = "";
+    if (worker_us != last_worker_us && seconds > 0)
+        std::snprintf(job_text, sizeof job_text, ", VIF1's worker busy %d%%",
+                      int(100.0 * double(worker_us - last_worker_us) / 1e6 / seconds + 0.5));
+    last_worker_us = worker_us;
     // Frames here are vertical blanks; a game that cannot keep up draws a
     // picture every other one (or less), which the VIF1 transfers show.
     std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second, %.1f VIF1 transfers a second%s\n",
@@ -261,7 +298,7 @@ void FrameTimes(u64 frame) {
                                     : std::string()) +
                  (idle != last_idle && seconds > 0
                       ? ", EE idle " + std::to_string(int(100.0 * double(idle - last_idle) / 1e9 / seconds + 0.5)) + "%"
-                      : std::string())).c_str());
+                      : std::string()) + job_text).c_str());
     last_lost = lost;
     last_idle = idle;
     last = now;
@@ -273,8 +310,11 @@ bool UntilFrameReached() { return g_until_reached; }
 void FrameDone(u64 frame) {
     FrameTimes(frame);
     SampleFrame(frame);
-    // Time passes: unmasked, PATH3 sends what it still holds.
-    if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
+    // Time passes: unmasked, PATH3 sends what it still holds (in turn with
+    // VIF1's, whose state PATH3's is).
+    Vif1Run([] {
+        if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
+    });
     if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
         g_until_reached = true;
         StopRequested() = true;
@@ -294,6 +334,7 @@ void FrameDone(u64 frame) {
     }
     // What reads the GS from here on - the picture, the GPU's frame, the
     // dumps - sees it with all of the frame's packets taken.
+    JoinVif1();
     SyncGs();
     if (g_dump_frame >= 0 && (long long)frame == g_dump_frame) {
         gs::Gs& g = gs::TheGs();

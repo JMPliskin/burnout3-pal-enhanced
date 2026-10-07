@@ -39,6 +39,9 @@ void StartSampler();
    there), where the GS model and the GPU bridge run. */
 void SetSampleGsThread(bool on);
 bool SampleGsThread();
+/* --sample-vif1: on VIF1's worker (real time), where VU1 runs. */
+void SetSampleVif1Thread(bool on);
+bool SampleVif1Thread();
 /* A host crash (an access violation and the like, on any thread): its code,
    address and the stack by name, to stderr, before the process ends. */
 void InstallCrashReport();

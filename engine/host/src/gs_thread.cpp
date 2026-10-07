@@ -49,6 +49,15 @@ enum : u32 { kQword = 1, kWord = 2, kWords = 3, kPrivileged = 4, kWrap = 5, kFra
 // GsFrame's work, on the GS thread at the frame's place in the stream.
 std::function<void(u64)> g_frame_handler;
 
+// With VIF1 on its worker (vif1_worker.cpp) the worker feeds the GS: what
+// the EE would feed it goes through the worker's queue, in turn (privileged
+// registers, frame ends), or waits for the queue to empty first.
+struct Producing {
+    Producing() {
+        if (Vif1Async() && !OnVif1Worker()) JoinVif1();
+    }
+};
+
 u32 Header(u32 type, int path, u32 count) { return type << 28 | u32(path & 0xF) << 24 | (count & 0xFFFFFF); }
 
 void Pause() {
@@ -226,11 +235,13 @@ void StopGsThread() {
 }
 
 void SyncGs() {
+    JoinVif1();
     if (g_feed) g_feed->Sync();
 }
 
 void GsQword(int path, u64 low, u64 high) {
     if (!g_feed) return gs::TheGs().Qword(path, low, high);
+    Producing producing;
     u32* e = g_feed->Reserve(5);
     e[0] = Header(kQword, path, 0);
     e[1] = u32(low);
@@ -242,6 +253,7 @@ void GsQword(int path, u64 low, u64 high) {
 
 void GsWord(int path, u32 word) {
     if (!g_feed) return gs::TheGs().Word(path, word);
+    Producing producing;
     u32* e = g_feed->Reserve(2);
     e[0] = Header(kWord, path, 0);
     e[1] = word;
@@ -250,6 +262,7 @@ void GsWord(int path, u32 word) {
 
 void GsWords(int path, const u32* words, u32 count, u32 from) {
     if (!g_feed) return gs::TheGs().Words(path, words, count, from);
+    Producing producing;
     while (count) {
         const u32 run = count < kMaxRun ? count : kMaxRun;
         u32* e = g_feed->Reserve(2 + run);
@@ -267,6 +280,10 @@ void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std
 
 bool GsFrame(u64 frame) {
     if (!g_frame_handler) return false;
+    if (Vif1Async() && !OnVif1Worker()) {
+        Vif1RunFrame([frame] { GsFrame(frame); });
+        return true;
+    }
     if (!g_feed) {
         g_frame_handler(frame);
         return true;
@@ -280,6 +297,10 @@ bool GsFrame(u64 frame) {
 }
 
 void GsPrivileged(u32 address, u64 value) {
+    if (Vif1Async() && !OnVif1Worker()) {
+        Vif1Run([address, value] { GsPrivileged(address, value); });
+        return;
+    }
     if (!g_feed) return gs::TheGs().SetPrivileged(address, value);
     u32* e = g_feed->Reserve(4);
     e[0] = Header(kPrivileged, 0, 0);

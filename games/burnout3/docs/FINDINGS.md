@@ -1869,6 +1869,31 @@ objects (its renderers need autoflush and a target used as a CLUT for it):
 whether the glare here is the game's own or a visibility test that should
 have hidden it is open.
 
+## Frame rate: where a 3D frame's time goes
+
+Racing on the console runs at 60 pictures a second (PCSX2's community
+patches name the menus and the crash replays as the 30 ones). The port, in
+real time with a window, drew the first race at about 21 a second, then 30,
+then about 37, as each wall came down:
+
+* **The picture shown by read-back.** Each vertical blank the EE synced with
+  the GS thread, read the displayed target back from the GPU, swapped its
+  channels and uploaded it again to the window. The frame's end now goes
+  into the GS thread's stream and the window blits the target on the GPU,
+  three presents in flight (21 -> 30).
+* **VIF1 on the EE's thread.** The game kicks a frame's display list as one
+  VIF1 chain and flips once it has ended; walked on the EE's thread the
+  chain - VIF1, the VU1 programs, their XGKICKs - was 15 ms of the race's
+  16.7 (28 ms in the garage), and the EE's own work came on top. As PCSX2's
+  MTVU, VIF1 and VU1 now run on a worker, from a copy of the chain's words
+  taken as the EE walks it (the transfer ends then), with PATH3, the GS's
+  privileged registers and the frame ends queued behind, in order; the EE
+  waits only to touch VIF1's or the GIF's registers or VU1's memory, and when
+  the worker is two frames behind (30 -> ~37).
+
+Now VU1's own work, on the worker (~83% busy in the race, ~22 ms a picture
+there), is what holds the race below 60.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

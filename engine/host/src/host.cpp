@@ -154,9 +154,15 @@ Stats& RunStats() {
     return stats;
 }
 
-bool Noting(const std::string& key) { return g_all_notes || !g_noted.count(key); }
+std::mutex g_notes_mutex;               // VIF1's worker notes too
+
+bool Noting(const std::string& key) {
+    std::lock_guard<std::mutex> lock(g_notes_mutex);
+    return g_all_notes || !g_noted.count(key);
+}
 
 void Note(const std::string& key, const std::string& text) {
+    std::lock_guard<std::mutex> lock(g_notes_mutex);
     if (g_noted.insert(key).second) {
         RunStats().notes.push_back(text);
         std::fprintf(stderr, "[host] %s\n", text.c_str());
@@ -384,6 +390,7 @@ int Run(const Options& options) {
     g_all_notes = options.all_notes;
     GuestMemory().WatchWrites(options.watch_writes);
     InstallCrashReport();
+    SetVif1Worker(!options.vif1_sync);
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
@@ -392,6 +399,7 @@ int Run(const Options& options) {
     if (options.sample) {
         SetSampleFrom(u64(options.sample_from));
         if (options.sample_gs) SetSampleGsThread(true);
+        else if (options.sample_vif1) SetSampleVif1Thread(true);
         else StartSampler();
     }
     if (!options.vu_record.empty()) Vu::RecordPrograms(options.vu_record);
@@ -489,6 +497,8 @@ int Main(int argc, char** argv) {
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--sample") options.sample = true;
         else if (arg == "--sample-gs") options.sample = options.sample_gs = true;
+        else if (arg == "--sample-vif1") options.sample = options.sample_vif1 = true;
+        else if (arg == "--vif1-sync") options.vif1_sync = true;
         else if (arg == "--sample-from" && i + 1 < argc) {
             options.sample = true;
             options.sample_from = std::stoll(argv[++i]);

@@ -153,6 +153,11 @@ std::atomic<bool> g_sample_gs{false};
 }  // namespace
 void SetSampleGsThread(bool on) { g_sample_gs = on; }
 bool SampleGsThread() { return g_sample_gs; }
+namespace {
+std::atomic<bool> g_sample_vif1{false};
+}  // namespace
+void SetSampleVif1Thread(bool on) { g_sample_vif1 = on; }
+bool SampleVif1Thread() { return g_sample_vif1; }
 
 void SampleFrame(unsigned long long frame) {
     if (!g_sampling.load(std::memory_order_relaxed) && frame >= g_sample_from.load(std::memory_order_relaxed))
