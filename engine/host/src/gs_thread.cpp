@@ -18,6 +18,7 @@
  */
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -45,6 +46,8 @@ using u64 = std::uint64_t;
 constexpr u32 kRing = 1u << 22;                 // words (16 MB)
 constexpr u32 kMaxRun = kRing / 8;              // the longest run of words one entry carries
 enum : u32 { kQword = 1, kWord = 2, kWords = 3, kPrivileged = 4, kWrap = 5, kFrame = 6 };
+
+std::atomic<u64> g_gs_busy_us{0};       // the GS thread at work, not waiting for more (--frame-times)
 
 // GsFrame's work, on the GS thread at the frame's place in the stream.
 std::function<void(u64)> g_frame_handler;
@@ -162,6 +165,15 @@ struct Feed {
                     continue;
                 }
             }
+            const auto began = std::chrono::steady_clock::now();
+            struct Busy {
+                std::chrono::steady_clock::time_point began;
+                ~Busy() {
+                    g_gs_busy_us.fetch_add(u64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                               std::chrono::steady_clock::now() - began).count()),
+                                           std::memory_order_relaxed);
+                }
+            } busy{began};
             try {
                 while (t < h) {
                     const u32 at = u32(t % kRing);
@@ -277,6 +289,8 @@ void GsWords(int path, const u32* words, u32 count, u32 from) {
 }
 
 void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std::move(handler); }
+
+u64 GsBusyMicroseconds() { return g_gs_busy_us.load(std::memory_order_relaxed); }
 
 bool GsFrame(u64 frame) {
     if (!g_frame_handler) return false;

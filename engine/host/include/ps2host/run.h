@@ -170,6 +170,8 @@ void JoinVif1();
 /* How long the worker has worked, in all (microseconds). */
 u64 Vif1BusyMicroseconds();
 bool GsFrame(u64 frame);
+/* How long the GS thread has worked, in all (microseconds). */
+u64 GsBusyMicroseconds();
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);

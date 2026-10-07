@@ -242,6 +242,14 @@ struct Bridge {
 
 Bridge* g_bridge = nullptr;
 
+// Bumped by whatever could change what OnDraw works out for a primitive from
+// its registers alone - an image's staleness, memory synced, a write-back, a
+// CLUT load, a texture decoded or released, an image made or reloaded, a
+// draw outside the blocks its target had dirty: while it stands still, a
+// primitive with the registers of the one before draws as that one did
+// (OnDraw's fast path).
+u64 g_mutations = 0;
+
 /* Whether the CLUT has rows the GPU's copy lacks. */
 bool b_clut_rows_cpu_only(const Bridge& b) { return (b.clut_cpu & ~b.clut_gpu) != 0; }
 std::map<std::string, u64> g_decode_kinds;      // PS2HOST_GPU_COUNT
@@ -277,6 +285,7 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
 /* `o` stale for `why`, in the rows over blocks [b0, b1) (all of it, past its
    blocks or by default). */
 void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u) {
+    ++g_mutations;
     u32 r0 = 0, r1 = ~0u;
     if (b1 != ~0u && b0 < b1 && b1 > o.begin) {
         const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
@@ -297,6 +306,7 @@ void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u) {
 /* What the GPU drew into an image, swizzled into the GPU's local memory - on
    the GPU, nothing waiting. */
 void WriteBack(Bridge& b, Owned& o) {
+    ++g_mutations;
     Timed timed(Section::GpuSync);
     o.gpu_newer = false;
     if (o.dirty_end <= o.dirty_begin) return;
@@ -322,6 +332,7 @@ void WriteBack(Bridge& b, Owned& o) {
 /* Before the CPU reads or writes local memory [begin, end): what the GPU drew
    there comes back to it; written, the GPU images there must reload. */
 void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullptr) {
+    ++g_mutations;
     for (auto& [key, o] : b.owned)
         if (&o != except && o.gpu_newer && o.dirty_begin < end && begin < o.dirty_end) WriteBack(b, o);
     {
@@ -347,7 +358,16 @@ void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullp
 /* A target or depth buffer about to be drawn into or sampled: up to date with
    memory and whatever else the GPU drew over its blocks. */
 Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 height, u32 rows) {
-    Owned& o = b.owned[std::make_tuple(fbp, fbw, psm, depth)];
+    // Tens of thousands of draws a frame go to the same target as the one
+    // before: that one, without the map (its elements stay put).
+    static Owned* last = nullptr;
+    static std::tuple<u32, u32, u32, bool> last_key;
+    const auto key = std::make_tuple(fbp, fbw, psm, depth);
+    if (!last || key != last_key) {
+        last = &b.owned[key];
+        last_key = key;
+    }
+    Owned& o = *last;
     if (!o.width) {
         o.fbp = fbp;
         o.fbw = fbw;
@@ -367,6 +387,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         }
     }
     if (!o.stale && o.checked == b.newer_epoch) return o;
+    ++g_mutations;
     // Another image's drawing over these blocks reaches this one through memory.
     for (auto& [key, other] : b.owned)
         if (&other != &o && other.gpu_newer && other.dirty_begin < o.end && o.begin < other.dirty_end) {
@@ -422,6 +443,7 @@ void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
     o.dirty_end = std::max(o.dirty_end, de);
     o.drawn_serial = ++b.serial;    // textures over it decoded before this are out of date
     if (inside) return;
+    ++g_mutations;
     ++b.newer_epoch;
     for (auto& [key, other] : b.owned) {
         if (&other == &o || de <= other.begin || other.full_end <= db) continue;
@@ -504,6 +526,7 @@ u64 ClutHash(const Bridge& b, u32 psm, u32 csa) {
    from images just drawn, and bringing those back waited ~8 ms each - else
    left to the GS model. */
 bool LoadClut(Bridge& b, u64 tex0, u64 texa) {
+    ++g_mutations;
     const u32 psm = Bits(tex0, 20, 6), cbp = Bits(tex0, 37, 14), cpsm = Bits(tex0, 51, 4), csa = Bits(tex0, 56, 5);
     const u32 rows = ClutRowsOf(psm, csa);
     if (!GpuHolds(b, cbp, cbp + 8)) {
@@ -564,6 +587,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         t.renderer_key = b.next_texture++;
         b.texture_lru.push_front(key);
         t.lru = b.texture_lru.begin();
+        ++g_mutations;
         t.begin = tbp;
         t.end = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(psm) / 8 / 256 + 32));
         b.IndexTexture(&t, true);
@@ -607,6 +631,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
             b.renderer->ClutRows(gs::TheGs().Clut().data(), b.clut_cpu & ~b.clut_gpu);
             b.clut_gpu |= b.clut_cpu;
         }
+        ++g_mutations;
         b.renderer->TextureFromMemory(t.renderer_key, d);
         if (std::getenv("PS2HOST_GPU_COUNT")) {
             char key[96];
@@ -651,6 +676,7 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         b.texture_lru.pop_back();
         auto found = b.textures.find(old);
         if (found != b.textures.end()) {
+            ++g_mutations;
             b.renderer->ReleaseTexture(found->second.renderer_key);
             b.IndexTexture(&found->second, false);
             b.textures.erase(found);
@@ -803,6 +829,35 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         if (Bits(c.test, 16, 1) && Bits(c.test, 17, 2) == 0) return;    // ZTST NEVER: every pixel fails
     }
     const u32 rows = std::max(1u, y1);
+    // The registers of the primitive before, and nothing changed since: its
+    // state, target and depth buffer again (most of a frame's tens of
+    // thousands of primitives; the lookups and checks were half the GS
+    // thread's time).
+    struct Fast {
+        bool valid = false;
+        u64 mutations = 0;
+        const gs::Context* context = nullptr;
+        u64 regs[11] = {};
+        u32 rows = 0, zmax = 0;
+        ps2gpu::GsDrawState state;
+        Owned* target = nullptr;
+        Owned* depth = nullptr;
+        bool draws_colour = false;
+    };
+    static Fast fast;
+    const u64 regs[11] = {call.prim, c.frame, c.scissor, c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf,
+                          call.texa, call.fogcol | (u64(call.pabe) << 63)};
+    if (s.primary && fast.valid && fast.mutations == g_mutations && fast.context == call.context &&
+        rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && (long long)s.frame != s.dump_frame) {
+        ps2gpu::GsDrawState st = fast.state;
+        st.gouraud = gouraud;
+        for (std::size_t i = 0; i < n; ++i) v[i].z = std::min(v[i].z, fast.zmax);
+        s.renderer->DrawTriangles(st, v, n);
+        if (fast.draws_colour) Drew(s, *fast.target, x1, y1, y0);
+        if (fast.depth) Drew(s, *fast.depth, x1, y1, y0);
+        return;
+    }
+    fast.valid = false;
     if (s.primary && (long long)s.frame == s.dump_frame) {
         const auto key = std::make_tuple(state.fbp, state.fbw, state.psm);
         if (key != s.last_target) {
@@ -965,8 +1020,31 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     if (s.primary) {
         // FBMSK over every bit the format stores: the colour is not written.
         const u32 stored = state.psm == gs::PSMCT24 ? 0xFFFFFFu : Is16(state.psm) ? 0x80F8F8F8u : 0xFFFFFFFFu;
-        if ((state.fbmsk & stored) != stored) Drew(s, *target, x1, y1, y0);
+        const bool draws_colour = (state.fbmsk & stored) != stored;
+        if (draws_colour) Drew(s, *target, x1, y1, y0);
         if (depth && state.depth_write) Drew(s, *depth, x1, y1, y0);
+        // The next primitive may take the fast path - unless this one's
+        // texture is a target, lies over what it draws (each primitive
+        // makes it stale), or its Z goes in as colour.
+        bool may = !z_as_colour && !state.texture_target && (long long)s.frame != s.dump_frame;
+        if (may && state.textured) {
+            const u32 tbp = Bits(c.tex0, 0, 14), tbw = Bits(c.tex0, 14, 6), tpsm = Bits(c.tex0, 20, 6);
+            const u32 tend = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(tpsm) / 8 / 256 + 32));
+            if (target->begin < tend && tbp < target->full_end) may = false;
+            if (depth && depth->begin < tend && tbp < depth->full_end) may = false;
+        }
+        if (may) {
+            fast.valid = true;
+            fast.mutations = g_mutations;
+            fast.context = call.context;
+            std::memcpy(fast.regs, regs, sizeof regs);
+            fast.rows = rows;
+            fast.zmax = zmax;
+            fast.state = state;
+            fast.target = target;
+            fast.depth = depth && state.depth_write ? depth : nullptr;
+            fast.draws_colour = draws_colour;
+        }
         if (z_as_colour) {
             // The Z, as the bytes the Z format stores, into the Z-format view.
             ps2gpu::GsDrawState zs;

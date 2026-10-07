@@ -278,16 +278,23 @@ void SetFrameTimes(unsigned every) { g_frame_times = every; }
 void FrameTimes(u64 frame) {
     using Clock = std::chrono::steady_clock;
     static Clock::time_point last = Clock::now();
-    static u64 last_frame = 0, last_transfers = 0, last_lost = 0, last_idle = 0, last_worker_us = 0;
+    static u64 last_frame = 0, last_transfers = 0, last_lost = 0, last_idle = 0, last_worker_us = 0, last_gs_us = 0;
     if (!g_frame_times || frame < last_frame + g_frame_times) return;
     const u64 lost = LostVblanks(), idle = IdleNanoseconds(), worker_us = Vif1BusyMicroseconds();
+    const u64 gs_us = GsBusyMicroseconds();
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
-    char job_text[64] = "";
-    if (worker_us != last_worker_us && seconds > 0)
-        std::snprintf(job_text, sizeof job_text, ", VIF1's worker busy %d%%",
-                      int(100.0 * double(worker_us - last_worker_us) / 1e6 / seconds + 0.5));
+    char job_text[96] = "";
+    if (seconds > 0)
+        std::snprintf(job_text, sizeof job_text, "%s, GS thread busy %d%%",
+                      worker_us != last_worker_us
+                          ? (", VIF1's worker busy " +
+                             std::to_string(int(100.0 * double(worker_us - last_worker_us) / 1e6 / seconds + 0.5)) + "%")
+                                .c_str()
+                          : "",
+                      int(100.0 * double(gs_us - last_gs_us) / 1e6 / seconds + 0.5));
     last_worker_us = worker_us;
+    last_gs_us = gs_us;
     // Frames here are vertical blanks; a game that cannot keep up draws a
     // picture every other one (or less), which the VIF1 transfers show.
     std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second, %.1f VIF1 transfers a second%s\n",

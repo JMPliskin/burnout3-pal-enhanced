@@ -64,6 +64,8 @@ public:
     bool Flush();
     void AfterSubmit(std::function<void()> done) { after_submit_.push_back(std::move(done)); }
     bool recording() const { return open_; }
+    /* Counts command buffers begun: what was set in one is not in the next. */
+    std::uint64_t recording_id() const { return recordings_; }
     static constexpr int kSlots = 3;
     /* The command buffer recording goes into (or will). */
     int slot() const { return current_; }
@@ -90,6 +92,7 @@ public:
 private:
     std::string describe_;
     bool open_ = false;
+    std::uint64_t recordings_ = 0;
     std::vector<std::function<void()>> after_submit_;
     int current_ = 0;
     bool in_flight_[kSlots] = {};
@@ -107,6 +110,7 @@ void VulkanGpu::RecordInPass(F&& record) {
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cmd, &begin);
         open_ = true;
+        ++recordings_;
     }
     record(cmd);
 }

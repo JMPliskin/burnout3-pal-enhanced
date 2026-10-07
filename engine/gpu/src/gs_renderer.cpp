@@ -310,6 +310,8 @@ private:
     VkSampler samplers_[8] = {};    /* bilinear << 2 | clamp_s << 1 | clamp_t */
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     std::map<std::uint32_t, VkPipeline> pipelines_;
+    std::uint32_t last_pipeline_key_ = ~0u;
+    VkPipeline last_pipeline_ = VK_NULL_HANDLE;
     std::map<Key, Image> targets_;
     std::map<Key, Image> depths_;   /* by (ZBP or a target's own, width, height) */
     std::map<std::uint64_t, Texture> textures_;
@@ -376,6 +378,19 @@ private:
                        std::uint32_t rows = ~0u);
     /* A texture image of this size under `key`, made (or made again) if need be. */
     Texture* TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height);
+    /* The state a command buffer's draws last set: set again only when it
+       changes (a race records ~2,000 batches a picture, and most set what
+       the one before did - a dozen calls into the driver each). */
+    struct DrawState {
+        std::uint64_t recording = ~0ull;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkDescriptorSet sets[2] = {};
+        int depth_test = -1, stencil_test = -1, compare = -1, depth_write = -1;
+        VkViewport viewport{};
+        VkRect2D scissor{};
+        float size[2] = {-1, -1};
+        VkBuffer vertices = VK_NULL_HANDLE;
+    } drawn_;
     // The CLUT for the draws (gs.frag's set 1): a target read as PSMT8H.
     VkDescriptorSetLayout clut_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSet clut_set_ = VK_NULL_HANDLE;
@@ -728,6 +743,7 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
 }
 
 void VulkanGsRenderer::Swizzle(VkCommandBuffer cmd, const SwizzleParams& params) {
+    drawn_ = DrawState{};           // push constants and bindings of its own: the draws set theirs again
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0, nullptr);
     vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
@@ -907,8 +923,14 @@ void VulkanGsRenderer::DepthFromMemory(std::uint32_t zbp, std::uint32_t width, s
 }
 
 VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
+    // Batch after batch asks for the same one.
+    if (key == last_pipeline_key_ && last_pipeline_) return last_pipeline_;
     auto found = pipelines_.find(key);
-    if (found != pipelines_.end()) return found->second;
+    if (found != pipelines_.end()) {
+        last_pipeline_key_ = key;
+        last_pipeline_ = found->second;
+        return found->second;
+    }
     VkPipelineShaderStageCreateInfo stages[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                                  {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1085,6 +1107,7 @@ void VulkanGsRenderer::DateSetup(VkCommandBuffer cmd, Image& target, Image& dept
     ri.pDepthAttachment = &z;
     ri.pStencilAttachment = &stencil;
     vkCmdBeginRendering(cmd, &ri);
+    drawn_ = DrawState{};           // its own pipeline, sets, viewport and scissor
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, date_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &target.sampled, 0, nullptr);
     VkViewport vp{0, 0, float(target.width), float(target.height), 0, 1};
@@ -1179,6 +1202,7 @@ void VulkanGsRenderer::TextureFromMemory(std::uint64_t key, const GsTextureDecod
         MemoryBarrier(cmd);
         if (d.clut) vkCmdUpdateBuffer(cmd, clut_, 0, 1024, d.clut);
         MemoryBarrier(cmd);
+        drawn_ = DrawState{};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
                                 nullptr);
@@ -1206,6 +1230,7 @@ void VulkanGsRenderer::ClutFromMemory(const GsClutLoad& load) {
     params.mode = 1;
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
+        drawn_ = DrawState{};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
                                 nullptr);
@@ -1523,21 +1548,44 @@ void VulkanGsRenderer::Flush() {
             // ZTST: NEVER, ALWAYS, GEQUAL, GREATER - the larger Z is nearer.
             static const VkCompareOp kCompare[4] = {VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS,
                                                     VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
-            vkCmdSetDepthTestEnable(cmd, state_.depth ? VK_TRUE : VK_FALSE);
-            vkCmdSetStencilTestEnable(cmd, state_.date ? VK_TRUE : VK_FALSE);
-            vkCmdSetDepthCompareOp(cmd, kCompare[state_.ztst & 3]);
-            const VkDescriptorSet sets[2] = {set, clut_set_};
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, sets, 0, nullptr);
-            VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
-            vkCmdSetViewport(cmd, 0, 1, &vp);
+            if (drawn_.recording != g_.recording_id()) drawn_ = DrawState{g_.recording_id()};
+            DrawState& d = drawn_;
+            const int depth_test = state_.depth ? 1 : 0, stencil_test = state_.date ? 1 : 0;
+            const int compare = int(state_.ztst & 3);
+            if (d.depth_test != depth_test) vkCmdSetDepthTestEnable(cmd, VkBool32(d.depth_test = depth_test));
+            if (d.stencil_test != stencil_test) vkCmdSetStencilTestEnable(cmd, VkBool32(d.stencil_test = stencil_test));
+            if (d.compare != compare) vkCmdSetDepthCompareOp(cmd, kCompare[d.compare = compare]);
+            if (d.sets[0] != set || d.sets[1] != clut_set_) {
+                d.sets[0] = set;
+                d.sets[1] = clut_set_;
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, d.sets, 0, nullptr);
+            }
+            const VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
+            if (std::memcmp(&vp, &d.viewport, sizeof vp) != 0) {
+                d.viewport = vp;
+                vkCmdSetViewport(cmd, 0, 1, &vp);
+            }
             const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
             const std::int32_t x1 = std::min(std::int32_t(t->width) - 1, state_.scissor_x1);
             const std::int32_t y1 = std::min(std::int32_t(t->height) - 1, state_.scissor_y1);
-            VkRect2D sc{{x0, y0}, {std::uint32_t(std::max(0, x1 - x0 + 1)), std::uint32_t(std::max(0, y1 - y0 + 1))}};
-            vkCmdSetScissor(cmd, 0, 1, &sc);
+            const VkRect2D sc{{x0, y0}, {std::uint32_t(std::max(0, x1 - x0 + 1)), std::uint32_t(std::max(0, y1 - y0 + 1))}};
+            if (std::memcmp(&sc, &d.scissor, sizeof sc) != 0) {
+                d.scissor = sc;
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+            }
             const float size[2] = {float(t->width), float(t->height)};
-            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
-            vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
+            if (size[0] != d.size[0] || size[1] != d.size[1]) {
+                d.size[0] = size[0];
+                d.size[1] = size[1];
+                vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, size);
+            }
+            // The ring's chunk bound once, at its start; the batch by its first vertex.
+            if (d.vertices != vertex_buffer) {
+                d.vertices = vertex_buffer;
+                const VkDeviceSize zero = 0;
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &zero);
+            }
+            const std::uint32_t first = std::uint32_t(vertex_offset / sizeof(PackedVertex));
             // PABE splits each pass again: blended where As >= 0x80 (the shader's
             // pabe 1), not blended below (pabe 2, the pipeline without blending).
             const bool split = state_.blend && state_.pabe;
@@ -1554,8 +1602,13 @@ void VulkanGsRenderer::Flush() {
                         const std::uint32_t op_key = op ? ((key & (0xFu << 9)) | op << 13) : key;
                         const VkPipeline chosen = op_key == PipelineKey(state_) ? pipeline : PipelineFor(op_key);
                         if (!chosen) continue;
-                        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
-                        vkCmdSetDepthWriteEnable(cmd, pass.depth_write && op != 1 ? VK_TRUE : VK_FALSE);
+                        if (d.pipeline != chosen) {
+                            d.pipeline = chosen;
+                            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
+                        }
+                        const int depth_write = pass.depth_write && op != 1 ? 1 : 0;
+                        if (d.depth_write != depth_write)
+                            vkCmdSetDepthWriteEnable(cmd, VkBool32(d.depth_write = depth_write));
                         params.afail = pass.mode;
                         params.pabe = half;
                         params.logic = op;
@@ -1563,7 +1616,7 @@ void VulkanGsRenderer::Flush() {
                         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset,
                                            sizeof params, &params);
                         ++g_draws;
-                        vkCmdDraw(cmd, count, 1, 0, 0);
+                        vkCmdDraw(cmd, count, 1, first, 0);
                     }
                 }
             }
