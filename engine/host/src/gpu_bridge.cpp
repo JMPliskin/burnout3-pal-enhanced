@@ -237,6 +237,10 @@ struct Bridge {
 
 Bridge* g_bridge = nullptr;
 
+/* Whether the CLUT has rows the GPU's copy lacks. */
+bool b_clut_rows_cpu_only(const Bridge& b) { return (b.clut_cpu & ~b.clut_gpu) != 0; }
+std::map<std::string, u64> g_decode_kinds;      // PS2HOST_GPU_COUNT
+
 // ------------------------------------------------------------------ --gpu
 
 /* Blocks [begin, end) whose copy on one side is behind the other's brought up
@@ -567,6 +571,12 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
             b.clut_gpu |= b.clut_cpu;
         }
         b.renderer->TextureFromMemory(t.renderer_key, d);
+        if (std::getenv("PS2HOST_GPU_COUNT")) {
+            char key[96];
+            std::snprintf(key, sizeof key, "psm %02X tbp %04X tbw %u %ux%u clutrows %d", unsigned(psm), unsigned(tbp),
+                          unsigned(tbw), unsigned(tw), unsigned(th), int((clut_rows & ~b.clut_cpu) != 0));
+            ++g_decode_kinds[key];
+        }
         t.valid = true;
         t.decoded = false;              // the CPU's copy was not read: no hash to compare
         t.decoded_serial = b.serial;
@@ -775,14 +785,20 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     if (s.primary) target = &Use(s, state.fbp, state.fbw, state.psm, false, state.width, state.height, rows);
     if (state.textured) {
         const u32 tex_psm = Bits(c.tex0, 20, 6), tbp_blocks = Bits(c.tex0, 0, 14);
+        // A target read as PSMT8H (Burnout 3's glow and blur passes, ~900 a
+        // picture in a race) indexes the GPU's CLUT by its alpha byte in the
+        // shader (4): it was swizzled into GPU memory and decoded again each
+        // time.
         const u32 tex_format = tex_psm == gs::PSMCT32 ? 0 : tex_psm == gs::PSMCT24 ? 1
-                             : (tex_psm == gs::PSMCT16 || tex_psm == gs::PSMCT16S) ? 2 : 3;
+                             : (tex_psm == gs::PSMCT16 || tex_psm == gs::PSMCT16S) ? 2
+                             : (tex_psm == gs::PSMT8H && s.primary) ? 4 : 3;
         state.tw = tw;
         state.th = th;
         // A texture that is a target the GPU has drawn is sampled from it
         // (render to texture).
-        if ((s.primary || s.targets_as_textures) && tex_format < 3 && tbp_blocks % 32 == 0) {
-            const u32 candidates[2] = {tex_format == 2 ? tex_psm : gs::PSMCT32, tex_format == 2 ? tex_psm : gs::PSMCT24};
+        if ((s.primary || s.targets_as_textures) && tex_format != 3 && tbp_blocks % 32 == 0) {
+            const u32 candidates[2] = {tex_format == 2 ? tex_psm : gs::PSMCT32,
+                                       tex_format == 2 ? tex_psm : tex_format == 4 ? gs::PSMCT32 : gs::PSMCT24};
             const u32 tex_fbp = tbp_blocks / 32, tex_fbw = Bits(c.tex0, 14, 6);
             for (u32 psm : candidates) {
                 const bool known = s.primary ? s.owned.count(std::make_tuple(tex_fbp, tex_fbw, psm, false)) != 0
@@ -791,6 +807,11 @@ void OnDraw(const gs::Gs::DrawCall& call) {
                 if (s.primary) {
                     Owned& source = s.owned[std::make_tuple(tex_fbp, tex_fbw, psm, false)];
                     Use(s, tex_fbp, tex_fbw, psm, false, source.width, source.height, 1);   // sampling grows nothing
+                }
+                if (tex_format == 4 && b_clut_rows_cpu_only(s)) {
+                    // The CLUT rows only the CPU has, over to the GPU's first.
+                    s.renderer->ClutRows(gs::TheGs().Clut().data(), s.clut_cpu & ~s.clut_gpu);
+                    s.clut_gpu |= s.clut_cpu;
                 }
                 state.texture_target = true;
                 state.tex_fbp = tex_fbp;
@@ -1074,6 +1095,15 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
                          static_cast<unsigned long long>(frame), static_cast<unsigned long long>(s.serial),
                          static_cast<unsigned long long>(s.write_backs), static_cast<unsigned long long>(s.reloads),
                          static_cast<unsigned long long>(s.decodes), s.owned.size(), s.textures.size());
+        if (frame % 100 == 0 && std::getenv("PS2HOST_GPU_COUNT")) {
+            std::fprintf(stderr, "[gpu]   last 100 frames: %s\n", ps2gpu::RendererCounters().c_str());
+            std::vector<std::pair<u64, std::string>> kinds;
+            for (const auto& [k, n] : g_decode_kinds) kinds.emplace_back(n, k);
+            std::sort(kinds.rbegin(), kinds.rend());
+            for (std::size_t i = 0; i < kinds.size() && i < 12; ++i)
+                std::fprintf(stderr, "[gpu]     GPU decodes %llu: %s\n", (unsigned long long)kinds[i].first, kinds[i].second.c_str());
+            g_decode_kinds.clear();
+        }
         if (std::getenv("PS2HOST_GPU_LOG")) {
             std::fprintf(stderr, "[gpu]   KB to the CPU: %llu for textures, %llu for reads, %llu for writes;",
                          static_cast<unsigned long long>(s.downloads_by[0] / 4),

@@ -69,9 +69,13 @@ struct Texture {
     VkDescriptorSet sets[8] = {};       /* by sampler */
 };
 
+// What the frames' command buffers hold (RendererCounters, PS2HOST_GPU_LOG).
+std::uint64_t g_barriers = 0, g_transitions = 0, g_dispatches = 0, g_draws = 0, g_passes = 0, g_feedback = 0;
+
 void Transition(VkCommandBuffer cmd, Image& t, VkImageLayout to, VkAccessFlags dst_access,
                 VkPipelineStageFlags dst_stage) {
     if (t.layout == to) return;
+    ++g_transitions;
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.oldLayout = t.layout;
     b.newLayout = to;
@@ -86,6 +90,7 @@ void Transition(VkCommandBuffer cmd, Image& t, VkImageLayout to, VkAccessFlags d
 
 /* Everything written so far, visible to everything after. */
 void MemoryBarrier(VkCommandBuffer cmd) {
+    ++g_barriers;
     VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -274,7 +279,11 @@ private:
     void DateSetup(VkCommandBuffer cmd, Image& target, Image& depth, std::uint32_t datm);
     /* A target's descriptor for sampling it. */
     VkDescriptorSet SampledSet(Image& image);
-    Image feedback_;                /* a copy of the target being drawn, when it is also the texture */
+    /* Copies of the target being drawn, when it is also the texture: one a
+       size, kept (one image resized in turn - the race alternates targets of
+       several sizes - waited for the GPU each time: 32 s of a race script). */
+    std::map<std::pair<std::uint32_t, std::uint32_t>, Image> feedbacks_;
+    Image* feedback_ = nullptr;     /* the one the batch being recorded copies into */
     /* The rendering pass the last batch left open, so the next one into the
        same target and depth buffer goes on in it (thousands of batches a
        frame, each beginning and ending its own, cost the GPU most of its
@@ -362,6 +371,9 @@ private:
     void LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect);
     /* A texture image of this size under `key`, made (or made again) if need be. */
     Texture* TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height);
+    // The CLUT for the draws (gs.frag's set 1): a target read as PSMT8H.
+    VkDescriptorSetLayout clut_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSet clut_set_ = VK_NULL_HANDLE;
     VkBuffer gsmem_ = VK_NULL_HANDLE, linear_ = VK_NULL_HANDLE, clut_ = VK_NULL_HANDLE;
     VkDeviceMemory gsmem_memory_ = VK_NULL_HANDLE, linear_memory_ = VK_NULL_HANDLE, clut_memory_ = VK_NULL_HANDLE;
     VkShaderModule decode_ = VK_NULL_HANDLE;
@@ -548,12 +560,19 @@ bool VulkanGsRenderer::Init(std::string* error) {
     dli.bindingCount = 1;
     dli.pBindings = &binding;
     vkCreateDescriptorSetLayout(g_.device, &dli, nullptr, &set_layout_);
-    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192};
+    VkDescriptorSetLayoutBinding clut_binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                              nullptr};
+    VkDescriptorSetLayoutCreateInfo cli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    cli.bindingCount = 1;
+    cli.pBindings = &clut_binding;
+    vkCreateDescriptorSetLayout(g_.device, &cli, nullptr, &clut_set_layout_);
+    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192},
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    dpi.maxSets = 8192;
-    dpi.poolSizeCount = 1;
-    dpi.pPoolSizes = &size;
+    dpi.maxSets = 8192 + 4;
+    dpi.poolSizeCount = 2;
+    dpi.pPoolSizes = sizes;
     vkCreateDescriptorPool(g_.device, &dpi, nullptr, &pool_);
     for (int i = 0; i < 8; ++i) {
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -568,8 +587,9 @@ bool VulkanGsRenderer::Init(std::string* error) {
     VkPushConstantRange push[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 8},
                                    {VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof(FragmentParams)}};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    lci.setLayoutCount = 1;
-    lci.pSetLayouts = &set_layout_;
+    const VkDescriptorSetLayout set_layouts[2] = {set_layout_, clut_set_layout_};
+    lci.setLayoutCount = 2;
+    lci.pSetLayouts = set_layouts;
     lci.pushConstantRangeCount = 2;
     lci.pPushConstantRanges = push;
     vkCreatePipelineLayout(g_.device, &lci, nullptr, &layout_);
@@ -610,6 +630,23 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
         !DeviceBuffer(1024, usage, &clut_, &clut_memory_)) {
         if (error) *error = "no GPU memory for GS local memory";
         return false;
+    }
+    {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = pool_;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &clut_set_layout_;
+        if (vkAllocateDescriptorSets(g_.device, &ai, &clut_set_) != VK_SUCCESS) {
+            if (error) *error = "no descriptor set for the CLUT";
+            return false;
+        }
+        const VkDescriptorBufferInfo info{clut_, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = clut_set_;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &info;
+        vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
     }
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = sizeof spirv_swizzle_comp;
@@ -689,6 +726,7 @@ void VulkanGsRenderer::Swizzle(VkCommandBuffer cmd, const SwizzleParams& params)
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0, nullptr);
     vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
+    ++g_dispatches;
     vkCmdDispatch(cmd, (params.cols + 7) / 8, (params.rows + 7) / 8, 1);
 }
 
@@ -1098,6 +1136,7 @@ void VulkanGsRenderer::TextureFromMemory(std::uint64_t key, const GsTextureDecod
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
                                 nullptr);
         vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
+        ++g_dispatches;
         vkCmdDispatch(cmd, (d.tw + 7) / 8, (d.th + 7) / 8, 1);
         MemoryBarrier(cmd);
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1306,15 +1345,12 @@ void VulkanGsRenderer::Flush() {
         if (found != targets_.end()) {
             source = &found->second;
             if (source == t) {
-                if (feedback_.width != t->width || feedback_.height != t->height) {
-                    g_.Submit("the feedback copy resized");                        // what is recorded may still use the old copy
-                    if (feedback_.sampled) vkFreeDescriptorSets(g_.device, pool_, 1, &feedback_.sampled);
-                    feedback_.sampled = VK_NULL_HANDLE;
-                    DestroyImage(feedback_);
-                    MakeImage(feedback_, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-                }
+                Image& copy = feedbacks_[{t->width, t->height}];
+                if (!copy.image)
+                    MakeImage(copy, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                feedback_ = &copy;
                 copy_first = true;
-                set = SampledSet(feedback_);
+                set = SampledSet(copy);
             } else {
                 set = SampledSet(*source);
             }
@@ -1391,17 +1427,18 @@ void VulkanGsRenderer::Flush() {
             if (outside || open_target_ != t || open_depth_ != depth) EndPass(cmd);
             if (state_.date) DateSetup(cmd, *t, *depth, state_.datm);
             if (copy_first) {
+                ++g_feedback;
                 Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT);
-                Transition(cmd, feedback_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                Transition(cmd, *feedback_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT);
                 VkImageCopy region{};
                 region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                 region.dstSubresource = region.srcSubresource;
                 region.extent = {t->width, t->height, 1};
-                vkCmdCopyImage(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, feedback_.image,
+                vkCmdCopyImage(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, feedback_->image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-                Transition(cmd, feedback_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                Transition(cmd, *feedback_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
             } else if (source) {
                 Transition(cmd, *source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
@@ -1431,6 +1468,7 @@ void VulkanGsRenderer::Flush() {
             ri.pColorAttachments = &colour;
             ri.pDepthAttachment = &z;
             ri.pStencilAttachment = &z;
+            ++g_passes;
             vkCmdBeginRendering(cmd, &ri);
             open_target_ = t;
             open_depth_ = depth;
@@ -1441,7 +1479,8 @@ void VulkanGsRenderer::Flush() {
             vkCmdSetDepthTestEnable(cmd, state_.depth ? VK_TRUE : VK_FALSE);
             vkCmdSetStencilTestEnable(cmd, state_.date ? VK_TRUE : VK_FALSE);
             vkCmdSetDepthCompareOp(cmd, kCompare[state_.ztst & 3]);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0, nullptr);
+            const VkDescriptorSet sets[2] = {set, clut_set_};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, sets, 0, nullptr);
             VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
             vkCmdSetViewport(cmd, 0, 1, &vp);
             const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
@@ -1476,6 +1515,7 @@ void VulkanGsRenderer::Flush() {
                         params.keep = keep;
                         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset,
                                            sizeof params, &params);
+                        ++g_draws;
                         vkCmdDraw(cmd, count, 1, 0, 0);
                     }
                 }
@@ -1587,7 +1627,7 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     for (auto& [size, list] : texture_pool_)
         for (Texture& texture : list) DestroyImage(texture.image);
     DestroyImage(blank_.image);
-    DestroyImage(feedback_);
+    for (auto& [size, copy] : feedbacks_) DestroyImage(copy);
     for (const Staged& staged : staging_free_) {
         vkUnmapMemory(g_.device, staged.memory);
         vkDestroyBuffer(g_.device, staged.buffer, nullptr);
@@ -1605,6 +1645,7 @@ VulkanGsRenderer::~VulkanGsRenderer() {
         if (s) vkDestroySampler(g_.device, s, nullptr);
     if (pool_) vkDestroyDescriptorPool(g_.device, pool_, nullptr);
     if (set_layout_) vkDestroyDescriptorSetLayout(g_.device, set_layout_, nullptr);
+    if (clut_set_layout_) vkDestroyDescriptorSetLayout(g_.device, clut_set_layout_, nullptr);
     if (layout_) vkDestroyPipelineLayout(g_.device, layout_, nullptr);
     if (vert_) vkDestroyShaderModule(g_.device, vert_, nullptr);
     if (frag_) vkDestroyShaderModule(g_.device, frag_, nullptr);
@@ -1623,6 +1664,18 @@ VulkanGsRenderer::~VulkanGsRenderer() {
 }
 
 }  // namespace
+
+std::string RendererCounters() {
+    static std::uint64_t last[6] = {};
+    const std::uint64_t now[6] = {g_barriers, g_transitions, g_dispatches, g_draws, g_passes, g_feedback};
+    char text[200];
+    std::snprintf(text, sizeof text, "%llu barriers, %llu transitions, %llu dispatches, %llu draws, %llu passes, %llu feedback copies",
+                  (unsigned long long)(now[0] - last[0]), (unsigned long long)(now[1] - last[1]),
+                  (unsigned long long)(now[2] - last[2]), (unsigned long long)(now[3] - last[3]),
+                  (unsigned long long)(now[4] - last[4]), (unsigned long long)(now[5] - last[5]));
+    for (int i = 0; i < 6; ++i) last[i] = now[i];
+    return text;
+}
 
 std::string SubmitStats() {
     char text[160];

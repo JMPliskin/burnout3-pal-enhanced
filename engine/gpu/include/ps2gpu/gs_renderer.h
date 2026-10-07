@@ -80,7 +80,7 @@ struct GsDrawState {
        read it as the GS would - TEXA's alpha, 16-bit colour to 5 bits. */
     bool texture_target = false;
     std::uint32_t tex_fbp = 0, tex_fbw = 0, tex_target_psm = 0;
-    std::uint32_t tex_format = 0;                        /* 0 32-bit, 1 24-bit, 2 16-bit */
+    std::uint32_t tex_format = 0;                        /* 0 32-bit, 1 24-bit, 2 16-bit, 4 PSMT8H through the CLUT */
     std::uint32_t ta0 = 0, ta1 = 0x80;                   /* TEXA */
     bool aem = false;
 
@@ -222,6 +222,9 @@ std::unique_ptr<GsRenderer> CreateGsRenderer(Gpu& gpu, std::string* error);
 /* How often the CPU has waited for the GPU to finish what was submitted, and
    for how long in all: "N submissions, S s waiting". */
 std::string SubmitStats();
+/* What went into the command buffers since the last call: barriers, layout
+   transitions, compute dispatches, draws, rendering passes, feedback copies. */
+std::string RendererCounters();
 
 }  // namespace ps2gpu
 

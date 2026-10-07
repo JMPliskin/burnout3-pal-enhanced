@@ -11,6 +11,9 @@ layout(location = 1) noperspective in vec3 coordinate;
 layout(location = 2) noperspective in float fog;
 
 layout(set = 0, binding = 0) uniform sampler2D texture_image;
+// The GPU's CLUT (decode.comp's), 256 entries as the GS expands them: a target
+// read as PSMT8H (tex_format 4) indexes it by its alpha byte.
+layout(std430, set = 1, binding = 0) readonly buffer Clut { uint clut[256]; };
 
 layout(push_constant) uniform Params {
     layout(offset = 16) uint textured;
@@ -28,7 +31,7 @@ layout(push_constant) uniform Params {
     uint wms, wmt;      // CLAMP: 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP, 3 REGION_REPEAT
     uint minu, maxu, minv, maxv;
     uint tw, th;        // TEX0's size (0: the image's own)
-    uint tex_format;    // a target read as 0 32-bit, 1 24-bit, 2 16-bit texels
+    uint tex_format;    // a target read as 0 32-bit, 1 24-bit, 2 16-bit texels, 4 PSMT8H through the CLUT
     uint ta0, ta1, aem; // TEXA
     uint logic;         // FBMSK masking part of a channel: 1 the AND pass, 2 the OR pass, 0 neither
     uint keep;          // ...the bits FBMSK keeps, RGBA bytes as the target holds them
@@ -52,6 +55,10 @@ vec4 Texel(int u, int v) {
     // A target may be smaller than TEX0 says: what lies beyond is not drawn here.
     at = min(at, textureSize(texture_image, 0) - 1);
     vec4 t = floor(texelFetch(texture_image, at, 0) * 255.0 + 0.5);
+    if (p.tex_format == 4u) {                       // PSMT8H: the alpha byte indexes the CLUT
+        const uint c = clut[uint(t.a) & 255u];
+        return vec4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float(c >> 24));
+    }
     bool black = t.r + t.g + t.b == 0.0;
     if (p.tex_format == 1u) {                       // 24-bit: TEXA's alpha
         t.a = (p.aem != 0u && black) ? 0.0 : float(p.ta0);
