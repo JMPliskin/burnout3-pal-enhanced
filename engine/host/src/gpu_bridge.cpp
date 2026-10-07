@@ -130,6 +130,11 @@ struct Owned {
     bool stale = true;              // local memory changed since the image was loaded
     bool stale_beyond = false;      // ...in rows past `end`: stale when it grows into them
     int why = 0;                    // what made it stale: 0 new, 1 memory written, 2 a draw over it, 3 another's write-back
+    // The rows a reload brings back (stale ones), [stale_row0, stale_row1):
+    // a reload was the whole image, and the race's blur passes, drawn into
+    // the first rows of its depth buffer's memory, had its 640x448 reloaded
+    // a thousand times a second for a few rows each.
+    u32 stale_row0 = 0, stale_row1 = ~0u;
     u64 reloads[4] = {};            // reloads, by why
     u64 drawn_serial = 0;           // when the GPU last drew into it (Bridge::serial)
     u64 checked = 0;                // Bridge::newer_epoch when Use last looked at the others
@@ -269,6 +274,26 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
     }
 }
 
+/* `o` stale for `why`, in the rows over blocks [b0, b1) (all of it, past its
+   blocks or by default). */
+void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u) {
+    u32 r0 = 0, r1 = ~0u;
+    if (b1 != ~0u && b0 < b1 && b1 > o.begin) {
+        const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
+        r0 = (std::max(b0, o.begin) - o.begin) / row_blocks * page_rows;
+        r1 = (b1 - o.begin + row_blocks - 1) / row_blocks * page_rows;
+    }
+    if (!o.stale) {
+        o.stale = true;
+        o.why = why;
+        o.stale_row0 = r0;
+        o.stale_row1 = r1;
+    } else {
+        o.stale_row0 = std::min(o.stale_row0, r0);
+        o.stale_row1 = std::max(o.stale_row1, r1);
+    }
+}
+
 /* What the GPU drew into an image, swizzled into the GPU's local memory - on
    the GPU, nothing waiting. */
 void WriteBack(Bridge& b, Owned& o) {
@@ -308,7 +333,7 @@ void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullp
         if (&o == except) continue;
         if (!write || end <= o.begin || o.full_end <= begin) continue;
         if (begin < o.end) {
-            if (!o.stale) { o.stale = true; o.why = 1; }
+            MarkStale(o, 1, begin, end);
         } else {
             o.stale_beyond = true;
         }
@@ -338,15 +363,16 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         if (end > o.end) {
             o.end = end;
             o.checked = 0;
-            if (o.stale_beyond && !o.stale) { o.stale = true; o.why = 1; }
+            if (o.stale_beyond) MarkStale(o, 1);     // rows drawn over before it reached them (stale or not)
         }
     }
     if (!o.stale && o.checked == b.newer_epoch) return o;
     // Another image's drawing over these blocks reaches this one through memory.
     for (auto& [key, other] : b.owned)
         if (&other != &o && other.gpu_newer && other.dirty_begin < o.end && o.begin < other.dirty_end) {
+            const u32 b0 = other.dirty_begin, b1 = other.dirty_end;
             WriteBack(b, other);
-            if (!o.stale) { o.stale = true; o.why = 3; }
+            MarkStale(o, 3, b0, b1);
         }
     o.checked = b.newer_epoch;
     if (o.stale) {
@@ -357,8 +383,19 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         Timed timed(Section::GpuSync);
         ++b.reloads;
         Coherent(b, o.begin, o.full_end, true);
-        if (depth) b.renderer->DepthFromMemory(o.fbp, o.width, o.height, o.fbw, o.psm);
-        else b.renderer->TargetFromMemory(o.fbp, o.fbw, o.psm, o.width, o.height);
+        const u32 r0 = std::min(o.stale_row0, o.height), r1 = std::min(o.stale_row1, o.height);
+        // Depth buffers come back whole: the renderer keeps one a target
+        // size over the same memory, and a part of one reloaded left the
+        // race's garage a few pixels off the software GS.
+        if ((r0 == 0 && r1 >= o.height) || depth) {
+            if (depth) b.renderer->DepthFromMemory(o.fbp, o.width, o.height, o.fbw, o.psm);
+            else b.renderer->TargetFromMemory(o.fbp, o.fbw, o.psm, o.width, o.height);
+        } else if (r0 < r1) {
+            if (depth) b.renderer->DepthRowsFromMemory(o.fbp, o.width, o.height, o.fbw, o.psm, r0, r1 - r0);
+            else b.renderer->TargetRowsFromMemory(o.fbp, o.fbw, o.psm, o.width, o.height, r0, r1 - r0);
+        }
+        o.stale_row0 = 0;
+        o.stale_row1 = ~0u;
         ++o.reloads[o.why];
         o.stale = o.stale_beyond = false;
     }
@@ -389,7 +426,7 @@ void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
     for (auto& [key, other] : b.owned) {
         if (&other == &o || de <= other.begin || other.full_end <= db) continue;
         if (db < other.end) {
-            if (!other.stale) { other.stale = true; other.why = 2; }
+            MarkStale(other, 2, db, de);
         } else {
             other.stale_beyond = true;
         }

@@ -229,6 +229,10 @@ public:
         Flush();
         g_.Flush();
     }
+    void TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
+                              std::uint32_t height, std::uint32_t first_row, std::uint32_t rows) override;
+    void DepthRowsFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
+                             std::uint32_t zpsm, std::uint32_t first_row, std::uint32_t rows) override;
     bool DisplayTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint64_t* image, int* layout,
                        std::uint32_t* width, std::uint32_t* height) override {
         auto found = targets_.find(Key{fbp, fbw, psm});
@@ -368,7 +372,8 @@ private:
     /* An image's first rows into the linear buffer, or back. */
     void ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect, std::uint32_t rows,
                        std::uint32_t first_row = 0);
-    void LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect);
+    void LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect, std::uint32_t first_row = 0,
+                       std::uint32_t rows = ~0u);
     /* A texture image of this size under `key`, made (or made again) if need be. */
     Texture* TextureImage(std::uint64_t key, std::uint32_t width, std::uint32_t height);
     // The CLUT for the draws (gs.frag's set 1): a target read as PSMT8H.
@@ -743,14 +748,17 @@ void VulkanGsRenderer::ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageA
     MemoryBarrier(cmd);
 }
 
-void VulkanGsRenderer::LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect) {
+void VulkanGsRenderer::LinearToImage(VkCommandBuffer cmd, Image& image, VkImageAspectFlags aspect,
+                                     std::uint32_t first_row, std::uint32_t rows) {
+    rows = std::min(rows, image.height - std::min(first_row, image.height));
     MemoryBarrier(cmd);
     Transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy copy{};
     copy.bufferRowLength = image.width;
     copy.imageSubresource = {aspect, 0, 0, 1};
-    copy.imageExtent = {image.width, image.height, 1};
+    copy.imageOffset = {0, std::int32_t(first_row), 0};
+    copy.imageExtent = {image.width, rows, 1};
     vkCmdCopyBufferToImage(cmd, linear_, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     MemoryBarrier(cmd);
 }
@@ -846,6 +854,45 @@ bool VulkanGsRenderer::DepthToMemory(std::uint32_t zbp, std::uint32_t width, std
         MemoryBarrier(cmd);
     });
     return true;
+}
+
+void VulkanGsRenderer::TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
+                                            std::uint32_t width, std::uint32_t height, std::uint32_t first_row,
+                                            std::uint32_t rows) {
+    // An image not made yet holds nothing: all of it, then.
+    if (!targets_.count(Key{fbp, fbw, psm})) return TargetFromMemory(fbp, fbw, psm, width, height);
+    Flush();
+    GsDrawState state;
+    state.fbp = fbp;
+    state.fbw = fbw;
+    state.psm = psm;
+    state.width = width;
+    state.height = height;
+    Image* t = TargetFor(state);
+    if (first_row >= t->height) return;
+    rows = std::min(rows, t->height - first_row);
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, rows, t->width, 0, 0, first_row});
+        LinearToImage(cmd, *t, VK_IMAGE_ASPECT_COLOR_BIT, first_row, rows);
+    });
+}
+
+void VulkanGsRenderer::DepthRowsFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,
+                                           std::uint32_t fbw, std::uint32_t zpsm, std::uint32_t first_row,
+                                           std::uint32_t rows) {
+    // The depth images are kept by size as well: one not made yet for this
+    // size holds nothing, and comes whole.
+    if (!depths_.count(Key{zbp, width, height})) return DepthFromMemory(zbp, width, height, fbw, zpsm);
+    Flush();
+    Image* d = DepthFor(zbp, width, height);
+    if (first_row >= d->height) return;
+    rows = std::min(rows, d->height - first_row);
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, rows, d->width, 0, 1, first_row});
+        LinearToImage(cmd, *d, VK_IMAGE_ASPECT_DEPTH_BIT, first_row, rows);
+    });
 }
 
 void VulkanGsRenderer::DepthFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height,

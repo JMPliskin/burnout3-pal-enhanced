@@ -207,6 +207,18 @@ public:
        been drawn is handed to the GPU first, and the target's image (its
        64-bit handle), its layout (a VkImageLayout) and size are given; false
        if there is none or it has not been drawn. */
+    /* TargetFromMemory / DepthFromMemory for rows [first_row, first_row +
+       rows) alone (the rest of the image as it is). */
+    virtual void TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
+                                      std::uint32_t height, std::uint32_t first_row, std::uint32_t rows) {
+        (void)first_row, (void)rows;
+        TargetFromMemory(fbp, fbw, psm, width, height);
+    }
+    virtual void DepthRowsFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
+                                     std::uint32_t zpsm, std::uint32_t first_row, std::uint32_t rows) {
+        (void)first_row, (void)rows;
+        DepthFromMemory(zbp, width, height, fbw, zpsm);
+    }
     virtual bool DisplayTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint64_t* image,
                                int* layout, std::uint32_t* width, std::uint32_t* height) {
         (void)fbp, (void)fbw, (void)psm, (void)image, (void)layout, (void)width, (void)height;
