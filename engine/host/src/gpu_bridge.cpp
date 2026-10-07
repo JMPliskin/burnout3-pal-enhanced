@@ -842,13 +842,15 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         ps2gpu::GsDrawState state;
         Owned* target = nullptr;
         Owned* depth = nullptr;
+        Owned* source = nullptr;    // a target sampled as the texture: fast only while it is not stale
         bool draws_colour = false;
     };
     static Fast fast;
     const u64 regs[11] = {call.prim, c.frame, c.scissor, c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf,
                           call.texa, call.fogcol | (u64(call.pabe) << 63)};
     if (s.primary && fast.valid && fast.mutations == g_mutations && fast.context == call.context &&
-        rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && (long long)s.frame != s.dump_frame) {
+        rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && (long long)s.frame != s.dump_frame &&
+        (!fast.source || !fast.source->stale)) {
         ps2gpu::GsDrawState st = fast.state;
         st.gouraud = gouraud;
         for (std::size_t i = 0; i < n; ++i) v[i].z = std::min(v[i].z, fast.zmax);
@@ -874,6 +876,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         }
     }
     Owned* target = nullptr;
+    Owned* tex_source = nullptr;
     if (s.primary) target = &Use(s, state.fbp, state.fbw, state.psm, false, state.width, state.height, rows);
     if (state.textured) {
         const u32 tex_psm = Bits(c.tex0, 20, 6), tbp_blocks = Bits(c.tex0, 0, 14);
@@ -899,6 +902,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
                 if (s.primary) {
                     Owned& source = s.owned[std::make_tuple(tex_fbp, tex_fbw, psm, false)];
                     Use(s, tex_fbp, tex_fbw, psm, false, source.width, source.height, 1);   // sampling grows nothing
+                    tex_source = &source;
                 }
                 if (tex_format == 4 && b_clut_rows_cpu_only(s)) {
                     // The CLUT rows only the CPU has, over to the GPU's first.
@@ -1026,12 +1030,20 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         // The next primitive may take the fast path - unless this one's
         // texture is a target, lies over what it draws (each primitive
         // makes it stale), or its Z goes in as colour.
-        bool may = !z_as_colour && !state.texture_target && (long long)s.frame != s.dump_frame;
-        if (may && state.textured) {
+        bool may = !z_as_colour && (long long)s.frame != s.dump_frame;
+        // A target that samples itself (feedback) sees each primitive's
+        // drawing in the next: those go the whole way.
+        if (state.texture_target && tex_source == target) may = false;
+        if (may && state.textured && !state.texture_target) {
             const u32 tbp = Bits(c.tex0, 0, 14), tbw = Bits(c.tex0, 14, 6), tpsm = Bits(c.tex0, 20, 6);
             const u32 tend = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(tpsm) / 8 / 256 + 32));
-            if (target->begin < tend && tbp < target->full_end) may = false;
-            if (depth && depth->begin < tend && tbp < depth->full_end) may = false;
+            // Over the rows a fast primitive can draw (it reaches no further
+            // than this one's rows), not all the target could hold: the
+            // race keeps textures past its depth buffer's 448 rows.
+            const u32 colour_end = Blocks(state.fbp, state.fbw, state.psm, rows).second;
+            if (target->begin < tend && tbp < colour_end) may = false;
+            if (depth && depth->begin < tend && tbp < Blocks(depth->fbp, depth->fbw, depth->psm, rows).second)
+                may = false;
         }
         if (may) {
             fast.valid = true;
@@ -1043,6 +1055,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
             fast.state = state;
             fast.target = target;
             fast.depth = depth && state.depth_write ? depth : nullptr;
+            fast.source = state.texture_target ? tex_source : nullptr;
             fast.draws_colour = draws_colour;
         }
         if (z_as_colour) {
