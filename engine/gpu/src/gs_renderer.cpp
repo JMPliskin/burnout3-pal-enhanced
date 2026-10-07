@@ -308,6 +308,21 @@ private:
     };
     VertexRing vertex_rings_[VulkanGpu::kSlots];
     void* Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset);
+    /* Upload data, the same way: a slot's chunks, free again once its
+       submission has run. A staging buffer an upload, freed (or kept, 64 at
+       most, of one size) after the submission, was the driver allocating and
+       freeing memory hundreds of times a frame in a race. */
+    VertexRing staging_rings_[VulkanGpu::kSlots];
+    /* Released textures by size (width << 32 | height), image, memory, view and
+       descriptor sets whole, for the next texture of that size: a race releases
+       and makes textures by the hundred a frame, and each made one was a driver
+       allocation and each released one a free. At most kPooledTextures kept. */
+    std::unordered_map<std::uint64_t, std::vector<Texture>> texture_pool_;
+    std::size_t pooled_textures_ = 0;
+    static constexpr std::size_t kPooledTextures = 1024;
+    void* Staging(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset);
+    void* RingAlloc(VertexRing* rings, VkBufferUsageFlags usage, VkDeviceSize bytes, VkBuffer* buffer,
+                    VkDeviceSize* offset);
     /* A staging buffer, freed once the submission that reads it has run. */
     void FreeAfterSubmit(VkBuffer buffer, VkDeviceMemory memory);
     /* Staging buffers for uploads, kept mapped and used again once the GPU
@@ -347,8 +362,19 @@ private:
 };
 
 void* VulkanGsRenderer::Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset) {
-    // The slot the draws using these are recorded into.
-    VertexRing& ring = vertex_rings_[g_.slot()];
+    return RingAlloc(vertex_rings_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, bytes, buffer, offset);
+}
+
+void* VulkanGsRenderer::Staging(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceSize* offset) {
+    // (Not Buffer's pooled staging path: that is for TRANSFER_SRC alone.)
+    return RingAlloc(staging_rings_, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, bytes,
+                     buffer, offset);
+}
+
+void* VulkanGsRenderer::RingAlloc(VertexRing* rings, VkBufferUsageFlags usage, VkDeviceSize bytes,
+                                  VkBuffer* buffer, VkDeviceSize* offset) {
+    // The slot the commands using these are recorded into.
+    VertexRing& ring = rings[g_.slot()];
     if (!ring.reset_pending) {
         ring.reset_pending = true;
         g_.AfterSubmit([&ring] {
@@ -365,7 +391,7 @@ void* VulkanGsRenderer::Vertices(VkDeviceSize bytes, VkBuffer* buffer, VkDeviceS
     if (ring.chunk == ring.chunks.size()) {
         VertexChunk chunk{};
         chunk.size = std::max<VkDeviceSize>(VkDeviceSize(8) << 20, aligned);
-        if (!Buffer(chunk.size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &chunk.buffer, &chunk.memory, &chunk.mapped))
+        if (!Buffer(chunk.size, usage, &chunk.buffer, &chunk.memory, &chunk.mapped))
             return nullptr;
         ring.chunks.push_back(chunk);
         ring.used = 0;
@@ -683,17 +709,16 @@ void VulkanGsRenderer::MemoryWrite(std::uint32_t begin, std::uint32_t end, const
     Flush();
     const VkDeviceSize size = VkDeviceSize(end - begin) * 256;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    if (!Buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    VkDeviceSize offset = 0;
+    void* mapped = Staging(size, &buffer, &offset);
+    if (!mapped) return;
     std::memcpy(mapped, bytes, std::size_t(size));
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        const VkBufferCopy copy{0, VkDeviceSize(begin) * 256, size};
+        const VkBufferCopy copy{offset, VkDeviceSize(begin) * 256, size};
         vkCmdCopyBuffer(cmd, buffer, gsmem_, 1, &copy);
         MemoryBarrier(cmd);
     });
-    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) {
@@ -997,21 +1022,21 @@ void VulkanGsRenderer::Fill(Texture& texture, const std::uint32_t* pixels) {
     Image& t = texture.image;
     const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    VkDeviceSize offset = 0;
+    void* mapped = Staging(bytes, &buffer, &offset);
+    if (!mapped) return;
     std::memcpy(mapped, pixels, bytes);
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
+        copy.bufferOffset = offset;
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {t.width, t.height, 1};
         vkCmdCopyBufferToImage(cmd, buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     });
-    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,
@@ -1031,6 +1056,13 @@ Texture* VulkanGsRenderer::TextureImage(std::uint64_t key, std::uint32_t width, 
                 set = VK_NULL_HANDLE;
             }
         DestroyImage(texture.image);
+        auto pooled = texture_pool_.find(std::uint64_t(width) << 32 | height);
+        if (pooled != texture_pool_.end() && !pooled->second.empty()) {
+            texture = pooled->second.back();
+            pooled->second.pop_back();
+            --pooled_textures_;
+            return &texture;
+        }
         if (!MakeImage(texture.image, width, height,
                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
             return nullptr;
@@ -1117,9 +1149,9 @@ void VulkanGsRenderer::UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::u
     const std::uint32_t w = std::min(width, t->width), h = std::min(height, t->height);
     const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    VkDeviceSize offset = 0;
+    void* mapped = Staging(bytes, &buffer, &offset);
+    if (!mapped) return;
     for (std::uint32_t y = 0; y < h; ++y)
         std::memcpy(static_cast<std::uint8_t*>(mapped) + std::size_t(y) * w * 4, pixels + std::size_t(y) * width,
                     std::size_t(w) * 4);
@@ -1127,11 +1159,11 @@ void VulkanGsRenderer::UploadTarget(std::uint32_t fbp, std::uint32_t fbw, std::u
         Transition(cmd, *t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
+        copy.bufferOffset = offset;
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {w, h, 1};
         vkCmdCopyBufferToImage(cmd, buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     });
-    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::ReleaseTexture(std::uint64_t key) {
@@ -1140,7 +1172,15 @@ void VulkanGsRenderer::ReleaseTexture(std::uint64_t key) {
     Flush();
     Texture texture = found->second;
     textures_.erase(found);
-    // Recorded draws may still sample it: it goes after they have run.
+    // Recorded draws may still sample it: it goes after they have run - into
+    // the pool, or away.
+    if (texture.image.image && pooled_textures_ < kPooledTextures) {
+        ++pooled_textures_;
+        g_.AfterSubmit([this, texture] {
+            texture_pool_[std::uint64_t(texture.image.width) << 32 | texture.image.height].push_back(texture);
+        });
+        return;
+    }
     VkDevice device = g_.device;
     VkDescriptorPool pool = pool_;
     g_.AfterSubmit([device, pool, texture]() mutable {
@@ -1193,20 +1233,20 @@ void VulkanGsRenderer::UploadDepth(std::uint32_t zbp, std::uint32_t width, std::
     Image* d = DepthFor(zbp, width, height);
     const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &buffer, &memory, &mapped)) return;
+    VkDeviceSize offset = 0;
+    void* mapped = Staging(bytes, &buffer, &offset);
+    if (!mapped) return;
     float* out = static_cast<float*>(mapped);
     for (std::size_t i = 0; i < std::size_t(width) * height; ++i) out[i] = float(double(z[i]) / 4294967296.0);
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, *d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
+        copy.bufferOffset = offset;
         copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
         copy.imageExtent = {width, height, 1};
         vkCmdCopyBufferToImage(cmd, buffer, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     });
-    FreeAfterSubmit(buffer, memory);
 }
 
 void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v, std::size_t count) {
@@ -1531,6 +1571,8 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     for (auto& [key, t] : targets_) DestroyImage(t);
     for (auto& [key, d] : depths_) DestroyImage(d);
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);
+    for (auto& [size, list] : texture_pool_)
+        for (Texture& texture : list) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     DestroyImage(feedback_);
     for (const Staged& staged : staging_free_) {
@@ -1538,8 +1580,9 @@ VulkanGsRenderer::~VulkanGsRenderer() {
         vkDestroyBuffer(g_.device, staged.buffer, nullptr);
         vkFreeMemory(g_.device, staged.memory, nullptr);
     }
-    for (VertexRing& ring : vertex_rings_)
-        for (VertexChunk& chunk : ring.chunks) {
+    for (VertexRing* rings : {vertex_rings_, staging_rings_})
+        for (int slot = 0; slot < VulkanGpu::kSlots; ++slot)
+        for (VertexChunk& chunk : rings[slot].chunks) {
             vkDestroyBuffer(g_.device, chunk.buffer, nullptr);
             vkFreeMemory(g_.device, chunk.memory, nullptr);
         }

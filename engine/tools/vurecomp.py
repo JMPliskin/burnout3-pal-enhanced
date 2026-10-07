@@ -233,6 +233,11 @@ def emit_lower(word: int, pc: int, mask: int):
             return setvi(it, "C::Word(v, %s, %d)" % (vi(is_), lanes[0])), False, None
         if index == 0x3F:                                               # ISWR
             return ["C::StoreVi<%du>(v, %s, %d);" % (dest, vi(is_), it)], False, None
+        if index in (0x64, 0x30, 0x31, 0x3D) and it == 0:
+            # MFP, MOVE, MR32, MFIR into VF0, which keeps 0, 0, 0, 1: nothing
+            # (`move vf0, vf0` is the assemblers' NOP, a third of the lowers
+            # that held a write). What they read still stalls: lower_reads.
+            return [], False, None
         if index == 0x64:                                               # MFP
             return ["C::Mfp(v, pd, %d, %du);" % (it, dest)], True, None
         if index == 0x68:
