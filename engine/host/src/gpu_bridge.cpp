@@ -50,6 +50,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -604,9 +605,9 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     }
     for (const Owned* o : t.over)
         if (o->drawn_serial > t.decoded_serial && o->begin < t.end && t.begin < o->drawn_end) t.valid = false;
-    // Decoded on the GPU too when the CLUT rows it reads are only there.
-    if (!t.valid && (GpuHolds(b, t.begin, t.end) || (clut_rows & ~b.clut_cpu))) {
-        Timed timed(Section::GpuSync);
+    // Decoded on the GPU, from its copy of local memory and its CLUT, the
+    // CPU's newer blocks and CLUT rows sent over first.
+    auto gpu_decode = [&] {
         for (auto& [okey, o] : b.owned)
             if (o.gpu_newer && o.dirty_begin < t.end && t.begin < o.dirty_end) WriteBack(b, o);
         Coherent(b, t.begin, t.end, true);
@@ -639,10 +640,16 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
                           unsigned(tbw), unsigned(tw), unsigned(th), int((clut_rows & ~b.clut_cpu) != 0));
             ++g_decode_kinds[key];
         }
-        t.valid = true;
-        t.decoded = false;              // the CPU's copy was not read: no hash to compare
         t.decoded_serial = b.serial;
         ++b.gpu_decodes;
+    };
+    // The GPU has newer blocks, or the CLUT rows it reads are only there:
+    // decoded there without a look at the CPU's copy.
+    if (!t.valid && (GpuHolds(b, t.begin, t.end) || (clut_rows & ~b.clut_cpu))) {
+        Timed timed(Section::GpuSync);
+        gpu_decode();
+        t.valid = true;
+        t.decoded = false;              // the CPU's copy was not read: no hash to compare
     }
     if (!t.valid) {
         Timed timed(Section::GpuSync);
@@ -655,19 +662,19 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         // something else than when it was last decoded.
         const u64 content = Hash(gs::TheGs().memory.data() + std::size_t(t.begin) * 256,
                                  std::size_t(t.end - t.begin) * 256);
+        // Something else: decoded on the GPU all the same (texel by texel on
+        // the CPU, the race's streamed textures were a twelfth of the GS
+        // thread), the hash kept to compare the next time.
         if (!t.decoded || content != t.content) {
-            std::vector<u32> pixels;
-            u32 w = 0, h = 0;
-            gs::TheGs().DecodeTexture(&pixels, &w, &h);
-            b.renderer->UploadTexture(t.renderer_key, pixels.data(), w, h);
+            gpu_decode();
             t.content = content;
             ++b.decodes;
         } else {
             ++b.unchanged;
+            t.decoded_serial = b.serial;
         }
         t.valid = true;
         t.decoded = true;
-        t.decoded_serial = b.serial;
     }
     const u64 renderer_key = t.renderer_key;
     // Keep the cache bounded: the least recently used go.
@@ -773,7 +780,9 @@ void DumpPass(Bridge& s, const std::tuple<u32, u32, u32>& target) {
 }
 
 void OnDraw(const gs::Gs::DrawCall& call) {
-    Timed timed(Section::GpuBridge);
+    // Timed only past the fast path below: two clock reads a primitive were
+    // a twentieth of the GS thread.
+    std::optional<Timed> timed;
     Bridge& s = *g_bridge;
     const u32 type = u32(call.prim & 7);
     if (type == 7) return;
@@ -860,6 +869,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         return;
     }
     fast.valid = false;
+    timed.emplace(Section::GpuBridge);
     if (s.primary && (long long)s.frame == s.dump_frame) {
         const auto key = std::make_tuple(state.fbp, state.fbw, state.psm);
         if (key != s.last_target) {
