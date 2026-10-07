@@ -246,9 +246,9 @@ void SetFrameTimes(unsigned every) { g_frame_times = every; }
 void FrameTimes(u64 frame) {
     using Clock = std::chrono::steady_clock;
     static Clock::time_point last = Clock::now();
-    static u64 last_frame = 0, last_transfers = 0, last_lost = 0;
+    static u64 last_frame = 0, last_transfers = 0, last_lost = 0, last_idle = 0;
     if (!g_frame_times || frame < last_frame + g_frame_times) return;
-    const u64 lost = LostVblanks();
+    const u64 lost = LostVblanks(), idle = IdleNanoseconds();
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
     // Frames here are vertical blanks; a game that cannot keep up draws a
@@ -257,8 +257,13 @@ void FrameTimes(u64 frame) {
                  static_cast<unsigned long long>(last_frame), static_cast<unsigned long long>(frame), seconds,
                  seconds > 0 ? double(frame - last_frame) / seconds : 0.0,
                  seconds > 0 ? double(g_vif1_transfers - last_transfers) / seconds : 0.0,
-                 lost != last_lost ? (", " + std::to_string(lost - last_lost) + " vertical blanks lost (the EE busy through them)").c_str() : "");
+                 ((lost != last_lost ? ", " + std::to_string(lost - last_lost) + " vertical blanks lost (the EE busy through them)"
+                                    : std::string()) +
+                 (idle != last_idle && seconds > 0
+                      ? ", EE idle " + std::to_string(int(100.0 * double(idle - last_idle) / 1e9 / seconds + 0.5)) + "%"
+                      : std::string())).c_str());
     last_lost = lost;
+    last_idle = idle;
     last = now;
     last_frame = frame;
     last_transfers = g_vif1_transfers;

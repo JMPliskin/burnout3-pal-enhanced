@@ -290,6 +290,7 @@ void SpendBudget(lifted::Context& c) {
 }
 
 std::atomic<u64> g_lost_vblanks{0};
+std::atomic<u64> g_idle_ns{0};      // real time: the EE asleep, every thread waiting (--frame-times)
 
 // A vertical blank that comes while the last is still undelivered is owed,
 // not dropped: the game counts blanks for its time (a movie's pictures
@@ -550,8 +551,12 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
             } else if (s.realtime) {
                 // Every thread waits: so does the host, for the next vertical
                 // blank or timer interrupt - the game runs at its own pace.
+                const auto idle_from = std::chrono::steady_clock::now();
                 while (!s.vblank_due && !s.timer_due && !StopRequested())
                     std::this_thread::sleep_for(std::chrono::microseconds(200));
+                g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::steady_clock::now() - idle_from).count()),
+                                    std::memory_order_relaxed);
                 if (s.timer_due.exchange(false)) {
                     DeliverTimers();
                     DeliverAlarms();
@@ -822,5 +827,6 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 }
 
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
+u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 
 }  // namespace ps2host

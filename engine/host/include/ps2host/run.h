@@ -194,6 +194,9 @@ void DbcFrame();
 bool ScriptPress(const std::string& button, u64 from, u64 to);
 /* Real time: vertical blanks that came while the last was still undelivered (threads.cpp). */
 u64 LostVblanks();
+/* Real time: how long the EE has slept with every thread waiting - its
+   headroom (threads.cpp). */
+u64 IdleNanoseconds();
 /* The EE timers (timers.cpp): their registers, the host time to their next
    interrupt (< 0: none), and raising the interrupts that are due. */
 void InstallTimers();
