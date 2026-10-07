@@ -61,6 +61,7 @@
 #include "ps2host/run.h"
 
 #if PS2HOST_VULKAN
+#include "ps2gpu/display.h"
 #include "ps2gpu/gs_renderer.h"
 #endif
 
@@ -971,6 +972,26 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
 
 }  // namespace
 
+/* The displayed buffer to the window from the GPU's target (the software
+   picture where the GPU has none), on the thread the GS runs on. */
+void PresentGpuPicture(ps2gpu::Display& display) {
+    u32 fbp = 0, fbw = 0, psm = 0;
+    if (g_bridge && gs::TheGs().Displayed(&fbp, &fbw, &psm)) {
+        auto found = g_bridge->owned.find(std::make_tuple(fbp, fbw, psm, false));
+        std::uint64_t image = 0;
+        int layout = 0;
+        u32 w = 0, h = 0;
+        if (found != g_bridge->owned.end() && !found->second.stale &&
+            g_bridge->renderer->DisplayTarget(fbp, fbw, psm, &image, &layout, &w, &h)) {
+            display.PresentImage(image, layout, std::min(w, 640u), std::min(h, 448u));
+            return;
+        }
+    }
+    std::vector<u32> pixels;
+    u32 w = 0, h = 0;
+    if (gs::TheGs().Picture(&pixels, &w, &h)) display.Present(pixels.data(), w, h);
+}
+
 bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
     static Bridge bridge;
     // On the window's device when there is a window: one Vulkan device for both.
@@ -1020,6 +1041,15 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
             *width = shown_w;
             *height = shown_h;
             return true;
+        });
+    }
+    if (bridge.primary) {
+        // The end of each frame on the GS thread, at its place in the stream:
+        // the frame to the GPU, and the window's picture straight from the
+        // displayed target (no read-back); the EE goes on meanwhile.
+        SetGsFrameHandler([](u64 frame) {
+            GpuShadowFrame(frame, std::string());
+            if (ps2gpu::Display* display = WindowDisplay()) PresentGpuPicture(*display);
         });
     }
     std::fprintf(stderr, "gpu: drawing on %s %s\n", device->Describe().c_str(),

@@ -15,6 +15,10 @@
 #include "ps2host/host.h"
 #include "ps2rt/lifted.h"
 
+namespace ps2gpu {
+class Display;
+}
+
 namespace ps2host {
 
 /* Thrown when the guest asks for something the host does not provide yet: the
@@ -144,6 +148,12 @@ void GsQword(int path, u64 low, u64 high);
 void GsWord(int path, u32 word);
 void GsWords(int path, const u32* words, u32 count, u32 from = ~0u);
 void GsPrivileged(u32 address, u64 value);
+/* The end of frame N, in the GS's stream: the handler (the GPU bridge's, when
+   the GPU draws: hand the frame to the GPU, show its picture) runs on the GS
+   thread once the frame's packets are taken, so the EE need not wait for
+   them. False when there is no handler: the EE syncs and does it itself. */
+void SetGsFrameHandler(std::function<void(u64)> handler);
+bool GsFrame(u64 frame);
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);
@@ -157,6 +167,11 @@ bool OpenWindow(const wchar_t* title, int width, int height);
 bool WindowOpen();
 bool WindowClosed();
 void PresentFrame();
+/* The window's events alone (PresentFrame without the picture, which the GS
+   thread presents): false once it has been closed. */
+bool PumpWindow();
+/* The window's display, null when there is none (or no Vulkan one). */
+ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as
    Gs::Picture gives it); false falls back to the software picture. */
 void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source);

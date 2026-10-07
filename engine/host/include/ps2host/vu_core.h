@@ -32,6 +32,7 @@ namespace ps2host {
 
 /* What the lower instruction of a pair leaves for the end of the pair. */
 struct Vu::Pending {
+    PS2HOST_VU_INLINE Pending() {}  // (MSVC called the implicit one, not inlined)
     int vf = -1;                    // a vector register the lower writes
     u32 lanes = 0, value[4] = {};
     bool vc = false;                // the lower changed control registers
@@ -492,6 +493,24 @@ struct VuCore {
     }
     template <u32 Dest, int Shift>
     static PS2HOST_VU_INLINE void Ftoi(Vu& v, int ft, int fs) {
+#if PS2RT_VU_SSE
+        // Clean, times a power of two (exact, or an infinity past the
+        // largest), truncated; cvttps2dq gives 0x80000000 for anything past
+        // 32 bits, right for negatives, and turned to 0x7FFFFFFF for the
+        // positives - lifted::FloatToInt's saturation.
+        static constexpr float kScaleF[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
+        if (ft == 0) return;
+        const __m128 x = _mm_mul_ps(
+            _mm_castsi128_ps(lifted::CleanLanes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(v.regs.vf[fs])))),
+            _mm_set1_ps(kScaleF[Shift]));
+        const __m128i over = _mm_castps_si128(_mm_cmpge_ps(x, _mm_set1_ps(2147483648.0f)));
+        const __m128i value = _mm_xor_si128(_mm_cvttps_epi32(x), over);
+        __m128i* to = reinterpret_cast<__m128i*>(v.regs.vf[ft]);
+        if constexpr (Dest == 15) _mm_storeu_si128(to, value);
+        else _mm_storeu_si128(to, Blend(LaneMask(Dest), value, _mm_loadu_si128(to)));
+        Wrote<Dest>(v, ft, false);                      // integers
+        return;
+#endif
         static constexpr double kScale[4] = {1.0, 16.0, 4096.0, 32768.0};
         const u32* a = v.regs.vf[fs];
         u32 out[4];

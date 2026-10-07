@@ -203,6 +203,15 @@ public:
     /* A texture's texels, RGBA, rows top-down; false if there is none. */
     virtual bool ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
                              std::uint32_t* height) = 0;
+    /* A target to show as it is on the GPU (Display::PresentImage): what has
+       been drawn is handed to the GPU first, and the target's image (its
+       64-bit handle), its layout (a VkImageLayout) and size are given; false
+       if there is none or it has not been drawn. */
+    virtual bool DisplayTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint64_t* image,
+                               int* layout, std::uint32_t* width, std::uint32_t* height) {
+        (void)fbp, (void)fbw, (void)psm, (void)image, (void)layout, (void)width, (void)height;
+        return false;
+    }
     /* A target's pixels, RGBA in memory, rows top-down; false if there is none. */
     virtual bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
                             std::vector<std::uint32_t>* pixels, std::uint32_t* width,

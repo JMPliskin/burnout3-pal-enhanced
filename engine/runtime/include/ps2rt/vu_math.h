@@ -26,6 +26,15 @@
 #else
 #define PS2RT_VU_SSE 0
 #endif
+/* SSE4.1 (pminud): every x86-64 processor a Vulkan port runs on has it; MSVC
+   takes its intrinsics without /arch, and other compilers say so with
+   __SSE4_1__. */
+#if PS2RT_VU_SSE && (defined(__SSE4_1__) || defined(_M_X64))
+#include <smmintrin.h>
+#define PS2RT_VU_SSE41 1
+#else
+#define PS2RT_VU_SSE41 0
+#endif
 
 
 
@@ -109,6 +118,16 @@ inline u32 Binary(int op, u32 a, u32 b, u32 acc) {
  * compares the two.
  */
 PS2RT_VU_INLINE __m128i CleanLanes(__m128i v) {
+#if PS2RT_VU_SSE41
+    // The magnitude clamped to the largest finite (an exponent of 255 is
+    // above it, whatever the mantissa), zero below the smallest normal, and
+    // the sign put back: Clean's three cases in six operations.
+    const __m128i magnitude = _mm_and_si128(v, _mm_set1_epi32(0x7FFFFFFF));
+    const __m128i sign = _mm_xor_si128(v, magnitude);
+    const __m128i clamped = _mm_min_epu32(magnitude, _mm_set1_epi32(int(kMax)));
+    const __m128i denormal = _mm_cmpgt_epi32(_mm_set1_epi32(0x00800000), magnitude);
+    return _mm_or_si128(sign, _mm_andnot_si128(denormal, clamped));
+#else
     const __m128i exponent = _mm_and_si128(v, _mm_set1_epi32(0x7F800000));
     const __m128i sign = _mm_and_si128(v, _mm_set1_epi32(int(kSign)));
     const __m128i zero = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
@@ -116,6 +135,7 @@ PS2RT_VU_INLINE __m128i CleanLanes(__m128i v) {
     const __m128i saturated = _mm_or_si128(sign, _mm_set1_epi32(int(kMax)));
     v = _mm_or_si128(_mm_andnot_si128(zero, v), _mm_and_si128(zero, sign));
     return _mm_or_si128(_mm_andnot_si128(huge, v), _mm_and_si128(huge, saturated));
+#endif
 }
 
 inline __m128 AsFloats(__m128i v) { return _mm_castsi128_ps(v); }

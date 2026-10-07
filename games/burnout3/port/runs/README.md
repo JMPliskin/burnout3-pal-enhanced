@@ -15,6 +15,7 @@ burnout3.exe <SLUS_210.50> --disc <iso> $(cat games/burnout3/port/runs/car_selec
 | --- | --- | --- |
 | `car_select.args` | no memory card -> start anyway; the EA, Criterion and RenderWare movies, the intro skipped (Start); title (Start); new profile (BURNOUT); don't save, autosave off; main menu -> World Tour -> USA -> Silver Lake -> Race -> the car select ("SELECT A COMPACT"), its 3D garage and cars | the logos ~1,500-2,200, the title ~3,750, the main menu at ~6,000, the car select at ~8,600 |
 | `race_training.args` | the same, then a car chosen: RACE TRAINING, its tutorial movie ("RULES OF THE ROAD", played in a window; no button skips it) | the tutorial from ~9,500 |
+| `race.args` | race_training's, then the first race (Silver Lake) with Cross held from the start: traffic, a wall scraped, sparks, glare, a takedown | the race from ~17,650 to 19,400; the 3D the frame-rate work is measured on |
 | `memcard_save.args` | a fresh memory card; the logos, the intro skipped, title, new profile, saved ("Save successful!"); the card's files are checked too | the save at ~4,500 |
 
 The frame numbers are vertical blanks counted by the host, so they hold only

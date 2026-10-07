@@ -35,6 +35,10 @@ std::string ProfileSummary();
    often on the stack at all ("total"), by name from the executable's
    symbols. Windows only (elsewhere it reports nothing). */
 void StartSampler();
+/* --sample-gs: the sampler on the GS thread instead (gs_thread.cpp starts it
+   there), where the GS model and the GPU bridge run. */
+void SetSampleGsThread(bool on);
+bool SampleGsThread();
 /* A host crash (an access violation and the like, on any thread): its code,
    address and the stack by name, to stderr, before the process ends. */
 void InstallCrashReport();

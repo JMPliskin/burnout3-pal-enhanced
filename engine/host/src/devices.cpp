@@ -270,6 +270,23 @@ void FrameDone(u64 frame) {
     SampleFrame(frame);
     // Time passes: unmasked, PATH3 sends what it still holds.
     if (!g_path3_masked && !g_path3_held.empty()) ReleasePath3(true);
+    if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
+        g_until_reached = true;
+        StopRequested() = true;
+        ForEachContext([](lifted::Context& each) { each.budget = -1; });
+    }
+    const bool dump = !g_frames_dir.empty() && g_frames_written < g_frames_limit && frame >= g_frames_from &&
+                      frame % u64(g_frames_every) == 0;
+    // Nothing here reads the GS this frame (no picture to the CPU, no dump,
+    // no trace): the GS thread ends the frame itself where the frame's
+    // packets end - the GPU's frame, the window's picture - and the EE goes
+    // straight on (it waited for the GS and the GPU at every frame before).
+    const bool cpu_reads_gs = dump || (g_dump_frame >= 0 && (long long)frame == g_dump_frame) || g_trace_frame >= 0;
+    if (!cpu_reads_gs && GsFrame(frame)) {
+        DbcFrame();
+        if (!PumpWindow()) throw GuestExit{0};          // the user closed the window
+        return;
+    }
     // What reads the GS from here on - the picture, the GPU's frame, the
     // dumps - sees it with all of the frame's packets taken.
     SyncGs();
@@ -286,11 +303,6 @@ void FrameDone(u64 frame) {
                          static_cast<unsigned long long>(frame), path.c_str());
         }
     }
-    if (g_until_frame && frame >= g_until_frame && !g_until_reached) {
-        g_until_reached = true;
-        StopRequested() = true;
-        ForEachContext([](lifted::Context& each) { each.budget = -1; });
-    }
     if (g_trace_frame >= 0) {
         // From the end of the frame before to the end of six frames on: the
         // game draws a picture across several.
@@ -301,8 +313,6 @@ void FrameDone(u64 frame) {
     DbcFrame();
     PresentFrame();
     if (WindowClosed()) throw GuestExit{0};             // the user closed the window
-    const bool dump = !g_frames_dir.empty() && g_frames_written < g_frames_limit && frame >= g_frames_from &&
-                      frame % u64(g_frames_every) == 0;
     GpuShadowFrame(frame, dump ? g_frames_dir : std::string());
     if (!dump) return;
     char name[64];

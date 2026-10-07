@@ -18,6 +18,7 @@
 #include "gpu_internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -31,6 +32,7 @@ public:
     ~VulkanDisplay() override;
     bool Init(const char* title, int width, int height);
     bool Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) override;
+    bool PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) override;
     bool Pump() override;
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
@@ -61,6 +63,16 @@ private:
     std::vector<VkImage> images_;
     std::vector<VkSemaphore> rendered_;     // one per swapchain image
     VkCommandPool pool_ = VK_NULL_HANDLE;
+    // Presents in flight: each its command buffer, acquire semaphore and
+    // fence, so a present waits for the one three before it, not the last
+    // (with one, every present waited for all the GPU had been given - the
+    // GS thread, which presents, in step with the GPU once a vertical blank).
+    static constexpr int kInFlight = 3;
+    VkCommandBuffer cmds_[kInFlight] = {};
+    VkSemaphore acquireds_[kInFlight] = {};
+    VkFence fences_[kInFlight] = {};
+    int slot_ = 0;
+    // The current present's (slot_'s).
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     VkSemaphore acquired_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
@@ -73,7 +85,17 @@ private:
     VkDeviceMemory picture_memory_ = VK_NULL_HANDLE;
     std::uint32_t picture_width_ = 0, picture_height_ = 0;
 
-    bool closed_ = false, stale_ = false;
+    // Set by Pump (the main thread), read where pictures are presented (the
+    // GS thread, when it presents).
+    std::atomic<bool> closed_{false}, stale_{false};
+    /* Acquires the next swapchain image and begins the command buffer:
+       false (with *ok) when there is nothing to present into. */
+    bool BeginPresent(std::uint32_t* index, bool* ok);
+    /* Clears the swapchain image, blits `source` (TRANSFER_SRC) to it 4:3,
+       submits and presents. */
+    bool FinishPresent(std::uint32_t index, VkImage source, std::uint32_t width, std::uint32_t height);
+    /* Ends the command buffer, submits it and presents the image. */
+    bool Submit(std::uint32_t index);
     bool dual_source_ = false;
     std::string describe_, error_;
     std::unique_ptr<VulkanGpu> shared_;
@@ -217,13 +239,18 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = pool_;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    if (!Check(vkAllocateCommandBuffers(device_, &cai, &cmd_), "vkAllocateCommandBuffers")) return false;
+    cai.commandBufferCount = kInFlight;
+    if (!Check(vkAllocateCommandBuffers(device_, &cai, cmds_), "vkAllocateCommandBuffers")) return false;
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    if (!Check(vkCreateSemaphore(device_, &sci, nullptr, &acquired_), "vkCreateSemaphore")) return false;
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    if (!Check(vkCreateFence(device_, &fci, nullptr, &fence_), "vkCreateFence")) return false;
+    for (int i = 0; i < kInFlight; ++i) {
+        if (!Check(vkCreateSemaphore(device_, &sci, nullptr, &acquireds_[i]), "vkCreateSemaphore")) return false;
+        if (!Check(vkCreateFence(device_, &fci, nullptr, &fences_[i]), "vkCreateFence")) return false;
+    }
+    cmd_ = cmds_[0];
+    acquired_ = acquireds_[0];
+    fence_ = fences_[0];
     return CreateSwapchain();
 }
 
@@ -374,36 +401,41 @@ void Barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
     vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) {
-    if (closed_) return false;
-    if (stale_ && !CreateSwapchain()) return false;
-    if (!swapchain_ || extent_.width == 0 || extent_.height == 0 || !width || !height) return true;
+bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
+    *ok = true;
+    if (closed_) {
+        *ok = false;
+        return false;
+    }
+    if (stale_ && !CreateSwapchain()) {
+        *ok = false;
+        return false;
+    }
+    if (!swapchain_ || extent_.width == 0 || extent_.height == 0) return false;
+    slot_ = (slot_ + 1) % kInFlight;
+    cmd_ = cmds_[slot_];
+    acquired_ = acquireds_[slot_];
+    fence_ = fences_[slot_];
     vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
-    std::uint32_t index = 0;
-    VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_, VK_NULL_HANDLE, &index);
+    VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_, VK_NULL_HANDLE, index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         stale_ = true;
-        return true;
+        return false;
     }
-    if (r != VK_SUBOPTIMAL_KHR && !Check(r, "vkAcquireNextImageKHR")) return false;
+    if (r != VK_SUBOPTIMAL_KHR && !Check(r, "vkAcquireNextImageKHR")) {
+        *ok = false;
+        return false;
+    }
     vkResetFences(device_, 1, &fence_);
-    if (!EnsurePicture(width, height)) return false;
-    std::memcpy(mapped_, pixels, std::size_t(width) * height * 4);
-
     vkResetCommandBuffer(cmd_, 0);
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd_, &begin);
+    return true;
+}
+
+bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint32_t width, std::uint32_t height) {
     const VkImage target = images_[index];
-    Barrier(cmd_, picture_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {width, height, 1};
-    vkCmdCopyBufferToImage(cmd_, staging_, picture_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    Barrier(cmd_, picture_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT);
     Barrier(cmd_, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     const VkClearColorValue black{};
@@ -421,13 +453,61 @@ bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, st
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[0] = {x0, y0, 0};
     blit.dstOffsets[1] = {x0 + dw, y0 + dh, 1};
-    vkCmdBlitImage(cmd_, picture_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+    vkCmdBlitImage(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     Barrier(cmd_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    vkEndCommandBuffer(cmd_);
+    return true;
+}
 
+bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) {
+    if (!width || !height) return !closed_;
+    std::uint32_t index = 0;
+    bool ok = true;
+    if (!BeginPresent(&index, &ok)) return ok;
+    if (!EnsurePicture(width, height)) {
+        vkEndCommandBuffer(cmd_);
+        return false;
+    }
+    // One staging buffer and picture for all: what an earlier present still
+    // copies from goes first.
+    for (int i = 0; i < kInFlight; ++i)
+        if (i != slot_) vkWaitForFences(device_, 1, &fences_[i], VK_TRUE, UINT64_MAX);
+    std::memcpy(mapped_, pixels, std::size_t(width) * height * 4);
+    Barrier(cmd_, picture_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = {width, height, 1};
+    vkCmdCopyBufferToImage(cmd_, staging_, picture_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    Barrier(cmd_, picture_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    FinishPresent(index, picture_, width, height);
+    return Submit(index);
+}
+
+bool VulkanDisplay::PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) {
+    if (!width || !height || !image) return !closed_;
+    std::uint32_t index = 0;
+    bool ok = true;
+    if (!BeginPresent(&index, &ok)) return ok;
+    const VkImage source = reinterpret_cast<VkImage>(image);
+    const VkImageLayout kept = VkImageLayout(layout);
+    // Whatever drew it was submitted before on this queue: a barrier from
+    // all of it, and back to the layout its renderer has it in.
+    Barrier(cmd_, source, kept, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    FinishPresent(index, source, width, height);
+    Barrier(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, kept, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    return Submit(index);
+}
+
+bool VulkanDisplay::Submit(std::uint32_t index) {
+    vkEndCommandBuffer(cmd_);
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.waitSemaphoreCount = 1;
@@ -444,7 +524,7 @@ bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, st
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &index;
-    r = vkQueuePresentKHR(queue_, &present);
+    const VkResult r = vkQueuePresentKHR(queue_, &present);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) stale_ = true;
     else if (!Check(r, "vkQueuePresentKHR")) return false;
     return true;
@@ -517,8 +597,10 @@ VulkanDisplay::~VulkanDisplay() {
     DestroyPicture();
     DestroySwapchain();
     if (device_) {
-        if (fence_) vkDestroyFence(device_, fence_, nullptr);
-        if (acquired_) vkDestroySemaphore(device_, acquired_, nullptr);
+        for (int i = 0; i < kInFlight; ++i) {
+            if (fences_[i]) vkDestroyFence(device_, fences_[i], nullptr);
+            if (acquireds_[i]) vkDestroySemaphore(device_, acquireds_[i], nullptr);
+        }
         if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
         vkDestroyDevice(device_, nullptr);
     }

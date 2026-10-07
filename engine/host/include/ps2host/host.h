@@ -88,6 +88,7 @@ struct Options {
     long long gs_dump_frame = -1;  /* write GS local memory when this frame is done */
     bool sample = false;           /* --sample: where the time goes, by function (profile.h) */
     long long sample_from = 0;     /* ...from this frame on (--sample-from) */
+    bool sample_gs = false;        /* ...on the GS thread (--sample-gs) */
     std::string vu_record;         /* --vu-record: the microprograms run, for vurecomp.py */
     bool vu_interpret = false;     /* --vu-interpret: no compiled microprograms */
     bool gpu = false;              /* draw on the GPU instead of the software GS (gpu_bridge.cpp) */

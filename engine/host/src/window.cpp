@@ -178,6 +178,25 @@ void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source)
     g_picture_source = std::move(source);
 }
 
+bool PumpWindow() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) {
+        if (!g_display->Pump()) g_closed = true;
+        return !g_closed;
+    }
+#endif
+    if (g_window) PresentGdi();
+    return true;
+}
+
+ps2gpu::Display* WindowDisplay() {
+#ifdef PS2HOST_VULKAN
+    return g_display.get();
+#else
+    return nullptr;
+#endif
+}
+
 void PresentFrame() {
 #ifdef PS2HOST_VULKAN
     if (g_display) {

@@ -224,6 +224,19 @@ public:
         Flush();
         g_.Flush();
     }
+    bool DisplayTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint64_t* image, int* layout,
+                       std::uint32_t* width, std::uint32_t* height) override {
+        auto found = targets_.find(Key{fbp, fbw, psm});
+        if (found == targets_.end() || !found->second.image || found->second.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            return false;
+        Kick();                         // the drawing, on the queue before the picture's copy
+        const Image& t = found->second;
+        *image = reinterpret_cast<std::uint64_t>(t.image);
+        *layout = int(t.layout);
+        *width = t.width;
+        *height = t.height;
+        return true;
+    }
     bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t>* z) override;
     void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) override;
     void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) override;

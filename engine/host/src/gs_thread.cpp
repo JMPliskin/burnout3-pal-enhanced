@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -43,7 +44,10 @@ using u64 = std::uint64_t;
 
 constexpr u32 kRing = 1u << 22;                 // words (16 MB)
 constexpr u32 kMaxRun = kRing / 8;              // the longest run of words one entry carries
-enum : u32 { kQword = 1, kWord = 2, kWords = 3, kPrivileged = 4, kWrap = 5 };
+enum : u32 { kQword = 1, kWord = 2, kWords = 3, kPrivileged = 4, kWrap = 5, kFrame = 6 };
+
+// GsFrame's work, on the GS thread at the frame's place in the stream.
+std::function<void(u64)> g_frame_handler;
 
 u32 Header(u32 type, int path, u32 count) { return type << 28 | u32(path & 0xF) << 24 | (count & 0xFFFFFF); }
 
@@ -173,6 +177,10 @@ struct Feed {
                             g.SetPrivileged(e[1], u64(e[2]) | u64(e[3]) << 32);
                             size = 4;
                             break;
+                        case kFrame:
+                            if (g_frame_handler) g_frame_handler(u64(e[1]) | u64(e[2]) << 32);
+                            size = 3;
+                            break;
                         case kWrap:
                             size = kRing - at;
                             break;
@@ -204,7 +212,10 @@ Feed& TheFeed() {
 void StartGsThread() {
     if (g_feed) return;
     g_feed = &TheFeed();
-    g_feed->thread = std::thread([] { g_feed->Run(); });
+    g_feed->thread = std::thread([] {
+        if (SampleGsThread()) StartSampler();
+        g_feed->Run();
+    });
 }
 
 void StopGsThread() {
@@ -250,6 +261,22 @@ void GsWords(int path, const u32* words, u32 count, u32 from) {
         count -= run;
         if (from != gs::Gs::kNoSource) from += 4 * run;
     }
+}
+
+void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std::move(handler); }
+
+bool GsFrame(u64 frame) {
+    if (!g_frame_handler) return false;
+    if (!g_feed) {
+        g_frame_handler(frame);
+        return true;
+    }
+    u32* e = g_feed->Reserve(3);
+    e[0] = Header(kFrame, 0, 0);
+    e[1] = u32(frame);
+    e[2] = u32(frame >> 32);
+    g_feed->Publish(3);
+    return true;
 }
 
 void GsPrivileged(u32 address, u64 value) {

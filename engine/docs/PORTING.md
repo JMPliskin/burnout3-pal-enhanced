@@ -61,6 +61,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--frames-from N` | with `--frames`: only from frame N on (the dump keeps 200 pictures) |
 | `--frame-times N` | every N frames, how long they took in wall-clock time, the frame (vertical blank) rate and how many DMA transfers to VIF1 - a game's pictures of 3D, usually one each - went a second (`regress.py --frame-times N` prints them). In real time a game that cannot keep up draws every other blank: Burnout 3's race runs at 58 blanks and 25-30 pictures a second. In real time the line also counts the vertical blanks lost - due while the last was still undelivered, the EE busy through a whole frame - which is what puts a movie's pictures behind its sound |
 | `--audio` | the SPU2's mixed output on the sound device, reverb included |
+| `--sample-gs` | `--sample` on the GS thread instead (the GS model, the GPU bridge, their submissions) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); `BUTTON@FROM-TO` holds it from one frame to another (`cross@17650-19400`: accelerate through a race); repeatable |
 | `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
 | `--vu-record FILE`, `--vu-interpret` | record the VU microprograms a run starts, for compiling ahead of time; run them interpreted (see below) |

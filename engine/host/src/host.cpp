@@ -391,7 +391,8 @@ int Run(const Options& options) {
     SetGsDumpFrame(options.gs_dump_frame);
     if (options.sample) {
         SetSampleFrom(u64(options.sample_from));
-        StartSampler();
+        if (options.sample_gs) SetSampleGsThread(true);
+        else StartSampler();
     }
     if (!options.vu_record.empty()) Vu::RecordPrograms(options.vu_record);
     if (!options.memcard.empty()) mc2::SetCardDirectory(options.memcard);
@@ -487,6 +488,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--gs-trace-frame" && i + 1 < argc) options.gs_trace_frame = std::stoll(argv[++i]);
         else if (arg == "--gs-dump-frame" && i + 1 < argc) options.gs_dump_frame = std::stoll(argv[++i]);
         else if (arg == "--sample") options.sample = true;
+        else if (arg == "--sample-gs") options.sample = options.sample_gs = true;
         else if (arg == "--sample-from" && i + 1 < argc) {
             options.sample = true;
             options.sample_from = std::stoll(argv[++i]);

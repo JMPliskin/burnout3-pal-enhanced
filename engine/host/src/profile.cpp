@@ -148,6 +148,12 @@ void SetSampleFrom(unsigned long long frame) {
     g_sampling = frame == 0;
 }
 
+namespace {
+std::atomic<bool> g_sample_gs{false};
+}  // namespace
+void SetSampleGsThread(bool on) { g_sample_gs = on; }
+bool SampleGsThread() { return g_sample_gs; }
+
 void SampleFrame(unsigned long long frame) {
     if (!g_sampling.load(std::memory_order_relaxed) && frame >= g_sample_from.load(std::memory_order_relaxed))
         g_sampling = true;

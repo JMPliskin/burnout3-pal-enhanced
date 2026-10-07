@@ -25,6 +25,17 @@ public:
        scaled to the window. False when the window is gone. */
     virtual bool Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) = 0;
 
+    /* Shows a picture the GPU already has: the top-left width x height of a
+       VkImage (on the display's own device, as its 64-bit handle), in
+       `layout` (a VkImageLayout) and left in it, copied to the window on the
+       GPU - no read-back, no upload. Whatever drew into it must have been
+       submitted to the queue before. False when the window is gone, or a
+       display cannot. */
+    virtual bool PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) {
+        (void)image, (void)layout, (void)width, (void)height;
+        return false;
+    }
+
     /* Handles the window's events; false once it has been closed. */
     virtual bool Pump() = 0;
 
