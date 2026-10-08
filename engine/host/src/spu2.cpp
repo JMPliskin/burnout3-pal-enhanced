@@ -391,39 +391,50 @@ void Spu2::NextBlock(Core& c, u32 index, const std::function<void(u32)>& irq) {
 // step; exponential attack slows above 0x6000, exponential decrease is
 // proportional to the level).
 void Spu2::Envelope(Voice& v) {
-    Rate r{};
-    switch (v.phase) {
-        case Phase::Off: return;
-        case Phase::Attack: {
-            const u32 rate = (v.adsr1 >> 8) & 0x7F;
-            r = {rate >> 2, rate & 3, false, (v.adsr1 & 0x8000) != 0};
-            break;
-        }
-        case Phase::Decay:
-            if (v.level <= std::min(0x7FFF, s32(((v.adsr1 & 15) + 1) * 0x800))) {
-                v.phase = Phase::Sustain;           // already at the sustain level
-                return;
-            }
-            r = {(v.adsr1 >> 4) & 15, 0, true, true};
-            break;
-        case Phase::Sustain: {
-            const u32 rate = (v.adsr2 >> 6) & 0x7F;
-            r = {rate >> 2, rate & 3, (v.adsr2 & 0x4000) != 0, (v.adsr2 & 0x8000) != 0};
-            break;
-        }
-        case Phase::Release:
-            r = {v.adsr2 & 0x1F, 0, true, (v.adsr2 & 0x20) != 0};
-            break;
+    if (v.phase == Phase::Off) return;
+    if (v.phase == Phase::Decay && v.level <= std::min(0x7FFF, s32(((v.adsr1 & 15) + 1) * 0x800))) {
+        v.phase = Phase::Sustain;                   // already at the sustain level
+        return;
     }
-    s32 step = r.decreasing ? -8 + s32(r.step) : 7 - s32(r.step);
-    step = r.shift < 11 ? step << (11 - r.shift) : step;
-    u32 increment = r.shift > 11 ? (r.shift - 11 >= 16 ? 0 : 0x8000u >> (r.shift - 11)) : 0x8000u;
-    if (r.exponential) {
-        if (r.decreasing) {
+    // The phase's rate: worked out again only when the phase or ADSR1/2 change.
+    const u64 key = u64(v.phase) | u64(v.adsr1 & 0xFFFF) << 8 | u64(v.adsr2 & 0xFFFF) << 24;
+    if (key != v.rate_key) {
+        Rate r{};
+        switch (v.phase) {
+            case Phase::Attack: {
+                const u32 rate = (v.adsr1 >> 8) & 0x7F;
+                r = {rate >> 2, rate & 3, false, (v.adsr1 & 0x8000) != 0};
+                break;
+            }
+            case Phase::Decay:
+                r = {(v.adsr1 >> 4) & 15, 0, true, true};
+                break;
+            case Phase::Sustain: {
+                const u32 rate = (v.adsr2 >> 6) & 0x7F;
+                r = {rate >> 2, rate & 3, (v.adsr2 & 0x4000) != 0, (v.adsr2 & 0x8000) != 0};
+                break;
+            }
+            case Phase::Release:
+                r = {v.adsr2 & 0x1F, 0, true, (v.adsr2 & 0x20) != 0};
+                break;
+            default: break;
+        }
+        s32 step = r.decreasing ? -8 + s32(r.step) : 7 - s32(r.step);
+        v.rate_step = r.shift < 11 ? step << (11 - r.shift) : step;
+        v.rate_increment = r.shift > 11 ? (r.shift - 11 >= 16 ? 0 : 0x8000u >> (r.shift - 11)) : 0x8000u;
+        v.rate_shift = r.shift;
+        v.rate_decreasing = r.decreasing;
+        v.rate_exponential = r.exponential;
+        v.rate_key = key;
+    }
+    s32 step = v.rate_step;
+    u32 increment = v.rate_increment;
+    if (v.rate_exponential) {
+        if (v.rate_decreasing) {
             step = s32((std::int64_t(step) * v.level) >> 15);
         } else if (v.level >= 0x6000) {
-            if (r.shift < 10) step >>= 2;
-            else if (r.shift >= 11) increment >>= 2;
+            if (v.rate_shift < 10) step >>= 2;
+            else if (v.rate_shift >= 11) increment >>= 2;
             else { step >>= 1; increment >>= 1; }
         }
     }

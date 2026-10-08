@@ -90,6 +90,12 @@ private:
         Phase phase = Phase::Off;
         s32 level = 0;                  // the envelope, 0-0x7FFF
         u32 envelope_counter = 0;
+        // The phase's rate as Envelope works it out from ADSR1/2, kept while
+        // the phase and the registers stay (a voice's every sample asked).
+        u64 rate_key = ~0ull;
+        s32 rate_step = 0;
+        u32 rate_increment = 0, rate_shift = 0;
+        bool rate_decreasing = false, rate_exponential = false;
     };
     struct Core {
         Voice voices[24];

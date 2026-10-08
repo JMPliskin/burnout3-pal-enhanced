@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <memory>
 #include <string>
 
@@ -205,6 +206,40 @@ void ShadowMask(bool masked) {
 
 u32 HeldInFifo(u64 quadwords) { return quadwords < kGifFifoDepth ? u32(quadwords) : kGifFifoDepth; }
 
+// A VIF1 or GIF chain's words as the EE walked it, for VIF1's worker (Walk).
+// Kept in a pool: a race walks a hundred chains a frame, and a vector made
+// for each grew by reallocating for each of its runs - a sixth of the EE's
+// time went to copying them about.
+struct ChainCopy {
+    std::vector<u32> words;
+    std::vector<std::pair<u32, u32>> runs;      // (count, from) each, in order
+};
+std::mutex g_chain_pool_lock;
+std::vector<ChainCopy*> g_chain_pool;
+
+std::shared_ptr<ChainCopy> NewChainCopy() {
+    ChainCopy* copy = nullptr;
+    {
+        std::lock_guard<std::mutex> hold(g_chain_pool_lock);
+        if (!g_chain_pool.empty()) {
+            copy = g_chain_pool.back();
+            g_chain_pool.pop_back();
+        }
+    }
+    if (!copy) {
+        copy = new ChainCopy;
+        copy->words.reserve(1u << 16);
+        copy->runs.reserve(1024);
+    }
+    copy->words.clear();            // (the capacity stays)
+    copy->runs.clear();
+    return std::shared_ptr<ChainCopy>(copy, [](ChainCopy* done) {
+        std::lock_guard<std::mutex> hold(g_chain_pool_lock);
+        if (g_chain_pool.size() < 16) g_chain_pool.push_back(done);
+        else delete done;
+    });
+}
+
 // Walks a started transfer and leaves the registers as it would; returns a
 // note (when `describe`: a transfer is noted only the first time).
 std::string Walk(const Channel& ch, u32 chcr, bool describe) {
@@ -225,11 +260,7 @@ std::string Walk(const Channel& ch, u32 chcr, bool describe) {
     // is walked and handed to it in a command (the transfer ends here, as on
     // the console its data is taken).
     const bool queued = Vif1Async() && (ch.base == 0x10009000u || ch.base == 0x1000A000u);
-    struct Copy {
-        std::vector<u32> words;
-        std::vector<std::pair<u32, u32>> runs;      // (count, from) each, in order
-    };
-    auto copy = queued ? std::make_shared<Copy>() : nullptr;
+    auto copy = queued ? NewChainCopy() : nullptr;
     if (queued)
         sink = [copy](const u32* words, u32 count, u32 from) {
             copy->words.insert(copy->words.end(), words, words + count);
