@@ -493,12 +493,17 @@ LEAVE = "s.count = count; s.stopping = stopping; s.delayed = delayed; C::Cycle(v
 
 
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
-              written: dict = None, clean: dict = None, dead_flags: bool = False) -> list:
+              written: dict = None, clean: dict = None, dead_flags: bool = False,
+              after: tuple = None) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
     driver with s.pc. `index` is its place in the block and `written` where
     the block's pairs before it wrote each vector field; the pair's own
-    writes are added to it."""
+    writes are added to it. `after` is the pair before it in the block
+    (lower, upper), None for the first: from the second pair on, a block
+    runs with no E bit or branch pending from before it (emit_block), so
+    `stopping` and `delayed` can be set only by the pair before - and are
+    checked only after one that may set them."""
     if written is None:
         written = {}
     immediate = bool(upper & 0x80000000)
@@ -566,11 +571,15 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
         body.append("C::End(v, cyc);")
     next_pc = (pc + 8) & mask
     body.append("++count;")
-    body.append("if (stopping) { s.pc = 0x%Xu; s.done = true; %s }" % (next_pc, LEAVE))
+    may_stop = after is None or bool(after[1] & 0x40000000)
+    may_branch = after is None or is_branch(*after)[0]
+    if may_stop:
+        body.append("if (stopping) { s.pc = 0x%Xu; s.done = true; %s }" % (next_pc, LEAVE))
     if end:
         body.append("stopping = true;")
     new_delayed = "branch" if branch else "kNone"
-    body.append("if (delayed != kNone) { s.pc = delayed; delayed = %s; %s }" % (new_delayed, LEAVE))
+    if may_branch:
+        body.append("if (delayed != kNone) { s.pc = delayed; delayed = %s; %s }" % (new_delayed, LEAVE))
     if branch:
         body.append("delayed = branch;")
     if last:
@@ -675,7 +684,7 @@ def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     dead = dead_flags(block, pairs) - {0}
     for i, pc in enumerate(block):
         out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean,
-                         i in dead)
+                         i in dead, pairs[block[i - 1]] if i else None)
     out.append("}")
     return out
 
