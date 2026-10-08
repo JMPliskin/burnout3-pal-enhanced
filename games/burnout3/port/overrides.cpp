@@ -112,7 +112,7 @@ void SkipMovie(lifted::Context& c) {
                          unsigned(generated::ReadU8(movie + 0x4D)), unsigned(generated::ReadU8(movie + 0x4E)),
                          unsigned(generated::ReadU8(movie + 0x4F)));
     }
-    if (playing && start && !loops && ps2host::SettingOn("skip_videos", true)) {
+    if (playing && start && !loops) {
         if (log) std::fprintf(stderr, "[movie] skipped: screen %08X movie %u\n", screen, generated::ReadU32(screen + 0x2FC));
         generated::Write8(movie + 0x4A, 1);
     }
@@ -126,13 +126,11 @@ void SkipMovie(lifted::Context& c) {
    Most of their time goes to frames going by and the IOP's streams, neither
    CPU busy. While one returns 0 the vertical blanks come faster
    (SetFastForward): the loading screen, a still picture and a spinner, goes
-   by sooner - the "fast_loading" setting (PC SETTINGS), or PS2HOST_LOAD_SPEED
-   to say how much faster (1: as the console). */
+   by sooner. PS2HOST_LOAD_SPEED says how much faster (1: as the console). */
 template <void (*Load)(lifted::Context&)>
 void FastLoading(lifted::Context& c) {
     static const char* forced = std::getenv("PS2HOST_LOAD_SPEED");
-    const unsigned speed = forced ? unsigned(std::max(1, std::atoi(forced)))
-                                  : ps2host::SettingOn("fast_loading", true) ? 8u : 1u;
+    const unsigned speed = forced ? unsigned(std::max(1, std::atoi(forced))) : 8u;
     Load(c);
     ps2host::SetFastForward(u32(c.r[2]) ? 1 : speed);
 }
@@ -209,35 +207,47 @@ constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its desc
 constexpr u32 kEntries = 6;                 // the game's five, and QUIT GAME
 constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
 
-/* The settings PC SETTINGS lists, then BACK - six rows, as the menu has. */
+/* The settings PC SETTINGS lists, then BACK: each a few values, Cross
+   going to the next (ON/OFF, or the internal resolution's three). */
 struct Option {
     const char* name;
     const char* help;
-    bool (*now)();
-    void (*set)(bool);
+    int (*now)();                           // the value's index
+    void (*set)(int);
+    const char* values[3];
+    int count;
 };
-bool FastLoadingOn() { return ps2host::SettingOn("fast_loading", true); }
-void SetFastLoading(bool on) { ps2host::SetSettingOn("fast_loading", on); }
-bool SkipVideosOn() { return ps2host::SettingOn("skip_videos", true); }
-void SetSkipVideos(bool on) { ps2host::SetSettingOn("skip_videos", on); }
-bool FramePacingOn() { return ps2host::SettingOn("frame_pacing", true); }
-void SetFramePacing(bool on) { ps2host::SetSettingOn("frame_pacing", on); }
+int Fullscreen() { return ps2host::WindowFullscreen() ? 1 : 0; }
+void SetFullscreen(int on) { ps2host::SetWindowFullscreen(on != 0); }
+int Vsync() { return ps2host::WindowVsync() ? 1 : 0; }
+void SetVsync(int on) { ps2host::SetWindowVsync(on != 0); }
+int FramePacing() { return ps2host::SettingOn("frame_pacing", true) ? 1 : 0; }
+void SetFramePacing(int on) { ps2host::SetSettingOn("frame_pacing", on != 0); }
+const char* const kResolutions[] = {"original", "2x", "display"};
+int Resolution() {
+    const std::string now = ps2host::Setting("resolution", "original");
+    for (int i = 0; i < 3; ++i)
+        if (now == kResolutions[i]) return i;
+    return 0;
+}
+void SetResolution(int which) { ps2host::SetSetting("resolution", kResolutions[which]); }
 const Option kOptions[] = {
-    {"FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", ps2host::WindowFullscreen, ps2host::SetWindowFullscreen},
-    {"VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", ps2host::WindowVsync, ps2host::SetWindowVsync},
-    {"FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacingOn, SetFramePacing},
-    {"FAST LOADING", "LOADING SCREENS GO BY EIGHT TIMES AS FAST", FastLoadingOn, SetFastLoading},
-    {"SKIP VIDEOS", "START SKIPS THE VIDEOS THE GAME PLAYS", SkipVideosOn, SetSkipVideos},
+    {"FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
+    {"VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
+    {"FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacing, SetFramePacing, {"OFF", "ON"}, 2},
+    {"RESOLUTION", "DRAWN AS THE PS2 DID, TWICE AS SHARP, OR AS SHARP AS THE SCREEN", Resolution, SetResolution,
+     {"ORIGINAL", "2X", "DISPLAY"}, 3},
 };
 constexpr u32 kOptionCount = sizeof kOptions / sizeof kOptions[0];
-static_assert(kOptionCount + 1 == kEntries, "the options and BACK fill the menu's rows");
+constexpr u32 kSettingsRows = kOptionCount + 1;     // and BACK
+static_assert(kSettingsRows <= kEntries, "the settings fit the menu's rows");
 
 struct MainMenuState {
     u32 menu = 0;                           // the main menu's object (0x00318340's a0)
     u32 entries = 0, helps = 0;             // our arrays: kEntries entries (8 bytes), help pointers
     u32 game_entries[kEntries][2] = {};     // the main menu's rows, kept while PC SETTINGS shows
     u32 game_helps[kEntries] = {};
-    GuestText pc_settings, pc_settings_help, quit, quit_help, back, back_help, quit_question;
+    GuestText pc_settings, pc_settings_help, quit, quit_help, back, back_help, quit_question, blank;
     GuestText option_names[kOptionCount], option_helps[kOptionCount];
     bool made = false, settings = false, quitting = false;
 };
@@ -262,16 +272,19 @@ void MakeTexts(lifted::Context& c) {
     g_main.back_help.Set("RETURN TO THE MAIN MENU");
     g_main.quit_question.Make(32);
     g_main.quit_question.Set("Quit Burnout 3?");
+    g_main.blank.Make(2);
+    g_main.blank.Set(" ");               // (an empty string the list does not draw as empty)
     for (u32 i = 0; i < kOptionCount; ++i) {
         g_main.option_names[i].Make(24);
-        g_main.option_helps[i].Make(48);
+        g_main.option_helps[i].Make(64);
         g_main.option_helps[i].Set(kOptions[i].help);
     }
     g_main.made = g_main.entries && g_main.helps;
 }
 
 void ShowOption(u32 i) {
-    g_main.option_names[i].Set(std::string(kOptions[i].name) + (kOptions[i].now() ? ": ON" : ": OFF"));
+    const Option& o = kOptions[i];
+    g_main.option_names[i].Set(std::string(o.name) + ": " + o.values[o.now()]);
 }
 
 constexpr u32 kQuitQuestion = 0x7F02;       // our string id (past the table's 4,006): the question
@@ -367,6 +380,14 @@ void ShowSettings(lifted::Context& c, bool on) {
         generated::Write32(g_main.entries + 8 * kOptionCount, g_main.back.at);
         generated::Write32(g_main.entries + 8 * kOptionCount + 4, 0);
         generated::Write32(g_main.helps + 4 * kOptionCount, g_main.back_help.at);
+        // The list keeps its six rows (it is set up with them): those past
+        // BACK are blank, and the count Up and Down keep to is BACK's.
+        for (u32 i = kSettingsRows; i < kEntries; ++i) {
+            generated::Write32(g_main.entries + 8 * i, g_main.blank.at);
+            generated::Write32(g_main.entries + 8 * i + 4, 0);
+            generated::Write32(g_main.helps + 4 * i, g_main.blank.at);
+        }
+        generated::Write16(menu + 0x16, kSettingsRows);
         generated::Write16(menu + 0x14, 0);
     } else {
         for (u32 i = 0; i < kEntries; ++i) {
@@ -374,6 +395,7 @@ void ShowSettings(lifted::Context& c, bool on) {
             generated::Write32(g_main.entries + 8 * i + 4, g_main.game_entries[i][1]);
             generated::Write32(g_main.helps + 4 * i, g_main.game_helps[i]);
         }
+        generated::Write16(menu + 0x16, kEntries);
         generated::Write16(menu + 0x14, kPcSettingsEntry);
     }
     g_main.settings = on;
@@ -415,7 +437,8 @@ void MainMenuInput(lifted::Context& c) {
         const u32 entry = generated::ReadU16(menu + 0x14);
         if (g_main.settings) {
             if (entry < kOptionCount) {
-                kOptions[entry].set(!kOptions[entry].now());
+                const Option& o = kOptions[entry];
+                o.set((o.now() + 1) % o.count);
                 ShowOption(entry);
                 RefreshList(c);
             } else {
