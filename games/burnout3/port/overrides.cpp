@@ -400,6 +400,23 @@ void ShowSettings(lifted::Context& c, bool on) {
     }
     g_main.settings = on;
     RefreshList(c);
+    // The button legend along the bottom (0x0031ECD0 on 0x01E89800, its
+    // buttons as flags): the main menu's 0x104 (Change, Select); a
+    // screen within a menu adds 0x1, (Triangle) Back. A button's sprite
+    // and text (the legend's +0x1C and +0x48, a word per slot) stay once
+    // made, so Back's (slot 0) go back to the frontend's pool (0x001D7560
+    // on 0x01E903E0, by the legend's layer) as the main menu returns.
+    constexpr u32 kLegend = 0x01E89800u;
+    if (!on) {
+        const u32 layer = u32(s32(generated::ReadS16(kLegend + 0x8u)));
+        for (const u32 at : {kLegend + 0x1Cu, kLegend + 0x48u}) {
+            if (const u32 object = generated::ReadU32(at)) {
+                GuestCall(c, 0x001D7560u, {0x01E903E0u, layer, object});
+                generated::Write32(at, 0);
+            }
+        }
+    }
+    GuestCall(c, 0x0031ECD0u, {kLegend, on ? 0x105u : 0x104u, 3u});
 }
 
 /* The frontend's message box (0x0032D080 shows one: the box, its type -
