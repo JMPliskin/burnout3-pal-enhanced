@@ -58,8 +58,10 @@ void RpcCall(std::uint32_t server, std::uint32_t procedure, std::uint32_t size,
              std::uint32_t receive, std::uint32_t receive_size,
              const std::vector<std::uint8_t>& packet);
 
-/* Runs the IOP until every thread waits (or a time slice is used up). */
-void Run();
+/* Runs the IOP until every thread waits, or it has run `instructions` (a
+   busy IOP can't hang the EE; the EE's idle wait gives it a short slice, so
+   a vertical blank is never kept waiting). */
+void Run(std::uint64_t instructions = 20'000'000);
 
 /* Log every library call a module makes (--iop-trace). */
 void SetTrace(bool on);

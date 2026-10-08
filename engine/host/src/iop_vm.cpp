@@ -37,7 +37,7 @@ namespace iop {
 namespace {
 
 constexpr u32 kHleCode = 0x80000u;          // syscall codes at or above this are host calls
-constexpr u64 kSlice = 20'000'000;          // instructions per Run, so a busy IOP can't hang the EE
+constexpr u64 kSlice = 20'000'000;          // instructions a call may run, so a busy IOP can't hang the EE
 // A thread runs at most this many instructions before the scheduler looks again:
 // interrupts (alarms, sound, DMA completions) arrive between quanta, as the
 // real IOP takes them whenever they come.
@@ -372,7 +372,7 @@ u32 Vm::Call(u32 function, std::vector<u32> args) {
 
 // ---------------------------------------------------------------- scheduling
 
-void Run() {
+void Run(u64 slice) {
     Vm& vm = TheVm();
     if (vm.threads.empty() && vm.alarms.empty() && vm.completions.empty()) return;
     const u64 start = vm.instructions;
@@ -402,7 +402,7 @@ void Run() {
             if (t.ready && (!best || t.priority < best->priority ||
                             (t.priority == best->priority && t.queued < best->queued)))
                 best = &t;
-        if (!best || vm.instructions - start > kSlice) return;
+        if (!best || vm.instructions - start > slice) return;
         vm.current = best->id;
         vm.reschedule = false;
         bool stopped = false;

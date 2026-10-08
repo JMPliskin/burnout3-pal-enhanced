@@ -28,8 +28,10 @@ void F_002470D8(lifted::Context& c);
 void F_00245398(lifted::Context& c);
 // A screen with a movie: its update each frame (a method; see SkipMovie).
 void F_001313C0(lifted::Context& c);
-// The race's loading, a step each frame (see FastLoading).
+// The race's loading, and the game's (boot, after a race), a step each
+// frame (see FastLoading).
 void F_0019A950(lifted::Context& c);
+void F_001322B0(lifted::Context& c);
 
 namespace {
 
@@ -106,20 +108,21 @@ void SkipMovie(lifted::Context& c) {
     F_001313C0(c);
 }
 
-/* 0x0019A950, a race's loading (FINDINGS: "Loading a race"): called by the
-   main loop (0x00132600, its state 4) once a frame, it takes the load a
-   phase further (world+0x143844, 0 to 0x17) as far as the parts it waits
-   for are ready, and returns 1 when the race may start. Most phases wait on
-   frames going by and on the IOP's streams; neither CPU is busy. While it
-   returns 0 the vertical blanks come faster (SetFastForward): the loading
-   screen, a still picture and a spinner, goes by sooner.
-   PS2HOST_LOAD_SPEED sets how much faster (1: as the console). */
+/* The main loop's (0x00132600) loading states, each a function it calls
+   once a frame until it returns non-zero (FINDINGS: "Loading a race"):
+   0x0019A950 in state 4, a race's world, a phase a frame; 0x001322B0 in
+   states 7 and 9, the game's own - the long load at boot, and after a race.
+   Most of their time goes to frames going by and the IOP's streams, neither
+   CPU busy. While one returns 0 the vertical blanks come faster
+   (SetFastForward): the loading screen, a still picture and a spinner, goes
+   by sooner. PS2HOST_LOAD_SPEED sets how much faster (1: as the console). */
+template <void (*Load)(lifted::Context&)>
 void FastLoading(lifted::Context& c) {
     static const unsigned speed = [] {
         const char* text = std::getenv("PS2HOST_LOAD_SPEED");
         return text ? unsigned(std::max(1, std::atoi(text))) : 8u;
     }();
-    F_0019A950(c);
+    Load(c);
     ps2host::SetFastForward(u32(c.r[2]) ? 1 : speed);
 }
 
@@ -145,5 +148,6 @@ void RegisterGameOverrides() {
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
-    ps2host::Override(0x0019A950u, FastLoading, "a race's loading: fast-forwarded while it waits");
+    ps2host::Override(0x0019A950u, FastLoading<F_0019A950>, "a race's loading: fast-forwarded while it waits");
+    ps2host::Override(0x001322B0u, FastLoading<F_001322B0>, "the game's loading: fast-forwarded while it waits");
 }

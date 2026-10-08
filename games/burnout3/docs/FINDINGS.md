@@ -1898,6 +1898,18 @@ than it needed to be, and one is the game's own pace:
   faster. Shortening the IOP's DelayThread waits, or ending voices' release
   at once, changed nothing.
 
+The main loop's state is at 0x0051BAD0 (its object 0x004EE040, +0x2DA90;
+the dispatch table 0x004B5C30). A run goes 0 -> 7 (the boot's load) -> 4 ->
+5 (the frontend); a race 6 -> 7 -> 4 (the race's load, above) -> 5; after
+a race, 8 (the race taken down) -> 9 -> 4 -> 5. States 7 and 9 call
+0x001322B0 once a frame until it returns non-zero - the game's own load,
+the long one at boot: FastLoading wraps it too, and the boot's load went
+from 8.0 s to 2.1 s.
+
+The IOP's run in the EE's idle wait is a short slice (50,000 instructions):
+with the full one (20 million, so a busy IOP can't hang the EE) a module
+busy at boot kept the EE past vertical blanks - 77 lost in ten seconds.
+
 ## cvt.w.s saturates
 
 The EE's float-to-word conversion truncates toward zero below 2^31 in

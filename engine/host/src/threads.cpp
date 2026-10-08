@@ -567,7 +567,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
                 while (!s.vblank_due && !s.timer_due && !StopRequested()) {
                     {
                         Timed timed(Section::Iop);
-                        iop::Run();
+                        iop::Run(50'000);           // a short slice: the blank may come meanwhile
                     }
                     if (IopReplyPending()) break;
                     std::this_thread::sleep_for(std::chrono::microseconds(200));
