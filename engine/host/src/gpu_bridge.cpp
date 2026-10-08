@@ -264,11 +264,14 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
     end = std::min(end, 16384u);
     const u8 behind = to_gpu ? Bridge::kCpuNewer : Bridge::kGpuNewer;
     u8* bytes = gs::TheGs().memory.data();
+    const u8* blocks = b.blocks.data();
     for (u32 i = begin; i < end;) {
-        if (b.blocks[i] != behind) {
-            ++i;
-            continue;
-        }
+        // To the next block behind (memchr, sixteen at a time and more: a
+        // reload looks over all of an image's blocks, ~300 times a picture,
+        // and finds none behind, or few).
+        const void* found = std::memchr(blocks + i, behind, end - i);
+        if (!found) break;
+        i = u32(static_cast<const u8*>(found) - blocks);
         u32 j = i;
         while (j < end && b.blocks[j] == behind) b.blocks[j++] = Bridge::kSame;
         if (to_gpu) {
@@ -706,8 +709,10 @@ ps2gpu::GsVertex Convert(const gs::Vertex& v, bool fst, u32 tw, u32 th) {
     out.a = v.a;
     out.fog = v.fog;
     if (fst) {
-        out.s = float(v.u) / 16.0f / float(tw);
-        out.t = float(v.v) / 16.0f / float(th);
+        // TW and TH are powers of two: dividing by 16 and by them is scaling
+        // by a power of two, which the reciprocal does exactly.
+        out.s = float(v.u) * (1.0f / float(16 * tw));
+        out.t = float(v.v) * (1.0f / float(16 * th));
         out.q = 1.0f;
     } else {
         out.s = v.s;
