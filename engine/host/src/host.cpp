@@ -1,11 +1,16 @@
 #include "ps2host/host.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -22,6 +27,7 @@
 #include "ps2host/memory.h"
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 
 namespace ps2host {
 
@@ -288,6 +294,13 @@ void Report(const Options& options, const std::string& outcome) {
             std::printf("  %s\n", Describe(thread[i]).c_str());
     }
     std::printf("threads:\n%s%s", ThreadReport().c_str(), iop::Report().c_str());
+    if (!options.dump_ram.empty()) {
+        if (std::FILE* f = std::fopen(options.dump_ram.c_str(), "wb")) {
+            std::fwrite(GuestMemory().rdram(), 1, 32u << 20, f);
+            std::fclose(f);
+            std::printf("EE RAM written to %s\n", options.dump_ram.c_str());
+        }
+    }
     for (u32 address : options.peek) {
         std::printf("memory at 0x%08X:", unsigned(address));
         for (u32 i = 0; i < 64; i += 4) {
@@ -394,6 +407,19 @@ int Run(const Options& options) {
     SetCheckGuesses(options.check_guesses);
     if (!options.vu_snapshot.empty())
         Vu::Snapshots(options.vu_snapshot, u64(options.vu_snapshot_from), options.vu_snapshot_count);
+    {
+        // The PC settings: beside the memory card (its directory's parent),
+        // or the executable, so they go where the player's saves go.
+        std::filesystem::path where;
+        if (!options.memcard.empty()) {
+            where = std::filesystem::absolute(options.memcard).parent_path();
+        } else {
+            wchar_t exe[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            where = std::filesystem::path(exe).parent_path();
+        }
+        LoadSettings((where / "pc_settings.ini").string());
+    }
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
@@ -543,6 +569,7 @@ int Main(int argc, char** argv) {
             options.watch.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg == "--watch-write" && i + 1 < argc)
             options.watch_writes.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
+        else if (arg == "--dump-ram" && i + 1 < argc) options.dump_ram = argv[++i];
         else if (arg == "--peek" && i + 1 < argc)
             options.peek.push_back(u32(std::stoul(argv[++i], nullptr, 16)));
         else if (arg.rfind("--", 0) != 0) options.elf_path = arg;

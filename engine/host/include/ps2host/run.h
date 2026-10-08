@@ -221,6 +221,10 @@ void PresentFrame();
 /* The window's events alone (PresentFrame without the picture, which the GS
    thread presents): false once it has been closed. */
 bool PumpWindow();
+/* Fullscreen on or off (saved as the "fullscreen" setting, settings.h, which
+   the window opens with); and whether it is. */
+void SetWindowFullscreen(bool on);
+bool WindowFullscreen();
 /* The window's display, null when there is none (or no Vulkan one). */
 ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as

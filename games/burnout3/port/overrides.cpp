@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 #include <set>
 #include <string>
 #include <tuple>
@@ -17,6 +19,7 @@
 #include "ps2host/host.h"
 #include "ps2host/mc2.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 
 // libmc2's handlers as the game has them, for when no card is given.
 void F_00244218(lifted::Context& c);
@@ -32,6 +35,10 @@ void F_001313C0(lifted::Context& c);
 // frame (see FastLoading).
 void F_0019A950(lifted::Context& c);
 void F_001322B0(lifted::Context& c);
+// The frontend: its string lookup, the main menu's input, a message box.
+void F_00271A00(lifted::Context& c);
+void F_00318100(lifted::Context& c);
+void F_003181E0(lifted::Context& c);
 
 namespace {
 
@@ -126,6 +133,105 @@ void FastLoading(lifted::Context& c) {
     ps2host::SetFastForward(u32(c.r[2]) ? 1 : speed);
 }
 
+// ------------------------------------------------------------ PC SETTINGS
+//
+// The main menu's ONLINE (EA's servers are long gone) becomes PC SETTINGS
+// (FINDINGS: "PC settings"): its label, its description and what Cross does
+// there. The game draws every word of it - its own strings (0x00271A00, the
+// lookup), its own message box (0x0032D080) - so it looks the game's.
+
+// Text the game has no string for, written over strings nothing can show
+// now (the online flow's television-standard messages: each has room for
+// 85 characters or more), and handed out for these ids.
+struct Text { u32 id, donor; const char* text; };
+constexpr u32 kMainMenuOnline = 0xB8;       // "ONLINE", as the main menu builds it (0x00318340)
+constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its description
+constexpr u32 kFullscreenQuestion = 0x7F00; // ours, past the table's 4,006
+const Text kTexts[] = {
+    {kMainMenuOnline, 0xA1F, "PC SETTINGS"},
+    {kOnlineHelp, 0xA20, "SET UP THE PC VERSION"},
+    {kFullscreenQuestion, 0xF9D, "Play in fullscreen?"},
+};
+
+/* 0x00271A00(holder, id): the string with that id, from the language file
+   (DATA/GLOBALUS.BIN, its table at 0x007A4880). The main menu's ONLINE is
+   PC SETTINGS when the main menu asks for it (it alone calls from
+   0x003183D0; other screens keep their ONLINE). */
+void GetString(lifted::Context& c) {
+    const u32 id = u32(c.r[5]), caller = u32(c.r[31]);
+    for (const Text& t : kTexts) {
+        if (t.id != id || (id == kMainMenuOnline && caller != 0x003183D0u)) continue;
+        c.r[5] = t.donor;
+        F_00271A00(c);
+        const u32 at = u32(c.r[2]);
+        if (!at) return;
+        u32 i = 0;
+        for (; t.text[i]; ++i) generated::Write16(at + 2 * i, u8(t.text[i]));
+        generated::Write16(at + 2 * i, 0);
+        return;
+    }
+    F_00271A00(c);
+}
+
+/* Calls a guest function from a host one, its arguments in a0-t1, and gives
+   back v0; the caller's registers as they were. */
+u32 GuestCall(lifted::Context& c, u32 target, std::initializer_list<u32> arguments) {
+    u64 saved[32];
+    std::memcpy(saved, c.r, sizeof saved);
+    int r = 4;
+    for (u32 a : arguments) c.r[r++] = s64(s32(a));
+    lifted::Call(c, target, u32(saved[31]));
+    const u32 result = u32(c.r[2]);
+    std::memcpy(c.r, saved, sizeof saved);
+    return result;
+}
+
+/* The frontend's message box (0x0032D080 shows one: the box, its type -
+   7 is YES/NO - and the message's string id). Its +0x0A is set while it
+   shows, +0x0C the button highlighted (0 the first); 0x0032B2C0(box, pad,
+   1) takes a frame's input and returns the button pressed (its id from the
+   type's table at 0x004A4A10: YES 4, NO 5) or 0xF; its method +0x0C
+   closes it. */
+constexpr u32 kMessageBox = 0x01E898E8;
+constexpr u32 kYes = 4, kNo = 5;
+bool g_settings_open = false;
+
+/* 0x003181E0(menu), the main menu's input each frame: Cross (0x0022CFE0) on
+   an entry opens it - entry 3, ONLINE, the online flow (a message box first).
+   On entry 3 it opens PC SETTINGS instead: a YES/NO box asking for
+   fullscreen, the setting as it is highlighted (MainMenu takes it from
+   there). */
+void MainMenuInput(lifted::Context& c) {
+    const u32 menu = u32(c.r[4]);
+    if (generated::ReadU16(menu + 0x14) == 3 && GuestCall(c, 0x0022CFE0u, {0x004F50C0u, 0})) {
+        GuestCall(c, 0x0032D080u, {kMessageBox, 7, kFullscreenQuestion, 0xF, 0});
+        generated::Write16(kMessageBox + 0x0C, ps2host::WindowFullscreen() ? 0 : 1);
+        g_settings_open = true;
+        c.r[2] = 1;
+        return;
+    }
+    F_003181E0(c);
+}
+
+/* 0x00318100(menu), the main menu each frame: by its +0x10, the menu's
+   input (1), or a message box's (0 and 2: the online flow's) until a button
+   closes it. While PC SETTINGS' box shows it has the input: YES or NO sets
+   fullscreen (and saves it, ps2host/settings.h), Triangle leaves it as it
+   is; either closes the box. */
+void MainMenu(lifted::Context& c) {
+    if (!g_settings_open) {
+        F_00318100(c);
+        return;
+    }
+    const u32 pressed = GuestCall(c, 0x0032B2C0u, {kMessageBox, 0, 1});
+    const bool back = (ps2host::PadButtonsHeld() & (1u << 12)) != 0;    // Triangle
+    if (pressed == kYes || pressed == kNo || back) {
+        if (pressed == kYes || pressed == kNo) ps2host::SetWindowFullscreen(pressed == kYes);
+        GuestCall(c, generated::ReadU32(generated::ReadU32(kMessageBox) + 0x0C), {kMessageBox});
+        g_settings_open = false;
+    }
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
@@ -150,4 +256,7 @@ void RegisterGameOverrides() {
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
     ps2host::Override(0x0019A950u, FastLoading<F_0019A950>, "a race's loading: fast-forwarded while it waits");
     ps2host::Override(0x001322B0u, FastLoading<F_001322B0>, "the game's loading: fast-forwarded while it waits");
+    ps2host::Override(0x00271A00u, GetString, "the string lookup: PC SETTINGS' words");
+    ps2host::Override(0x003181E0u, MainMenuInput, "the main menu's input: ONLINE is PC SETTINGS");
+    ps2host::Override(0x00318100u, MainMenu, "the main menu: PC SETTINGS' message box");
 }

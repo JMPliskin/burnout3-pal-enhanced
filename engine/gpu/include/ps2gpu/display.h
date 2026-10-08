@@ -36,8 +36,13 @@ public:
         return false;
     }
 
-    /* Handles the window's events; false once it has been closed. */
+    /* Handles the window's events; false once it has been closed. Alt+Enter
+       toggles fullscreen. */
     virtual bool Pump() = 0;
+
+    /* Fullscreen (borderless, the desktop's resolution) or a window. */
+    virtual void SetFullscreen(bool on) { (void)on; }
+    virtual bool Fullscreen() const { return false; }
 
     /* Whether the window has the keyboard, and whether a key is down - by SDL
        scancode (SDL_SCANCODE_*), which names keys by position. */

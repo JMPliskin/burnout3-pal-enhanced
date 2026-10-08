@@ -1838,6 +1838,38 @@ only when what it reads could have changed - the command, IPU_CTRL, the
 buffer and FIFO, channel 4's registers, or the tag the chain ended on - and
 the boot movies run 1.6 times as fast.
 
+## PC settings
+
+The main menu's ONLINE (EA's servers are long gone) is the port's PC
+SETTINGS, drawn and driven entirely by the game's own frontend:
+
+* **Words.** DATA/GLOBALUS.BIN is the US strings: a header (a hash, the
+  count - 4,006 - and the offset table's place), then UTF-16 strings. The
+  game loads it at 0x007A4880 and makes the offsets pointers;
+  0x00271A00(0x0051BA44, id) returns one. The main menu (0x00318340) builds
+  its entries from ids 0xE5, 0xE6, 0xE7, 0xB8 (ONLINE) and 0xE8, their
+  descriptions 0xE9-0xED. The port's lookup gives 0xB8 as PC SETTINGS when
+  the main menu asks (from 0x003183D0), 0xEC as "SET UP THE PC VERSION",
+  and an id of its own (0x7F00) as the question - written over the online
+  flow's television-standard messages (0xA1F, 0xA20, 0xF9D), which can no
+  longer show.
+* **The menu.** 0x00318100(menu) each frame: by the menu's +0x10, its input
+  (1: 0x003181E0) or a message box's (0, 2: the online flow's). In
+  0x003181E0, Cross (0x0022CFE0(0x004F50C0, 0)) on the entry at +0x14 opens
+  it; entry 3 shows the television-standard box first (0x0032D080, type 2).
+* **The message box** (0x01E898E8): 0x0032D080(box, type, message id, 0xF,
+  0) shows one; the types' buttons are at 0x004A4A10 (two words a type,
+  indices into 0x004A49D0's string ids: OK, CANCEL, RETRY, CONTINUE, YES,
+  NO - type 7 is YES/NO, 4 OK/CANCEL). +0x0A is set while it shows, +0x0C
+  is the button highlighted; 0x0032B2C0(box, 0, 1) takes a frame's input and
+  returns the button pressed (YES 4, NO 5) or 0xF, and its method +0x0C
+  closes it.
+
+PC SETTINGS opens a YES/NO box, "Play in fullscreen?", the setting as it is
+highlighted; YES or NO sets it, Triangle leaves it. The setting is kept in
+pc_settings.ini beside the memory card's directory (or the executable);
+Alt+Enter toggles it too.
+
 ## Skipping movies
 
 Every movie the game plays goes through one screen object (0x0051A6A8 in a

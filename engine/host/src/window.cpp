@@ -20,6 +20,7 @@
 
 #include "ps2host/gs.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 
 #ifdef PS2HOST_VULKAN
 #include <SDL3/SDL_scancode.h>
@@ -120,6 +121,7 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
     g_display = ps2gpu::CreateVulkanDisplay(narrow.c_str(), width, height, &error);
     if (g_display) {
         Note("window", "window: Vulkan on " + g_display->Describe());
+        if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
         return true;
     }
     Note("window", "window: no Vulkan display (" + error + "); drawing with GDI");
@@ -178,15 +180,40 @@ void SetPictureSource(std::function<bool(std::vector<u32>*, u32*, u32*)> source)
     g_picture_source = std::move(source);
 }
 
+// Alt+Enter changes fullscreen in the display's Pump: saved as the setting.
+void KeepFullscreenSetting() {
+#ifdef PS2HOST_VULKAN
+    static int last = -1;
+    const int now = g_display && g_display->Fullscreen() ? 1 : 0;
+    if (last >= 0 && now != last) SetSettingOn("fullscreen", now != 0);
+    last = now;
+#endif
+}
+
 bool PumpWindow() {
 #ifdef PS2HOST_VULKAN
     if (g_display) {
         if (!g_display->Pump()) g_closed = true;
+        KeepFullscreenSetting();
         return !g_closed;
     }
 #endif
     if (g_window) PresentGdi();
     return true;
+}
+
+void SetWindowFullscreen(bool on) {
+    SetSettingOn("fullscreen", on);
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->SetFullscreen(on);
+#endif
+}
+
+bool WindowFullscreen() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) return g_display->Fullscreen();
+#endif
+    return SettingOn("fullscreen");
 }
 
 ps2gpu::Display* WindowDisplay() {
@@ -204,6 +231,7 @@ void PresentFrame() {
             g_closed = true;
             return;
         }
+        KeepFullscreenSetting();
         std::vector<u32> pixels;
         u32 w = 0, h = 0;
         const bool got = (g_picture_source && g_picture_source(&pixels, &w, &h)) || gs::TheGs().Picture(&pixels, &w, &h);

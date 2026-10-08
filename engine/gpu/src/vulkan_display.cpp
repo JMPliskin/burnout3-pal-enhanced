@@ -34,6 +34,8 @@ public:
     bool Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) override;
     bool PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) override;
     bool Pump() override;
+    void SetFullscreen(bool on) override;
+    bool Fullscreen() const override;
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
     bool Pad(PadState* state) const override;
@@ -530,11 +532,26 @@ bool VulkanDisplay::Submit(std::uint32_t index) {
     return true;
 }
 
+void VulkanDisplay::SetFullscreen(bool on) {
+    if (!window_) return;
+    SDL_SetWindowFullscreen(window_, on);
+    SDL_ShowCursor();
+    if (on) SDL_HideCursor();
+    stale_ = true;
+}
+
+bool VulkanDisplay::Fullscreen() const {
+    return window_ && (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
 bool VulkanDisplay::Pump() {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) closed_ = true;
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) stale_ = true;
+        if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.scancode == SDL_SCANCODE_RETURN &&
+            (e.key.mod & SDL_KMOD_ALT))
+            SetFullscreen(!Fullscreen());
         if (e.type == SDL_EVENT_GAMEPAD_ADDED && !gamepad_) {
             gamepad_ = SDL_OpenGamepad(e.gdevice.which);
             if (gamepad_) std::fprintf(stderr, "[window] controller: %s\n", SDL_GetGamepadName(gamepad_));
