@@ -494,7 +494,7 @@ LEAVE = "s.count = count; s.stopping = stopping; s.delayed = delayed; C::Cycle(v
 
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
               written: dict = None, clean: dict = None, dead_flags: bool = False,
-              after: tuple = None) -> list:
+              after: tuple = None, no_flags: bool = False) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
     driver with s.pc. `index` is its place in the block and `written` where
@@ -503,7 +503,9 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     (lower, upper), None for the first: from the second pair on, a block
     runs with no E bit or branch pending from before it (emit_block), so
     `stopping` and `delayed` can be set only by the pair before - and are
-    checked only after one that may set them."""
+    checked only after one that may set them. `no_flags`: the fast blocks
+    of a program that never reads MAC or STATUS (fast_eligible) - an FMAC
+    leaves both alone (CLIP is as ever)."""
     if written is None:
         written = {}
     immediate = bool(upper & 0x80000000)
@@ -535,6 +537,9 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
         body.append("u32 branch = kNone;")
     body += lower_lines
     upper_lines, upper_written, lanes, set_flags = emit_upper(upper, clean)
+    if no_flags and set_flags and not upper_lines[0].startswith("C::ClipJudge"):
+        upper_lines = [line for line in upper_lines if not line.startswith("C::Flags<")]
+        set_flags = False
     if dead_flags:
         upper_lines = [line.replace("C::Flags<", "C::StickyFlags<") for line in upper_lines]
         set_flags = False
@@ -666,7 +671,99 @@ def dead_flags(block: list, pairs: dict) -> set:
     return dead
 
 
-def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
+def reads_status(lower: int, upper: int) -> bool:
+    """FSEQ, FSSET, FSAND, FSOR: the lowers that read or set STATUS."""
+    return not (upper & 0x80000000) and 0x14 <= (lower >> 25) <= 0x17
+
+
+def reads_mac_only(lower: int, upper: int) -> bool:
+    """FMEQ, FMAND, FMOR: the lowers that read the landed MAC flags."""
+    return not (upper & 0x80000000) and (lower >> 25) in (0x18, 0x1A, 0x1B)
+
+
+def mac_live(pairs: dict, mask: int, start: int) -> bool:
+    """Whether a reader of MAC can see the flags of the FMAC at `start`: a
+    walk of the program from the pair after it, branches and delay slots as
+    they run, until a later FMAC's flags have landed for certain - four
+    pairs after it, a pair taking a cycle at least - or the program ends.
+    A reader met before then (even one it reaches before `start`'s own
+    flags land) sees them; so does code not recorded, or a jump to a
+    register's address (where it goes is not known)."""
+    END = "end"
+    seen = set()
+    todo = []
+
+    def after(pc, pending):
+        """The pair to run after `pc` (pending: its branch's targets, if it
+        is a delay slot; END after an E bit): [(pc, pending)] or None."""
+        if pending == END:
+            return []
+        if pending is not None:
+            return [(t, None) for t in pending]
+        lower, upper = pairs[pc]
+        branch, static, conditional = is_branch(lower, upper)
+        if branch:
+            if not static:
+                return None                         # JR, JALR: anywhere
+            targets = [(pc + 8 + imm11(lower) * 8) & mask]
+            if conditional:
+                targets.append((pc + 16) & mask)
+            return [((pc + 8) & mask, tuple(targets))]
+        if upper & 0x40000000:
+            return [((pc + 8) & mask, END)]
+        return [((pc + 8) & mask, None)]
+
+    # `start` runs as a pair of its own, or (after a branch) as its delay
+    # slot - then what follows is the branch's target.
+    first = after(start, None)
+    if first is None:
+        return True
+    before = pairs.get((start - 8) & mask)
+    if before and is_branch(*before)[0]:
+        slot = after((start - 8) & mask, None)
+        if slot is None:
+            return True                             # JR, JALR: anywhere
+        first += after(start, slot[0][1])
+    todo = [(pc, pending, None) for pc, pending in first]
+    while todo:
+        pc, pending, since = todo.pop()
+        if since is not None:
+            since += 1
+            if since >= 4:
+                continue                            # a later FMAC's flags have landed
+        if (pc, pending, since) in seen:
+            continue
+        seen.add((pc, pending, since))
+        if pc not in pairs:
+            return True
+        lower, upper = pairs[pc]
+        if pending is not None and pending != END and is_branch(lower, upper)[0]:
+            return True                             # a branch in a delay slot: not followed
+        if reads_mac_only(lower, upper):
+            return True
+        if sets_mac(upper):
+            since = 0
+        nexts = after(pc, pending)
+        if nexts is None:
+            return True
+        todo += [(n, np, since) for n, np in nexts]
+    return False
+
+
+def fast_drops(unit: int, pairs: dict, mask: int) -> set:
+    """The pairs whose MAC and STATUS flags --vu-fast leaves out, or None
+    where it runs the program exact. A VU1 program only (the EE reads VU0's
+    flags, CFC2; never VU1's), and one that never reads or sets STATUS
+    (FSEQ ... FSOR): then the flags matter only to the MAC readers (FMEQ,
+    FMAND, FMOR), and an FMAC's only where one can see them (mac_live).
+    What fast mode gives up: a later run reading the flags a run left
+    before an FMAC of its own lands."""
+    if unit != 1 or any(reads_status(lower, upper) for lower, upper in pairs.values()):
+        return None
+    return {pc for pc, (lower, upper) in pairs.items() if sets_mac(upper) and not mac_live(pairs, mask, pc)}
+
+
+def emit_block(name: str, block: list, pairs: dict, mask: int, drops: set = frozenset()) -> list:
     # The run's state and the cycle as locals, written back where the block
     # leaves (LEAVE): nothing the block does can reach them through memory.
     # A block starts only with as many pairs left to the limit as it has
@@ -684,7 +781,7 @@ def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
     dead = dead_flags(block, pairs) - {0}
     for i, pc in enumerate(block):
         out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean,
-                         i in dead, pairs[block[i - 1]] if i else None)
+                         i in dead, pairs[block[i - 1]] if i else None, pc in drops)
     out.append("}")
     return out
 
@@ -751,23 +848,30 @@ def generate_files(programs: list, what: str, single: str = None) -> dict:
         name = "Vu%dProgram%d" % (unit, number)
         blocks = blocks_of(pairs, entries, mask)
         names = []
+        drops = fast_drops(unit, pairs, mask)
+        fast = bool(drops)
         for block in blocks:
             block_name = "%sBlock%04X" % (name, block[0])
             names.append((block[0], block_name))
-            code = emit_block(block_name, block, pairs, mask)
-            if single is None and len(chunks[-1]) + len(code) > LINES_PER_FILE and chunks[-1]:
-                chunks.append([])
-            chunks[-1] += code + [""]
-            declarations.append("void %s(Vu& v, VuRunState& s, std::uint64_t limit);" % block_name)
+            for variant, dropped in [("", frozenset())] + ([("Fast", drops)] if fast else []):
+                code = emit_block(block_name + variant, block, pairs, mask, dropped)
+                if single is None and len(chunks[-1]) + len(code) > LINES_PER_FILE and chunks[-1]:
+                    chunks.append([])
+                chunks[-1] += code + [""]
+                declarations.append("void %s%s(Vu& v, VuRunState& s, std::uint64_t limit);" % (block_name, variant))
         tables.append("const u32 k%sCode[] = {" % name)
         tables.append(code_array(runs_of(pairs)))
         tables.append("};")
         tables.append("const u32 k%sStarts[] = {%s};" % (name, ", ".join("0x%Xu" % pc for pc, _ in names)))
         tables.append("const ps2host::VuBlock k%sBlocks[] = {%s};" % (name, ", ".join(n for _, n in names)))
+        if fast:
+            tables.append("const ps2host::VuBlock k%sFastBlocks[] = {%s};" %
+                          (name, ", ".join(n + "Fast" for _, n in names)))
         tables.append("")
         for entry in entries:
-            registrations.append("    {%d, 0x%Xu, k%sCode, k%sStarts, k%sBlocks, %du}," %
-                                 (unit, entry, name, name, name, len(names)))
+            registrations.append("    {%d, 0x%Xu, k%sCode, k%sStarts, k%sBlocks, %du, %s}," %
+                                 (unit, entry, name, name, name, len(names),
+                                  "k%sFastBlocks" % name if fast else "nullptr"))
     main = [HEADER % what]
     if single is not None:
         main += chunks[0]
@@ -847,7 +951,7 @@ SPECIAL_INDEXES = [0x30, 0x31, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0
                    0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E]
 
 
-def random_lower(rng: random.Random, pc: int, size: int, last: int) -> int:
+def random_lower(rng: random.Random, pc: int, size: int, last: int, flag_reads: bool = True) -> int:
     dest = rng.choice([0xF, 0xF, 0x8, 0x4, 0x2, 0x1, 0xE, rng.randrange(16)])
     it, is_ = rng.randrange(1, 16) if rng.random() < 0.9 else rng.randrange(32), rng.randrange(16)
     roll = rng.random()
@@ -857,7 +961,13 @@ def random_lower(rng: random.Random, pc: int, size: int, last: int) -> int:
         return (0x40 << 25) | (dest << 21) | (it << 16) | (is_ << 11) | (fd << 6) | 0x3C | (index & 3)
     if roll < 0.45:                                              # IADD ISUB IADDI IAND IOR (and 0x33)
         return (0x40 << 25) | (it << 16) | (is_ << 11) | (rng.randrange(32) << 6) | rng.randrange(0x30, 0x36)
-    op = rng.choice(LOWER_OPS)
+    if flag_reads is True:
+        ops = LOWER_OPS
+    elif flag_reads == "mac":
+        ops = [o for o in LOWER_OPS if not 0x14 <= o <= 0x17]
+    else:
+        ops = [o for o in LOWER_OPS if not 0x14 <= o <= 0x1B]
+    op = rng.choice(ops)
     imm = rng.randrange(0x800)
     if op in (0x20, 0x21, 0x28, 0x29, 0x2C, 0x2D, 0x2E, 0x2F):
         # Mostly forward, sometimes back: loops end at the run's limit if not before.
@@ -866,7 +976,7 @@ def random_lower(rng: random.Random, pc: int, size: int, last: int) -> int:
     return (op << 25) | (dest << 21) | (it << 16) | (is_ << 11) | imm
 
 
-def random_program(rng: random.Random, unit: int) -> dict:
+def random_program(rng: random.Random, unit: int, flag_reads: bool = True) -> dict:
     size = 0x4000 if unit == 1 else 0x1000
     count = rng.randrange(8, 48)
     base = rng.randrange(0, size // 8 - count - 2) * 8
@@ -876,7 +986,7 @@ def random_program(rng: random.Random, unit: int) -> dict:
         pc = base + 8 * i
         upper = random_upper(rng)
         lower = struct.unpack("<I", struct.pack("<f", rng.uniform(-4, 4)))[0] if upper & 0x80000000 \
-            else random_lower(rng, pc, size, last)
+            else random_lower(rng, pc, size, last, flag_reads)
         pairs[pc] = (lower, upper)
     end = base + 8 * count
     pairs[end] = (0x8000033C, 0x400002FF)                           # NOP with E
@@ -891,6 +1001,13 @@ def corpus(count: int, seed: int, name: str) -> dict:
         unit = 1 if rng.random() < 0.8 else 0
         pairs = random_program(rng, unit)
         programs.append((unit, [min(pairs)], pairs))
+    # And VU1 programs for --vu-fast's blocks (VuFastIsTheExactButFlags):
+    # none reading STATUS, half reading MAC (FMEQ, FMAND, FMOR) and half
+    # neither; a generator of their own, so the ones above stay as they were.
+    rng = random.Random(seed + 1000)
+    for k in range(count // 3):
+        pairs = random_program(rng, 1, flag_reads="mac" if k % 2 else False)
+        programs.append((1, [min(pairs)], pairs))
     return generate_files(programs, "%d random programs (seed %d) for VuCompiledIsTheInterpreter"
                           % (count, seed), single=name)
 

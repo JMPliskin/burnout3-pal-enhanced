@@ -106,6 +106,7 @@ struct VuCompiled {
     const std::uint32_t* starts;
     const VuBlock* blocks;
     std::uint32_t block_count;
+    const VuBlock* fast_blocks = nullptr;   // the same without MAC and STATUS (--vu-fast), or none
 };
 /* Adds one to those Vu::Run looks for (the generated file does, as it starts). */
 void RegisterVuProgram(const VuCompiled* program);

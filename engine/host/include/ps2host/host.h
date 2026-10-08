@@ -98,6 +98,7 @@ struct Options {
     bool vif1_sync = false;        /* --vif1-sync: VIF1 on the EE's thread in real time too */
     std::string vu_record;         /* --vu-record: the microprograms run, for vurecomp.py */
     bool vu_interpret = false;     /* --vu-interpret: no compiled microprograms */
+    bool vu_fast = false;          /* --vu-fast: VU1 programs without MAC/STATUS readers skip those flags */
     bool gpu = false;              /* draw on the GPU instead of the software GS (gpu_bridge.cpp) */
     bool gpu_shadow = false;       /* draw on the GPU too, and compare (gpu_bridge.cpp) */
     bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */

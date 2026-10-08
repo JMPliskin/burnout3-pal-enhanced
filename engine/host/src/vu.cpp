@@ -156,14 +156,15 @@ std::unordered_map<std::uint64_t, std::vector<const VuCompiled*>>& Compiled() {
 }
 
 // A program's blocks by pair address (null where none starts), made once.
-const std::vector<VuBlock>& BlockTable(const VuCompiled* program, std::size_t pairs) {
+const std::vector<VuBlock>& BlockTable(const VuCompiled* program, std::size_t pairs, bool fast) {
     // A thread's own (VU1 runs on VIF1's worker, VU0 on the EE's).
-    thread_local std::unordered_map<const VuCompiled*, std::vector<VuBlock>> tables;
-    std::vector<VuBlock>& table = tables[program];
+    thread_local std::unordered_map<const VuCompiled*, std::vector<VuBlock>> tables[2];
+    const VuBlock* blocks = fast && program->fast_blocks ? program->fast_blocks : program->blocks;
+    std::vector<VuBlock>& table = tables[blocks == program->blocks ? 0 : 1][program];
     if (table.empty()) {
         table.assign(pairs, nullptr);
         for (std::uint32_t i = 0; i < program->block_count; ++i)
-            if (program->starts[i] / 8 < pairs) table[program->starts[i] / 8] = program->blocks[i];
+            if (program->starts[i] / 8 < pairs) table[program->starts[i] / 8] = blocks[i];
     }
     return table;
 }
@@ -269,17 +270,20 @@ void Vu::RecordPrograms(const std::string& path) {
     if (!g_record) std::fprintf(stderr, "vu: cannot write %s\n", path.c_str());
 }
 
-bool Vu::SameState(const Vu& o) const {
+bool Vu::SameState(const Vu& o, bool flags) const {
     auto same = [](const void* a, const void* b, std::size_t n) { return std::memcmp(a, b, n) == 0; };
     if (!same(regs.vf, o.regs.vf, sizeof regs.vf) || !same(regs.vc, o.regs.vc, sizeof regs.vc) ||
         !same(regs.vacc, o.regs.vacc, sizeof regs.vacc))
         return false;
-    if (mac != o.mac || status != o.status || clip != o.clip || p != o.p || resume != o.resume)
+    if ((flags && (mac != o.mac || status != o.status)) || clip != o.clip || p != o.p || resume != o.resume)
         return false;
     if (cycle_ != o.cycle_ || !same(vf_ready_, o.vf_ready_, sizeof vf_ready_) || q_next_ != o.q_next_ ||
         p_next_ != o.p_next_ || q_ready_ != o.q_ready_ || p_ready_ != o.p_ready_ || q_busy_ != o.q_busy_ ||
         p_busy_ != o.p_busy_)
         return false;
+    if (!flags)     // CLIP's in flight still, without the MAC writes between
+        return clip_latest_ == o.clip_latest_ && ClipsInFlight() == o.ClipsInFlight() && data.size() == o.data.size() &&
+               same(data.data(), o.data.data(), data.size()) && kicks_ == o.kicks_;
     if (mac_latest_ != o.mac_latest_ || status_latest_ != o.status_latest_ || clip_latest_ != o.clip_latest_ ||
         flag_count_ != o.flag_count_)
         return false;
@@ -583,6 +587,15 @@ void Vu::Lower(u32 word, u32 pc, Pending& out, u32* branch) {
     }
 }
 
+std::vector<std::pair<Vu::u64, Vu::u32>> Vu::ClipsInFlight() const {
+    std::vector<std::pair<u64, u32>> out;
+    for (int i = 0; i < flag_count_; ++i) {
+        const FlagWrite& f = flag_queue_[(flag_head_ + i) & 7];
+        if (f.sets_clip) out.emplace_back(f.ready, f.clip);
+    }
+    return out;
+}
+
 void Vu::LandAll() {
     cycle_ += 64;                   // time passes after the program: what was in flight lands
     Land();
@@ -617,7 +630,7 @@ void Vu::SnapshotFrame(u64 frame) {
     if (g_snapshots && frame >= g_snapshot_from.load()) g_snapshotting = true;
 }
 
-int Vu::Bench(const std::string& path, int passes) {
+int Vu::Bench(const std::string& path, int passes, bool fast) {
     std::FILE* in = std::fopen(path.c_str(), "rb");
     if (!in) {
         std::fprintf(stderr, "vu: cannot read %s\n", path.c_str());
@@ -639,6 +652,7 @@ int Vu::Bench(const std::string& path, int passes) {
     }
     std::fclose(in);
     Vu vu(1);
+    vu.fast = fast;
     vu.on_kick = [](u64, u64) {};
     vu.on_kick_block = [](const u32*, u32) {};
     double best = 0;
@@ -756,7 +770,7 @@ bool Vu::RunCompiled(VuRunState& state, u64 limit) {
             break;
         }
         ++compiled_entries_;
-        const std::vector<VuBlock>& table = BlockTable(program, micro.size() / 8);
+        const std::vector<VuBlock>& table = BlockTable(program, micro.size() / 8, fast);
         const u64 before = state.count;
         const u32 started = state.pc;
         while (!state.done && state.count < limit) {

@@ -33,6 +33,7 @@
 #include <map>
 #include <unordered_map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ps2rt/lifted.h"
@@ -94,8 +95,14 @@ public:
     /* Whether Run takes compiled programs where it has them (the tests run
        the interpreter alone to compare). */
     bool use_compiled = true;
-    /* For tests: everything a run can change, the same in both. */
-    bool SameState(const Vu& other) const;
+    /* --vu-fast: compiled VU1 programs that never read MAC or STATUS run
+       blocks that do not compute them (VuCompiled::fast_blocks): faster, and
+       exact but for those flags - which a later run reading them before an
+       FMAC of its own lands would see. */
+    bool fast = false;
+    /* For tests: everything a run can change, the same in both (`flags`
+       false: but the MAC and STATUS flags, landed, latest and in flight). */
+    bool SameState(const Vu& other, bool flags = true) const;
     /* --vu-record: each program a run starts, and the code reachable from
        where it starts, to `path` (engine/tools/vurecomp.py compiles them). */
     static void RecordPrograms(const std::string& path);
@@ -108,7 +115,7 @@ public:
        port has them, in `passes` passes; the fastest pass's time a pair, and a
        hash of every run's registers and memory after (what a change to the
        VU must leave alone). Returns 0, or 1 when the file cannot be read. */
-    static int Bench(const std::string& path, int passes = 5);
+    static int Bench(const std::string& path, int passes = 5, bool fast = false);
     /* How often each program address was started, for reports. */
     const std::map<u32, u64>& starts() const { return starts_; }
 
@@ -163,6 +170,9 @@ private:
     void Land();                    /* results whose time has come (a look, inline) */
     void LandNow();                 /* ...landing them */
     void LandAll();
+    /* The CLIP judgements in flight (when each lands, its value): what
+       SameState compares without the MAC and STATUS flags. */
+    std::vector<std::pair<u64, u32>> ClipsInFlight() const;
 
     struct Pending;
     /* The interpreter, from where `state` stands. */

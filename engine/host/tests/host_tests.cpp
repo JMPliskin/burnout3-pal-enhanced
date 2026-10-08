@@ -778,10 +778,10 @@ void MemoryCardKeepsSaves() {
 // --corpus), compiled ahead of time, run as the interpreter runs them: from
 // random registers and memory, every register, flag, pipeline, cycle and
 // byte of data memory the same at the end - and the pairs counted.
-void VuCompiledIsTheInterpreter() {
-    std::size_t count = 0;
-    const ps2host::VuCompiled* programs = VuGeneratedPrograms(&count);
-    u32 seed = 77;
+/* A program of the test corpus in a VU's instruction memory (NOPs around
+   it), and random registers, flags and data memory from `seed`, which goes
+   on: two VUs given the same seed start the same. */
+void PrepareVuRun(ps2host::Vu& vu, const ps2host::VuCompiled& program, u32& seed) {
     auto next = [&] { return seed = seed * 1664525u + 1013904223u; };
     auto number = [&]() -> u32 {
         const u32 r = next();
@@ -793,6 +793,37 @@ void VuCompiledIsTheInterpreter() {
             default: return next();
         }
     };
+    for (std::size_t at = 0; at < vu.micro.size(); at += 8) {
+        const u32 nop[2] = {0x8000033Cu, 0x000002FFu};
+        std::memcpy(vu.micro.data() + at, nop, 8);
+    }
+    const u32* code = program.code;
+    const u32 runs_in = *code++;
+    for (u32 r = 0; r < runs_in; ++r) {
+        std::memcpy(vu.micro.data() + code[0], code + 2, 4 * code[1]);
+        code += 2 + code[1];
+    }
+    for (int r = 1; r < 32; ++r)
+        for (u32& lane : vu.regs.vf[r]) lane = number();
+    for (u32& lane : vu.regs.vacc) lane = number();
+    for (int r = 1; r < 16; ++r) vu.regs.vc[r] = next() % ((next() & 1) ? 16 : 0x10000);
+    vu.regs.vc[20] = 0x3F800000u | (next() & 0x7FFFFF);
+    vu.regs.vc[21] = number();
+    vu.regs.vc[22] = number();
+    for (std::size_t b = 0; b < vu.data.size(); b += 4) {
+        const u32 value = number();
+        std::memcpy(vu.data.data() + b, &value, 4);
+    }
+    vu.mac = next() & 0xFFFF;
+    vu.status = next() & 0xFFF;
+    vu.clip = next() & 0xFFFFFF;
+    vu.p = number();
+}
+
+void VuCompiledIsTheInterpreter() {
+    std::size_t count = 0;
+    const ps2host::VuCompiled* programs = VuGeneratedPrograms(&count);
+    u32 seed = 77;
     u32 wrong = 0, runs = 0, entered = 0;
     for (std::size_t i = 0; i < count; ++i) {
         const ps2host::VuCompiled& program = programs[i];
@@ -800,36 +831,10 @@ void VuCompiledIsTheInterpreter() {
         for (int trial = 0; trial < 6; ++trial) {
             auto interpreted = std::make_unique<ps2host::Vu>(program.unit);
             auto ahead = std::make_unique<ps2host::Vu>(program.unit);
-            for (ps2host::Vu* vu : {interpreted.get(), ahead.get()}) {
-                for (std::size_t at = 0; at < vu->micro.size(); at += 8) {     // NOPs around the program
-                    const u32 nop[2] = {0x8000033Cu, 0x000002FFu};
-                    std::memcpy(vu->micro.data() + at, nop, 8);
-                }
-                const u32* code = program.code;
-                const u32 runs_in = *code++;
-                for (u32 r = 0; r < runs_in; ++r) {
-                    std::memcpy(vu->micro.data() + code[0], code + 2, 4 * code[1]);
-                    code += 2 + code[1];
-                }
-            }
             const u32 start = seed;
             for (ps2host::Vu* vu : {interpreted.get(), ahead.get()}) {
                 seed = start;
-                for (int r = 1; r < 32; ++r)
-                    for (u32& lane : vu->regs.vf[r]) lane = number();
-                for (u32& lane : vu->regs.vacc) lane = number();
-                for (int r = 1; r < 16; ++r) vu->regs.vc[r] = next() % ((next() & 1) ? 16 : 0x10000);
-                vu->regs.vc[20] = 0x3F800000u | (next() & 0x7FFFFF);
-                vu->regs.vc[21] = number();
-                vu->regs.vc[22] = number();
-                for (std::size_t b = 0; b < vu->data.size(); b += 4) {
-                    const u32 value = number();
-                    std::memcpy(vu->data.data() + b, &value, 4);
-                }
-                vu->mac = next() & 0xFFFF;
-                vu->status = next() & 0xFFF;
-                vu->clip = next() & 0xFFFFFF;
-                vu->p = number();
+                PrepareVuRun(*vu, program, seed);
             }
             interpreted->use_compiled = false;
             const u64 limit = 3000;
@@ -846,6 +851,56 @@ void VuCompiledIsTheInterpreter() {
     // interpreter goes on there.)
     std::snprintf(what, sizeof what, "VU compiled programs taken where they are (%u of %u runs)", entered, runs);
     Check(entered == runs, what);
+}
+
+// --vu-fast: the corpus's VU1 programs that never read MAC or STATUS
+// (vurecomp's fast_eligible) run their flag-free blocks, and end as the
+// exact blocks do in everything else - registers, memory, CLIP, Q and P,
+// every pipeline and cycle - and in the pairs counted.
+void VuFastIsTheExactButFlags() {
+    std::size_t count = 0;
+    const ps2host::VuCompiled* programs = VuGeneratedPrograms(&count);
+    u32 seed = 991;
+    u32 wrong = 0, runs = 0, flags_differ = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const ps2host::VuCompiled& program = programs[i];
+        if (!program.block_count || !program.fast_blocks) continue;
+        for (int trial = 0; trial < 20; ++trial) {
+            auto exact = std::make_unique<ps2host::Vu>(program.unit);
+            auto fast = std::make_unique<ps2host::Vu>(program.unit);
+            const u32 start = seed;
+            for (ps2host::Vu* vu : {exact.get(), fast.get()}) {
+                seed = start;
+                PrepareVuRun(*vu, program, seed);
+            }
+            fast->fast = true;
+            const u64 limit = 3000;
+            const u64 a = exact->Run(program.entry, limit), b = fast->Run(program.entry, limit);
+            ++runs;
+            if (a != b || !exact->SameState(*fast, false) || !fast->compiled_pairs()) {
+                ++wrong;
+                std::fprintf(stderr, "[fast] program %zu entry %X trial %d: pairs %llu %llu, compiled %llu\n", i,
+                             program.entry, trial, (unsigned long long)a, (unsigned long long)b,
+                             (unsigned long long)fast->compiled_pairs());
+                for (int r = 0; r < 32; ++r)
+                    for (int l = 0; l < 4; ++l)
+                        if (exact->regs.vf[r][l] != fast->regs.vf[r][l]) std::fprintf(stderr, "  vf%d.%d\n", r, l);
+                for (int r = 0; r < 32; ++r)
+                    if (exact->regs.vc[r] != fast->regs.vc[r])
+                        std::fprintf(stderr, "  vc%d %X %X\n", r, exact->regs.vc[r], fast->regs.vc[r]);
+                if (exact->clip != fast->clip) std::fprintf(stderr, "  clip\n");
+                if (std::memcmp(exact->data.data(), fast->data.data(), exact->data.size())) std::fprintf(stderr, "  data\n");
+            }
+            if (!exact->SameState(*fast)) ++flags_differ;
+        }
+    }
+    char what[160];
+    std::snprintf(what, sizeof what, "VU fast blocks run as the exact ones but for MAC and STATUS (%u of %u runs differ)",
+                  wrong, runs);
+    Check(wrong == 0 && runs >= 100, what);
+    // The fast blocks do leave the flags alone (else they were not taken).
+    std::snprintf(what, sizeof what, "VU fast blocks taken: the flags differ in %u of %u runs", flags_differ, runs);
+    Check(flags_differ > runs / 4, what);
 }
 
 void VuTimingIsVisible() {
@@ -1157,6 +1212,7 @@ int main() {
     MemoryCardKeepsSaves();
     VuLanesAreTheModel();
     VuCompiledIsTheInterpreter();
+    VuFastIsTheExactButFlags();
     VuTimingIsVisible();
     VuFlagsOfAResultIntoVf0();
     VuMaxKeepsADenormal();

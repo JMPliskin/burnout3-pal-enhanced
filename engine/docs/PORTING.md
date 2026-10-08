@@ -67,6 +67,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); `BUTTON@FROM-TO` holds it from one frame to another (`cross@17650-19400`: accelerate through a race); repeatable |
 | `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
 | `--vu-record FILE`, `--vu-interpret` | record the VU microprograms a run starts, for compiling ahead of time; run them interpreted (see below) |
+| `--vu-fast` | compiled VU1 programs leave out the MAC and STATUS flags no instruction of theirs can read ("Fast mode" below): exact but for those flags, ~15% less VU1 time; exact is the default |
 | `--audio-wav FILE` | the same output recorded to a WAV file, for checking sound without listening |
 | `--watch-write ADDR` | every store to a guest address, with the function making it and four of its callers |
 | `--iop-trace` | every IOP library call the game's own modules make |
@@ -269,6 +270,36 @@ Burnout 3, the car select and the race recorded: 67 programs, 11,364 pairs;
 every pair of either run compiled (428 million and 2.46 billion). The car
 select 32 s to 24 s on the same build (`--vu-interpret` for the
 comparison); the race script about 2 minutes.
+
+### Fast mode (`--vu-fast`)
+
+Most of a compiled pair's time went to the MAC and STATUS flags: the four
+lanes' zero and sign bits, the sticky bits, and the queue they land through
+four cycles later - about 30% of every pair. Few programs read them: of
+Burnout 3's 70 VU1 programs, 40 never do, and the other 30 read MAC alone
+(FMAND, FMOR), never STATUS. So vurecomp writes a second set of blocks for
+each VU1 program that never reads or sets STATUS (`fast_drops`), in which an
+FMAC computes no flags at all unless a MAC reader can see them: a walk of the
+program from the pair after it - branches and delay slots as they run, the
+FMAC's own pair taken as a delay slot too where a branch is before it - up to
+where a later FMAC's flags have landed for certain (four pairs on), or the
+program's end. A reader reached first, a jump to a register's address or
+code not recorded keep the flags. The newest flags landed at any reader are
+then always an FMAC's that kept them, and the cycles are the exact model's,
+so every reader reads what it would have.
+
+What it gives up: the flags a run leaves at its end, which a later run could
+read before an FMAC of its own lands (the EE never reads VU1's flags; VU0
+programs are always exact). `VuFastIsTheExactButFlags` (host tests) runs the
+corpus's programs without STATUS readers both ways from random states -
+every register, CLIP, Q, P, pipeline, cycle and byte of memory the same, the
+flags different - and `regress.py --vu-fast` checks a scripted run's
+pictures against the exact ones (it refuses `--update`).
+
+Burnout 3: 5,841 of its 8,970 VU1 FMACs leave their flags out; `--vu-bench`
+on 6,000 race runs 5.82 -> 4.93 ns a pair; VIF1's worker in the real-time
+race ~71% -> ~60% busy; the car select, the training race and the race draw
+every picture as the exact VU does.
 
 ## Code that exists only at run time
 

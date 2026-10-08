@@ -50,11 +50,15 @@ def main(argv=None) -> int:
     parser.add_argument("run", help="the scripted run (port/runs/<run>.args)")
     parser.add_argument("--gpu", action="store_true", help="the GPU renderer (--gpu), else the software GS")
     parser.add_argument("--every", type=int, default=200, help="a picture every N frames")
+    parser.add_argument("--vu-fast", action="store_true",
+                        help="run with --vu-fast (compared with the same CRCs: what the exact VU drew)")
     parser.add_argument("--update", action="store_true", help="record this run's pictures as expected")
     parser.add_argument("--keep", help="keep the pictures in this directory")
     parser.add_argument("--frame-times", type=int, default=0, metavar="N",
                         help="print the wall-clock frame rate every N frames (the run's --frame-times)")
     args = parser.parse_args(argv)
+    if args.vu_fast and args.update:
+        parser.error("--update records the exact VU's pictures: not with --vu-fast")
     game = game_config.from_args(args)
 
     runs = game.path(os.path.join("port", "runs"))
@@ -75,6 +79,8 @@ def main(argv=None) -> int:
         "--timeout", "14400", "--frames", pictures, "--frames-every", str(args.every)]
     if args.gpu:
         command.append("--gpu")
+    if args.vu_fast:
+        command.append("--vu-fast")
     if args.frame_times:
         command += ["--frame-times", str(args.frame_times)]
     started = time.time()
