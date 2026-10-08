@@ -147,10 +147,12 @@ struct Text { u32 id, donor; const char* text; };
 constexpr u32 kMainMenuOnline = 0xB8;       // "ONLINE", as the main menu builds it (0x00318340)
 constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its description
 constexpr u32 kFullscreenQuestion = 0x7F00; // ours, past the table's 4,006
+constexpr u32 kVsyncQuestion = 0x7F01;
 const Text kTexts[] = {
     {kMainMenuOnline, 0xA1F, "PC SETTINGS"},
     {kOnlineHelp, 0xA20, "SET UP THE PC VERSION"},
     {kFullscreenQuestion, 0xF9D, "Play in fullscreen?"},
+    {kVsyncQuestion, 0xF9E, "Wait for vertical sync? (No tearing, a little more delay)"},
 };
 
 /* 0x00271A00(holder, id): the string with that id, from the language file
@@ -194,7 +196,22 @@ u32 GuestCall(lifted::Context& c, u32 target, std::initializer_list<u32> argumen
    closes it. */
 constexpr u32 kMessageBox = 0x01E898E8;
 constexpr u32 kYes = 4, kNo = 5;
+
+/* PC SETTINGS' questions, one box each, in turn: its words, the setting as
+   it is (YES highlighted when on) and what an answer does. */
+struct Question { u32 text; bool (*now)(); void (*set)(bool); };
+const Question kQuestions[] = {
+    {kFullscreenQuestion, ps2host::WindowFullscreen, ps2host::SetWindowFullscreen},
+    {kVsyncQuestion, ps2host::WindowVsync, ps2host::SetWindowVsync},
+};
 bool g_settings_open = false;
+std::size_t g_question = 0;                 // the one showing
+
+void AskQuestion(lifted::Context& c, std::size_t which) {
+    g_question = which;
+    GuestCall(c, 0x0032D080u, {kMessageBox, 7, kQuestions[which].text, 0xF, 0});
+    generated::Write16(kMessageBox + 0x0C, kQuestions[which].now() ? 0 : 1);
+}
 
 /* 0x003181E0(menu), the main menu's input each frame: Cross (0x0022CFE0) on
    an entry opens it - entry 3, ONLINE, the online flow (a message box first).
@@ -204,8 +221,7 @@ bool g_settings_open = false;
 void MainMenuInput(lifted::Context& c) {
     const u32 menu = u32(c.r[4]);
     if (generated::ReadU16(menu + 0x14) == 3 && GuestCall(c, 0x0022CFE0u, {0x004F50C0u, 0})) {
-        GuestCall(c, 0x0032D080u, {kMessageBox, 7, kFullscreenQuestion, 0xF, 0});
-        generated::Write16(kMessageBox + 0x0C, ps2host::WindowFullscreen() ? 0 : 1);
+        AskQuestion(c, 0);
         g_settings_open = true;
         c.r[2] = 1;
         return;
@@ -226,9 +242,10 @@ void MainMenu(lifted::Context& c) {
     const u32 pressed = GuestCall(c, 0x0032B2C0u, {kMessageBox, 0, 1});
     const bool back = (ps2host::PadButtonsHeld() & (1u << 12)) != 0;    // Triangle
     if (pressed == kYes || pressed == kNo || back) {
-        if (pressed == kYes || pressed == kNo) ps2host::SetWindowFullscreen(pressed == kYes);
+        if (pressed == kYes || pressed == kNo) kQuestions[g_question].set(pressed == kYes);
         GuestCall(c, generated::ReadU32(generated::ReadU32(kMessageBox) + 0x0C), {kMessageBox});
-        g_settings_open = false;
+        if (!back && g_question + 1 < sizeof kQuestions / sizeof kQuestions[0]) AskQuestion(c, g_question + 1);
+        else g_settings_open = false;
     }
 }
 

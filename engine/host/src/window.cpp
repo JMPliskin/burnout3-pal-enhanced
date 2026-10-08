@@ -122,6 +122,7 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
     if (g_display) {
         Note("window", "window: Vulkan on " + g_display->Describe());
         if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
+        if (SettingOn("vsync")) g_display->SetVsync(true);
         return true;
     }
     Note("window", "window: no Vulkan display (" + error + "); drawing with GDI");
@@ -207,6 +208,20 @@ void SetWindowFullscreen(bool on) {
 #ifdef PS2HOST_VULKAN
     if (g_display) g_display->SetFullscreen(on);
 #endif
+}
+
+void SetWindowVsync(bool on) {
+    SetSettingOn("vsync", on);
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->SetVsync(on);
+#endif
+}
+
+bool WindowVsync() {
+#ifdef PS2HOST_VULKAN
+    if (g_display) return g_display->Vsync();
+#endif
+    return SettingOn("vsync");
 }
 
 bool WindowFullscreen() {

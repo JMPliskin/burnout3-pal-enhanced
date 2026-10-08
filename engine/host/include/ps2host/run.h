@@ -233,6 +233,10 @@ bool PumpWindow();
    the window opens with); and whether it is. */
 void SetWindowFullscreen(bool on);
 bool WindowFullscreen();
+/* Vertical sync on or off (the "vsync" setting): no tearing, or the least
+   delay. */
+void SetWindowVsync(bool on);
+bool WindowVsync();
 /* The window's display, null when there is none (or no Vulkan one). */
 ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as

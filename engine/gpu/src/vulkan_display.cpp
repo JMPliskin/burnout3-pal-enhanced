@@ -43,6 +43,8 @@ public:
     bool Pump() override;
     void SetFullscreen(bool on) override;
     bool Fullscreen() const override;
+    void SetVsync(bool on) override;
+    bool Vsync() const override { return vsync_; }
     Pacing TakePacing() override;
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
@@ -92,6 +94,7 @@ private:
     VkSemaphore acquired_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
     VkPresentModeKHR mode_ = VK_PRESENT_MODE_FIFO_KHR;
+    std::atomic<bool> vsync_{false};        // FIFO when set (SetVsync)
 
     VkBuffer staging_ = VK_NULL_HANDLE;
     VkDeviceMemory staging_memory_ = VK_NULL_HANDLE;
@@ -319,9 +322,10 @@ bool VulkanDisplay::CreateSwapchain() {
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu_, surface_, &n, nullptr);
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu_, surface_, &n, modes.data());
-    mode_ = VK_PRESENT_MODE_FIFO_KHR;
-    for (VkPresentModeKHR m : {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR})
-        if (std::find(modes.begin(), modes.end(), m) != modes.end()) mode_ = m;
+    mode_ = VK_PRESENT_MODE_FIFO_KHR;            // every device has it
+    if (!vsync_)
+        for (VkPresentModeKHR m : {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR})
+            if (std::find(modes.begin(), modes.end(), m) != modes.end()) mode_ = m;
 
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     sci.surface = surface_;
@@ -768,6 +772,12 @@ Display::Pacing VulkanDisplay::TakePacing() {
     presents_ = 0;
     interval_sum_ = interval_squares_ = interval_longest_ = 0;
     return p;
+}
+
+void VulkanDisplay::SetVsync(bool on) {
+    if (vsync_ == on) return;
+    vsync_ = on;
+    stale_ = true;                              // the swapchain again, with the other mode
 }
 
 void VulkanDisplay::SetFullscreen(bool on) {

@@ -58,6 +58,12 @@ public:
     struct Pacing { std::uint64_t presents = 0; double mean_ms = 0, jitter_ms = 0, longest_ms = 0; };
     virtual Pacing TakePacing() { return {}; }
 
+    /* Vertical sync: each picture waits for the screen's refresh (no
+       tearing, FIFO), or goes at once (IMMEDIATE, or MAILBOX where that is
+       all there is). */
+    virtual void SetVsync(bool on) { (void)on; }
+    virtual bool Vsync() const { return false; }
+
     /* Fullscreen (borderless, the desktop's resolution) or a window. */
     virtual void SetFullscreen(bool on) { (void)on; }
     virtual bool Fullscreen() const { return false; }
