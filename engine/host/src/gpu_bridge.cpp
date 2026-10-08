@@ -1377,7 +1377,7 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
         SetGsFrameHandler([](u64 frame) {
             GpuShadowFrame(frame, std::string());
             if (ps2gpu::Display* display = WindowDisplay()) {
-                static const bool pace = !VirtualClock() && SettingOn("frame_pacing", true);
+                const bool pace = !VirtualClock() && SettingOn("frame_pacing", true);    // (PC SETTINGS)
                 PresentGpuPicture(*display, pace ? FrameDue(frame) : 0);
             }
         });

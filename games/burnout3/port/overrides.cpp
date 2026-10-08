@@ -15,6 +15,8 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "ps2host/host.h"
 #include "ps2host/mc2.h"
@@ -39,6 +41,8 @@ void F_001322B0(lifted::Context& c);
 void F_00271A00(lifted::Context& c);
 void F_00318100(lifted::Context& c);
 void F_003181E0(lifted::Context& c);
+void F_00321470(lifted::Context& c);
+void F_0031C350(lifted::Context& c);
 
 namespace {
 
@@ -108,7 +112,7 @@ void SkipMovie(lifted::Context& c) {
                          unsigned(generated::ReadU8(movie + 0x4D)), unsigned(generated::ReadU8(movie + 0x4E)),
                          unsigned(generated::ReadU8(movie + 0x4F)));
     }
-    if (playing && start && !loops) {
+    if (playing && start && !loops && ps2host::SettingOn("skip_videos", true)) {
         if (log) std::fprintf(stderr, "[movie] skipped: screen %08X movie %u\n", screen, generated::ReadU32(screen + 0x2FC));
         generated::Write8(movie + 0x4A, 1);
     }
@@ -122,55 +126,169 @@ void SkipMovie(lifted::Context& c) {
    Most of their time goes to frames going by and the IOP's streams, neither
    CPU busy. While one returns 0 the vertical blanks come faster
    (SetFastForward): the loading screen, a still picture and a spinner, goes
-   by sooner. PS2HOST_LOAD_SPEED sets how much faster (1: as the console). */
+   by sooner - the "fast_loading" setting (PC SETTINGS), or PS2HOST_LOAD_SPEED
+   to say how much faster (1: as the console). */
 template <void (*Load)(lifted::Context&)>
 void FastLoading(lifted::Context& c) {
-    static const unsigned speed = [] {
-        const char* text = std::getenv("PS2HOST_LOAD_SPEED");
-        return text ? unsigned(std::max(1, std::atoi(text))) : 8u;
-    }();
+    static const char* forced = std::getenv("PS2HOST_LOAD_SPEED");
+    const unsigned speed = forced ? unsigned(std::max(1, std::atoi(forced)))
+                                  : ps2host::SettingOn("fast_loading", true) ? 8u : 1u;
     Load(c);
     ps2host::SetFastForward(u32(c.r[2]) ? 1 : speed);
 }
 
 // ------------------------------------------------------------ PC SETTINGS
 //
-// The main menu's ONLINE (EA's servers are long gone) becomes PC SETTINGS
-// (FINDINGS: "PC settings"): its label, its description and what Cross does
-// there. The game draws every word of it - its own strings (0x00271A00, the
-// lookup), its own message box (0x0032D080) - so it looks the game's.
-
-// Text the game has no string for, written over strings nothing can show
-// now (the online flow's television-standard messages: each has room for
-// 85 characters or more), and handed out for these ids.
-struct Text { u32 id, donor; const char* text; };
-constexpr u32 kMainMenuOnline = 0xB8;       // "ONLINE", as the main menu builds it (0x00318340)
-constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its description
-constexpr u32 kFullscreenQuestion = 0x7F00; // ours, past the table's 4,006
-constexpr u32 kVsyncQuestion = 0x7F01;
-const Text kTexts[] = {
-    {kMainMenuOnline, 0xA1F, "PC SETTINGS"},
-    {kOnlineHelp, 0xA20, "SET UP THE PC VERSION"},
-    {kFullscreenQuestion, 0xF9D, "Play in fullscreen?"},
-    {kVsyncQuestion, 0xF9E, "Wait for vertical sync? (No tearing, a little more delay)"},
-};
+// The main menu (FINDINGS: "PC settings") gets two entries of the port's:
+// its ONLINE (EA's servers are long gone) is PC SETTINGS, a list of the
+// port's settings shown in the main menu's own list, and QUIT GAME is added
+// after DRIVER DETAILS, asking first in the game's own YES/NO box. The game
+// draws every word of it - its strings (0x00271A00, the lookup), its list
+// (0x00321470) and ticker (0x0031C350), its message box (0x0032D080).
 
 /* 0x00271A00(holder, id): the string with that id, from the language file
-   (DATA/GLOBALUS.BIN, its table at 0x007A4880). The main menu's ONLINE is
-   PC SETTINGS when the main menu asks for it (it alone calls from
-   0x003183D0; other screens keep their ONLINE). */
-void GetString(lifted::Context& c) {
-    const u32 id = u32(c.r[5]), caller = u32(c.r[31]);
-    for (const Text& t : kTexts) {
-        if (t.id != id || (id == kMainMenuOnline && caller != 0x003183D0u)) continue;
-        c.r[5] = t.donor;
-        F_00271A00(c);
-        const u32 at = u32(c.r[2]);
+   (DATA/GLOBALUS.BIN, its table at 0x007A4880). Strings of the online flow
+   - which nothing can show now - give the port the guest memory its own
+   words and lists live in. */
+struct Donor { u32 id, chars; };
+const Donor kDonors[] = {{108, 122}, {109, 135}, {110, 110}, {182, 99}, {1187, 143}, {1108, 75}, {3161, 82},
+                         {2868, 68}, {2870, 68}, {1206, 68}, {112, 71}, {113, 67}, {116, 88}};
+
+/* Hands out guest memory from the donors (they are never shown), in order:
+   texts and arrays the menu points at. Made once, when the language file is
+   in (the first main menu); the same every time after. */
+class GuestPool {
+public:
+    void Begin(lifted::Context& c) {
+        if (ready_) return;
+        // The lookup's holder is the main loop's (0x0051BA44): whoever calls
+        // here (a list, a ticker) has its own a0.
+        u64 saved[32];
+        std::memcpy(saved, c.r, sizeof saved);
+        for (const Donor& d : kDonors) {
+            c.r[4] = 0x0051BA44u;
+            c.r[5] = d.id;
+            F_00271A00(c);
+            if (u32(c.r[2])) regions_.push_back({u32(c.r[2]), 2 * d.chars});
+        }
+        std::memcpy(c.r, saved, sizeof saved);
+        ready_ = true;
+    }
+    u32 Take(u32 bytes, u32 align = 2) {
+        for (auto& [at, left] : regions_) {
+            const u32 start = (at + align - 1) & ~(align - 1);
+            if (start + bytes <= at + left) {
+                left -= start + bytes - at;
+                at = start + bytes;
+                return start;
+            }
+        }
+        return 0;
+    }
+private:
+    bool ready_ = false;
+    std::vector<std::pair<u32, u32>> regions_;      // (next free, bytes left)
+};
+GuestPool g_pool;
+
+/* A guest UTF-16 string the port writes (room for `chars`). */
+struct GuestText {
+    u32 at = 0, chars = 0;
+    void Make(u32 room) { chars = room; at = g_pool.Take(2 * (room + 1)); }
+    void Set(const std::string& text) {
         if (!at) return;
         u32 i = 0;
-        for (; t.text[i]; ++i) generated::Write16(at + 2 * i, u8(t.text[i]));
+        for (; i < text.size() && i < chars; ++i) generated::Write16(at + 2 * i, u8(text[i]));
         generated::Write16(at + 2 * i, 0);
-        return;
+    }
+};
+
+// The main menu's entries, by its own string ids (0x00318340 builds them).
+constexpr u32 kMainMenuOnline = 0xB8;       // "ONLINE"
+constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its description
+constexpr u32 kEntries = 6;                 // the game's five, and QUIT GAME
+constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
+
+/* The settings PC SETTINGS lists, then BACK - six rows, as the menu has. */
+struct Option {
+    const char* name;
+    const char* help;
+    bool (*now)();
+    void (*set)(bool);
+};
+bool FastLoadingOn() { return ps2host::SettingOn("fast_loading", true); }
+void SetFastLoading(bool on) { ps2host::SetSettingOn("fast_loading", on); }
+bool SkipVideosOn() { return ps2host::SettingOn("skip_videos", true); }
+void SetSkipVideos(bool on) { ps2host::SetSettingOn("skip_videos", on); }
+bool FramePacingOn() { return ps2host::SettingOn("frame_pacing", true); }
+void SetFramePacing(bool on) { ps2host::SetSettingOn("frame_pacing", on); }
+const Option kOptions[] = {
+    {"FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", ps2host::WindowFullscreen, ps2host::SetWindowFullscreen},
+    {"VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", ps2host::WindowVsync, ps2host::SetWindowVsync},
+    {"FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacingOn, SetFramePacing},
+    {"FAST LOADING", "LOADING SCREENS GO BY EIGHT TIMES AS FAST", FastLoadingOn, SetFastLoading},
+    {"SKIP VIDEOS", "START SKIPS THE VIDEOS THE GAME PLAYS", SkipVideosOn, SetSkipVideos},
+};
+constexpr u32 kOptionCount = sizeof kOptions / sizeof kOptions[0];
+static_assert(kOptionCount + 1 == kEntries, "the options and BACK fill the menu's rows");
+
+struct MainMenuState {
+    u32 menu = 0;                           // the main menu's object (0x00318340's a0)
+    u32 entries = 0, helps = 0;             // our arrays: kEntries entries (8 bytes), help pointers
+    u32 game_entries[kEntries][2] = {};     // the main menu's rows, kept while PC SETTINGS shows
+    u32 game_helps[kEntries] = {};
+    GuestText pc_settings, pc_settings_help, quit, quit_help, back, back_help, quit_question;
+    GuestText option_names[kOptionCount], option_helps[kOptionCount];
+    bool made = false, settings = false, quitting = false;
+};
+MainMenuState g_main;
+
+void MakeTexts(lifted::Context& c) {
+    if (g_main.made) return;
+    g_pool.Begin(c);
+    g_main.entries = g_pool.Take(8 * kEntries, 8);
+    g_main.helps = g_pool.Take(4 * kEntries, 4);
+    g_main.pc_settings.Make(16);
+    g_main.pc_settings.Set("PC SETTINGS");
+    g_main.pc_settings_help.Make(32);
+    g_main.pc_settings_help.Set("SET UP THE PC VERSION");
+    g_main.quit.Make(16);
+    g_main.quit.Set("QUIT GAME");
+    g_main.quit_help.Make(32);
+    g_main.quit_help.Set("CLOSE BURNOUT 3");
+    g_main.back.Make(8);
+    g_main.back.Set("BACK");
+    g_main.back_help.Make(32);
+    g_main.back_help.Set("RETURN TO THE MAIN MENU");
+    g_main.quit_question.Make(32);
+    g_main.quit_question.Set("Quit Burnout 3?");
+    for (u32 i = 0; i < kOptionCount; ++i) {
+        g_main.option_names[i].Make(24);
+        g_main.option_helps[i].Make(48);
+        g_main.option_helps[i].Set(kOptions[i].help);
+    }
+    g_main.made = g_main.entries && g_main.helps;
+}
+
+void ShowOption(u32 i) {
+    g_main.option_names[i].Set(std::string(kOptions[i].name) + (kOptions[i].now() ? ": ON" : ": OFF"));
+}
+
+constexpr u32 kQuitQuestion = 0x7F02;       // our string id (past the table's 4,006): the question
+
+void GetString(lifted::Context& c) {
+    const u32 id = u32(c.r[5]), caller = u32(c.r[31]);
+    // The main menu's ONLINE as PC SETTINGS: asked from 0x003183D0 (it
+    // alone; other screens keep their ONLINE), and its description.
+    if ((id == kMainMenuOnline && caller == 0x003183D0u) || id == kOnlineHelp || id == kQuitQuestion) {
+        MakeTexts(c);
+        const GuestText& t = id == kMainMenuOnline ? g_main.pc_settings
+                           : id == kOnlineHelp     ? g_main.pc_settings_help
+                                                   : g_main.quit_question;
+        if (t.at) {
+            c.r[2] = t.at;
+            return;
+        }
     }
     F_00271A00(c);
 }
@@ -188,6 +306,80 @@ u32 GuestCall(lifted::Context& c, u32 target, std::initializer_list<u32> argumen
     return result;
 }
 
+/* 0x00321470(list, &index, entries): the main menu's list (0x00318340 sets
+   it up from 0x00318460, the index and the count at menu+0x14, its five
+   entries - a string pointer and a disabled byte each - at menu+0x18). It
+   gets six: the game's five and QUIT GAME, in an array of the port's. */
+void MenuList(lifted::Context& c) {
+    if (u32(c.r[31]) == 0x00318464u) {
+        MakeTexts(c);
+        if (g_main.made) {
+            const u32 from = u32(c.r[6]);
+            g_main.menu = u32(c.r[5]) - 0x14;
+            for (u32 i = 0; i < 8 * (kEntries - 1); i += 4)
+                generated::Write32(g_main.entries + i, generated::ReadU32(from + i));
+            generated::Write32(g_main.entries + 8 * kQuitEntry, g_main.quit.at);
+            generated::Write32(g_main.entries + 8 * kQuitEntry + 4, 0);
+            generated::Write16(u32(c.r[5]) + 2, kEntries);      // the count
+            c.r[6] = g_main.entries;
+            g_main.settings = g_main.quitting = false;
+        }
+    }
+    F_00321470(c);
+}
+
+/* 0x0031C350(ticker, &index, helps, 0): the main menu's descriptions, a
+   string pointer each (0x00318340, from 0x003184A4): six, as the list. */
+void MenuHelps(lifted::Context& c) {
+    if (u32(c.r[31]) == 0x003184A8u && g_main.made) {
+        const u32 from = u32(c.r[6]);
+        for (u32 i = 0; i < kEntries - 1; ++i) generated::Write32(g_main.helps + 4 * i, generated::ReadU32(from + 4 * i));
+        generated::Write32(g_main.helps + 4 * kQuitEntry, g_main.quit_help.at);
+        c.r[6] = g_main.helps;
+    }
+    F_0031C350(c);
+}
+
+/* The list (0x01E89544, its entries at +0x10) draws each row's words once,
+   and again only when the row is highlighted or left: 0x0031FE40(list, row,
+   enabled), which the game calls to enable or disable a row, draws it again
+   (0x00320EB0) - every row, its words changed. */
+void RefreshList(lifted::Context& c) {
+    for (u32 row = 0; row < kEntries; ++row) GuestCall(c, 0x0031FE40u, {0x01E89544u, row, 1});
+}
+
+/* PC SETTINGS: the list's rows become the settings (and BACK), the main
+   menu's kept to come back to. */
+void ShowSettings(lifted::Context& c, bool on) {
+    const u32 menu = g_main.menu;
+    if (on) {
+        for (u32 i = 0; i < kEntries; ++i) {
+            g_main.game_entries[i][0] = generated::ReadU32(g_main.entries + 8 * i);
+            g_main.game_entries[i][1] = generated::ReadU32(g_main.entries + 8 * i + 4);
+            g_main.game_helps[i] = generated::ReadU32(g_main.helps + 4 * i);
+        }
+        for (u32 i = 0; i < kOptionCount; ++i) {
+            ShowOption(i);
+            generated::Write32(g_main.entries + 8 * i, g_main.option_names[i].at);
+            generated::Write32(g_main.entries + 8 * i + 4, 0);
+            generated::Write32(g_main.helps + 4 * i, g_main.option_helps[i].at);
+        }
+        generated::Write32(g_main.entries + 8 * kOptionCount, g_main.back.at);
+        generated::Write32(g_main.entries + 8 * kOptionCount + 4, 0);
+        generated::Write32(g_main.helps + 4 * kOptionCount, g_main.back_help.at);
+        generated::Write16(menu + 0x14, 0);
+    } else {
+        for (u32 i = 0; i < kEntries; ++i) {
+            generated::Write32(g_main.entries + 8 * i, g_main.game_entries[i][0]);
+            generated::Write32(g_main.entries + 8 * i + 4, g_main.game_entries[i][1]);
+            generated::Write32(g_main.helps + 4 * i, g_main.game_helps[i]);
+        }
+        generated::Write16(menu + 0x14, kPcSettingsEntry);
+    }
+    g_main.settings = on;
+    RefreshList(c);
+}
+
 /* The frontend's message box (0x0032D080 shows one: the box, its type -
    7 is YES/NO - and the message's string id). Its +0x0A is set while it
    shows, +0x0C the button highlighted (0 the first); 0x0032B2C0(box, pad,
@@ -197,55 +389,71 @@ u32 GuestCall(lifted::Context& c, u32 target, std::initializer_list<u32> argumen
 constexpr u32 kMessageBox = 0x01E898E8;
 constexpr u32 kYes = 4, kNo = 5;
 
-/* PC SETTINGS' questions, one box each, in turn: its words, the setting as
-   it is (YES highlighted when on) and what an answer does. */
-struct Question { u32 text; bool (*now)(); void (*set)(bool); };
-const Question kQuestions[] = {
-    {kFullscreenQuestion, ps2host::WindowFullscreen, ps2host::SetWindowFullscreen},
-    {kVsyncQuestion, ps2host::WindowVsync, ps2host::SetWindowVsync},
-};
-bool g_settings_open = false;
-std::size_t g_question = 0;                 // the one showing
-
-void AskQuestion(lifted::Context& c, std::size_t which) {
-    g_question = which;
-    GuestCall(c, 0x0032D080u, {kMessageBox, 7, kQuestions[which].text, 0xF, 0});
-    generated::Write16(kMessageBox + 0x0C, kQuestions[which].now() ? 0 : 1);
+bool TrianglePressed() {
+    static bool before = false;
+    const bool now = (ps2host::PadButtonsHeld() & (1u << 12)) != 0;
+    const bool pressed = now && !before;
+    before = now;
+    return pressed;
 }
 
 /* 0x003181E0(menu), the main menu's input each frame: Cross (0x0022CFE0) on
-   an entry opens it - entry 3, ONLINE, the online flow (a message box first).
-   On entry 3 it opens PC SETTINGS instead: a YES/NO box asking for
-   fullscreen, the setting as it is highlighted (MainMenu takes it from
-   there). */
+   an entry opens it (0x0030D560), Up and Down move. Cross on PC SETTINGS
+   lists the settings; on one of them, it switches it (and saves it,
+   ps2host/settings.h); BACK or Triangle goes back. Cross on QUIT GAME asks
+   first. */
 void MainMenuInput(lifted::Context& c) {
     const u32 menu = u32(c.r[4]);
-    if (generated::ReadU16(menu + 0x14) == 3 && GuestCall(c, 0x0022CFE0u, {0x004F50C0u, 0})) {
-        AskQuestion(c, 0);
-        g_settings_open = true;
+    const bool ours = g_main.made && menu == g_main.menu;
+    const bool back = TrianglePressed();
+    if (ours && g_main.settings && back) {
+        ShowSettings(c, false);
         c.r[2] = 1;
         return;
+    }
+    if (ours && GuestCall(c, 0x0022CFE0u, {0x004F50C0u, 0})) {
+        const u32 entry = generated::ReadU16(menu + 0x14);
+        if (g_main.settings) {
+            if (entry < kOptionCount) {
+                kOptions[entry].set(!kOptions[entry].now());
+                ShowOption(entry);
+                RefreshList(c);
+            } else {
+                ShowSettings(c, false);
+            }
+            c.r[2] = 1;
+            return;
+        }
+        if (entry == kPcSettingsEntry) {
+            ShowSettings(c, true);
+            c.r[2] = 1;
+            return;
+        }
+        if (entry == kQuitEntry) {
+            GuestCall(c, 0x0032D080u, {kMessageBox, 7, kQuitQuestion, 0xF, 0});
+            generated::Write16(kMessageBox + 0x0C, 1);          // NO highlighted
+            g_main.quitting = true;
+            c.r[2] = 1;
+            return;
+        }
     }
     F_003181E0(c);
 }
 
 /* 0x00318100(menu), the main menu each frame: by its +0x10, the menu's
    input (1), or a message box's (0 and 2: the online flow's) until a button
-   closes it. While PC SETTINGS' box shows it has the input: YES or NO sets
-   fullscreen (and saves it, ps2host/settings.h), Triangle leaves it as it
-   is; either closes the box. */
+   closes it. While QUIT GAME's box shows it has the input: YES ends the
+   game (as closing the window does), NO or Triangle closes the box. */
 void MainMenu(lifted::Context& c) {
-    if (!g_settings_open) {
+    if (!g_main.quitting) {
         F_00318100(c);
         return;
     }
     const u32 pressed = GuestCall(c, 0x0032B2C0u, {kMessageBox, 0, 1});
-    const bool back = (ps2host::PadButtonsHeld() & (1u << 12)) != 0;    // Triangle
-    if (pressed == kYes || pressed == kNo || back) {
-        if (pressed == kYes || pressed == kNo) kQuestions[g_question].set(pressed == kYes);
+    if (pressed == kYes) throw ps2host::GuestExit{0};
+    if (pressed == kNo || TrianglePressed()) {
         GuestCall(c, generated::ReadU32(generated::ReadU32(kMessageBox) + 0x0C), {kMessageBox});
-        if (!back && g_question + 1 < sizeof kQuestions / sizeof kQuestions[0]) AskQuestion(c, g_question + 1);
-        else g_settings_open = false;
+        g_main.quitting = false;
     }
 }
 
@@ -274,6 +482,8 @@ void RegisterGameOverrides() {
     ps2host::Override(0x0019A950u, FastLoading<F_0019A950>, "a race's loading: fast-forwarded while it waits");
     ps2host::Override(0x001322B0u, FastLoading<F_001322B0>, "the game's loading: fast-forwarded while it waits");
     ps2host::Override(0x00271A00u, GetString, "the string lookup: PC SETTINGS' words");
-    ps2host::Override(0x003181E0u, MainMenuInput, "the main menu's input: ONLINE is PC SETTINGS");
-    ps2host::Override(0x00318100u, MainMenu, "the main menu: PC SETTINGS' message box");
+    ps2host::Override(0x003181E0u, MainMenuInput, "the main menu's input: PC SETTINGS, QUIT GAME");
+    ps2host::Override(0x00318100u, MainMenu, "the main menu: QUIT GAME's message box");
+    ps2host::Override(0x00321470u, MenuList, "a list: the main menu's with QUIT GAME");
+    ps2host::Override(0x0031C350u, MenuHelps, "a ticker: the main menu's descriptions with QUIT GAME's");
 }
