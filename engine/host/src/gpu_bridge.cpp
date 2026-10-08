@@ -43,6 +43,7 @@
  */
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -112,6 +113,9 @@ struct Extent {
     u32 x1 = 0, y1 = 0;             // the furthest pixel drawn, exclusive
 };
 
+/* Local memory's 512 pages (8 KB, 32 blocks each), as a set. */
+using Pages = std::bitset<512>;
+
 /* A GPU image standing for a region of local memory (--gpu). */
 struct Owned {
     u32 fbp = 0, fbw = 1, psm = 0;  // FBP (ZBP) in 2048-word units, FBW, PSM
@@ -136,6 +140,13 @@ struct Owned {
     // the first rows of its depth buffer's memory, had its 640x448 reloaded
     // a thousand times a second for a few rows each.
     u32 stale_row0 = 0, stale_row1 = ~0u;
+    // The same by page, as finely as known: what changed under the image
+    // since it was loaded, and what it drew since its last write-back. A
+    // texture sampled from it needs neither unless the pages it reads are
+    // in them (the race's road reads 16 texels of a 1024x256 view over its
+    // depth buffer, while drawing Z into other pages of it - 200 reloads,
+    // each with the depth buffer's write-back, a picture).
+    Pages stale_pages, dirty_pages;
     u64 reloads[4] = {};            // reloads, by why
     u64 drawn_serial = 0;           // when the GPU last drew into it (Bridge::serial)
     u64 checked = 0;                // Bridge::newer_epoch when Use last looked at the others
@@ -294,8 +305,15 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
 
 /* `o` stale for `why`, in the rows over blocks [b0, b1) (all of it, past its
    blocks or by default). */
-void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u) {
+void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u, const Pages* pages = nullptr) {
     ++g_mutations;
+    if (pages) {
+        o.stale_pages |= *pages;
+    } else if (b1 != ~0u && b0 < b1) {
+        for (u32 p = b0 / 32; p <= (b1 - 1) / 32 && p < 512; ++p) o.stale_pages.set(p);
+    } else {
+        o.stale_pages.set();
+    }
     u32 r0 = 0, r1 = ~0u;
     if (b1 != ~0u && b0 < b1 && b1 > o.begin) {
         const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
@@ -319,6 +337,7 @@ void WriteBack(Bridge& b, Owned& o) {
     ++g_mutations;
     Timed timed(Section::GpuSync);
     o.gpu_newer = false;
+    o.dirty_pages.reset();
     if (o.dirty_end <= o.dirty_begin) return;
     // Only the rows drawn into since the last write-back: the image's other
     // rows may be stale - another image drew over them since, and memory has
@@ -431,6 +450,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         std::tie(o.begin, o.end) = Blocks(fbp, fbw, psm, rows);
         o.full_end = Blocks(fbp, fbw, psm, height).second;
         o.drawn_end = o.begin;
+        o.stale_pages.set();
     } else {
         const u32 end = Blocks(fbp, fbw, psm, rows).second;
         if (end > o.end) {
@@ -470,23 +490,42 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         }
         o.stale_row0 = 0;
         o.stale_row1 = ~0u;
+        o.stale_pages.reset();
         ++o.reloads[o.why];
         o.stale = o.stale_beyond = false;
     }
     return o;
 }
 
-/* After the GPU drew into `o`, rows [y0, y1): memory and the other images
-   over those blocks are behind. */
-void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
+/* The pages of `o` under its pixels [x0, x1) x [y0, y1) (64x32 a page, 64x64
+   16-bit). */
+Pages PagesOf(const Owned& o, u32 x0, u32 x1, u32 y0, u32 y1) {
+    Pages pages;
+    const u32 page_rows = Is16(o.psm) ? 64 : 32, fbw = std::max(1u, o.fbw);
+    x1 = std::min(x1, fbw * 64);
+    x0 = std::min(x0, x1 ? x1 - 1 : 0);
+    x1 = std::max(x1, x0 + 1);
+    y1 = std::max(y1, y0 + 1);
+    for (u32 py = y0 / page_rows; py <= (y1 - 1) / page_rows; ++py)
+        for (u32 px = x0 / 64; px <= (x1 - 1) / 64; ++px) {
+            const u32 page = o.begin / 32 + py * fbw + px;
+            if (page < 512) pages.set(page);
+        }
+    return pages;
+}
+
+/* After the GPU drew into `o`, pixels [x0, x1) x [y0, y1): memory and the
+   other images over those blocks are behind. */
+void Drew(Bridge& b, Owned& o, u32 x0, u32 x1, u32 y1, u32 y0) {
     const u32 page_rows = Is16(o.psm) ? 64 : 32, row_blocks = std::max(1u, o.fbw) * 32;
     y1 = std::min(std::max(y1, y0 + 1), o.height);
     y0 = std::min(y0, y1 - 1);
     const u32 db = o.begin + (y0 / page_rows) * row_blocks;
     const u32 de = o.begin + ((y1 + page_rows - 1) / page_rows) * row_blocks;
-    // Already newer than memory over these blocks: the others over them were
+    const Pages pages = PagesOf(o, x0, x1, y0, y1);
+    // Already newer than memory over these pages: the others over them were
     // made stale then (any reloaded since wrote this one back first).
-    const bool inside = o.gpu_newer && db >= o.dirty_begin && de <= o.dirty_end;
+    const bool inside = o.gpu_newer && db >= o.dirty_begin && de <= o.dirty_end && (pages & ~o.dirty_pages).none();
     o.gpu_newer = true;
     o.x1 = std::max(o.x1, std::min(x1, o.width));
     o.y1 = std::max(o.y1, y1);
@@ -494,6 +533,7 @@ void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
     o.end = std::max(o.end, o.drawn_end);
     o.dirty_begin = std::min(o.dirty_begin, db);
     o.dirty_end = std::max(o.dirty_end, de);
+    o.dirty_pages |= pages;
     o.drawn_serial = ++b.serial;    // textures over it decoded before this are out of date
     if (inside) return;
     ++g_mutations;
@@ -501,11 +541,59 @@ void Drew(Bridge& b, Owned& o, u32 x1, u32 y1, u32 y0) {
     for (auto& [key, other] : b.owned) {
         if (&other == &o || de <= other.begin || other.full_end <= db) continue;
         if (db < other.end) {
-            MarkStale(other, 2, db, de);
+            MarkStale(other, 2, db, de, &pages);
         } else {
             other.stale_beyond = true;
         }
     }
+}
+
+/* The pages of target `o` a primitive sampling it as a TW x TH texture can
+   read, by its texture coordinates (a texel more each side, for bilinear
+   filtering); false where that is not known - the region modes, a texture
+   wider than the buffer, a vertex with Q not above 0. Perspective-correct
+   coordinates inside a triangle are weighted means of its vertices' S/Q and
+   T/Q (weights the barycentrics times Q, all positive), so they lie between
+   the vertices' least and greatest. */
+bool SampledPages(const Owned& o, u64 clamp, u32 tw, u32 th, const ps2gpu::GsVertex* v, std::size_t n, Pages* out) {
+    const u32 wms = u32(clamp & 3), wmt = u32(clamp >> 2 & 3);
+    if (wms > 1 || wmt > 1 || tw > std::max(1u, o.fbw) * 64 || !n) return false;
+    float s0 = 0, s1 = 0, t0 = 0, t1 = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!(v[i].q > 0)) return false;
+        const float s = v[i].s / v[i].q, t = v[i].t / v[i].q;
+        if (!std::isfinite(s) || !std::isfinite(t)) return false;
+        if (i == 0 || s < s0) s0 = s;
+        if (i == 0 || s > s1) s1 = s;
+        if (i == 0 || t < t0) t0 = t;
+        if (i == 0 || t > t1) t1 = t;
+    }
+    // Texels [lo, hi) of `size`: the whole span where REPEAT would wrap.
+    const auto span = [](float c0, float c1, u32 size, u32 mode, u32* lo, u32* hi) {
+        const float a = std::floor(c0 * float(size)) - 1, b = std::ceil(c1 * float(size)) + 1;
+        if (mode == 0 && (a < 0 || b > float(size))) {
+            *lo = 0;
+            *hi = size;
+            return;
+        }
+        *lo = u32(std::clamp(a, 0.0f, float(size - 1)));
+        *hi = u32(std::clamp(b, float(*lo + 1), float(size)));
+    };
+    u32 x0, x1, y0, y1;
+    span(s0, s1, tw, wms, &x0, &x1);
+    span(t0, t1, th, wmt, &y0, &y1);
+    *out = PagesOf(o, x0, x1, y0, y1);
+    return true;
+}
+
+/* Target `o` about to be sampled as a texture, over `pages`: brought up to
+   date (Use) only if what it lacks lies there - changed under it since it
+   was loaded, or drawn by another image the GPU has not written back. */
+void Sample(Bridge& b, Owned& o, const Pages& pages) {
+    bool needed = o.stale && (o.stale_pages & pages).any();
+    for (auto it = b.owned.begin(); !needed && it != b.owned.end(); ++it)
+        needed = &it->second != &o && it->second.gpu_newer && (it->second.dirty_pages & pages).any();
+    if (needed) Use(b, o.fbp, o.fbw, o.psm, false, o.width, o.height, 1);   // sampling grows nothing
 }
 
 /* A 64-bit hash of `size` bytes (a multiple of 8). Four independent lanes,
@@ -863,14 +951,16 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     const std::size_t n = Triangles(call, fst, tw, th, v, &gouraud);
     state.gouraud = gouraud;
     if (!n) return;
-    u32 x1 = 0, y1 = 0, y0 = state.height;
+    u32 x0 = state.width, x1 = 0, y1 = 0, y0 = state.height;
     for (std::size_t i = 0; i < n; ++i) {
+        x0 = std::min(x0, u32(std::clamp(std::floor(v[i].x), 0.0f, float(state.width))));
         // Exclusive: the GS draws the pixels whose centres lie before the far edge.
         x1 = std::max(x1, u32(std::clamp(std::ceil(v[i].x), 0.0f, float(state.width))));
         y1 = std::max(y1, u32(std::clamp(std::ceil(v[i].y), 0.0f, float(state.height))));
         y0 = std::min(y0, u32(std::clamp(std::floor(v[i].y), 0.0f, float(state.height))));
     }
     y0 = std::max(y0, u32(std::max(state.scissor_y0, 0)));
+    x0 = std::max(x0, u32(std::max(state.scissor_x0, 0)));
     x1 = std::min(x1, u32(state.scissor_x1 + 1));
     y1 = std::min(y1, u32(state.scissor_y1 + 1));
     if (s.primary) {
@@ -918,8 +1008,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         st.gouraud = gouraud;
         for (std::size_t i = 0; i < n; ++i) v[i].z = std::min(v[i].z, fast.zmax);
         s.renderer->DrawTriangles(st, v, n);
-        if (fast.draws_colour) Drew(s, *fast.target, x1, y1, y0);
-        if (fast.depth) Drew(s, *fast.depth, x1, y1, y0);
+        if (fast.draws_colour) Drew(s, *fast.target, x0, x1, y1, y0);
+        if (fast.depth) Drew(s, *fast.depth, x0, x1, y1, y0);
         return;
     }
     fast.valid = false;
@@ -965,7 +1055,9 @@ void OnDraw(const gs::Gs::DrawCall& call) {
                 if (!known) continue;
                 if (s.primary) {
                     Owned& source = s.owned[std::make_tuple(tex_fbp, tex_fbw, psm, false)];
-                    Use(s, tex_fbp, tex_fbw, psm, false, source.width, source.height, 1);   // sampling grows nothing
+                    Pages sampled;
+                    if (SampledPages(source, c.clamp, tw, th, v, n, &sampled)) Sample(s, source, sampled);
+                    else Use(s, tex_fbp, tex_fbw, psm, false, source.width, source.height, 1);   // sampling grows nothing
                     tex_source = &source;
                 }
                 if (tex_format == 4 && b_clut_rows_cpu_only(s)) {
@@ -1089,8 +1181,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         // FBMSK over every bit the format stores: the colour is not written.
         const u32 stored = state.psm == gs::PSMCT24 ? 0xFFFFFFu : Is16(state.psm) ? 0x80F8F8F8u : 0xFFFFFFFFu;
         const bool draws_colour = (state.fbmsk & stored) != stored;
-        if (draws_colour) Drew(s, *target, x1, y1, y0);
-        if (depth && state.depth_write) Drew(s, *depth, x1, y1, y0);
+        if (draws_colour) Drew(s, *target, x0, x1, y1, y0);
+        if (depth && state.depth_write) Drew(s, *depth, x0, x1, y1, y0);
         // The next primitive may take the fast path - unless this one's
         // texture is a target, lies over what it draws (each primitive
         // makes it stale), or its Z goes in as colour.
@@ -1148,7 +1240,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
             }
             Owned& view = Use(s, zs.fbp, zs.fbw, zs.psm, false, zs.width, zs.height, rows);
             s.renderer->DrawTriangles(zs, zv, n);
-            Drew(s, view, x1, y1, y0);
+            Drew(s, view, x0, x1, y1, y0);
         }
         return;
     }
