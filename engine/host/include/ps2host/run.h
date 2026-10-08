@@ -283,6 +283,9 @@ void RaiseIntc(u32 cause);
 /* Sound (audio.cpp): opened with --audio; the SPU2 hands it 16-bit stereo
    frames at 48 kHz. */
 bool OpenAudio();
+/* Stops the sound and finishes the WAV recording (--audio-wav), before the
+   process ends. */
+void CloseAudio();
 /* ...and/or recorded to a WAV file (--audio-wav). */
 bool OpenWavDump(const std::string& path);
 void AudioFrames(const short* frames, unsigned count);

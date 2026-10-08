@@ -5,7 +5,12 @@
 
 #include <cstdio>
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include "ps2host/host.h"
+#include "ps2host/run.h"
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
@@ -47,5 +52,15 @@ int main(int argc, char** argv) {
     }
     ps2host::RegisterFunctions(kGuestFunctions, kGuestFunctionCount);
     RegisterGameOverrides();
-    return ps2host::Main(argc, argv);
+    const int code = ps2host::Main(argc, argv);
+    // What must be finished is (the report written, the settings and the
+    // memory card saved as they changed, the WAV's header here); the rest -
+    // the window, the GPU device, the threads - goes with the process.
+    // Taken down one by one at exit, the Vulkan device's could hang
+    // (vkDestroyDevice with the driver's threads and the renderer's images
+    // still about), leaving a window that never closed.
+    ps2host::CloseAudio();
+    std::fflush(nullptr);
+    TerminateProcess(GetCurrentProcess(), UINT(code));
+    return code;
 }

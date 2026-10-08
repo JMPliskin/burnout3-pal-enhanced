@@ -49,7 +49,8 @@ struct Device {
     // stopped and closed before the buffers go: the system's audio thread
     // was still copying from the queued ones as the process freed them (a
     // crash at exit, one run in two).
-    ~Device() {
+    ~Device() { Close(); }
+    void Close() {
         if (out) {
             waveOutReset(out);
             for (WAVEHDR& h : headers)
@@ -61,6 +62,7 @@ struct Device {
         const unsigned data = unsigned(wav_frames * 4);
         WriteHeader(data);
         std::fclose(wav);
+        wav = nullptr;
     }
     void WriteHeader(unsigned data) {
         unsigned char h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',
@@ -81,6 +83,8 @@ Device& D() {
 }
 
 }  // namespace
+
+void CloseAudio() { D().Close(); }
 
 bool OpenAudio() {
     Device& d = D();
