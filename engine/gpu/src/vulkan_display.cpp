@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <condition_variable>
 #include <deque>
@@ -763,6 +764,9 @@ bool VulkanDisplay::Submit(std::uint32_t index) {
             interval_sum_ += ms;
             interval_squares_ += ms * ms;
             interval_longest_ = std::max(interval_longest_, ms);
+            static const bool hitch = std::getenv("PS2HOST_HITCH") != nullptr;
+            if (hitch && ms > 25.0)
+                std::fprintf(stderr, "[hitch] present: %.1f ms since the last\n", ms);
         }
         last_present_ = now;
     }

@@ -53,6 +53,39 @@ std::atomic<u64> g_gs_busy_us{0};       // the GS thread at work, not waiting fo
 // GsFrame's work, on the GS thread at the frame's place in the stream.
 std::function<void(u64)> g_frame_handler;
 
+// When the EE ended each of the last frames (GsFrame), by frame number.
+std::atomic<u64> g_frame_ended[256];
+
+// PS2HOST_HITCH: each frame's way to the screen - when the EE ended it (and
+// its idle time and VIF1's worker's busy time then), when the worker passed
+// it on, when the GS thread took and finished it - and a frame that came a
+// period late, or took long on its way, told.
+struct FrameWay { std::atomic<u64> ee{0}, worker{0}, idle{0}, worker_us{0}; };
+FrameWay g_way[256];
+const bool g_hitch = std::getenv("PS2HOST_HITCH") != nullptr;
+
+void HitchFrame(u64 frame, u64 took, u64 done) {
+    static u64 last_blank = 0, last_busy = 0;
+    const u64 blank = g_frame_ended[frame & 255].load(std::memory_order_relaxed);
+    const u64 busy = g_gs_busy_us.load(std::memory_order_relaxed);
+    const u64 gap = blank && last_blank && blank > last_blank ? blank - last_blank : 0;
+    const auto ms = [&](u64 t) { return t && blank ? (double(t) - double(blank)) / 1e6 : -1.0; };
+    const FrameWay& w = g_way[frame & 255];
+    const FrameWay& before = g_way[(frame - 1) & 255];
+    const u64 idle = w.idle.load(std::memory_order_relaxed), idle_before = before.idle.load(std::memory_order_relaxed);
+    const u64 vu = w.worker_us.load(std::memory_order_relaxed), vu_before = before.worker_us.load(std::memory_order_relaxed);
+    const u64 ee = w.ee.load(std::memory_order_relaxed), ee_before = before.ee.load(std::memory_order_relaxed);
+    if (ms(done) > 22.0 || gap > 20'000'000)
+        std::fprintf(stderr, "[hitch] frame %llu: blank %+.1f ms after the last; EE %.1f, VIF1 %.1f, GS took %.1f done %.1f ms after it; GS busy %.1f ms; EE frame %.1f ms, idle %.1f, VIF1 worker busy %.1f\n",
+                     (unsigned long long)frame, last_blank ? gap / 1e6 : 0.0, ms(ee),
+                     ms(w.worker.load(std::memory_order_relaxed)), ms(took), ms(done),
+                     (busy - last_busy) / 1e3, ee > ee_before ? (ee - ee_before) / 1e6 : -1.0,
+                     idle >= idle_before ? (idle - idle_before) / 1e6 : -1.0,
+                     vu >= vu_before ? (vu - vu_before) / 1e3 : -1.0);
+    last_blank = blank;
+    last_busy = busy;
+}
+
 // With VIF1 on its worker (vif1_worker.cpp) the worker feeds the GS: what
 // the EE would feed it goes through the worker's queue, in turn (privileged
 // registers, frame ends), or waits for the queue to empty first.
@@ -200,7 +233,12 @@ struct Feed {
                             size = 4;
                             break;
                         case kFrame:
-                            if (g_frame_handler) g_frame_handler(u64(e[1]) | u64(e[2]) << 32);
+                            if (g_frame_handler) {
+                                const u64 frame = u64(e[1]) | u64(e[2]) << 32;
+                                const u64 took = g_hitch ? ClockNs() : 0;
+                                g_frame_handler(frame);
+                                if (g_hitch) HitchFrame(frame, took, ClockNs());
+                            }
                             size = 3;
                             break;
                         case kWrap:
@@ -292,10 +330,6 @@ void GsWords(int path, const u32* words, u32 count, u32 from) {
 
 void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std::move(handler); }
 
-namespace {
-// When the EE ended each of the last frames (GsFrame), by frame number.
-std::atomic<u64> g_frame_ended[256];
-}  // namespace
 
 u64 FrameEndedNs(u64 frame) { return g_frame_ended[frame & 255].load(std::memory_order_relaxed); }
 
@@ -327,6 +361,13 @@ bool GsFrame(u64 frame) {
         // next loop head first).
         const u64 blank = VirtualClock() ? 0 : LastVblankNs();
         g_frame_ended[frame & 255].store(blank ? blank : ClockNs(), std::memory_order_relaxed);
+        if (g_hitch) {
+            g_way[frame & 255].ee.store(ClockNs(), std::memory_order_relaxed);
+            g_way[frame & 255].idle.store(IdleNanoseconds(), std::memory_order_relaxed);
+            g_way[frame & 255].worker_us.store(Vif1BusyMicroseconds(), std::memory_order_relaxed);
+        }
+    } else if (g_hitch) {
+        g_way[frame & 255].worker.store(ClockNs(), std::memory_order_relaxed);
     }
     if (Vif1Async() && !OnVif1Worker()) {
         Vif1RunFrame([frame] { GsFrame(frame); });

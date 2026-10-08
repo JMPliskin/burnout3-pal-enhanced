@@ -70,6 +70,9 @@ bool Noting(const std::string& key);
 void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget);
 /* The running thread's guest call stack (or the interrupt handlers'). */
 std::vector<u32>& CurrentCalls();
+/* The sampler's (profile.cpp): the guest call stack now, innermost first, up
+   to max entries, read while the EE's host thread is suspended. */
+int GuestCallsNow(u32* out, int max);
 /* In an interrupt handler: the call stack of the thread it interrupted. */
 std::vector<u32> InterruptedCalls();
 /* Every guest register context: the threads' and the interrupt handlers'. */

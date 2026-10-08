@@ -315,8 +315,21 @@ void StopTimer() {
 }
 
 // Takes a due vertical blank, leaving the next one due at once if one is owed.
+// PS2HOST_HITCH: when the last blank came due (the timer's), to tell how
+// late the EE took it - and what it did meanwhile, for the sampler.
+std::atomic<u64> g_blank_due_ns{0};
+const bool g_hitch_blanks = std::getenv("PS2HOST_HITCH") != nullptr;
+
 bool TakeVblank(Scheduler& s) {
     if (!s.vblank_due.exchange(false)) return false;
+    if (g_hitch_blanks) {
+        const u64 due = g_blank_due_ns.load(std::memory_order_relaxed), now = ClockNs();
+        if (due && now > due + 4'000'000) {
+            SampleOnly(due + 500'000, now);
+            std::fprintf(stderr, "[hitch] a blank taken %.1f ms late\n", (now - due) / 1e6);
+        }
+        g_blank_due_ns.store(0, std::memory_order_relaxed);
+    }
     u32 owed = s.vblank_owed.load();
     while (owed && !s.vblank_owed.compare_exchange_weak(owed, owed - 1)) {
     }
@@ -330,6 +343,14 @@ bool TakeVblank(Scheduler& s) {
 // to 1 ms in real time), so the thread sleeps to just short of the moment
 // and yields to it: a blank two milliseconds late was a blank the EE took
 // with the next, and lost.
+//
+// A spend can itself be lost: the EE's own decrement of its budget (a loop
+// head's, not atomic) or a loop head's new budget written over it. The
+// blank then waited for the next one's spend - a whole period late, a
+// picture held a frame longer (Burnout 3's race: one in ten frames, the EE
+// spinning in its packet wait all the while). So while a blank or a timer
+// interrupt waits to be taken, the budget is spent again every half
+// millisecond.
 std::atomic<unsigned> g_fast_forward{1};    // SetFastForward
 std::atomic<u64> g_last_vblank_ns{0};       // LastVblankNs
 
@@ -341,27 +362,35 @@ void VblankTimer() {
     while (!StopRequested() && !g_timer_stop) {
         // Sleep to the next vertical blank, or to an EE timer's interrupt if that
         // comes first.
+        Scheduler& s = S();
         auto wake = next;
         s64 timer = NanosToNextTimerEvent();
         const s64 alarm = NanosToNextAlarm();
         if (alarm >= 0 && (timer < 0 || alarm < timer)) timer = alarm;
-        if (timer >= 0) wake = std::min(wake, clock::now() + std::chrono::nanoseconds(timer));
+        const auto timer_at = timer >= 0 ? clock::now() + std::chrono::nanoseconds(timer) : clock::time_point::max();
+        wake = std::min(wake, timer_at);
+        const bool untaken = s.vblank_due.load() || s.timer_due.load();
+        const auto retry_at = clock::now() + std::chrono::microseconds(500);
+        const bool retrying = untaken && retry_at < wake;
+        if (retrying) wake = retry_at;
         if (wake - clock::now() > margin) std::this_thread::sleep_until(wake - margin);
         while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
-        Scheduler& s = S();
         if (clock::now() >= next) {
             g_last_vblank_ns.store(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next.time_since_epoch()).count()),
                                    std::memory_order_relaxed);
             const unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
             next += factor > 1 ? period / factor : period;
             if (clock::now() >= next + period) next = clock::now() + period;   // a stall: start again from now
+            if (g_hitch_blanks && !s.vblank_due.load())
+                g_blank_due_ns.store(ClockNs(), std::memory_order_relaxed);
             if (s.vblank_due.exchange(true)) {
                 if (s.vblank_owed.load() < kOwedVblanks) s.vblank_owed.fetch_add(1);
                 else g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        if (timer >= 0) s.timer_due = true;
-        if (lifted::Context* c = s.running.load()) SpendBudget(*c);
+        if (timer >= 0 && (!retrying || clock::now() >= timer_at)) s.timer_due = true;
+        if (lifted::Context* c = s.running.load())
+            if (!retrying || s.vblank_due.load() || s.timer_due.load()) SpendBudget(*c);
     }
 }
 
@@ -421,6 +450,9 @@ void LoopHead(lifted::Context& c, u32 address) {
     c.budget = requested ? s.saved_budget
              : s.virtual_time ? (idle ? kIdleSliceIterations : kSliceIterations) : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
+    // In real time the timer may have spent the budget since the blank and
+    // timers were looked at: its spend kept (VblankTimer).
+    if (s.realtime && (s.vblank_due.load() || s.timer_due.load())) c.budget = 0;
     if (frame) DeliverFrame();
     if (timers) {
         DeliverTimers();
@@ -494,6 +526,29 @@ void RequestDelivery() {
     s.saved_budget = c.budget;
     s.delivery_requested = true;
     c.budget = 0;
+}
+
+namespace {
+// GuestCallsNow's read, apart: no C++ objects, so it can be guarded.
+int ReadCalls(const u32* data, std::size_t size, u32* out, int max) {
+    int n = 0;
+    __try {
+        for (std::size_t i = size; i > 0 && n < max; --i) out[n++] = data[i - 1];
+    } __except (1) {
+        n = 0;
+    }
+    return n;
+}
+}  // namespace
+
+int GuestCallsNow(u32* out, int max) {
+    // The EE's thread is suspended (the sampler's): its vector may be mid
+    // change, so the read is a guarded one into the caller's array.
+    Scheduler& s = S();
+    Thread* current = s.current;
+    if (!current) return 0;
+    const std::vector<u32>& calls = s.in_interrupt ? s.interrupt_calls : current->calls;
+    return ReadCalls(calls.data(), calls.size(), out, max);
 }
 
 std::vector<u32>& CurrentCalls() {

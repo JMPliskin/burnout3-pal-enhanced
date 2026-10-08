@@ -1,6 +1,7 @@
 /* Timed sections for the report (profile.h). */
 
 #include "ps2host/profile.h"
+#include "ps2host/run.h"
 
 #include <algorithm>
 #include <atomic>
@@ -125,13 +126,23 @@ std::string ProfileSummary() {
 namespace {
 
 constexpr int kFrames = 8;              // the function running, and seven callers
+constexpr int kGuest = 16;              // the guest functions running, innermost first
 
 struct Sampler {
     std::atomic<bool> stop{false};
     std::thread thread;
     std::mutex mutex;
     std::vector<std::uint64_t> stacks;  // kFrames addresses a sample
+    std::vector<std::uint64_t> times;   // when each was taken (steady clock ns)
+    std::vector<std::uint32_t> guest;   // kGuest guest addresses a sample (0: none)
+    // SampleOnly: the spans of time the report counts (none: all of it).
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> spans;
 };
+
+std::uint64_t SteadyNs() {
+    return std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             Clock::now().time_since_epoch()).count());
+}
 
 Sampler& TheSampler() {
     static Sampler sampler;
@@ -142,6 +153,12 @@ std::atomic<unsigned long long> g_sample_from{0};
 std::atomic<bool> g_sampling{true};
 
 }  // namespace
+
+void SampleOnly(unsigned long long from_ns, unsigned long long to_ns) {
+    Sampler& s = TheSampler();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.spans.push_back({from_ns, to_ns});
+}
 
 void SetSampleFrom(unsigned long long frame) {
     g_sample_from = frame;
@@ -173,9 +190,14 @@ void StartSampler() {
                     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0);
     if (!target) return;
     timeBeginPeriod(1);
-    s.thread = std::thread([&s, target] {
-        std::vector<std::uint64_t> local;
+    // The guest's call stack too, on the EE's thread only (the others run no
+    // guest thread of their own).
+    const bool sample_guest = !SampleGsThread() && !SampleVif1Thread();
+    s.thread = std::thread([&s, target, sample_guest] {
+        std::vector<std::uint64_t> local, local_times;
+        std::vector<std::uint32_t> local_guest;
         local.reserve(1 << 20);
+        local_times.reserve(1 << 17);
         while (!s.stop.load()) {
             Sleep(1);
             if (!g_sampling.load(std::memory_order_relaxed)) continue;
@@ -183,6 +205,7 @@ void StartSampler() {
             // lock it could hold: the walk goes into a fixed array, through
             // the executable's unwind tables.
             std::uint64_t frames[kFrames] = {};
+            std::uint32_t guest[kGuest] = {};
             CONTEXT ctx{};
             ctx.ContextFlags = CONTEXT_FULL;
             if (SuspendThread(target) == DWORD(-1)) break;
@@ -203,16 +226,25 @@ void StartSampler() {
                     frames[n] = ctx.Rip;
                 }
             }
+            if (sample_guest) GuestCallsNow(guest, kGuest);
             ResumeThread(target);
             local.insert(local.end(), frames, frames + kFrames);
+            local_times.push_back(SteadyNs());
+            local_guest.insert(local_guest.end(), guest, guest + kGuest);
             if (local.size() >= (1u << 16)) {
                 std::lock_guard<std::mutex> lock(s.mutex);
                 s.stacks.insert(s.stacks.end(), local.begin(), local.end());
+                s.times.insert(s.times.end(), local_times.begin(), local_times.end());
+                s.guest.insert(s.guest.end(), local_guest.begin(), local_guest.end());
                 local.clear();
+                local_times.clear();
+                local_guest.clear();
             }
         }
         std::lock_guard<std::mutex> lock(s.mutex);
         s.stacks.insert(s.stacks.end(), local.begin(), local.end());
+        s.times.insert(s.times.end(), local_times.begin(), local_times.end());
+        s.guest.insert(s.guest.end(), local_guest.begin(), local_guest.end());
         CloseHandle(target);
     });
 }
@@ -265,10 +297,25 @@ std::string SampleReport(int top) {
     };
     std::map<std::string, std::uint64_t> self, total, by_line, by_file;
     std::map<std::string, std::map<std::string, std::uint64_t>> callers;
-    const std::size_t samples = s.stacks.size() / kFrames;
+    std::size_t samples = s.stacks.size() / kFrames;
+    std::vector<bool> counted(samples, true);
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.spans.empty()) {
+            std::size_t kept = 0;
+            for (std::size_t i = 0; i < samples; ++i) {
+                const std::uint64_t t = i < s.times.size() ? s.times[i] : 0;
+                bool in = false;
+                for (const auto& [from, to] : s.spans) in = in || (t >= from && t <= to);
+                counted[i] = in;
+                kept += in;
+            }
+            std::fprintf(stderr, "sample: %zu of %zu samples in %zu spans\n", kept, samples, s.spans.size());
+        }
+    }
     for (std::size_t i = 0; i < samples; ++i) {
         const std::uint64_t* f = &s.stacks[i * kFrames];
-        if (!f[0]) continue;
+        if (!f[0] || !counted[i]) continue;
         const std::string& leaf = name(f[0]);
         ++self[leaf];
         const std::string& where = line_of(f[0]);
@@ -283,6 +330,31 @@ std::string SampleReport(int top) {
         if (f[1]) ++callers[leaf][name(f[1])];
     }
     SymCleanup(process);
+    std::map<std::string, std::uint64_t> guest_total, guest_self, guest_stacks;
+    std::size_t guest_samples = 0;
+    for (std::size_t i = 0; i < samples && (i + 1) * kGuest <= s.guest.size(); ++i) {
+        if (!counted[i]) continue;
+        const std::uint32_t* g = &s.guest[i * kGuest];
+        if (!g[0]) continue;
+        ++guest_samples;
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "0x%08X", unsigned(g[0]));
+        ++guest_self[hex];
+        std::string stack;
+        for (int n = 0; n < 6 && g[n]; ++n) {
+            std::snprintf(hex, sizeof hex, n ? " < %08X" : "%08X", unsigned(g[n]));
+            stack += hex;
+        }
+        ++guest_stacks[stack];
+        std::uint32_t seen[kGuest];
+        int n_seen = 0;
+        for (int n = 0; n < kGuest && g[n]; ++n) {
+            if (std::find(seen, seen + n_seen, g[n]) != seen + n_seen) continue;
+            seen[n_seen++] = g[n];
+            std::snprintf(hex, sizeof hex, "0x%08X", unsigned(g[n]));
+            ++guest_total[hex];
+        }
+    }
     auto ranked = [](const std::map<std::string, std::uint64_t>& counts) {
         std::vector<std::pair<std::uint64_t, std::string>> list;
         for (const auto& [fn, n] : counts) list.push_back({n, fn});
@@ -291,6 +363,31 @@ std::string SampleReport(int top) {
     };
     std::string out;
     char line[512];
+    if (guest_samples) {
+        std::snprintf(line, sizeof line, "sample: %zu with a guest call stack\n  guest, anywhere on the stack:\n",
+                      guest_samples);
+        out += line;
+        const auto by_guest = ranked(guest_total);
+        for (int i = 0; i < top && i < int(by_guest.size()); ++i) {
+            std::snprintf(line, sizeof line, "    %5.1f%%  %s\n", 100.0 * double(by_guest[i].first) / double(guest_samples),
+                          by_guest[i].second.c_str());
+            out += line;
+        }
+        out += "  guest stacks (innermost first):\n";
+        const auto by_stack = ranked(guest_stacks);
+        for (int i = 0; i < top && i < int(by_stack.size()); ++i) {
+            std::snprintf(line, sizeof line, "    %5.1f%%  %s\n", 100.0 * double(by_stack[i].first) / double(guest_samples),
+                          by_stack[i].second.c_str());
+            out += line;
+        }
+        out += "  guest, innermost:\n";
+        const auto by_guest_self = ranked(guest_self);
+        for (int i = 0; i < top && i < int(by_guest_self.size()); ++i) {
+            std::snprintf(line, sizeof line, "    %5.1f%%  %s\n",
+                          100.0 * double(by_guest_self[i].first) / double(guest_samples), by_guest_self[i].second.c_str());
+            out += line;
+        }
+    }
     std::snprintf(line, sizeof line, "sample: %zu samples (1 ms apart)\n  self:\n", samples);
     out += line;
     const auto by_self = ranked(self);

@@ -48,6 +48,11 @@ void InstallCrashReport();
 /* --sample-from N: no samples until frame N (devices.cpp calls this each frame). */
 void SetSampleFrom(unsigned long long frame);
 void SampleFrame(unsigned long long frame);
+/* The report counts only samples taken within the spans given (steady clock
+   ns): with PS2HOST_HITCH, the times a vertical blank waited for the EE to
+   take it. None given, it counts them all. On the EE's thread the report
+   gives the guest's call stacks too. */
+void SampleOnly(unsigned long long from_ns, unsigned long long to_ns);
 std::string SampleReport(int top = 30);
 
 }  // namespace ps2host
