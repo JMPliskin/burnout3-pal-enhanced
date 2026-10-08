@@ -329,6 +329,8 @@ bool TakeVblank(Scheduler& s) {
 // to 1 ms in real time), so the thread sleeps to just short of the moment
 // and yields to it: a blank two milliseconds late was a blank the EE took
 // with the next, and lost.
+std::atomic<unsigned> g_fast_forward{1};    // SetFastForward
+
 void VblankTimer() {
     using clock = std::chrono::steady_clock;
     const auto period = std::chrono::microseconds(16683);      // NTSC, 59.94 Hz
@@ -346,7 +348,8 @@ void VblankTimer() {
         while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
         Scheduler& s = S();
         if (clock::now() >= next) {
-            next += period;
+            const unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
+            next += factor > 1 ? period / factor : period;
             if (clock::now() >= next + period) next = clock::now() + period;   // a stall: start again from now
             if (s.vblank_due.exchange(true)) {
                 if (s.vblank_owed.load() < kOwedVblanks) s.vblank_owed.fetch_add(1);
@@ -554,9 +557,21 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
             } else if (s.realtime) {
                 // Every thread waits: so does the host, for the next vertical
                 // blank or timer interrupt - the game runs at its own pace.
+                // The IOP runs meanwhile, as the console's does beside the
+                // EE: run only at each frame (DeliverFrame), a module's
+                // thread that waited (a delay, a semaphore its own reader
+                // signals) went on once a frame, and a loading screen that
+                // asks it for a file piece by piece sat idle between pieces.
+                // An answer it sends wakes the EE at once.
                 const auto idle_from = std::chrono::steady_clock::now();
-                while (!s.vblank_due && !s.timer_due && !StopRequested())
+                while (!s.vblank_due && !s.timer_due && !StopRequested()) {
+                    {
+                        Timed timed(Section::Iop);
+                        iop::Run();
+                    }
+                    if (IopReplyPending()) break;
                     std::this_thread::sleep_for(std::chrono::microseconds(200));
+                }
                 g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - idle_from).count()),
                                     std::memory_order_relaxed);
@@ -832,6 +847,8 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
+void SetFastForward(unsigned factor) { g_fast_forward = factor ? factor : 1; }
+unsigned FastForward() { return g_fast_forward.load(std::memory_order_relaxed); }
 
 void FastThread() {
     THREAD_POWER_THROTTLING_STATE throttling{};

@@ -83,6 +83,8 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result);
    one queued answer to the EE (false when none waits). */
 void SifDma(u32 transfers, u32 count);
 bool DeliverIopReply();
+/* Whether an answer from the IOP waits to be delivered. */
+bool IopReplyPending();
 /* A packet from the IOP to the EE (a module's sceSifSendCmd): queued, and
    delivered as the SIF0 interrupt at the next safe point. */
 void QueueIopPacket(std::vector<u8> packet);
@@ -159,6 +161,13 @@ void SetGsFrameHandler(std::function<void(u64)> handler);
 void StartVif1Worker();
 /* Whether real time runs VIF1 on its worker (default yes; --vif1-sync: no). */
 void SetVif1Worker(bool on);
+/* Real time: vertical blanks `factor` times as often as the display's (1:
+   as they come) - for stretches the game only waits through, a loading
+   screen counting frames while it loads (a game's hook turns it on and
+   off). */
+void SetFastForward(unsigned factor);
+/* The factor SetFastForward set (1: none). */
+unsigned FastForward();
 /* The calling thread runs the game in real time (the EE's, the GS thread,
    VIF1's worker): Windows is asked not to slow it for power (on a hybrid
    processor, not to park it on an efficiency core) and to run it above

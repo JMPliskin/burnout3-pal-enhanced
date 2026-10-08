@@ -1863,6 +1863,41 @@ TRAINING. Skipping the tutorial goes on to the race's loading screen and
 the race as its end does. `PS2HOST_MOVIE_LOG=1` prints each movie as it
 starts and each skip.
 
+## Loading a race
+
+The main loop (0x00132600) loads a race in its state 4: once a frame it
+calls 0x0019A950 on the world (0x00522660), which takes the load a phase
+further (world+0x143844, 0x18 then 3 ... 0x17; 0x00665EA4) as far as the
+parts it waits for are ready, and returns 1 when the race may start. Each
+phase asks one part whether it is done and returns 0 (next frame) if not.
+Timed in real time after the RACE TRAINING tutorial (skipped), the race's
+loading screen took 6.4 s, nearly all in three phases:
+
+* phase 4, 0x00289EE0 (0x01E77540, its own states at +4: 3, 4 and 9): ~2 s,
+  waiting on objects of the audio streams (0x00383F00 on +0x52B8, +0x52BC);
+* phase 5, each car's model in turn: ~1 s;
+* phase 16, 0x00302D20 (world+0x12A348), a stream opened and polled through
+  its status (method +0x24): ~2 s.
+
+Neither CPU was busy (the EE ~85% idle). The disc is no part of it: the
+host's sceCdRead answers at once, and the loader's own reads (IOP thread 28,
+32 KB each) come to about 1.5 MB. Two things in the port made it slower
+than it needed to be, and one is the game's own pace:
+
+* The IOP ran once a frame (DeliverFrame), so a module thread that waited
+  went on once a frame. It now also runs while the EE waits for the next
+  vertical blank (real time; an answer it sends wakes the EE): 8.7 s to
+  6.4 s.
+* The phases go a step a frame. port/overrides.cpp's FastLoading wraps
+  0x0019A950: while it returns 0, vertical blanks come eight times as often
+  (SetFastForward; PS2HOST_LOAD_SPEED, 1 for the console's pace). The
+  loading screen is a still picture and a spinner. 6.4 s to 2.6 s (4x: 2.9,
+  16x: 2.5).
+* What is left is mostly phase 4's audio streams, which fill as the sound
+  plays (IOP thread 37, 16 KB at a time): faster only by running the sound
+  faster. Shortening the IOP's DelayThread waits, or ending voices' release
+  at once, changed nothing.
+
 ## cvt.w.s saturates
 
 The EE's float-to-word conversion truncates toward zero below 2^31 in

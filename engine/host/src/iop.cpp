@@ -223,6 +223,11 @@ void QueueIopPacket(std::vector<u8> packet) {
 
 // Deliver one queued answer: into the EE's receive buffer, then the SIF0 DMA
 // interrupt. False when none is waiting.
+bool IopReplyPending() {
+    const Iop& iop = I();
+    return !iop.replies.empty() && iop.receive_buffer;
+}
+
 bool DeliverIopReply() {
     Iop& iop = I();
     if (iop.replies.empty() || !iop.receive_buffer) return false;
