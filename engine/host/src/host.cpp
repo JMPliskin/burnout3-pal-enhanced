@@ -549,7 +549,17 @@ int Main(int argc, char** argv) {
             return 64;
         }
     }
-    if (!options.vu_bench.empty()) return Vu::Bench(options.vu_bench);
+    if (!options.vu_bench.empty()) {
+        // With --sample, a hundred passes under the sampler and its report.
+        if (options.sample) {
+            StartSampler();
+            SetSampleFrom(0);
+            SampleFrame(0);
+        }
+        const int status = Vu::Bench(options.vu_bench, options.sample ? 100 : 5);
+        if (options.sample) std::printf("%s", SampleReport().c_str());
+        return status;
+    }
     if (options.elf_path.empty()) {
         std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] [--notes] [--watch addr] [--peek addr] "
                              "[--budget N] [--limit N] [--timeout seconds]\n", argv[0]);

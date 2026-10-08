@@ -617,7 +617,7 @@ void Vu::SnapshotFrame(u64 frame) {
     if (g_snapshots && frame >= g_snapshot_from.load()) g_snapshotting = true;
 }
 
-int Vu::Bench(const std::string& path) {
+int Vu::Bench(const std::string& path, int passes) {
     std::FILE* in = std::fopen(path.c_str(), "rb");
     if (!in) {
         std::fprintf(stderr, "vu: cannot read %s\n", path.c_str());
@@ -643,7 +643,7 @@ int Vu::Bench(const std::string& path) {
     vu.on_kick_block = [](const u32*, u32) {};
     double best = 0;
     u64 pairs = 0, hash = 0;
-    for (int pass = 0; pass < 5; ++pass) {
+    for (int pass = 0; pass < passes; ++pass) {
         double seconds = 0;
         u64 pass_pairs = 0, pass_hash = 1469598103934665603ull;
         std::uint8_t* micro_now = nullptr;
@@ -667,10 +667,14 @@ int Vu::Bench(const std::string& path) {
             const auto began = std::chrono::steady_clock::now();
             pass_pairs += vu.Run(r.s.pc);
             seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
-            // FNV-1a over what the run left: registers, flags, data memory.
+            // FNV-1a, a word at a time, over what the run left: registers, flags, data memory.
             auto mix = [&pass_hash](const void* p, std::size_t n) {
                 const std::uint8_t* b = static_cast<const std::uint8_t*>(p);
-                for (std::size_t i = 0; i < n; ++i) pass_hash = (pass_hash ^ b[i]) * 1099511628211ull;
+                for (std::size_t i = 0; i + 8 <= n; i += 8) {      // (every size here is a multiple of 8)
+                    std::uint64_t word;
+                    std::memcpy(&word, b + i, 8);
+                    pass_hash = (pass_hash ^ word) * 1099511628211ull;
+                }
             };
             mix(vu.regs.vf, sizeof vu.regs.vf);
             mix(vu.regs.vc, sizeof vu.regs.vc);

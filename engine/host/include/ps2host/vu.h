@@ -105,10 +105,10 @@ public:
     static void Snapshots(const std::string& path, u64 from, u32 count);
     static void SnapshotFrame(u64 frame);
     /* --vu-bench: those runs again, on a VU1 of its own, compiled where the
-       port has them, in five passes; the fastest pass's time a pair, and a
+       port has them, in `passes` passes; the fastest pass's time a pair, and a
        hash of every run's registers and memory after (what a change to the
        VU must leave alone). Returns 0, or 1 when the file cannot be read. */
-    static int Bench(const std::string& path);
+    static int Bench(const std::string& path, int passes = 5);
     /* How often each program address was started, for reports. */
     const std::map<u32, u64>& starts() const { return starts_; }
 

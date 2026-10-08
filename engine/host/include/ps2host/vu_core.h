@@ -353,55 +353,14 @@ struct VuCore {
     static PS2HOST_VU_INLINE u32 Mac(Vu& v, u64 cycle) { LandFlags(v, cycle); return v.mac; }
 
     // ------------------------------------------------------------ upper
-    /* STATUS's sticky zero and sign bits (6, 7) as a block gathers them
-       (vurecomp.py): the results' zero and sign lanes, OR'd in registers of
-       the block's own - the bits only ever gather - and into status_latest_
-       (FoldSticky) where something takes it as it stands: a pair pushing
-       its flags, FSSET, the block's end. Gathered into status_latest_ at
-       every FMAC whose flags no one sees, they were a sixth of a pair. */
-#if PS2RT_VU_SSE
-    struct Sticky {
-        __m128i zero = _mm_setzero_si128(), sign = _mm_setzero_si128();
-    };
-    template <u32 Dest>
-    static PS2HOST_VU_INLINE void StickyGather(Sticky& st, __m128i bits) {
-        __m128i zero = _mm_cmpeq_epi32(_mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF)), _mm_setzero_si128());
-        if constexpr (Dest != 15) {
-            const __m128i mask = _mm_set_epi32((Dest & 1) ? -1 : 0, (Dest & 2) ? -1 : 0, (Dest & 4) ? -1 : 0,
-                                               (Dest & 8) ? -1 : 0);
-            zero = _mm_and_si128(zero, mask);
-            bits = _mm_and_si128(bits, mask);
-        }
-        st.zero = _mm_or_si128(st.zero, zero);
-        st.sign = _mm_or_si128(st.sign, bits);
-    }
-    static PS2HOST_VU_INLINE void FoldSticky(Vu& v, Sticky& st) {
-        const int zero = _mm_movemask_ps(_mm_castsi128_ps(st.zero));
-        const int sign = _mm_movemask_ps(_mm_castsi128_ps(st.sign));
-        v.status_latest_ |= ((zero ? 1u : 0u) | (sign ? 2u : 0u)) << 6;
-        st.zero = st.sign = _mm_setzero_si128();
-    }
-#else
-    struct Sticky {};
-    static PS2HOST_VU_INLINE void FoldSticky(Vu&, Sticky&) {}
-#endif
 #if PS2RT_VU_SSE
     /* An FMAC operation: Op (vu_math.h's), Operand (0-3 a lane of ft, 4 Q,
        5 I, 6 ft), into To (-1 ACC; 0 VF0, which stays: the result goes to
        discarded_, for the flags). Flags 1 sets the flags as Flags<To, Dest>
        would after it, 2 as StickyFlags<To, Dest> - from the result as it
-       is, not read back from where it went - and 3 gathers the sticky bits
-       into `st` (Sticky). */
+       is, not read back from where it went. */
     template <int Op, int Operand, int To, u32 Dest, int Known = 0, int SetFlags = 0>
     static PS2HOST_VU_INLINE void Fmac(Vu& v, int fs, int ft) {
-        FmacOf<Op, Operand, To, Dest, Known, SetFlags>(v, fs, ft, nullptr);
-    }
-    template <int Op, int Operand, int To, u32 Dest, int Known = 0, int SetFlags = 0>
-    static PS2HOST_VU_INLINE void Fmac(Vu& v, int fs, int ft, Sticky& st) {
-        FmacOf<Op, Operand, To, Dest, Known, SetFlags>(v, fs, ft, &st);
-    }
-    template <int Op, int Operand, int To, u32 Dest, int Known, int SetFlags>
-    static PS2HOST_VU_INLINE void FmacOf(Vu& v, int fs, int ft, Sticky* st) {
         lifted::Context& c = v.regs;
         __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c.vf[fs]));
         __m128i b;
@@ -432,7 +391,6 @@ struct VuCore {
         else if constexpr (To < 0 && kRaw) v.acc_unclean_ = true;
         if constexpr (SetFlags == 1) FlagsOf<Dest>(v, result);
         else if constexpr (SetFlags == 2) StickyFlagsOf<Dest>(v, result);
-        else if constexpr (SetFlags == 3) StickyGather<Dest>(*st, result);
         if constexpr (To > 0 && kRaw) v.unclean_ |= 1u << To;
         else if constexpr (To > 0 && Dest == 15) v.unclean_ &= ~(1u << To);    // all four fields, clean
         if constexpr (To == 0) {
@@ -463,11 +421,7 @@ struct VuCore {
         if constexpr (To == 0) lifted::FmacResult(v.regs, f, v.discarded_);
         else lifted::RunFmac(v.regs, f);
         if constexpr (SetFlags == 1) Flags<To, Dest>(v);
-        else if constexpr (SetFlags >= 2) StickyFlags<To, Dest>(v);
-    }
-    template <int Op, int Operand, int To, u32 Dest, int Known = 0, int SetFlags = 0>
-    static void Fmac(Vu& v, int fs, int ft, Sticky&) {
-        Fmac<Op, Operand, To, Dest, Known, SetFlags>(v, fs, ft);
+        else if constexpr (SetFlags == 2) StickyFlags<To, Dest>(v);
     }
 #endif
     /* Macro mode's COP2 operations, as it runs them (vu0.cpp's Cop2), without

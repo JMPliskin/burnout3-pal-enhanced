@@ -492,29 +492,15 @@ def needless_wait(r: int, lane: int, index: int, written: dict) -> bool:
 LEAVE = "s.count = count; s.stopping = stopping; s.delayed = delayed; C::Cycle(v) = cyc; return;"
 
 
-def into_sticky(line: str) -> str:
-    """An FMAC gathering its sticky bits at once (Fmac's 2) as one adding
-    them to the block's `st` (3)."""
-    if not line.startswith("C::Fmac<") or ", 2>(" not in line or not line.endswith(");"):
-        return line
-    head, args = line.rsplit(", 2>(", 1)
-    return head + ", 3>(" + args[:-2] + ", st);"
-
-
 def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int = 0,
-              written: dict = None, clean: dict = None, dead_flags: bool = False,
-              sticky: bool = False) -> list:
+              written: dict = None, clean: dict = None, dead_flags: bool = False) -> list:
     """One pair, as Run runs it, then where the run goes: on to the next pair
     of the block, or (`last`, a branch taken, the program's end) back to the
     driver with s.pc. `index` is its place in the block and `written` where
     the block's pairs before it wrote each vector field; the pair's own
-    writes are added to it. `sticky`: the block gathers STATUS's sticky
-    bits in `st` (VuCore::Sticky) - an FMAC whose flags are dead adds its
-    own there, and they go into STATUS before anything takes it as it
-    stands (FSSET, a pair pushing flags) and as the block leaves."""
+    writes are added to it."""
     if written is None:
         written = {}
-    leave = ("C::FoldSticky(v, st); " + LEAVE) if sticky else LEAVE
     immediate = bool(upper & 0x80000000)
     end = bool(upper & 0x40000000)
     reads = upper_reads(upper) + ([] if immediate else lower_reads(lower))
@@ -542,16 +528,12 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
         body.append("C::Pending pd;")
     if branch:
         body.append("u32 branch = kNone;")
-    if sticky and any("C::StatusLatest(v)" in line for line in lower_lines):
-        body.append("C::FoldSticky(v, st);")     # FSSET sets the sticky bits over what came before
     body += lower_lines
     upper_lines, upper_written, lanes, set_flags = emit_upper(upper, clean)
     if dead_flags:
         upper_lines = [line.replace("C::Flags<", "C::StickyFlags<") for line in upper_lines]
         set_flags = False
     upper_lines = fuse_flags(upper_lines)
-    if sticky:
-        upper_lines = [into_sticky(line) for line in upper_lines]
     body += upper_lines
     for r, dest in lower_writes(lower_lines) + [(upper_written, lanes)]:
         for lane in range(4):
@@ -574,8 +556,6 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
     sets_mac = "true" if (upper & 0x7FF) != 0x1FF else "false"
     sets_clip = "true" if (upper & 0x7FF) == 0x1FF else "false"
     flags = "true" if set_flags else "false"
-    if sticky and set_flags:
-        body.append("C::FoldSticky(v, st);")     # the flags it pushes take STATUS as it stands
     if pending:
         body.append("C::Finish(v, cyc, pd, %d, %du, %s, %s, %s);" % (written_reg, lanes, flags, sets_mac,
                                                                     sets_clip))
@@ -586,16 +566,16 @@ def emit_pair(pc: int, lower: int, upper: int, mask: int, last: bool, index: int
         body.append("C::End(v, cyc);")
     next_pc = (pc + 8) & mask
     body.append("++count;")
-    body.append("if (stopping) { s.pc = 0x%Xu; s.done = true; %s }" % (next_pc, leave))
+    body.append("if (stopping) { s.pc = 0x%Xu; s.done = true; %s }" % (next_pc, LEAVE))
     if end:
         body.append("stopping = true;")
     new_delayed = "branch" if branch else "kNone"
-    body.append("if (delayed != kNone) { s.pc = delayed; delayed = %s; %s }" % (new_delayed, leave))
+    body.append("if (delayed != kNone) { s.pc = delayed; delayed = %s; %s }" % (new_delayed, LEAVE))
     if branch:
         body.append("delayed = branch;")
     if last:
         body.append("s.pc = 0x%Xu;" % next_pc)
-        body.append(leave)
+        body.append(LEAVE)
     out += ["        " + line for line in body]
     out.append("    }")
     return out
@@ -693,12 +673,9 @@ def emit_block(name: str, block: list, pairs: dict, mask: int) -> list:
            "    u32 delayed = s.delayed;"]
     written, clean = {}, {}
     dead = dead_flags(block, pairs) - {0}
-    sticky = bool(dead)
-    if sticky:
-        out.append("    C::Sticky st;")
     for i, pc in enumerate(block):
         out += emit_pair(pc, pairs[pc][0], pairs[pc][1], mask, i == len(block) - 1, i, written, clean,
-                         i in dead, sticky)
+                         i in dead)
     out.append("}")
     return out
 
