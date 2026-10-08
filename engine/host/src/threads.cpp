@@ -331,6 +331,7 @@ bool TakeVblank(Scheduler& s) {
 // and yields to it: a blank two milliseconds late was a blank the EE took
 // with the next, and lost.
 std::atomic<unsigned> g_fast_forward{1};    // SetFastForward
+std::atomic<u64> g_last_vblank_ns{0};       // LastVblankNs
 
 void VblankTimer() {
     using clock = std::chrono::steady_clock;
@@ -349,6 +350,8 @@ void VblankTimer() {
         while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
         Scheduler& s = S();
         if (clock::now() >= next) {
+            g_last_vblank_ns.store(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next.time_since_epoch()).count()),
+                                   std::memory_order_relaxed);
             const unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
             next += factor > 1 ? period / factor : period;
             if (clock::now() >= next + period) next = clock::now() + period;   // a stall: start again from now
@@ -863,6 +866,7 @@ u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
 void SetFastForward(unsigned factor) { g_fast_forward = factor ? factor : 1; }
 unsigned FastForward() { return g_fast_forward.load(std::memory_order_relaxed); }
+u64 LastVblankNs() { return g_last_vblank_ns.load(std::memory_order_relaxed); }
 
 void FastThread() {
     THREAD_POWER_THROTTLING_STATE throttling{};

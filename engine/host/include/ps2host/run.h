@@ -168,6 +168,9 @@ void SetVif1Worker(bool on);
 void SetFastForward(unsigned factor);
 /* The factor SetFastForward set (1: none). */
 unsigned FastForward();
+/* Real time: when the last vertical blank was due (ClockNs), on the timer's
+   own grid - not when the EE took it, which it does at its next loop head. */
+u64 LastVblankNs();
 /* The calling thread runs the game in real time (the EE's, the GS thread,
    VIF1's worker): Windows is asked not to slow it for power (on a hybrid
    processor, not to park it on an efficiency core) and to run it above

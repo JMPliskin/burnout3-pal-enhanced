@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -130,9 +131,10 @@ private:
     PacedPicture paced_[kPaced];
     std::uint32_t paced_width_ = 0, paced_height_ = 0;
     VkCommandPool copy_pool_ = VK_NULL_HANDLE;
-    std::mutex paced_lock_;                 // newest_, taken_, stop_
+    std::mutex paced_lock_;                 // ready_, taken_, stop_
     std::condition_variable paced_wake_;
-    int newest_ = -1, taken_ = -1;          // the picture to show next; the one being shown
+    std::deque<int> ready_;                 // pictures waiting to be shown, oldest first
+    int taken_ = -1;                        // the one being shown
     bool stop_ = false;
     std::thread present_thread_;
     std::mutex present_lock_;               // the swapchain and cmds_: the present thread, or Present
@@ -562,7 +564,7 @@ bool VulkanDisplay::EnsurePaced(std::uint32_t width, std::uint32_t height) {
     if (width == paced_width_ && height == paced_height_ && paced_[0].image) return true;
     {
         std::unique_lock<std::mutex> hold(paced_lock_);
-        newest_ = -1;
+        ready_.clear();
         paced_wake_.wait(hold, [&] { return taken_ < 0; });   // none being shown
     }
     {
@@ -627,13 +629,20 @@ bool VulkanDisplay::PresentImageAt(std::uint64_t image, int layout, std::uint32_
     if (!width || !height || !image) return !closed_;
     if (closed_) return false;
     if (!EnsurePaced(width, height)) return false;
-    // A picture neither waiting to be shown nor being shown: what the GPU
-    // still reads of it (an earlier present's blit, submitted before) goes
-    // first, by the queue's order and the copy's barrier.
-    int slot = 0;
+    // A picture neither waiting to be shown nor being shown - or, with all
+    // of them waiting, the oldest waiting (its turn is lost: the shown
+    // picture keeps no more than two frames behind). What the GPU still
+    // reads of it (an earlier present's blit, submitted before) goes first,
+    // by the queue's order and the copy's barrier.
+    int slot = -1;
     {
         std::lock_guard<std::mutex> hold(paced_lock_);
-        while (slot == newest_ || slot == taken_) ++slot;
+        for (int i = 0; i < kPaced && slot < 0; ++i)
+            if (i != taken_ && std::find(ready_.begin(), ready_.end(), i) == ready_.end()) slot = i;
+        if (slot < 0) {
+            slot = ready_.front();
+            ready_.pop_front();
+        }
     }
     PacedPicture& p = paced_[slot];
     vkWaitForFences(device_, 1, &p.copied, VK_TRUE, UINT64_MAX);    // its command buffer, from last time
@@ -673,7 +682,7 @@ bool VulkanDisplay::PresentImageAt(std::uint64_t image, int layout, std::uint32_
     p.due_ns = due_ns;
     {
         std::lock_guard<std::mutex> hold(paced_lock_);
-        newest_ = slot;
+        ready_.push_back(slot);
     }
     paced_wake_.notify_all();
     return !closed_;
@@ -685,11 +694,11 @@ void VulkanDisplay::PresentLoop() {
         int slot;
         {
             std::unique_lock<std::mutex> hold(paced_lock_);
-            paced_wake_.wait(hold, [&] { return stop_ || newest_ >= 0; });
+            paced_wake_.wait(hold, [&] { return stop_ || !ready_.empty(); });
             if (stop_) return;
-            slot = newest_;
+            slot = ready_.front();
         }
-        // Until it is due (a newer picture coming meanwhile takes its place).
+        // In order, each when it is due.
         const Clock::time_point due = std::min(Clock::time_point{std::chrono::nanoseconds(paced_[slot].due_ns)},
                                                Clock::now() + std::chrono::milliseconds(50));
         if (Clock::now() + std::chrono::milliseconds(2) < due)
@@ -698,9 +707,8 @@ void VulkanDisplay::PresentLoop() {
         {
             std::lock_guard<std::mutex> hold(paced_lock_);
             if (stop_) return;
-            if (newest_ < 0) continue;
-            slot = newest_;
-            newest_ = -1;
+            if (ready_.empty() || ready_.front() != slot) continue;     // dropped meanwhile
+            ready_.pop_front();
             taken_ = slot;
         }
         {

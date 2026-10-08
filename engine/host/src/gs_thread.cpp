@@ -321,7 +321,13 @@ u64 GsBusyMicroseconds() { return g_gs_busy_us.load(std::memory_order_relaxed); 
 
 bool GsFrame(u64 frame) {
     if (!g_frame_handler) return false;
-    if (!OnVif1Worker()) g_frame_ended[frame & 255].store(ClockNs(), std::memory_order_relaxed);
+    if (!OnVif1Worker()) {
+        // The frame's vertical blank as the timer had it: frames a period
+        // apart however late the EE took each (a long loop runs on to its
+        // next loop head first).
+        const u64 blank = VirtualClock() ? 0 : LastVblankNs();
+        g_frame_ended[frame & 255].store(blank ? blank : ClockNs(), std::memory_order_relaxed);
+    }
     if (Vif1Async() && !OnVif1Worker()) {
         Vif1RunFrame([frame] { GsFrame(frame); });
         return true;
