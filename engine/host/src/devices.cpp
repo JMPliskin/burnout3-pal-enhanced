@@ -363,6 +363,14 @@ void FrameTimes(u64 frame) {
     last_join = join;
     last_behind = behind;
     last_full = full;
+    static u64 last_gpu_us = 0;
+    const u64 gpu_us = GpuBusyMicroseconds();
+    if (gpu_us != last_gpu_us && seconds > 0) {
+        const std::size_t used = std::strlen(job_text);
+        std::snprintf(job_text + used, sizeof job_text - used, ", GPU busy %d%%",
+                      int(100.0 * double(gpu_us - last_gpu_us) / 1e6 / seconds + 0.5));
+    }
+    last_gpu_us = gpu_us;
     static u64 last_guesses = 0;
     u64 guesses = 0, wrong = 0;
     Vif1Guesses(&guesses, &wrong);

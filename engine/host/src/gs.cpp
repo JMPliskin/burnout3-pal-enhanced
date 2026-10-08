@@ -399,7 +399,38 @@ void Gs::Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) 
                         : (psm == PSMT4) ? 128 : 64;
     const u32 pages_wide = std::max(1u, (psm == PSMT8 || psm == PSMT4) ? bw / 2 : bw);
     const u32 rows = (y + h + page_rows - 1) / page_rows;
-    on_memory(bp, bp + rows * pages_wide * 32, write);
+    const u32 begin = bp, end = bp + rows * pages_wide * 32;
+    // Written, which blocks the rectangle covers, whole or in part, a block's
+    // pixels at a time (8x8 32-bit, 16x8 16-bit, 16x16 8-bit, 32x16 4-bit):
+    // only those in part need what was there (with --gpu, brought back from
+    // the GPU, which waits for it). Formats that write part of a pixel
+    // (8H, 4HL, 4HH), and a rectangle past the buffer's width, as before.
+    u32 cw = 0, ch = 0;
+    switch (psm) {
+        case PSMCT32: case PSMCT24: case PSMZ32: case PSMZ24: cw = 8; ch = 8; break;
+        case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: cw = 16; ch = 8; break;
+        case PSMT8: cw = 16; ch = 16; break;
+        case PSMT4: cw = 32; ch = 16; break;
+        default: break;
+    }
+    if (!write || !on_write || !cw || !bw || x + w > bw * 64 || end > 16384 || end <= begin) {
+        on_memory(begin, end, write);
+        return;
+    }
+    std::vector<u8> cover(end - begin, 0);
+    for (u32 cy = y / ch * ch; cy < y + h; cy += ch)
+        for (u32 cx = x / cw * cw; cx < x + w; cx += cw) {
+            u32 nibble = 0;
+            const u32 block = Memory::Address(bp, bw, cx, cy, psm, &nibble) / 256;
+            if (block < begin || block >= end) {        // (not expected: as before)
+                on_memory(begin, end, write);
+                return;
+            }
+            const bool whole = cx >= x && cx + cw <= x + w && cy >= y && cy + ch <= y + h;
+            u8& c = cover[block - begin];
+            c = std::max<u8>(c, whole ? 2 : 1);
+        }
+    on_write(begin, end, cover.data());
 }
 
 bool Gs::Picture(std::vector<u32>* pixels, u32* width, u32* height) const {

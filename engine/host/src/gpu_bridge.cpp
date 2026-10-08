@@ -257,6 +257,12 @@ std::map<std::string, u64> g_decode_kinds;      // PS2HOST_GPU_COUNT
 
 // ------------------------------------------------------------------ --gpu
 
+}  // namespace
+
+u64 GpuBusyMicroseconds() { return ps2gpu::GpuBusyNanoseconds() / 1000; }
+
+namespace {
+
 /* Blocks [begin, end) whose copy on one side is behind the other's brought up
    to date, in runs: `to_gpu` the GPU's from the CPU's, else the CPU's from the
    GPU's (which waits for the GPU). */
@@ -357,6 +363,49 @@ void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullp
         for (u32 page = begin >> 5; page <= ((end - 1) >> 5) && page < 512; ++page)
             for (Cached* t : b.texture_pages[page])
                 if (t->begin < end && begin < t->end) t->valid = false;
+}
+
+/* An image transfer about to write blocks [begin, end) (Gs::on_write): the
+   blocks it writes in part come back from the GPU first, those it writes
+   whole need nothing of what was there - a read-back waits for all the GPU
+   has queued, and a race's texture uploads into blocks the GPU drew over
+   cost a wait each (1,400 of ~6 ms in a minute of racing, 4 KB each). */
+void SyncWrite(Bridge& b, u32 begin, u32 end, const u8* cover) {
+    ++g_mutations;
+    u32 first = end, last = begin;          // the blocks written
+    for (u32 i = begin; i < end; ++i)
+        if (cover[i - begin]) {
+            first = std::min(first, i);
+            last = i + 1;
+        }
+    if (first >= last) return;
+    // What the GPU images drew over them into the GPU's memory first (on the
+    // GPU, nothing waiting): written back later, it would land over these.
+    for (auto& [key, o] : b.owned)
+        if (o.gpu_newer && o.dirty_begin < last && first < o.dirty_end) WriteBack(b, o);
+    {
+        Timed timed(Section::GpuSync);
+        for (u32 i = first; i < last;) {
+            if (cover[i - begin] != 1 || b.blocks[i] != Bridge::kGpuNewer) {
+                ++i;
+                continue;
+            }
+            u32 j = i;
+            while (j < last && cover[j - begin] == 1 && b.blocks[j] == Bridge::kGpuNewer) ++j;
+            Coherent(b, i, j, false);
+            i = j;
+        }
+    }
+    for (u32 i = first; i < last; ++i)
+        if (cover[i - begin]) b.blocks[i] = Bridge::kCpuNewer;
+    for (auto& [key, o] : b.owned) {
+        if (last <= o.begin || o.full_end <= first) continue;
+        if (first < o.end) MarkStale(o, 1, first, last);
+        else o.stale_beyond = true;
+    }
+    for (u32 page = first >> 5; page <= ((last - 1) >> 5) && page < 512; ++page)
+        for (Cached* t : b.texture_pages[page])
+            if (t->begin < last && first < t->end) t->valid = false;
 }
 
 /* A target or depth buffer about to be drawn into or sampled: up to date with
@@ -1179,6 +1228,10 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
         g.on_memory = [](u32 begin, u32 end, bool write) {
             g_bridge->cause = write ? 2 : 1;
             Sync(*g_bridge, begin, end, write);
+        };
+        g.on_write = [](u32 begin, u32 end, const u8* cover) {
+            g_bridge->cause = 2;
+            SyncWrite(*g_bridge, begin, end, cover);
         };
         g.on_clut_load = [](u64 tex0, u64 texa) { return LoadClut(*g_bridge, tex0, texa); };
     }

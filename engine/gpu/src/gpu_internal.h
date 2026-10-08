@@ -5,6 +5,7 @@
 
 #include <volk.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <string>
@@ -19,6 +20,9 @@ namespace ps2gpu {
    waited (a read-back of which kind, a resize, a full ring). */
 inline std::uint64_t g_submits = 0;
 inline double g_wait_seconds = 0;
+/* The GPU's time on the command buffers handed over, in all (timestamps at
+   each one's start and end; GpuBusyNanoseconds). */
+inline std::atomic<std::uint64_t> g_gpu_ns{0};
 struct WaitReason { const char* why; std::uint64_t count; double seconds; };
 inline WaitReason g_waits[16] = {};
 inline void CountWait(const char* why, double seconds) {
@@ -93,6 +97,11 @@ private:
     std::string describe_;
     bool open_ = false;
     std::uint64_t recordings_ = 0;
+    // Two timestamps a slot: as its command buffer starts and as it ends.
+    VkQueryPool timestamps_ = VK_NULL_HANDLE;
+    double timestamp_ns_ = 0;               // a tick, in nanoseconds
+    bool stamped_[kSlots] = {};
+    void MakeTimestamps();
     std::vector<std::function<void()>> after_submit_;
     int current_ = 0;
     bool in_flight_[kSlots] = {};
@@ -111,6 +120,10 @@ void VulkanGpu::RecordInPass(F&& record) {
         vkBeginCommandBuffer(cmd, &begin);
         open_ = true;
         ++recordings_;
+        if (timestamps_) {
+            vkCmdResetQueryPool(cmd, timestamps_, 2 * std::uint32_t(current_), 2);
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps_, 2 * std::uint32_t(current_));
+        }
     }
     record(cmd);
 }
@@ -131,6 +144,13 @@ inline bool VulkanGpu::Retire(int slot, const char* why) {
     g_wait_seconds += waited;
     CountWait(why, waited);
     in_flight_[slot] = false;
+    if (stamped_[slot]) {
+        std::uint64_t ticks[2] = {};
+        if (vkGetQueryPoolResults(device, timestamps_, 2 * std::uint32_t(slot), 2, sizeof ticks, ticks,
+                                  sizeof ticks[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ticks[1] > ticks[0])
+            g_gpu_ns += std::uint64_t(double(ticks[1] - ticks[0]) * timestamp_ns_);
+        stamped_[slot] = false;
+    }
     std::vector<std::function<void()>> done;
     done.swap(slot_done_[slot]);
     for (auto& f : done) f();
@@ -141,6 +161,10 @@ inline bool VulkanGpu::Flush() {
     if (!open_) return true;
     if (end_pass) end_pass(cmd);
     open_ = false;
+    if (timestamps_) {
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps_, 2 * std::uint32_t(current_) + 1);
+        stamped_[current_] = true;
+    }
     vkEndCommandBuffer(cmd);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;

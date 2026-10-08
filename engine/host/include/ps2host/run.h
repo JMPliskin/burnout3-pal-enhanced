@@ -188,6 +188,9 @@ void Vif1WaitMicroseconds(u64* join, u64* frame, u64* full);
 bool GsFrame(u64 frame);
 /* How long the GS thread has worked, in all (microseconds). */
 u64 GsBusyMicroseconds();
+/* How long the GPU has worked on what --gpu handed it, in all (microseconds;
+   0 without it, or where the GPU keeps no time). */
+u64 GpuBusyMicroseconds();
 bool UntilFrameReached();
 /* --gs-trace-frame: trace the GS during one frame. */
 void SetGsTraceFrame(long long frame);

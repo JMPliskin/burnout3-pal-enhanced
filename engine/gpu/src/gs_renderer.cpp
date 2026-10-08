@@ -1765,6 +1765,8 @@ VulkanGsRenderer::~VulkanGsRenderer() {
 
 }  // namespace
 
+std::uint64_t GpuBusyNanoseconds() { return g_gpu_ns.load(); }
+
 std::string RendererCounters() {
     static std::uint64_t last[6] = {};
     const std::uint64_t now[6] = {g_barriers, g_transitions, g_dispatches, g_draws, g_passes, g_feedback};
@@ -1779,8 +1781,8 @@ std::string RendererCounters() {
 
 std::string SubmitStats() {
     char text[160];
-    std::snprintf(text, sizeof text, "%llu submissions, %.1f s waiting for them",
-                  static_cast<unsigned long long>(g_submits), g_wait_seconds);
+    std::snprintf(text, sizeof text, "%llu submissions, the GPU busy %.1f s, %.1f s waiting for them",
+                  static_cast<unsigned long long>(g_submits), double(g_gpu_ns.load()) / 1e9, g_wait_seconds);
     std::string out = text;
     for (const WaitReason& w : g_waits) {
         if (!w.why || !w.count) continue;

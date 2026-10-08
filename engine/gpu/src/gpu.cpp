@@ -104,7 +104,28 @@ bool VulkanGpu::Init(std::string* error) {
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     for (VkFence& f : fences)
         if ((r = vkCreateFence(device, &fci, nullptr, &f)) != VK_SUCCESS) return fail("vkCreateFence", r);
+    MakeTimestamps();
     return true;
+}
+
+void VulkanGpu::MakeTimestamps() {
+    // Only where the queue keeps time (timestampValidBits) and says how fast.
+    std::uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, families.data());
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(gpu, &properties);
+    if (family >= count || families[family].timestampValidBits == 0 || properties.limits.timestampPeriod <= 0)
+        return;
+    VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qci.queryCount = 2 * kSlots;
+    if (vkCreateQueryPool(device, &qci, nullptr, &timestamps_) != VK_SUCCESS) {
+        timestamps_ = VK_NULL_HANDLE;
+        return;
+    }
+    timestamp_ns_ = properties.limits.timestampPeriod;
 }
 
 bool VulkanGpu::InitShared(VkInstance shared_instance, VkPhysicalDevice shared_gpu, VkDevice shared_device,
@@ -140,6 +161,7 @@ bool VulkanGpu::InitShared(VkInstance shared_instance, VkPhysicalDevice shared_g
         return false;
     }
     cmd = cmds[0];
+    MakeTimestamps();
     return true;
 }
 
@@ -156,6 +178,7 @@ VulkanGpu::~VulkanGpu() {
         vkDeviceWaitIdle(device);
         for (VkFence f : fences)
             if (f) vkDestroyFence(device, f, nullptr);
+        if (timestamps_) vkDestroyQueryPool(device, timestamps_, nullptr);
         if (pool) vkDestroyCommandPool(device, pool, nullptr);
         if (owns_device) vkDestroyDevice(device, nullptr);
     }

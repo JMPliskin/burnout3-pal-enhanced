@@ -124,6 +124,11 @@ public:
        loads, the displayed picture. */
     bool rasterize = true;
     std::function<void(u32 begin, u32 end, bool write)> on_memory;
+    /* An image transfer about to write blocks [begin, end), when set (else
+       on_memory): cover[i] for block begin + i - 0 not written, 1 written in
+       part, 2 written whole. A block written whole needs nothing of what was
+       there before. */
+    std::function<void(u32 begin, u32 end, const u8* cover)> on_write;
     /* --gpu: a CLUT load (TEX0 with its CLD, and TEXA) about to happen; true
        if the second renderer made it from its own copy of local memory - the
        model's CLUT then keeps its old entries for those (on_memory is not
