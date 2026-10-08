@@ -99,6 +99,16 @@ public:
     /* --vu-record: each program a run starts, and the code reachable from
        where it starts, to `path` (engine/tools/vurecomp.py compiles them). */
     static void RecordPrograms(const std::string& path);
+    /* --vu-snapshot: from frame `from` on, `count` VU1 runs as they start -
+       where, the registers and flags, both memories - to `path`, for
+       --vu-bench. SnapshotFrame: the frame now (devices.cpp). */
+    static void Snapshots(const std::string& path, u64 from, u32 count);
+    static void SnapshotFrame(u64 frame);
+    /* --vu-bench: those runs again, on a VU1 of its own, compiled where the
+       port has them, in five passes; the fastest pass's time a pair, and a
+       hash of every run's registers and memory after (what a change to the
+       VU must leave alone). Returns 0, or 1 when the file cannot be read. */
+    static int Bench(const std::string& path);
     /* How often each program address was started, for reports. */
     const std::map<u32, u64>& starts() const { return starts_; }
 
@@ -136,6 +146,10 @@ private:
     u32 q_next_ = 0, p_next_ = 0;   /* DIV's and the EFU's results in flight */
     u64 q_ready_ = 0, p_ready_ = 0;
     bool q_busy_ = false, p_busy_ = false;
+    /* No earlier than the first of the busy Q and P lands (~0: neither is
+       busy): what each pair looks at before landing them, one compare for
+       four. LandNow sets it again. */
+    u64 qp_due_ = ~u64(0);
     /* The FMAC sets the flags as it finishes: what upper instructions have
        produced so far, and what is still on its way to the lower's view. */
     u32 mac_latest_ = 0, status_latest_ = 0, clip_latest_ = 0;

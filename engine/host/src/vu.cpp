@@ -10,6 +10,8 @@
 #include "ps2host/vu.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -586,12 +588,130 @@ void Vu::LandAll() {
     Land();
 }
 
+namespace {
+
+// --vu-snapshot and --vu-bench (Vu::Snapshots, Vu::Bench): a run as it starts.
+struct Snapshot {
+    u32 pc;
+    u32 flags[6];                       // mac, status, clip, p, top, itop
+    u32 vf[32][4], vc[32], vacc[4];
+};
+std::FILE* g_snapshots = nullptr;
+std::atomic<u64> g_snapshot_from{~u64(0)};
+std::atomic<bool> g_snapshotting{false};
+u32 g_snapshots_left = 0;
+
+}  // namespace
+
+void Vu::Snapshots(const std::string& path, u64 from, u32 count) {
+    g_snapshots = std::fopen(path.c_str(), "wb");
+    if (!g_snapshots) {
+        std::fprintf(stderr, "vu: cannot write %s\n", path.c_str());
+        return;
+    }
+    g_snapshot_from = from;
+    g_snapshots_left = count;
+}
+
+void Vu::SnapshotFrame(u64 frame) {
+    if (g_snapshots && frame >= g_snapshot_from.load()) g_snapshotting = true;
+}
+
+int Vu::Bench(const std::string& path) {
+    std::FILE* in = std::fopen(path.c_str(), "rb");
+    if (!in) {
+        std::fprintf(stderr, "vu: cannot read %s\n", path.c_str());
+        return 1;
+    }
+    struct Run {
+        Snapshot s;
+        std::vector<std::uint8_t> micro, data;
+    };
+    std::vector<Run> runs;
+    for (;;) {
+        Run r;
+        r.micro.resize(16384);
+        r.data.resize(16384);
+        if (std::fread(&r.s, sizeof r.s, 1, in) != 1 || std::fread(r.micro.data(), 1, 16384, in) != 16384 ||
+            std::fread(r.data.data(), 1, 16384, in) != 16384)
+            break;
+        runs.push_back(std::move(r));
+    }
+    std::fclose(in);
+    Vu vu(1);
+    vu.on_kick = [](u64, u64) {};
+    vu.on_kick_block = [](const u32*, u32) {};
+    double best = 0;
+    u64 pairs = 0, hash = 0;
+    for (int pass = 0; pass < 5; ++pass) {
+        double seconds = 0;
+        u64 pass_pairs = 0, pass_hash = 1469598103934665603ull;
+        std::uint8_t* micro_now = nullptr;
+        for (Run& r : runs) {
+            if (micro_now != r.micro.data() &&
+                (!micro_now || std::memcmp(micro_now, r.micro.data(), 16384) != 0)) {
+                std::memcpy(vu.micro.data(), r.micro.data(), 16384);
+                vu.MicroWritten();
+            }
+            micro_now = r.micro.data();
+            std::memcpy(vu.data.data(), r.data.data(), 16384);
+            std::memcpy(vu.regs.vf, r.s.vf, sizeof r.s.vf);
+            std::memcpy(vu.regs.vc, r.s.vc, sizeof r.s.vc);
+            std::memcpy(vu.regs.vacc, r.s.vacc, sizeof r.s.vacc);
+            vu.mac = r.s.flags[0];
+            vu.status = r.s.flags[1];
+            vu.clip = r.s.flags[2];
+            vu.p = r.s.flags[3];
+            vu.top = r.s.flags[4];
+            vu.itop = r.s.flags[5];
+            const auto began = std::chrono::steady_clock::now();
+            pass_pairs += vu.Run(r.s.pc);
+            seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+            // FNV-1a over what the run left: registers, flags, data memory.
+            auto mix = [&pass_hash](const void* p, std::size_t n) {
+                const std::uint8_t* b = static_cast<const std::uint8_t*>(p);
+                for (std::size_t i = 0; i < n; ++i) pass_hash = (pass_hash ^ b[i]) * 1099511628211ull;
+            };
+            mix(vu.regs.vf, sizeof vu.regs.vf);
+            mix(vu.regs.vc, sizeof vu.regs.vc);
+            mix(vu.regs.vacc, sizeof vu.regs.vacc);
+            const u32 flags[4] = {vu.mac, vu.status, vu.clip, vu.p};
+            mix(flags, sizeof flags);
+            mix(vu.data.data(), 16384);
+        }
+        if (pass == 0 || seconds < best) best = seconds;
+        pairs = pass_pairs;
+        hash = pass_hash;
+    }
+    std::printf("vu-bench: %zu runs, %llu pairs, best pass %.1f ms, %.2f ns a pair; state hash %016llX\n",
+                runs.size(), (unsigned long long)pairs, best * 1000, pairs ? best * 1e9 / double(pairs) : 0.0,
+                (unsigned long long)hash);
+    return 0;
+}
+
 Vu::u64 Vu::Run(u32 pc, u64 limit) {
     Timed timed(data_mask_ == 0x3FF ? Section::Vu1 : Section::Vu0);
     const int unit = data_mask_ == 0x3FF ? 1 : 0;
     pc &= u32(micro.size() - 1) & ~7u;
     ++starts_[pc];
     if (g_record) RecordProgram(micro, unit, pc);
+    if (unit == 1 && g_snapshotting.load(std::memory_order_relaxed) && g_snapshots_left) {
+        Snapshot s{};
+        s.pc = pc;
+        const u32 flags[6] = {mac, status, clip, p, top, itop};
+        std::memcpy(s.flags, flags, sizeof flags);
+        std::memcpy(s.vf, regs.vf, sizeof s.vf);
+        std::memcpy(s.vc, regs.vc, sizeof s.vc);
+        std::memcpy(s.vacc, regs.vacc, sizeof s.vacc);
+        std::fwrite(&s, sizeof s, 1, g_snapshots);
+        std::fwrite(micro.data(), 1, 16384, g_snapshots);
+        std::fwrite(data.data(), 1, 16384, g_snapshots);
+        if (--g_snapshots_left == 0) {
+            std::fclose(g_snapshots);
+            g_snapshots = nullptr;
+            g_snapshotting = false;
+        }
+    }
     VuRunState state;
     state.pc = pc;
     unclean_ = ~1u;                     // nothing known about the registers yet
@@ -709,6 +829,7 @@ void Vu::Interpret(VuRunState& state, u64 limit) {
             q_next_ = pending.vc ? pending.vc_after[kRegQ] : regs.vc[kRegQ];
             q_ready_ = cycle_ + u64(pending.q_latency);
             q_busy_ = true;
+            qp_due_ = std::min(qp_due_, q_ready_);
             if (pending.vc) pending.vc_after[kRegQ] = regs.vc[kRegQ];
         }
         if (pending.vc) std::memcpy(regs.vc, pending.vc_after, sizeof pending.vc_after);
@@ -716,6 +837,7 @@ void Vu::Interpret(VuRunState& state, u64 limit) {
             p_next_ = pending.p_value;
             p_ready_ = cycle_ + u64(pending.p_latency ? pending.p_latency : 1);
             p_busy_ = true;
+            qp_due_ = std::min(qp_due_, p_ready_);
         }
         regs.vc[0] = 0;
         ++cycle_;

@@ -392,6 +392,8 @@ int Run(const Options& options) {
     InstallCrashReport();
     SetVif1Worker(!options.vif1_sync);
     SetCheckGuesses(options.check_guesses);
+    if (!options.vu_snapshot.empty())
+        Vu::Snapshots(options.vu_snapshot, u64(options.vu_snapshot_from), options.vu_snapshot_count);
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
@@ -501,6 +503,12 @@ int Main(int argc, char** argv) {
         else if (arg == "--sample-vif1") options.sample = options.sample_vif1 = true;
         else if (arg == "--vif1-sync") options.vif1_sync = true;
         else if (arg == "--check-guesses") options.check_guesses = true;
+        else if (arg == "--vu-snapshot" && i + 3 < argc) {
+            options.vu_snapshot = argv[++i];
+            options.vu_snapshot_from = std::stoll(argv[++i]);
+            options.vu_snapshot_count = unsigned(std::stoul(argv[++i]));
+        }
+        else if (arg == "--vu-bench" && i + 1 < argc) options.vu_bench = argv[++i];
         else if (arg == "--sample-from" && i + 1 < argc) {
             options.sample = true;
             options.sample_from = std::stoll(argv[++i]);
@@ -541,6 +549,7 @@ int Main(int argc, char** argv) {
             return 64;
         }
     }
+    if (!options.vu_bench.empty()) return Vu::Bench(options.vu_bench);
     if (options.elf_path.empty()) {
         std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] [--notes] [--watch addr] [--peek addr] "
                              "[--budget N] [--limit N] [--timeout seconds]\n", argv[0]);

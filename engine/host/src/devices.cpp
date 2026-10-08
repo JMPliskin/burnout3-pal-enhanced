@@ -394,6 +394,7 @@ bool UntilFrameReached() { return g_until_reached; }
 void FrameDone(u64 frame) {
     FrameTimes(frame);
     SampleFrame(frame);
+    Vu::SnapshotFrame(frame);
     // Time passes: unmasked, PATH3 sends what it still holds (in turn with
     // VIF1's, whose state PATH3's is).
     Vif1Run([] {
