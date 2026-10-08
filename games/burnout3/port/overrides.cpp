@@ -8,10 +8,14 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
+#include <set>
 #include <string>
+#include <tuple>
 
 #include "ps2host/host.h"
 #include "ps2host/mc2.h"
+#include "ps2host/run.h"
 
 // libmc2's handlers as the game has them, for when no card is given.
 void F_00244218(lifted::Context& c);
@@ -21,6 +25,8 @@ void F_00246788(lifted::Context& c);
 void F_00245FC0(lifted::Context& c);
 void F_002470D8(lifted::Context& c);
 void F_00245398(lifted::Context& c);
+// A screen with a movie: its update each frame (a method; see SkipMovie).
+void F_001313C0(lifted::Context& c);
 
 namespace {
 
@@ -57,6 +63,46 @@ void CardOr(lifted::Context& c) {
     else Host(c);
 }
 
+/* 0x001313C0, the update of a screen that plays a movie (FINDINGS:
+   "Skipping movies"): in state 0x17 (+0x2F8) it drives the movie at +0x1C8
+   (0x00325030 decodes and shows the next picture). The movie's +0x48 is set
+   while it plays, +0x49 once it has finished, and +0x4A asks it to stop -
+   0x00324ED0, the game's own request, which the update then honours: it
+   cancels the stream's read in flight, marks the movie finished, and the
+   screen goes on as at the movie's end. A press of Start (a press, not a
+   hold) asks it here, for every movie the game sits through - not one that
+   loops (+0x4B: the stream starts again at its end), which plays behind a
+   screen waiting for input. */
+void SkipMovie(lifted::Context& c) {
+    const u32 screen = u32(c.r[4]), movie = screen + 0x1C8;
+    static u16 before = 0;
+    const u16 held = ps2host::PadButtonsHeld();
+    const bool start = (held & 8u) && !(before & 8u);
+    before = held;
+    const bool playing = generated::ReadU32(screen + 0x2F8) == 0x17 && generated::ReadU8(movie + 0x48) &&
+                         !generated::ReadU8(movie + 0x49) && !generated::ReadU8(movie + 0x4A);
+    // +0x4B: it loops (the stream goes back to its start at the end) - the
+    // title screen's background, which Start is for, not to be skipped.
+    const bool loops = generated::ReadU8(movie + 0x4B) != 0;
+    static const bool log = std::getenv("PS2HOST_MOVIE_LOG") != nullptr;
+    if (log && playing) {
+        static std::set<std::tuple<u32, u32, u32>> seen;
+        const u32 vtable = generated::ReadU32(screen), which = generated::ReadU32(screen + 0x2FC);
+        if (seen.insert({screen, vtable, which}).second)
+            std::fprintf(stderr, "[movie] screen %08X class %08X movie %u: +48..4F %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                         screen, vtable, which, unsigned(generated::ReadU8(movie + 0x48)),
+                         unsigned(generated::ReadU8(movie + 0x49)), unsigned(generated::ReadU8(movie + 0x4A)),
+                         unsigned(generated::ReadU8(movie + 0x4B)), unsigned(generated::ReadU8(movie + 0x4C)),
+                         unsigned(generated::ReadU8(movie + 0x4D)), unsigned(generated::ReadU8(movie + 0x4E)),
+                         unsigned(generated::ReadU8(movie + 0x4F)));
+    }
+    if (playing && start && !loops) {
+        if (log) std::fprintf(stderr, "[movie] skipped: screen %08X movie %u\n", screen, generated::ReadU32(screen + 0x2FC));
+        generated::Write8(movie + 0x4A, 1);
+    }
+    F_001313C0(c);
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
@@ -78,4 +124,5 @@ void RegisterGameOverrides() {
     ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
+    ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
 }

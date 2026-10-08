@@ -1838,6 +1838,31 @@ only when what it reads could have changed - the command, IPU_CTRL, the
 buffer and FIFO, channel 4's registers, or the tag the chain ended on - and
 the boot movies run 1.6 times as fast.
 
+## Skipping movies
+
+Every movie the game plays goes through one screen object (0x0051A6A8 in a
+run) whose update, 0x001313C0, drives the movie at +0x1C8 while the screen's
+state (+0x2F8) is 0x17: 0x00325030 decodes and shows the next picture. The
+movie keeps its state in bytes: +0x48 while it plays, +0x49 once it has
+finished, +0x4A a stop asked for, +0x4B that it loops (at the stream's end,
+.L012 of 0x00325030, the stream goes back to its start), +0x4C that the
+stream has been read to its end. 0x00324ED0 sets +0x4A - the game's own stop:
+the update then waits out or cancels the stream's read in flight (the
+stream object at +0x6C, its methods +0x24 status and +0x0C cancel), clears
++0x48 and sets +0x49, and the screen goes on as at the movie's end.
+0x00130C70 and 0x00131100 ask for it and run the update until it is done;
+the intro's Start skip is one of their callers. The logos, the credits and
+the RACE TRAINING tutorial have none: nothing skips them.
+
+The port's override of 0x001313C0 (port/overrides.cpp) asks for the stop
+when Start is pressed (a press, not a hold) while a movie plays that does not
+loop. The movies of a run, by the number at the screen's +0x2FC: 2 the EA
+logo, 9 the Criterion and RenderWare logos, 0 the intro, 26 the title
+screen's background (it loops, and Start is for the title screen), 19 RACE
+TRAINING. Skipping the tutorial goes on to the race's loading screen and
+the race as its end does. `PS2HOST_MOVIE_LOG=1` prints each movie as it
+starts and each skip.
+
 ## cvt.w.s saturates
 
 The EE's float-to-word conversion truncates toward zero below 2^31 in

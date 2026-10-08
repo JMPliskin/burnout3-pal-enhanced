@@ -232,6 +232,10 @@ struct HostPadState {
 bool HostPad(HostPadState* state);
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
+/* The DualShock 2's buttons as the game last read them (bit n: input n held,
+   libpad's order - 3 is Start): the keyboard, the game controller and
+   --press together. For hooks that act on a button as the game would. */
+u16 PadButtonsHeld();
 /* --press: hold `button` (cross, start, up, ...) for 6 frames from `frame`. */
 bool ScriptPress(const std::string& button, u64 from, u64 to);
 /* Real time: vertical blanks that came while the last was still undelivered (threads.cpp). */

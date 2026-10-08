@@ -98,6 +98,7 @@ std::vector<Press>& Script() {
     return presses;
 }
 u64 g_frame = 0;
+u16 g_held = 0;                     // PadButtonsHeld
 
 void PadData(u8* data) {
     u16 buttons = 0xFFFF;                                   // active low: nothing pressed
@@ -108,6 +109,7 @@ void PadData(u8* data) {
     HostPadState pad;
     const bool controller = HostPad(&pad);
     buttons &= u16(~pad.buttons);
+    g_held = u16(~buttons);
     data[0] = u8(buttons);
     data[1] = u8(buttons >> 8);
     // Then, as libpad's DualShock 2 report has them: the sticks (right X, Y,
@@ -227,5 +229,7 @@ void DbcFrame() {
 }
 
 void InstallDbc() { RegisterRpcServer(0x80001300u, Server); }
+
+u16 PadButtonsHeld() { return g_held; }
 
 }  // namespace ps2host
