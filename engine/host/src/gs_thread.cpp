@@ -17,6 +17,7 @@
  * thread at its next call here.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -291,10 +292,36 @@ void GsWords(int path, const u32* words, u32 count, u32 from) {
 
 void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std::move(handler); }
 
+namespace {
+// When the EE ended each of the last frames (GsFrame), by frame number.
+std::atomic<u64> g_frame_ended[256];
+}  // namespace
+
+u64 FrameEndedNs(u64 frame) { return g_frame_ended[frame & 255].load(std::memory_order_relaxed); }
+
+u64 FrameDue(u64 frame) {
+    // The delay each frame came with, the longest of the last 30 the one
+    // every frame keeps to (and half a millisecond more), so frames go out
+    // a frame's period apart however much each took on its way; never more
+    // than a period and a half behind - a frame later than that goes at once.
+    static u64 delays[30] = {};
+    static int next = 0;
+    const u64 ended = FrameEndedNs(frame);
+    const u64 now = ClockNs();
+    if (!ended || now < ended) return now;
+    delays[next] = now - ended;
+    next = (next + 1) % 30;
+    u64 keep = 0;
+    for (u64 d : delays) keep = std::max(keep, d);
+    keep = std::min<u64>(keep + 500'000, 25'000'000);
+    return std::max(now, ended + keep);
+}
+
 u64 GsBusyMicroseconds() { return g_gs_busy_us.load(std::memory_order_relaxed); }
 
 bool GsFrame(u64 frame) {
     if (!g_frame_handler) return false;
+    if (!OnVif1Worker()) g_frame_ended[frame & 255].store(ClockNs(), std::memory_order_relaxed);
     if (Vif1Async() && !OnVif1Worker()) {
         Vif1RunFrame([frame] { GsFrame(frame); });
         return true;

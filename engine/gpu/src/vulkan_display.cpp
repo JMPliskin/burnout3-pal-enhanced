@@ -19,8 +19,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace ps2gpu {
@@ -33,9 +38,12 @@ public:
     bool Init(const char* title, int width, int height);
     bool Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) override;
     bool PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) override;
+    bool PresentImageAt(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height,
+                        std::uint64_t due_ns) override;
     bool Pump() override;
     void SetFullscreen(bool on) override;
     bool Fullscreen() const override;
+    Pacing TakePacing() override;
     bool Focused() const override;
     bool KeyDown(int scancode) const override;
     bool Pad(PadState* state) const override;
@@ -50,6 +58,11 @@ private:
     bool EnsurePicture(std::uint32_t width, std::uint32_t height);
     void DestroyPicture();
     std::uint32_t FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wanted) const;
+    // PresentImageAt's: pictures copied and waiting, and the thread that
+    // shows them when they are due.
+    bool EnsurePaced(std::uint32_t width, std::uint32_t height);
+    void DestroyPaced();
+    void PresentLoop();
 
     SDL_Window* window_ = nullptr;
     SDL_Gamepad* gamepad_ = nullptr;        // the first controller plugged in
@@ -100,6 +113,31 @@ private:
     bool Submit(std::uint32_t index);
     bool dual_source_ = false;
     std::string describe_, error_;
+    // PresentImageAt's pictures: copies of the frames' targets, three, each
+    // its copy's command buffer and fence (the GS thread's own pool).
+    static constexpr int kPaced = 3;
+    struct PacedPicture {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkCommandBuffer copy = VK_NULL_HANDLE;
+        VkFence copied = VK_NULL_HANDLE;
+        std::uint32_t width = 0, height = 0;
+        std::uint64_t due_ns = 0;
+    };
+    PacedPicture paced_[kPaced];
+    std::uint32_t paced_width_ = 0, paced_height_ = 0;
+    VkCommandPool copy_pool_ = VK_NULL_HANDLE;
+    std::mutex paced_lock_;                 // newest_, taken_, stop_
+    std::condition_variable paced_wake_;
+    int newest_ = -1, taken_ = -1;          // the picture to show next; the one being shown
+    bool stop_ = false;
+    std::thread present_thread_;
+    std::mutex present_lock_;               // the swapchain and cmds_: the present thread, or Present
+    // Present times (TakePacing): intervals since the last take.
+    std::mutex pacing_lock_;
+    std::chrono::steady_clock::time_point last_present_{};
+    std::uint64_t presents_ = 0;
+    double interval_sum_ = 0, interval_squares_ = 0, interval_longest_ = 0;
     std::unique_ptr<VulkanGpu> shared_;
 };
 
@@ -317,7 +355,10 @@ bool VulkanDisplay::CreateSwapchain() {
 
 void VulkanDisplay::DestroySwapchain() {
     if (!device_) return;
-    vkDeviceWaitIdle(device_);
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        vkDeviceWaitIdle(device_);
+    }
     for (VkSemaphore s : rendered_) vkDestroySemaphore(device_, s, nullptr);
     rendered_.clear();
     images_.clear();
@@ -349,7 +390,10 @@ void VulkanDisplay::DestroyPicture() {
 
 bool VulkanDisplay::EnsurePicture(std::uint32_t width, std::uint32_t height) {
     if (width == picture_width_ && height == picture_height_ && picture_) return true;
-    vkDeviceWaitIdle(device_);
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        vkDeviceWaitIdle(device_);
+    }
     DestroyPicture();
     const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -465,6 +509,7 @@ bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint
 
 bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, std::uint32_t height) {
     if (!width || !height) return !closed_;
+    std::lock_guard<std::mutex> hold(present_lock_);
     std::uint32_t index = 0;
     bool ok = true;
     if (!BeginPresent(&index, &ok)) return ok;
@@ -492,6 +537,7 @@ bool VulkanDisplay::Present(const std::uint32_t* pixels, std::uint32_t width, st
 
 bool VulkanDisplay::PresentImage(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height) {
     if (!width || !height || !image) return !closed_;
+    std::lock_guard<std::mutex> hold(present_lock_);
     std::uint32_t index = 0;
     bool ok = true;
     if (!BeginPresent(&index, &ok)) return ok;
@@ -508,6 +554,168 @@ bool VulkanDisplay::PresentImage(std::uint64_t image, int layout, std::uint32_t 
     return Submit(index);
 }
 
+bool VulkanDisplay::EnsurePaced(std::uint32_t width, std::uint32_t height) {
+    if (width == paced_width_ && height == paced_height_ && paced_[0].image) return true;
+    {
+        std::unique_lock<std::mutex> hold(paced_lock_);
+        newest_ = -1;
+        paced_wake_.wait(hold, [&] { return taken_ < 0; });   // none being shown
+    }
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        vkDeviceWaitIdle(device_);
+    }
+    DestroyPaced();
+    if (!copy_pool_) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pci.queueFamilyIndex = family_;
+        if (!Check(vkCreateCommandPool(device_, &pci, nullptr, &copy_pool_), "vkCreateCommandPool")) return false;
+    }
+    for (PacedPicture& p : paced_) {
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_B8G8R8A8_UNORM;
+        ici.extent = {width, height, 1};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!Check(vkCreateImage(device_, &ici, nullptr, &p.image), "vkCreateImage (paced)")) return false;
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(device_, p.image, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (!Check(vkAllocateMemory(device_, &mai, nullptr, &p.memory), "vkAllocateMemory (paced)")) return false;
+        vkBindImageMemory(device_, p.image, p.memory, 0);
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cai.commandPool = copy_pool_;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        if (!Check(vkAllocateCommandBuffers(device_, &cai, &p.copy), "vkAllocateCommandBuffers (paced)")) return false;
+        VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        if (!Check(vkCreateFence(device_, &fci, nullptr, &p.copied), "vkCreateFence (paced)")) return false;
+    }
+    paced_width_ = width;
+    paced_height_ = height;
+    if (!present_thread_.joinable()) present_thread_ = std::thread([this] { PresentLoop(); });
+    return true;
+}
+
+void VulkanDisplay::DestroyPaced() {
+    if (!device_) return;
+    for (PacedPicture& p : paced_) {
+        if (p.copied) vkDestroyFence(device_, p.copied, nullptr);
+        if (p.copy) vkFreeCommandBuffers(device_, copy_pool_, 1, &p.copy);
+        if (p.image) vkDestroyImage(device_, p.image, nullptr);
+        if (p.memory) vkFreeMemory(device_, p.memory, nullptr);
+        p = PacedPicture{};
+    }
+    paced_width_ = paced_height_ = 0;
+}
+
+bool VulkanDisplay::PresentImageAt(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height,
+                                   std::uint64_t due_ns) {
+    if (!width || !height || !image) return !closed_;
+    if (closed_) return false;
+    if (!EnsurePaced(width, height)) return false;
+    // A picture neither waiting to be shown nor being shown: what the GPU
+    // still reads of it (an earlier present's blit, submitted before) goes
+    // first, by the queue's order and the copy's barrier.
+    int slot = 0;
+    {
+        std::lock_guard<std::mutex> hold(paced_lock_);
+        while (slot == newest_ || slot == taken_) ++slot;
+    }
+    PacedPicture& p = paced_[slot];
+    vkWaitForFences(device_, 1, &p.copied, VK_TRUE, UINT64_MAX);    // its command buffer, from last time
+    vkResetFences(device_, 1, &p.copied);
+    vkResetCommandBuffer(p.copy, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(p.copy, &begin);
+    const VkImage source = reinterpret_cast<VkImage>(image);
+    const VkImageLayout kept = VkImageLayout(layout);
+    Barrier(p.copy, source, kept, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    Barrier(p.copy, p.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = {width, height, 1};
+    vkCmdCopyImage(p.copy, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region);
+    Barrier(p.copy, p.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    Barrier(p.copy, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, kept, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    vkEndCommandBuffer(p.copy);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &p.copy;
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        if (!Check(vkQueueSubmit(queue_, 1, &submit, p.copied), "vkQueueSubmit (paced)")) return false;
+    }
+    p.width = width;
+    p.height = height;
+    p.due_ns = due_ns;
+    {
+        std::lock_guard<std::mutex> hold(paced_lock_);
+        newest_ = slot;
+    }
+    paced_wake_.notify_all();
+    return !closed_;
+}
+
+void VulkanDisplay::PresentLoop() {
+    using Clock = std::chrono::steady_clock;
+    for (;;) {
+        int slot;
+        {
+            std::unique_lock<std::mutex> hold(paced_lock_);
+            paced_wake_.wait(hold, [&] { return stop_ || newest_ >= 0; });
+            if (stop_) return;
+            slot = newest_;
+        }
+        // Until it is due (a newer picture coming meanwhile takes its place).
+        const Clock::time_point due = std::min(Clock::time_point{std::chrono::nanoseconds(paced_[slot].due_ns)},
+                                               Clock::now() + std::chrono::milliseconds(50));
+        if (Clock::now() + std::chrono::milliseconds(2) < due)
+            std::this_thread::sleep_until(due - std::chrono::milliseconds(1));
+        while (Clock::now() < due) std::this_thread::yield();
+        {
+            std::lock_guard<std::mutex> hold(paced_lock_);
+            if (stop_) return;
+            if (newest_ < 0) continue;
+            slot = newest_;
+            newest_ = -1;
+            taken_ = slot;
+        }
+        {
+            std::lock_guard<std::mutex> hold(present_lock_);
+            std::uint32_t index = 0;
+            bool ok = true;
+            if (BeginPresent(&index, &ok)) {
+                FinishPresent(index, paced_[slot].image, paced_[slot].width, paced_[slot].height);
+                Submit(index);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> hold(paced_lock_);
+            taken_ = -1;
+        }
+        paced_wake_.notify_all();
+    }
+}
+
 bool VulkanDisplay::Submit(std::uint32_t index) {
     vkEndCommandBuffer(cmd_);
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -519,17 +727,47 @@ bool VulkanDisplay::Submit(std::uint32_t index) {
     submit.pCommandBuffers = &cmd_;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &rendered_[index];
-    if (!Check(vkQueueSubmit(queue_, 1, &submit, fence_), "vkQueueSubmit")) return false;
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
     present.pWaitSemaphores = &rendered_[index];
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &index;
-    const VkResult r = vkQueuePresentKHR(queue_, &present);
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        if (!Check(vkQueueSubmit(queue_, 1, &submit, fence_), "vkQueueSubmit")) return false;
+        r = vkQueuePresentKHR(queue_, &present);
+    }
+    {
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> hold(pacing_lock_);
+        if (last_present_.time_since_epoch().count()) {
+            const double ms = std::chrono::duration<double, std::milli>(now - last_present_).count();
+            ++presents_;
+            interval_sum_ += ms;
+            interval_squares_ += ms * ms;
+            interval_longest_ = std::max(interval_longest_, ms);
+        }
+        last_present_ = now;
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) stale_ = true;
     else if (!Check(r, "vkQueuePresentKHR")) return false;
     return true;
+}
+
+Display::Pacing VulkanDisplay::TakePacing() {
+    std::lock_guard<std::mutex> hold(pacing_lock_);
+    Pacing p;
+    p.presents = presents_;
+    if (presents_) {
+        p.mean_ms = interval_sum_ / double(presents_);
+        p.jitter_ms = std::sqrt(std::max(0.0, interval_squares_ / double(presents_) - p.mean_ms * p.mean_ms));
+        p.longest_ms = interval_longest_;
+    }
+    presents_ = 0;
+    interval_sum_ = interval_squares_ = interval_longest_ = 0;
+    return p;
 }
 
 void VulkanDisplay::SetFullscreen(bool on) {
@@ -609,8 +847,16 @@ bool VulkanDisplay::KeyDown(int scancode) const {
 }
 
 VulkanDisplay::~VulkanDisplay() {
+    {
+        std::lock_guard<std::mutex> hold(paced_lock_);
+        stop_ = true;
+    }
+    paced_wake_.notify_all();
+    if (present_thread_.joinable()) present_thread_.join();
     shared_.reset();
     if (device_) vkDeviceWaitIdle(device_);
+    DestroyPaced();
+    if (copy_pool_) vkDestroyCommandPool(device_, copy_pool_, nullptr);
     DestroyPicture();
     DestroySwapchain();
     if (device_) {

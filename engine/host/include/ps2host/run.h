@@ -200,6 +200,14 @@ u64 Vif1BusyMicroseconds();
    empty, for it to catch up a frame, for room in the queue. */
 void Vif1WaitMicroseconds(u64* join, u64* frame, u64* full);
 bool GsFrame(u64 frame);
+/* When the EE ended frame `frame` (GsFrame; ClockNs), 0 if not known. */
+u64 FrameEndedNs(u64 frame);
+/* On the GS thread, as frame `frame` is finished (real time): when it should
+   be shown (ClockNs) so frames reach the screen evenly spaced - each the
+   same time after the EE ended it, the longest delay of the last few -
+   rather than as each happened to come through VIF1's worker and the GS
+   thread. The display's own thread waits for it (Display::PresentImageAt). */
+u64 FrameDue(u64 frame);
 /* How long the GS thread has worked, in all (microseconds). */
 u64 GsBusyMicroseconds();
 /* How long the GPU has worked on what --gpu handed it, in all (microseconds;

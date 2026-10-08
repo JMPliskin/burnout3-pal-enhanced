@@ -33,6 +33,9 @@
 #include <string>
 
 #include "ps2host/dma.h"
+#ifdef PS2HOST_VULKAN
+#include "ps2gpu/display.h"
+#endif
 #include "ps2host/gs.h"
 #include "ps2host/ipu.h"
 #include "ps2host/memory.h"
@@ -339,7 +342,7 @@ void FrameTimes(u64 frame) {
     const u64 gs_us = GsBusyMicroseconds();
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
-    char job_text[256] = "";
+    char job_text[512] = "";
     if (seconds > 0)
         std::snprintf(job_text, sizeof job_text, "%s, GS thread busy %d%%",
                       worker_us != last_worker_us
@@ -371,6 +374,17 @@ void FrameTimes(u64 frame) {
                       int(100.0 * double(gpu_us - last_gpu_us) / 1e6 / seconds + 0.5));
     }
     last_gpu_us = gpu_us;
+#ifdef PS2HOST_VULKAN
+    if (ps2gpu::Display* display = WindowDisplay()) {
+        const ps2gpu::Display::Pacing p = display->TakePacing();
+        if (p.presents && seconds > 0) {
+            const std::size_t used = std::strlen(job_text);
+            std::snprintf(job_text + used, sizeof job_text - used,
+                          ", presents %.1f/s every %.2f ms (jitter %.2f, longest %.1f)", double(p.presents) / seconds,
+                          p.mean_ms, p.jitter_ms, p.longest_ms);
+        }
+    }
+#endif
     static u64 last_guesses = 0;
     u64 guesses = 0, wrong = 0;
     Vif1Guesses(&guesses, &wrong);

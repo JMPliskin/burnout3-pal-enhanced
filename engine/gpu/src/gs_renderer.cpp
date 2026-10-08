@@ -1720,7 +1720,10 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
 
 VulkanGsRenderer::~VulkanGsRenderer() {
     g_.Submit();
-    vkDeviceWaitIdle(g_.device);
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        vkDeviceWaitIdle(g_.device);
+    }
     for (auto& [key, t] : targets_) DestroyImage(t);
     for (auto& [key, d] : depths_) DestroyImage(d);
     for (auto& [key, texture] : textures_) DestroyImage(texture.image);

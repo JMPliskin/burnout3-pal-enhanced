@@ -61,6 +61,7 @@
 #include "ps2host/gs.h"
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 
 #if PS2HOST_VULKAN
 #include "ps2gpu/display.h"
@@ -1295,7 +1296,7 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
 
 /* The displayed buffer to the window from the GPU's target (the software
    picture where the GPU has none), on the thread the GS runs on. */
-void PresentGpuPicture(ps2gpu::Display& display) {
+void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
     u32 fbp = 0, fbw = 0, psm = 0;
     if (g_bridge && gs::TheGs().Displayed(&fbp, &fbw, &psm)) {
         auto found = g_bridge->owned.find(std::make_tuple(fbp, fbw, psm, false));
@@ -1304,7 +1305,8 @@ void PresentGpuPicture(ps2gpu::Display& display) {
         u32 w = 0, h = 0;
         if (found != g_bridge->owned.end() && !found->second.stale &&
             g_bridge->renderer->DisplayTarget(fbp, fbw, psm, &image, &layout, &w, &h)) {
-            display.PresentImage(image, layout, std::min(w, 640u), std::min(h, 448u));
+            if (due_ns) display.PresentImageAt(image, layout, std::min(w, 640u), std::min(h, 448u), due_ns);
+            else display.PresentImage(image, layout, std::min(w, 640u), std::min(h, 448u));
             return;
         }
     }
@@ -1374,7 +1376,10 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
         // displayed target (no read-back); the EE goes on meanwhile.
         SetGsFrameHandler([](u64 frame) {
             GpuShadowFrame(frame, std::string());
-            if (ps2gpu::Display* display = WindowDisplay()) PresentGpuPicture(*display);
+            if (ps2gpu::Display* display = WindowDisplay()) {
+                static const bool pace = !VirtualClock() && SettingOn("frame_pacing", true);
+                PresentGpuPicture(*display, pace ? FrameDue(frame) : 0);
+            }
         });
     }
     std::fprintf(stderr, "gpu: drawing on %s %s\n", device->Describe().c_str(),

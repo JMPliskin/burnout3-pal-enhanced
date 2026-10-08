@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +20,10 @@ namespace ps2gpu {
 /* SubmitStats: submissions, the time spent waiting for the GPU, and what
    waited (a read-back of which kind, a resize, a full ring). */
 inline std::uint64_t g_submits = 0;
+/* The one queue the renderer and the display share: Vulkan wants its
+   submissions, presents and the device's wait-idle from one thread at a
+   time, and the display presents from a thread of its own. */
+inline std::mutex g_queue_lock;
 inline double g_wait_seconds = 0;
 /* The GPU's time on the command buffers handed over, in all (timestamps at
    each one's start and end; GpuBusyNanoseconds). */
@@ -170,7 +175,11 @@ inline bool VulkanGpu::Flush() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
     vkResetFences(device, 1, &fences[current_]);
-    const bool ok = vkQueueSubmit(queue, 1, &submit, fences[current_]) == VK_SUCCESS;
+    bool ok;
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        ok = vkQueueSubmit(queue, 1, &submit, fences[current_]) == VK_SUCCESS;
+    }
     ++g_submits;
     in_flight_[current_] = ok;
     slot_done_[current_].swap(after_submit_);

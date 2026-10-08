@@ -36,9 +36,27 @@ public:
         return false;
     }
 
+    /* PresentImage, the picture shown at `due` (a steady_clock time, in
+       nanoseconds since its epoch) rather than now: the image is copied at
+       once (it may be drawn over next), and a thread of the display's shows
+       it then - so pictures reach the screen evenly however unevenly they
+       were finished. The newest picture wins: one not yet shown when the
+       next comes is never shown. */
+    virtual bool PresentImageAt(std::uint64_t image, int layout, std::uint32_t width, std::uint32_t height,
+                                std::uint64_t due_ns) {
+        (void)due_ns;
+        return PresentImage(image, layout, width, height);
+    }
+
     /* Handles the window's events; false once it has been closed. Alt+Enter
        toggles fullscreen. */
     virtual bool Pump() = 0;
+
+    /* How evenly pictures went to the screen since the last call (--frame-times):
+       presents, and the time between them - mean, standard deviation and
+       longest, in milliseconds. */
+    struct Pacing { std::uint64_t presents = 0; double mean_ms = 0, jitter_ms = 0, longest_ms = 0; };
+    virtual Pacing TakePacing() { return {}; }
 
     /* Fullscreen (borderless, the desktop's resolution) or a window. */
     virtual void SetFullscreen(bool on) { (void)on; }

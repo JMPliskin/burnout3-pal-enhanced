@@ -175,7 +175,10 @@ std::uint32_t VulkanGpu::FindMemory(std::uint32_t bits, VkMemoryPropertyFlags wa
 
 VulkanGpu::~VulkanGpu() {
     if (device) {
-        vkDeviceWaitIdle(device);
+        {
+            std::lock_guard<std::mutex> hold(g_queue_lock);
+            vkDeviceWaitIdle(device);
+        }
         for (VkFence f : fences)
             if (f) vkDestroyFence(device, f, nullptr);
         if (timestamps_) vkDestroyQueryPool(device, timestamps_, nullptr);
