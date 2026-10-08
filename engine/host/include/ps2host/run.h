@@ -166,9 +166,25 @@ void Vif1Run(std::function<void()> command);
 /* Vif1Run for a frame's end: the EE waits while the worker is two frames
    behind. */
 void Vif1RunFrame(std::function<void()> command);
-void JoinVif1();
+/* `why` and `address` name the wait for PS2HOST_JOIN_LOG. */
+void JoinVif1(const char* why = nullptr, u32 address = 0);
+/* GIF_STAT read while the worker has work (memory.cpp): what it will hold
+   once the worker has run what is queued, as the EE can tell (devices.cpp),
+   checked on the worker in turn; false when it cannot tell, and the read
+   waits. Vif1Settled: a read with the queue run (the EE's). */
+bool Vif1Guessable(u32 address, u32 size);
+bool Vif1Guess(u32 address, u32* value);
+void Vif1Settled(u32 address, u32 value);
+/* Guesses made, and those found wrong. */
+void Vif1Guesses(u64* guesses, u64* wrong);
+/* --check-guesses (virtual time): every status read compared with the guess
+   real time would have made, as if the worker were always behind. */
+void SetCheckGuesses(bool on);
 /* How long the worker has worked, in all (microseconds). */
 u64 Vif1BusyMicroseconds();
+/* How long the EE has waited for it, in all (microseconds): for its queue to
+   empty, for it to catch up a frame, for room in the queue. */
+void Vif1WaitMicroseconds(u64* join, u64* frame, u64* full);
 bool GsFrame(u64 frame);
 /* How long the GS thread has worked, in all (microseconds). */
 u64 GsBusyMicroseconds();

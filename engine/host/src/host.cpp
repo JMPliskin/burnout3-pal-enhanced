@@ -391,6 +391,7 @@ int Run(const Options& options) {
     GuestMemory().WatchWrites(options.watch_writes);
     InstallCrashReport();
     SetVif1Worker(!options.vif1_sync);
+    SetCheckGuesses(options.check_guesses);
     if (options.window) OpenWindow(L"PS2 port", 1280, 896);
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
@@ -499,6 +500,7 @@ int Main(int argc, char** argv) {
         else if (arg == "--sample-gs") options.sample = options.sample_gs = true;
         else if (arg == "--sample-vif1") options.sample = options.sample_vif1 = true;
         else if (arg == "--vif1-sync") options.vif1_sync = true;
+        else if (arg == "--check-guesses") options.check_guesses = true;
         else if (arg == "--sample-from" && i + 1 < argc) {
             options.sample = true;
             options.sample_from = std::stoll(argv[++i]);

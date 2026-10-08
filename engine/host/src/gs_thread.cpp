@@ -57,7 +57,7 @@ std::function<void(u64)> g_frame_handler;
 // registers, frame ends), or waits for the queue to empty first.
 struct Producing {
     Producing() {
-        if (Vif1Async() && !OnVif1Worker()) JoinVif1();
+        if (Vif1Async() && !OnVif1Worker()) JoinVif1("producing");
     }
 };
 
@@ -247,7 +247,7 @@ void StopGsThread() {
 }
 
 void SyncGs() {
-    JoinVif1();
+    JoinVif1("syncgs");
     if (g_feed) g_feed->Sync();
 }
 

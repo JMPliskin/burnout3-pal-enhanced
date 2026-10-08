@@ -90,6 +90,7 @@ struct Options {
     long long sample_from = 0;     /* ...from this frame on (--sample-from) */
     bool sample_gs = false;        /* ...on the GS thread (--sample-gs) */
     bool sample_vif1 = false;      /* ...on VIF1's worker (--sample-vif1) */
+    bool check_guesses = false;    /* --check-guesses: GIF_STAT guesses checked (virtual time) */
     bool vif1_sync = false;        /* --vif1-sync: VIF1 on the EE's thread in real time too */
     std::string vu_record;         /* --vu-record: the microprograms run, for vurecomp.py */
     bool vu_interpret = false;     /* --vu-interpret: no compiled microprograms */

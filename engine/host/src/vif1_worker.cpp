@@ -27,10 +27,14 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "ps2host/profile.h"
@@ -88,6 +92,19 @@ struct Worker {
 
 Worker* g_worker = nullptr;
 
+// --frame-times: the EE's time waiting for the worker - for the queue to
+// empty (JoinVif1), for it to come within kFramesBehind frames, for room.
+std::atomic<u64> g_join_us{0}, g_frame_wait_us{0}, g_full_us{0};
+
+struct Waited {
+    std::atomic<u64>& total;
+    std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
+    ~Waited() {
+        total += u64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began)
+                         .count());
+    }
+};
+
 Worker& TheWorker() {
     static Worker worker;
     return worker;
@@ -128,6 +145,12 @@ bool Vif1Busy() { return g_worker && g_worker->pending.load(std::memory_order_ac
 
 u64 Vif1BusyMicroseconds() { return g_worker ? g_worker->busy_us.load() : 0; }
 
+void Vif1WaitMicroseconds(u64* join, u64* frame, u64* full) {
+    *join = g_join_us.load();
+    *frame = g_frame_wait_us.load();
+    *full = g_full_us.load();
+}
+
 void Vif1Run(std::function<void()> command) {
     if (!g_worker || t_on_worker) {
         command();
@@ -137,6 +160,7 @@ void Vif1Run(std::function<void()> command) {
     std::unique_lock<std::mutex> lock(w.mutex);
     if (w.pending.load() >= kMaxQueued) {
         Timed timed(Section::GsWait);
+        Waited waited{g_full_us};
         w.drained.wait(lock, [&] { return w.pending.load() < kMaxQueued / 2; });
     }
     ++w.pending;
@@ -157,6 +181,7 @@ void Vif1RunFrame(std::function<void()> command) {
     constexpr int kFramesBehind = 2;
     if (w.frames.load() >= kFramesBehind) {
         Timed timed(Section::GsWait);
+        Waited waited{g_frame_wait_us};
         std::unique_lock<std::mutex> lock(w.mutex);
         w.drained.wait(lock, [&] { return w.frames.load() < kFramesBehind; });
     }
@@ -167,13 +192,44 @@ void Vif1RunFrame(std::function<void()> command) {
     });
 }
 
-void JoinVif1() {
+namespace {
+
+// PS2HOST_JOIN_LOG: the EE's waits for the worker by what waited (a memory
+// read or write by its address), at exit - where to look when --frame-times
+// shows the EE waiting.
+std::mutex g_join_log_mutex;
+std::map<std::pair<std::string, u32>, std::pair<u64, u64>> g_join_log;     // joins, microseconds
+
+void LogJoin(const char* why, u32 address, u64 us) {
+    std::lock_guard<std::mutex> lock(g_join_log_mutex);
+    if (g_join_log.empty())
+        std::atexit([] {
+            for (const auto& [key, joins] : g_join_log)
+                std::fprintf(stderr, "[join] %s %08X: %llu joins, %llu us\n", key.first.c_str(), unsigned(key.second),
+                             (unsigned long long)joins.first, (unsigned long long)joins.second);
+        });
+    auto& joins = g_join_log[{why ? why : "?", address}];
+    ++joins.first;
+    joins.second += us;
+}
+
+}  // namespace
+
+void JoinVif1(const char* why, u32 address) {
     if (!g_worker || t_on_worker) return;
     Worker& w = *g_worker;
     if (w.pending.load(std::memory_order_acquire) != 0) {
         Timed timed(Section::GsWait);
-        std::unique_lock<std::mutex> lock(w.mutex);
-        w.drained.wait(lock, [&] { return w.pending.load() == 0; });
+        const auto began = std::chrono::steady_clock::now();
+        {
+            std::unique_lock<std::mutex> lock(w.mutex);
+            w.drained.wait(lock, [&] { return w.pending.load() == 0; });
+        }
+        const u64 us = u64(std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - began).count());
+        g_join_us += us;
+        static const bool log = std::getenv("PS2HOST_JOIN_LOG") != nullptr;
+        if (log) LogJoin(why, address, us);
     }
     Rethrow(w);
 }

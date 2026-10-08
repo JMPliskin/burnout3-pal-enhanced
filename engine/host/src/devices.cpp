@@ -23,6 +23,8 @@
  */
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -161,6 +163,45 @@ std::string Scratchpad(const Channel& ch, u32 chcr, bool describe) {
     return text;
 }
 
+// GIF_STAT as VIF1's worker will leave it, worked out on the EE's thread, so
+// a read need not wait for the worker (Vif1Guess). Burnout 3 starts each
+// display-list packet by waiting for VIF1, VU1 and the GIF to be idle; with
+// its transfers ending as they start, every wait was the EE waiting for all
+// the worker had - ~15% of the EE's time at a race's start, the pictures it
+// missed. Only the worker changes GIF_STAT: VIF1's MSKPATH3 (from the FIFO or
+// a transfer) and a GIF transfer held behind the mask filling the FIFO. The
+// EE follows the FIFO's commands and the GIF transfers itself, and takes a
+// VIF1 transfer to leave GIF_STAT as the one before it left it. Each guess
+// is checked on the worker, in turn; a wrong one ends guessing.
+struct GifShadow {
+    bool known = false;
+    u32 value = 0;
+};
+GifShadow g_gif_shadow;                         // the EE's
+std::atomic<u32> g_gif_after_vif1{0};           // the worker's: GIF_STAT as the last VIF1 transfer left it
+std::atomic<bool> g_gif_after_known{false};
+// The EE's: the register last answered by a guess, nothing it follows
+// queued since - read again, the game is waiting for it to change.
+u32 g_guessed_last = 0;
+std::atomic<u64> g_guesses{0}, g_wrong{0};
+std::atomic<bool> g_guessing_off{false};
+bool g_check_guesses = false;
+
+bool Shadowing() { return g_check_guesses || Vif1Async(); }
+
+// With nothing queued, GIF_STAT is what memory holds (a check takes the
+// worker to be always behind: only its guesses count).
+void GifShadowFromMemory() {
+    if (!g_check_guesses && !Vif1Busy()) g_gif_shadow = {true, *Register(kGifStat)};
+}
+
+void ShadowMask(bool masked) {
+    u32& v = g_gif_shadow.value;
+    v = masked ? (v | kGifStatM3P) : (v & ~(kGifStatM3P | kGifStatFqc));
+}
+
+u32 HeldInFifo(u64 quadwords) { return quadwords < kGifFifoDepth ? u32(quadwords) : kGifFifoDepth; }
+
 // Walks a started transfer and leaves the registers as it would; returns a
 // note (when `describe`: a transfer is noted only the first time).
 std::string Walk(const Channel& ch, u32 chcr, bool describe) {
@@ -199,16 +240,28 @@ std::string Walk(const Channel& ch, u32 chcr, bool describe) {
             std::snprintf(text, sizeof text, "%llu quadwords, %u tags%s",
                       static_cast<unsigned long long>(outcome.quadwords), outcome.tags,
                       outcome.ended ? "" : ", stopped: the chain does not end");
-        const bool gif = ch.base == 0x1000A000u;
+        const bool gif = ch.base == 0x1000A000u, vif1 = ch.base == 0x10009000u;
         const u64 quadwords = outcome.quadwords;
         auto fifo = [gif, quadwords] {
-            if (gif && (*Register(kGifStat) & kGifStatM3P)) {
-                const u32 held = quadwords < kGifFifoDepth ? u32(quadwords) : kGifFifoDepth;
-                *Register(kGifStat) = (*Register(kGifStat) & ~kGifStatFqc) | (held << kGifStatFqcShift);
-            }
+            if (gif && (*Register(kGifStat) & kGifStatM3P))
+                *Register(kGifStat) = (*Register(kGifStat) & ~kGifStatFqc) | (HeldInFifo(quadwords) << kGifStatFqcShift);
         };
+        auto learn = [vif1] {
+            if (!vif1) return;
+            g_gif_after_vif1 = *Register(kGifStat);
+            g_gif_after_known = true;
+        };
+        if (Shadowing() && (gif || vif1)) {
+            GifShadowFromMemory();
+            g_guessed_last = 0;             // a read from here on asks again
+            if (vif1) {
+                g_gif_shadow = {g_gif_after_known.load(), g_gif_after_vif1.load()};
+            } else if (g_gif_shadow.known && (g_gif_shadow.value & kGifStatM3P)) {
+                g_gif_shadow.value = (g_gif_shadow.value & ~kGifStatFqc) | (HeldInFifo(quadwords) << kGifStatFqcShift);
+            }
+        }
         if (queued) {
-            Vif1Run([copy, gif, fifo] {
+            Vif1Run([copy, gif, fifo, learn] {
                 const u32* at = copy->words.data();
                 for (const auto& [count, from] : copy->runs) {
                     if (gif) Path3(at, count, from);
@@ -216,9 +269,11 @@ std::string Walk(const Channel& ch, u32 chcr, bool describe) {
                     at += count;
                 }
                 fifo();
+                learn();
             });
         } else {
             fifo();
+            learn();
         }
     } catch (const MemoryFault& fault) {
         std::snprintf(text, sizeof text, "stopped: read outside memory at 0x%08X", unsigned(fault.address));
@@ -284,7 +339,7 @@ void FrameTimes(u64 frame) {
     const u64 gs_us = GsBusyMicroseconds();
     const Clock::time_point now = Clock::now();
     const double seconds = std::chrono::duration<double>(now - last).count();
-    char job_text[96] = "";
+    char job_text[256] = "";
     if (seconds > 0)
         std::snprintf(job_text, sizeof job_text, "%s, GS thread busy %d%%",
                       worker_us != last_worker_us
@@ -295,6 +350,28 @@ void FrameTimes(u64 frame) {
                       int(100.0 * double(gs_us - last_gs_us) / 1e6 / seconds + 0.5));
     last_worker_us = worker_us;
     last_gs_us = gs_us;
+    // The EE's waits for the worker, when it waited at all.
+    static u64 last_join = 0, last_behind = 0, last_full = 0;
+    u64 join = 0, behind = 0, full = 0;
+    Vif1WaitMicroseconds(&join, &behind, &full);
+    if (seconds > 0 && (join != last_join || behind != last_behind || full != last_full)) {
+        const auto share = [&](u64 us) { return int(100.0 * double(us) / 1e6 / seconds + 0.5); };
+        const std::size_t used = std::strlen(job_text);
+        std::snprintf(job_text + used, sizeof job_text - used, ", EE waiting: joins %d%%, frames %d%%, room %d%%",
+                      share(join - last_join), share(behind - last_behind), share(full - last_full));
+    }
+    last_join = join;
+    last_behind = behind;
+    last_full = full;
+    static u64 last_guesses = 0;
+    u64 guesses = 0, wrong = 0;
+    Vif1Guesses(&guesses, &wrong);
+    if (guesses != last_guesses) {
+        const std::size_t used = std::strlen(job_text);
+        std::snprintf(job_text + used, sizeof job_text - used, ", %llu status reads guessed (%llu wrong in all)",
+                      (unsigned long long)(guesses - last_guesses), (unsigned long long)wrong);
+    }
+    last_guesses = guesses;
     // Frames here are vertical blanks; a game that cannot keep up draws a
     // picture every other one (or less), which the VIF1 transfers show.
     std::fprintf(stderr, "[frames] %llu-%llu: %.2f s, %.1f frames a second, %.1f VIF1 transfers a second%s\n",
@@ -379,6 +456,55 @@ void FrameDone(u64 frame) {
         }
 }
 
+bool Vif1Guessable(u32 address, u32 size) { return size == 4 && address == kGifStat; }
+
+bool Vif1Guess(u32 address, u32* value) {
+    if (!Vif1Async() || address != kGifStat || g_guessing_off || !g_gif_shadow.known) return false;
+    // Read again straight away, the game waiting for it to change: it waits
+    // for the worker.
+    if (g_guessed_last == address) return false;
+    g_guessed_last = address;
+    const u32 guess = g_gif_shadow.value;
+    ++g_guesses;
+    Vif1Run([guess] {
+        const u32 actual = *Register(kGifStat);
+        if (actual == guess) return;
+        g_guessing_off = true;
+        if (g_wrong.fetch_add(1) < 8)
+            std::fprintf(stderr, "[vif1] GIF_STAT guessed 0x%08X, held 0x%08X: no more guesses\n", unsigned(guess),
+                         unsigned(actual));
+    });
+    *value = guess;
+    return true;
+}
+
+void Vif1Settled(u32 address, u32 value) {
+    if (address != kGifStat) return;
+    if (g_check_guesses) {
+        // What real time would have answered: a guess, or a wait for the worker.
+        if (g_gif_shadow.known && g_guessed_last != address) {
+            g_guessed_last = address;
+            ++g_guesses;
+            if (value != g_gif_shadow.value && g_wrong.fetch_add(1) < 32)
+                std::fprintf(stderr, "[check] GIF_STAT would have been guessed 0x%08X, holds 0x%08X\n",
+                             unsigned(g_gif_shadow.value), unsigned(value));
+        } else {
+            g_guessed_last = 0;
+        }
+        g_gif_shadow = {true, value};
+        return;
+    }
+    if (g_guessed_last == address) g_guessed_last = 0;
+    GifShadowFromMemory();
+}
+
+void Vif1Guesses(u64* guesses, u64* wrong) {
+    *guesses = g_guesses.load();
+    *wrong = g_wrong.load();
+}
+
+void SetCheckGuesses(bool on) { g_check_guesses = on; }
+
 void DmaChannelEnded(u32 channel) {
     SetDStat(d_stat | (1u << channel));
     PostDmac(channel);
@@ -448,9 +574,27 @@ void InstallDevices() {
         }
     }
     // The FIFO takes whole quadwords; the store's last word hands all four over.
+    // With VIF1's worker, in turn after what it has (memory.cpp lets the
+    // store through without waiting).
     m.OnWrite(kVif1Fifo + 12, [](u32, u64) {
-        Memory& memory = GuestMemory();
-        for (u32 i = 0; i < 4; ++i) Vif1().Word(u32(memory.Read(kVif1Fifo + 4 * i, 4)));
+        const u32* fifo = Register(kVif1Fifo);
+        const std::array<u32, 4> words{fifo[0], fifo[1], fifo[2], fifo[3]};
+        if (Shadowing()) {
+            // Commands of a word, as the FIFO's quadwords are here: MSKPATH3's
+            // effect followed, the others leaving GIF_STAT be; anything else,
+            // and what it leaves is not known.
+            GifShadowFromMemory();
+            g_guessed_last = 0;
+            for (u32 word : words) {
+                const u32 cmd = (word >> 24) & 0x7F;
+                if (cmd == 0x06) ShadowMask((word >> 15) & 1);
+                else if (!(cmd <= 0x05 || cmd == 0x07 || cmd == 0x10 || cmd == 0x11 || cmd == 0x13))
+                    g_gif_shadow.known = false;
+            }
+        }
+        Vif1Run([words] {
+            for (u32 word : words) Vif1().Word(word);
+        });
     });
     m.OnRead(kGsCsr, [](u32, u64 stored) {
         static u64 field = 0;

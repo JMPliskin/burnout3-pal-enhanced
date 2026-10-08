@@ -72,17 +72,26 @@ namespace {
 /* Registers and memory VIF1's worker changes or reads (vif1_worker.cpp):
    GIF and VIF1 registers and FIFOs, VU1's memories (not VU0's: the EE uses
    them all the time). Not the DMA channels and the DMAC's D_STAT: a transfer
-   ends on the EE's thread, the worker running on from a copy of its data. */
+   ends on the EE's thread, the worker running on from a copy of its data.
+   Of the GIF's registers only GIF_STAT, the one the worker changes; VIF1's
+   only written: VIF1's model keeps its state to itself, and what a read
+   finds there is the same with the worker done or not. */
 bool Vif1Sees(u32 a, bool write) {
-    (void)write;
-    return (a - 0x10003000u < 0x100u) || (a - 0x10003C00u < 0x400u) || (a - 0x10005000u < 0x2000u) ||
+    return (a - 0x10003020u < 4u) || (write && a - 0x10003C00u < 0x400u) || (a - 0x10005000u < 0x2000u) ||
            (a - 0x11008000u < 0x8000u);
 }
 }  // namespace
 
 u64 Memory::Read(u32 address, u32 size) {
     address = Physical(address);
-    if (Vif1Busy() && Vif1Sees(address, false)) JoinVif1();
+    // GIF_STAT, while VIF1's worker has work: what it will read once the
+    // worker is done, worked out rather than waited for (Vif1Guess).
+    const bool status = Vif1Guessable(address, size) && !OnVif1Worker();
+    if (Vif1Busy() && Vif1Sees(address, false)) {
+        u32 guess = 0;
+        if (status && Vif1Guess(address, &guess)) return guess;
+        JoinVif1("read", address);
+    }
     u8* bytes = Translate(address, size);
     if (!bytes) throw MemoryFault{address, false};
     u64 value = 0;
@@ -92,6 +101,7 @@ u64 Memory::Read(u32 address, u32 size) {
         if (!OnVif1Worker()) RunStats().register_reads[address & ~3u]++;
         if (read_hooks_[index]) value = read_hooks_[index](address, value);
     }
+    if (status) Vif1Settled(address, u32(value));     // read with the queue run
     return value;
 }
 
@@ -113,7 +123,8 @@ void Memory::Watched(u32 address, u64 value, u32 size) {
 
 void Memory::Write(u32 address, u64 value, u32 size) {
     address = Physical(address);
-    if (Vif1Busy() && Vif1Sees(address, true)) JoinVif1();
+    // VIF1's FIFO excepted: a quadword stored there goes to the worker in turn (devices.cpp).
+    if (Vif1Busy() && Vif1Sees(address, true) && address - 0x10005000u >= 0x1000u) JoinVif1("write", address);
     // Into VU0's or VU1's instruction memory: their compiled programs are
     // compared with it again (Vu::MicroWritten).
     if (address - 0x11000000u < 0x10000u && ((address >> 14) & 1) == 0) {
