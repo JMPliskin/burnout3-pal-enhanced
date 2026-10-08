@@ -113,6 +113,7 @@ struct Scheduler {
     bool in_interrupt = false;
     lifted::Context interrupt_context = NewContext();
     u32 pending_dmac = 0;                   // channels whose interrupt waits
+    u32 dmac_missed = 0;                    // channels that ended while their interrupt was off
     bool realtime = false;                  // a vblank timer runs (unlimited budget)
     // --virtual-time: the scheduler keeps the clock. A thread runs a slice of
     // loop iterations at a time; each slice is a fixed span of time.
@@ -461,6 +462,9 @@ void RaiseDmac(u32 channel) {
     }();
     const Texts& t = texts[channel & 31];
     if (!(s.dmac_mask & (1u << channel))) {
+        // The interrupt is status AND mask: the status stays set (D_STAT),
+        // and enabling the channel raises it then (_EnableDmac).
+        s.dmac_missed |= 1u << channel;
         Note(t.masked_key, t.masked);
         return;
     }
@@ -823,10 +827,20 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
             s.dmac_handlers.erase(a1);
             result = 0;
             return true;
-        case 0x16: case -0x16:                       // _EnableDmac(channel)
-            s.dmac_mask |= 1u << (a0 & 31);
+        case 0x16: case -0x16: {                     // _EnableDmac(channel)
+            const u32 bit = 1u << (a0 & 31);
+            s.dmac_mask |= bit;
+            // A channel that ended while its interrupt was off interrupts
+            // now, as the DMAC's line is status AND mask - if its status
+            // (D_STAT) is still set. RenderWare turns channels 1 and 2 off
+            // and on around its packets; dropped, an end waited for the next
+            // vertical blank, and the race lost a frame every second or so.
+            const u32* stat = reinterpret_cast<const u32*>(GuestMemory().Translate(0x1000E010u, 4));
+            if ((s.dmac_missed & bit) && stat && (*stat & bit)) PostDmac(a0 & 31);
+            s.dmac_missed &= ~bit;
             result = 1;
             return true;
+        }
         case 0x17: case -0x17:                       // _DisableDmac(channel)
             s.dmac_mask &= ~(1u << (a0 & 31));
             result = 1;
