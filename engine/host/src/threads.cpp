@@ -510,6 +510,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     s.realtime = loop_budget == INT64_MAX && !s.virtual_time;
     if (s.realtime) {
         timeBeginPeriod(1);             // sleeps to the millisecond, not Windows' 15.6 ms
+        FastThread();
         if (!TimerThread().joinable()) {
             TimerThread() = std::thread(VblankTimer);
             std::atexit(StopTimer);
@@ -831,5 +832,14 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
+
+void FastThread() {
+    THREAD_POWER_THROTTLING_STATE throttling{};
+    throttling.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    throttling.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    throttling.StateMask = 0;               // never throttled
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttling, sizeof throttling);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
 
 }  // namespace ps2host

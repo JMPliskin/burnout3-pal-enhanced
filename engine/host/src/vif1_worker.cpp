@@ -63,6 +63,7 @@ struct Worker {
 
     void Run() {
         t_on_worker = true;
+        FastThread();
         if (SampleVif1Thread()) StartSampler();
         for (;;) {
             std::function<void()> command;

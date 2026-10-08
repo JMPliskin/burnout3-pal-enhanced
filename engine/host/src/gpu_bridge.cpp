@@ -147,6 +147,10 @@ struct Owned {
     // depth buffer, while drawing Z into other pages of it - 200 reloads,
     // each with the depth buffer's write-back, a picture).
     Pages stale_pages, dirty_pages;
+    // The page rectangle last drawn (x0, x1, y0, y1, inclusive), all of it
+    // in dirty_pages while `rect_dirty`: most primitives land inside it.
+    u32 rect[4] = {};
+    bool rect_dirty = false;
     u64 reloads[4] = {};            // reloads, by why
     u64 drawn_serial = 0;           // when the GPU last drew into it (Bridge::serial)
     u64 checked = 0;                // Bridge::newer_epoch when Use last looked at the others
@@ -338,6 +342,7 @@ void WriteBack(Bridge& b, Owned& o) {
     Timed timed(Section::GpuSync);
     o.gpu_newer = false;
     o.dirty_pages.reset();
+    o.rect_dirty = false;
     if (o.dirty_end <= o.dirty_begin) return;
     // Only the rows drawn into since the last write-back: the image's other
     // rows may be stale - another image drew over them since, and memory has
@@ -522,10 +527,16 @@ void Drew(Bridge& b, Owned& o, u32 x0, u32 x1, u32 y1, u32 y0) {
     y0 = std::min(y0, y1 - 1);
     const u32 db = o.begin + (y0 / page_rows) * row_blocks;
     const u32 de = o.begin + ((y1 + page_rows - 1) / page_rows) * row_blocks;
-    const Pages pages = PagesOf(o, x0, x1, y0, y1);
     // Already newer than memory over these pages: the others over them were
     // made stale then (any reloaded since wrote this one back first).
-    const bool inside = o.gpu_newer && db >= o.dirty_begin && de <= o.dirty_end && (pages & ~o.dirty_pages).none();
+    const u32 fbw = std::max(1u, o.fbw), cx1 = std::min(x1, fbw * 64);
+    const u32 cx0 = std::min(x0, cx1 ? cx1 - 1 : 0);
+    const u32 r[4] = {cx0 / 64, (std::max(cx1, cx0 + 1) - 1) / 64, y0 / page_rows, (y1 - 1) / page_rows};
+    const bool in_rect = o.rect_dirty && r[0] >= o.rect[0] && r[1] <= o.rect[1] && r[2] >= o.rect[2] && r[3] <= o.rect[3];
+    Pages pages;
+    if (!in_rect) pages = PagesOf(o, x0, x1, y0, y1);
+    const bool inside = o.gpu_newer && db >= o.dirty_begin && de <= o.dirty_end &&
+                        (in_rect || (pages & ~o.dirty_pages).none());
     o.gpu_newer = true;
     o.x1 = std::max(o.x1, std::min(x1, o.width));
     o.y1 = std::max(o.y1, y1);
@@ -533,9 +544,14 @@ void Drew(Bridge& b, Owned& o, u32 x0, u32 x1, u32 y1, u32 y0) {
     o.end = std::max(o.end, o.drawn_end);
     o.dirty_begin = std::min(o.dirty_begin, db);
     o.dirty_end = std::max(o.dirty_end, de);
-    o.dirty_pages |= pages;
+    if (!in_rect) {
+        o.dirty_pages |= pages;
+        std::memcpy(o.rect, r, sizeof r);
+        o.rect_dirty = true;
+    }
     o.drawn_serial = ++b.serial;    // textures over it decoded before this are out of date
     if (inside) return;
+    if (in_rect) pages = PagesOf(o, x0, x1, y0, y1);   // (not expected: inside whenever in the rectangle)
     ++g_mutations;
     ++b.newer_epoch;
     for (auto& [key, other] : b.owned) {

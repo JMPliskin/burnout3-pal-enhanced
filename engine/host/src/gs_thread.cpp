@@ -234,6 +234,7 @@ void StartGsThread() {
     if (g_feed) return;
     g_feed = &TheFeed();
     g_feed->thread = std::thread([] {
+        FastThread();
         if (SampleGsThread()) StartSampler();
         g_feed->Run();
     });

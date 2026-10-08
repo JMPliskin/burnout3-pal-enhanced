@@ -159,6 +159,11 @@ void SetGsFrameHandler(std::function<void(u64)> handler);
 void StartVif1Worker();
 /* Whether real time runs VIF1 on its worker (default yes; --vif1-sync: no). */
 void SetVif1Worker(bool on);
+/* The calling thread runs the game in real time (the EE's, the GS thread,
+   VIF1's worker): Windows is asked not to slow it for power (on a hybrid
+   processor, not to park it on an efficiency core) and to run it above
+   normal priority. */
+void FastThread();
 bool Vif1Async();
 bool OnVif1Worker();
 bool Vif1Busy();
