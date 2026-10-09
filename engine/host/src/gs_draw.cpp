@@ -23,6 +23,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -270,6 +271,24 @@ void Gs::Draw() {
                      Bits(c.frame, 0, 9), Bits(c.frame, 16, 6), Bits(c.frame, 24, 6), Bits(c.frame, 32, 32),
                      Bits(c.zbuf, 0, 9), Bits(c.zbuf, 24, 4), Bits(c.zbuf, 32, 1),
                      (unsigned long long)c.test, (unsigned long long)c.alpha);
+    }
+    if (trace) {
+        // PS2HOST_GS_DUMP_BEFORE=TBP,PSM (hex): local memory to gsmem_before.bin
+        // as the traced stream's first primitive with that texture is drawn.
+        static const char* want = std::getenv("PS2HOST_GS_DUMP_BEFORE");
+        static bool dumped = false;
+        if (want && !dumped) {
+            unsigned tbp = 0, psm = 0;
+            const Context& c = Ctx();
+            if (std::sscanf(want, "%x,%x", &tbp, &psm) == 2 && Bits(c.tex0, 0, 14) == tbp &&
+                Bits(c.tex0, 20, 6) == psm && (Prim() >> 4 & 1)) {
+                dumped = true;
+                if (std::FILE* f = std::fopen("gsmem_before.bin", "wb")) {
+                    std::fwrite(memory.data(), 1, 4u << 20, f);
+                    std::fclose(f);
+                }
+            }
+        }
     }
     const u32 type = u32(Prim() & 7);
     if (type == 7 || !rasterize) return;

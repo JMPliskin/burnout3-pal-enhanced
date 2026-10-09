@@ -5,6 +5,8 @@
 extracted/
 asm/
 build/
+# The user's console BIOS dumps (PCSX2 references): never committed.
+bios/
 
 # Python
 __pycache__/

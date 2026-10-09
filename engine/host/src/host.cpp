@@ -31,6 +31,82 @@
 
 namespace ps2host {
 
+/* --gs-replay <file> <dir>: a GS stream (engine/tools/pcsx2dump.py's, from a
+   PCSX2 GS dump) through the GS model alone: local memory and registers set,
+   then GIF packets, privileged registers and vertical blanks in turn - each
+   blank's picture to <dir>/replay_<n>.bmp, the GS trace to <dir>/trace.txt.
+   What the model draws from the console's own commands, beside what PCSX2
+   drew (the dump's picture): a GS fault or one before it, told apart. */
+int GsReplay(const std::string& file, const std::string& out) {
+    std::FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "gs-replay: cannot open %s\n", file.c_str());
+        return 66;
+    }
+    std::vector<unsigned char> data;
+    {
+        unsigned char buffer[1 << 16];
+        std::size_t n;
+        while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) data.insert(data.end(), buffer, buffer + n);
+        std::fclose(f);
+    }
+    const std::size_t kMemory = 4u << 20;
+    if (data.size() < 5 + kMemory || std::memcmp(data.data(), "GSRP1", 5) != 0) {
+        std::fprintf(stderr, "gs-replay: not a replay stream\n");
+        return 65;
+    }
+    std::filesystem::create_directories(out);
+    gs::Gs& g = gs::TheGs();
+    std::memcpy(g.memory.data(), data.data() + 5, kMemory);
+    std::FILE* trace = std::fopen((out + "/trace.txt").c_str(), "w");
+    if (trace) {
+        g.trace_out = trace;
+        g.trace = true;
+    }
+    std::size_t at = 5 + kMemory;
+    auto u32_at = [&](std::size_t o) { u32 v; std::memcpy(&v, data.data() + o, 4); return v; };
+    auto u64_at = [&](std::size_t o) { u64 v; std::memcpy(&v, data.data() + o, 8); return v; };
+    int pictures = 0;
+    std::vector<u32> words;
+    while (at < data.size()) {
+        const char kind = char(data[at++]);
+        if (kind == 'R') {
+            g.WriteRegister(u32_at(at), u64_at(at + 4));
+            at += 12;
+        } else if (kind == 'P') {
+            g.SetPrivileged(u32_at(at), u64_at(at + 4));
+            at += 12;
+        } else if (kind == 'W') {
+            const int path = data[at];
+            const u32 bytes = u32_at(at + 1);
+            at += 5;
+            words.resize(bytes / 4);
+            std::memcpy(words.data(), data.data() + at, words.size() * 4);
+            at += bytes;
+            g.Words(path, words.data(), u32(words.size()));
+        } else if (kind == 'V') {
+            g.Finish();
+            if (trace) std::fprintf(trace, "[gs] ---- vertical blank %d\n", pictures);
+            g.WriteBmp(out + "/replay_" + std::to_string(pictures++) + ".bmp");
+        } else {
+            std::fprintf(stderr, "gs-replay: bad record at %zu\n", at - 1);
+            return 65;
+        }
+    }
+    g.Finish();
+    if (std::FILE* m = std::fopen((out + "/gsmem.bin").c_str(), "wb")) {      // local memory at the end
+        std::fwrite(g.memory.data(), 1, kMemory, m);
+        std::fclose(m);
+    }
+    if (trace) {
+        g.trace = false;
+        g.trace_out = stderr;
+        std::fclose(trace);
+    }
+    std::fprintf(stderr, "gs-replay: %d pictures to %s\n", pictures, out.c_str());
+    return 0;
+}
+
 namespace {
 
 const FunctionEntry* g_table = nullptr;
@@ -536,6 +612,10 @@ int Main(int argc, char** argv) {
             options.vu_snapshot_count = unsigned(std::stoul(argv[++i]));
         }
         else if (arg == "--vu-bench" && i + 1 < argc) options.vu_bench = argv[++i];
+        else if (arg == "--gs-replay" && i + 2 < argc) {
+            const std::string file = argv[++i], out = argv[++i];
+            return GsReplay(file, out);
+        }
         else if (arg == "--sample-from" && i + 1 < argc) {
             options.sample = true;
             options.sample_from = std::stoll(argv[++i]);
