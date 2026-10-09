@@ -156,6 +156,10 @@ void SetFrameTimes(unsigned every);
    EE's): what feeds the GS goes through these, in order; SyncGs waits until
    the GS has taken all of it, before anything reads the GS's state. */
 void StartGsThread();
+/* On the EE: wait until VIF1's worker and the GS thread have taken all that
+   was given them (a backlog run up while fast-forwarding, drained before
+   frames are paced again). */
+void GsDrain();
 void StopGsThread();
 void SyncGs();
 void GsQword(int path, u64 low, u64 high);

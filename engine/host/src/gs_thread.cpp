@@ -279,6 +279,11 @@ void StartGsThread() {
     });
 }
 
+void GsDrain() {
+    if (Vif1Async() && !OnVif1Worker()) JoinVif1("drain");
+    if (g_feed) g_feed->Sync();
+}
+
 void StopGsThread() {
     if (!g_feed) return;
     g_feed->Sync();

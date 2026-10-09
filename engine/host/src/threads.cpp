@@ -963,7 +963,15 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
-void SetFastForward(unsigned factor) { g_fast_forward = factor ? factor : 1; }
+void SetFastForward(unsigned factor) {
+    factor = factor ? factor : 1;
+    const unsigned before = g_fast_forward.exchange(factor);
+    // Back to real time from fast-forwarding (a loading screen): VIF1's
+    // worker and the GS thread fell behind the EE (a race's start: 0.3 s,
+    // drained over its first 30 frames - a stutter at the green light);
+    // they catch up here, on the loading screen's last picture.
+    if (before > 1 && factor == 1 && !VirtualClock()) GsDrain();
+}
 unsigned FastForward() { return g_fast_forward.load(std::memory_order_relaxed); }
 u64 LastVblankNs() { return g_last_vblank_ns.load(std::memory_order_relaxed); }
 
