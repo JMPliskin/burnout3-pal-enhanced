@@ -472,7 +472,9 @@ void StartCapture(u64 frame) {
         return;
     }
     g_capture_dir = dir.string();
-    g_capture_frame = (long long)frame + 1;
+    // Two frames: a game drawing a picture every other blank (Burnout 3)
+    // draws nothing in one of them.
+    g_capture_frame = (long long)frame + 2;
     GpuCaptureBegin(frame + 1, (dir / "passes").string());
     gs::Gs& g = gs::TheGs();
     if (std::FILE* f = std::fopen((dir / "trace.txt").string().c_str(), "w")) {
@@ -491,6 +493,7 @@ void FinishCapture(u64 frame) {
         std::fclose(g.trace_out);
         g.trace_out = stderr;
     }
+    SyncGs();
     const std::string screen = GpuCaptureScreen(g_capture_dir);
     g.Finish();
     if (g.on_memory) g.on_memory(0, 16384, false);      // the GPU's drawing, back in memory

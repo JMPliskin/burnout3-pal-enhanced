@@ -251,7 +251,8 @@ struct Bridge {
     // target as it stood when drawing moved on to another, as a BMP, with a
     // line per pass on stderr - to see which pass of a frame goes wrong.
     u64 frame = 0;
-    long long dump_frame = -1;
+    long long dump_frame = -1, dump_last = -1;    // the frames whose passes are dumped
+    bool Dumping() const { return (long long)frame >= dump_frame && (long long)frame <= std::max(dump_frame, dump_last); }
     std::string dump_passes = ".";
     std::tuple<u32, u32, u32> last_target{~0u, 0, 0};
     u32 pass = 0;
@@ -1020,7 +1021,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     const u64 regs[11] = {call.prim, c.frame, c.scissor, c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf,
                           call.texa, call.fogcol | (u64(call.pabe) << 63)};
     if (s.primary && fast.valid && fast.mutations == g_mutations && fast.context == call.context &&
-        rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && (long long)s.frame != s.dump_frame &&
+        rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && !s.Dumping() &&
         (!fast.source || !fast.source->stale)) {
         ps2gpu::GsDrawState st = fast.state;
         st.gouraud = gouraud;
@@ -1032,7 +1033,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     }
     fast.valid = false;
     timed.emplace(Section::GpuBridge);
-    if (s.primary && (long long)s.frame == s.dump_frame) {
+    if (s.primary && s.Dumping()) {
         const auto key = std::make_tuple(state.fbp, state.fbw, state.psm);
         if (key != s.last_target) {
             if (std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
@@ -1204,7 +1205,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         // The next primitive may take the fast path - unless this one's
         // texture is a target, lies over what it draws (each primitive
         // makes it stale), or its Z goes in as colour.
-        bool may = !z_as_colour && (long long)s.frame != s.dump_frame;
+        bool may = !z_as_colour && !s.Dumping();
         // A target that samples itself (feedback) sees each primitive's
         // drawing in the next: those go the whole way.
         if (state.texture_target && tex_source == target) may = false;
@@ -1440,6 +1441,7 @@ void GpuCaptureBegin(u64 frame, const std::string& passes_dir) {
     if (!g_bridge) return;
     g_bridge->dump_passes = passes_dir;
     g_bridge->dump_frame = (long long)frame;
+    g_bridge->dump_last = (long long)frame + 1;     // a game drawing a picture every other blank
 }
 
 std::string GpuCaptureScreen(const std::string& dir) {
@@ -1464,7 +1466,7 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
     if (!g_bridge) return;
     Bridge& s = *g_bridge;
     if (s.primary) {
-        if ((long long)s.frame == s.dump_frame && std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
+        if (s.Dumping() && std::get<0>(s.last_target) != ~0u) DumpPass(s, s.last_target);
         s.frame = frame + 1;
         // The frame's drawing to the GPU now, to run while the next is made,
         // rather than when something next waits on the GPU.

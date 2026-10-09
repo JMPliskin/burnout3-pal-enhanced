@@ -120,13 +120,18 @@ void main() {
     if (p.textured != 0u) {
         vec2 uv = coordinate.xy / coordinate.z * vec2(TextureSize());
         // A sprite on a target drawn larger: sampled as finely as the target
-        // is drawn, but no further than the GS reads - between the texels of
-        // its first and last pixels (past them, a strip's edge reached into
-        // the next strip, or REPEAT the texture's far side: seams).
+        // is drawn, within the sprite's own pixels (a pixel of it only partly
+        // covered reached into the next strip's texels), and - REPEAT, the
+        // sprite within one copy of the texture - not wrapping round to its
+        // far side (a tile's edge: seams). Strips of one texture meet as one.
         const uint snap = (p.blend_ops >> 8) & 255u;
         if (snap > 1u) {
             const vec2 size = vec2(TextureSize());
-            uv = clamp(uv, min(range.xy, range.zw) * size, max(range.xy, range.zw) * size);
+            const vec2 lo = min(range.xy, range.zw), hi = max(range.xy, range.zw);
+            uv = clamp(uv, lo * size, hi * size);
+            const float inset = p.bilinear != 0u ? 0.5 : 0.001;
+            if (p.wms == 0u && lo.x >= 0.0 && hi.x <= 1.0) uv.x = clamp(uv.x, inset, size.x - inset);
+            if (p.wmt == 0u && lo.y >= 0.0 && hi.y <= 1.0) uv.y = clamp(uv.y, inset, size.y - inset);
         }
         vec4 t = Sample(uv);
         vec3 product = floor(t.rgb * v.rgb / 128.0);

@@ -1771,8 +1771,14 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
         }
         drawn_any_ = true;
     }
-    // A sprite's S and T at its first and last pixels (the GS samples a
-    // pixel at its whole coordinates: x from ceil(x0) to ceil(x1) - 1).
+    // A sprite's S and T at the outer edges of its first and last pixels
+    // (the GS samples a pixel at its whole coordinates: x from ceil(x0) to
+    // ceil(x1) - 1, each pixel half a pixel either side of it) - strips of
+    // one texture (a movie, text, a menu's pictures) meeting as one. A
+    // target sampled (a post effect over strips of a buffer cut up in
+    // memory - the race's glow) only as far as the GS reads, its first and
+    // last pixels' own coordinates: past them, bright columns at its strips.
+    const float edge = state.texture_target ? 0.0f : 0.5f;
     float range[4] = {0, 0, 0, 0};
     if (state.sprite && count >= 3) {
         float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y, s0 = 0, s1 = 0, t0 = 0, t1 = 0;
@@ -1783,11 +1789,11 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
             if (v[i].y <= y0) y0 = v[i].y, t0 = v[i].t / q;
             if (v[i].y >= y1) y1 = v[i].y, t1 = v[i].t / q;
         }
-        auto at = [](float a0, float a1, float c0, float c1, float first, float* lo, float* hi) {
+        auto at = [edge](float a0, float a1, float c0, float c1, float first, float* lo, float* hi) {
             const float last = std::max(first, std::ceil(a1) - 1.0f);
             const float per = a1 > a0 ? (c1 - c0) / (a1 - a0) : 0.0f;
-            *lo = c0 + (first - a0) * per;
-            *hi = c0 + (last - a0) * per;
+            *lo = c0 + (first - edge - a0) * per;
+            *hi = c0 + (last + edge - a0) * per;
         };
         at(x0, x1, s0, s1, std::ceil(x0), &range[0], &range[2]);
         at(y0, y1, t0, t1, std::ceil(y0), &range[1], &range[3]);
