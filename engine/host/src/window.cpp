@@ -196,6 +196,7 @@ bool PumpWindow() {
     if (g_display) {
         if (!g_display->Pump()) g_closed = true;
         KeepFullscreenSetting();
+        if (g_display->TakeCapture()) RequestCapture();
         return !g_closed;
     }
 #endif

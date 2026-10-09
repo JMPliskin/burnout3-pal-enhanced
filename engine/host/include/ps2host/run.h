@@ -137,6 +137,15 @@ void SetFrameDumps(const std::string& dir, int every, int limit, u64 from = 0);
 enum class GpuMode { Shadow, ShadowRtt, Primary };
 bool StartGpuRenderer(std::string* error, GpuMode mode, bool show);
 void GpuShadowFrame(u64 frame, const std::string& dump_dir);
+/* A capture (F12): the GPU's passes of `frame` dumped into `passes_dir`;
+   then the picture shown, at the internal resolution and the PS2's, into
+   `dir` (screen.bmp, screen_1x.bmp) - what it was, as text. GpuPrimary:
+   the GPU draws (--gpu), so there is something to capture. */
+void GpuCaptureBegin(u64 frame, const std::string& passes_dir);
+std::string GpuCaptureScreen(const std::string& dir);
+bool GpuPrimary();
+/* F12 or L3+R3 (the window's): capture the next frame. */
+void RequestCapture();
 std::string GpuShadowSummary();
 /* --until-frame: stop the run when frame N is done (with --virtual-time, the
    same point every time). */

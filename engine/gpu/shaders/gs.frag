@@ -16,6 +16,7 @@ layout(set = 2, binding = 0) uniform sampler2D destination;
 layout(location = 0) in vec4 shade;
 layout(location = 1) noperspective in vec3 coordinate;
 layout(location = 2) noperspective in float fog;
+layout(location = 3) flat in vec4 range;   // a sprite's S, T at its first and last pixels (gs.vert)
 
 layout(set = 0, binding = 0) uniform sampler2D texture_image;
 // The GPU's CLUT (decode.comp's), 256 entries as the GS expands them: a target
@@ -118,13 +119,14 @@ void main() {
     vec4 c = v;
     if (p.textured != 0u) {
         vec2 uv = coordinate.xy / coordinate.z * vec2(TextureSize());
-        // A sprite on a target drawn larger: sampled where the GS samples, at
-        // the centre of the GS pixel this one is part of (its coordinates are
-        // affine: the derivatives move them there exactly).
+        // A sprite on a target drawn larger: sampled as finely as the target
+        // is drawn, but no further than the GS reads - between the texels of
+        // its first and last pixels (past them, a strip's edge reached into
+        // the next strip, or REPEAT the texture's far side: seams).
         const uint snap = (p.blend_ops >> 8) & 255u;
         if (snap > 1u) {
-            const vec2 centre = (floor(gl_FragCoord.xy / float(snap)) + 0.5) * float(snap);
-            uv += dFdx(uv) * (centre.x - gl_FragCoord.x) + dFdy(uv) * (centre.y - gl_FragCoord.y);
+            const vec2 size = vec2(TextureSize());
+            uv = clamp(uv, min(range.xy, range.zw) * size, max(range.xy, range.zw) * size);
         }
         vec4 t = Sample(uv);
         vec3 product = floor(t.rgb * v.rgb / 128.0);

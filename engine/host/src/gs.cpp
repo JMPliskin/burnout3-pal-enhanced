@@ -98,7 +98,7 @@ void Gs::Qword(int path, u64 low, u64 high) {
         q_ = 1.0f;
         ++tags_[path];
         if (trace)
-            std::fprintf(stderr, "[gs] tag path %d nloop %u eop %u pre %u prim %X flg %u nreg %u regs %016llX\n",
+            std::fprintf(trace_out, "[gs] tag path %d nloop %u eop %u pre %u prim %X flg %u nreg %u regs %016llX\n",
                          path, p.loops, Bits(low, 15, 1), Bits(low, 46, 1), Bits(low, 47, 11), p.format,
                          p.nregs, (unsigned long long)high);
         if (Bits(low, 46, 1) && p.format == 0) WriteRegister(0x00, Bits(low, 47, 11));
@@ -230,7 +230,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
             trx_y_ = 0;
             trx_active_ = trxdir_ == 0;
             if (trace)
-                std::fprintf(stderr, "[gs] transfer dir %u: src %X/%u psm %02X (%u,%u) -> dst %X/%u psm %02X (%u,%u), %ux%u\n",
+                std::fprintf(trace_out, "[gs] transfer dir %u: src %X/%u psm %02X (%u,%u) -> dst %X/%u psm %02X (%u,%u), %ux%u\n",
                              unsigned(trxdir_), Bits(bitbltbuf_, 0, 14), Bits(bitbltbuf_, 16, 6), Bits(bitbltbuf_, 24, 6),
                              Bits(trxpos_, 0, 11), Bits(trxpos_, 16, 11), Bits(bitbltbuf_, 32, 14), Bits(bitbltbuf_, 48, 6),
                              Bits(bitbltbuf_, 56, 6), Bits(trxpos_, 32, 11), Bits(trxpos_, 48, 11), Bits(trxreg_, 0, 12),

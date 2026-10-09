@@ -256,7 +256,7 @@ void Gs::Draw() {
         const Context& c = Ctx();
         const Vertex& v = queue_[0];
         const Vertex& w = queue_[queued_ - 1];
-        std::fprintf(stderr, "[gs] prim %llX tex0 tbp %X tbw %u psm %02X %ux%u cbp %X cpsm %u csm %u csa %u cld %u"
+        std::fprintf(trace_out, "[gs] prim %llX tex0 tbp %X tbw %u psm %02X %ux%u cbp %X cpsm %u csm %u csa %u cld %u"
                      " | (%.1f,%.1f)-(%.1f,%.1f) uv (%u,%u)-(%u,%u) st (%.3f,%.3f)-(%.3f,%.3f) q %.3f-%.3f"
                      " rgba %02X%02X%02X%02X z %X-%X from %08X\n",
                      (unsigned long long)Prim(), Bits(c.tex0, 0, 14), Bits(c.tex0, 14, 6), Bits(c.tex0, 20, 6),
@@ -265,8 +265,8 @@ void Gs::Draw() {
                      v.x, v.y, w.x, w.y, v.u, v.v, w.u, w.v, v.s, v.t, w.s, w.t, v.q, w.q, w.r, w.g, w.b, w.a, v.z, w.z,
                      rgba_source_);
         if (queued_ == 3)
-            std::fprintf(stderr, "[gs]   middle vertex (%.1f,%.1f)\n", queue_[1].x, queue_[1].y);
-        std::fprintf(stderr, "[gs]   frame fbp %X fbw %u psm %02X fbmsk %08X; zbuf zbp %X psm %02X zmsk %u; test %llX alpha %llX\n",
+            std::fprintf(trace_out, "[gs]   middle vertex (%.1f,%.1f)\n", queue_[1].x, queue_[1].y);
+        std::fprintf(trace_out, "[gs]   frame fbp %X fbw %u psm %02X fbmsk %08X; zbuf zbp %X psm %02X zmsk %u; test %llX alpha %llX\n",
                      Bits(c.frame, 0, 9), Bits(c.frame, 16, 6), Bits(c.frame, 24, 6), Bits(c.frame, 32, 32),
                      Bits(c.zbuf, 0, 9), Bits(c.zbuf, 24, 4), Bits(c.zbuf, 32, 1),
                      (unsigned long long)c.test, (unsigned long long)c.alpha);

@@ -20,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
@@ -83,6 +84,7 @@ public:
     Memory memory;
     /* --gs-trace: log image transfers and primitives (stderr). */
     bool trace = false;
+    std::FILE* trace_out = stderr;      // where the trace goes (a capture's trace.txt)
 
     /* A GS register write by address (A+D, REGLIST, or the GIF's own). */
     void WriteRegister(u32 address, u64 value);

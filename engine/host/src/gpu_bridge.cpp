@@ -1434,6 +1434,32 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
     return true;
 }
 
+bool GpuPrimary() { return g_bridge && g_bridge->primary; }
+
+void GpuCaptureBegin(u64 frame, const std::string& passes_dir) {
+    if (!g_bridge) return;
+    g_bridge->dump_passes = passes_dir;
+    g_bridge->dump_frame = (long long)frame;
+}
+
+std::string GpuCaptureScreen(const std::string& dir) {
+    if (!g_bridge) return "no GPU";
+    Bridge& s = *g_bridge;
+    u32 fbp = 0, fbw = 0, psm = 0;
+    gs::TheGs().Displayed(&fbp, &fbw, &psm);
+    std::vector<u32> pixels;
+    u32 w = 0, h = 0;
+    char text[160];
+    const u32 k = s.renderer->Scale();
+    if (s.renderer->ReadTargetFull(fbp, fbw, psm, &pixels, &w, &h))
+        WriteBmp(dir + "/screen.bmp", pixels, w, std::min(w, 640u * k), std::min(h, 448u * k));
+    if (s.renderer->ReadTarget(fbp, fbw, psm, &pixels, &w, &h))
+        WriteBmp(dir + "/screen_1x.bmp", pixels, w, std::min(w, 640u), std::min(h, 448u));
+    std::snprintf(text, sizeof text, "shown: FBP %X FBW %u PSM %02X; internal resolution %ux", unsigned(fbp),
+                  unsigned(fbw), unsigned(psm), unsigned(k));
+    return text;
+}
+
 void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
     if (!g_bridge) return;
     Bridge& s = *g_bridge;

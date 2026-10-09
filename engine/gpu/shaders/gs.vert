@@ -8,6 +8,9 @@ layout(location = 1) in vec4 colour;
 layout(location = 2) in vec3 stq;
 layout(location = 3) in uint z;     // the GS's Z, unsigned; larger is nearer
 layout(location = 4) in float fog;  // F, 0-1
+// A sprite on a target drawn larger: the S, T the GS reads at its first and
+// last pixels (s0, t0, s1, t1) - the texture coordinates kept inside them.
+layout(location = 5) in vec4 range;
 
 layout(push_constant) uniform Target {
     vec2 size;          // the target, in pixels
@@ -18,6 +21,7 @@ layout(location = 0) out vec4 shade;
 // pixel: no perspective correction of its own.
 layout(location = 1) noperspective out vec3 coordinate;
 layout(location = 2) noperspective out float fog_out;
+layout(location = 3) flat out vec4 range_out;
 
 void main() {
     vec2 ndc = (position + 0.5) / target.size * 2.0 - 1.0;
@@ -25,4 +29,5 @@ void main() {
     shade = colour;
     coordinate = stq;
     fog_out = fog;
+    range_out = range;
 }

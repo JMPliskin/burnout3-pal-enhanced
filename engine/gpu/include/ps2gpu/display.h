@@ -70,6 +70,8 @@ public:
     /* Fullscreen (borderless, the desktop's resolution) or a window. */
     virtual void SetFullscreen(bool on) { (void)on; }
     virtual bool Fullscreen() const { return false; }
+    /* F12, or L3 with R3 on a controller, since the last call: a capture asked for. */
+    virtual bool TakeCapture() { return false; }
 
     /* Whether the window has the keyboard, and whether a key is down - by SDL
        scancode (SDL_SCANCODE_*), which names keys by position. */

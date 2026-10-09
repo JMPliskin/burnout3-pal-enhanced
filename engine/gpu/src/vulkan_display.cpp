@@ -46,6 +46,12 @@ public:
     void SetFullscreen(bool on) override;
     bool Fullscreen() const override;
     void SetVsync(bool on) override;
+    bool TakeCapture() override {
+        const bool asked = capture_;
+        capture_ = false;
+        return asked;
+    }
+    bool capture_ = false;
     std::uint32_t PixelHeight() const override {
         int w = 0, h = 0;
         if (!window_ || !SDL_GetWindowSizeInPixels(window_, &w, &h)) return 0;
@@ -868,6 +874,12 @@ bool VulkanDisplay::Pump() {
         if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.scancode == SDL_SCANCODE_RETURN &&
             (e.key.mod & SDL_KMOD_ALT))
             SetFullscreen(!Fullscreen());
+        if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.scancode == SDL_SCANCODE_F12) capture_ = true;
+        if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && gamepad_ &&
+            (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK || e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) &&
+            SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_STICK) &&
+            SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_STICK))
+            capture_ = true;
         if (e.type == SDL_EVENT_GAMEPAD_ADDED && !gamepad_) {
             gamepad_ = SDL_OpenGamepad(e.gdevice.which);
             if (gamepad_) std::fprintf(stderr, "[window] controller: %s\n", SDL_GetGamepadName(gamepad_));

@@ -45,7 +45,12 @@ struct PackedVertex {
     float s, t, q;
     std::uint32_t z;
     std::uint8_t fog, pad[3];
+    float range[4];             // a sprite's S, T at its first and last pixels (gs.vert)
+    float pad2[4];
 };
+// The vertex ring hands out 256-byte aligned runs, a batch's first vertex
+// found by its offset: whole vertices to 256 bytes.
+static_assert(256 % sizeof(PackedVertex) == 0, "a vertex must divide the ring's alignment");
 
 /* What the fragment shader is told, after the vertex shader's 16 bytes. */
 struct FragmentParams {
@@ -292,6 +297,8 @@ public:
     void ClutRows(const std::uint32_t* clut, std::uint32_t rows) override;
     bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
                     std::uint32_t* width, std::uint32_t* height) override;
+    bool ReadTargetFull(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::vector<std::uint32_t>* pixels,
+                        std::uint32_t* width, std::uint32_t* height) override;
     bool ReadTexture(std::uint64_t key, std::vector<std::uint32_t>* pixels, std::uint32_t* width,
                      std::uint32_t* height) override;
     bool ReadImage(Image& image, std::vector<std::uint32_t>* pixels);
@@ -1247,16 +1254,17 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     stages[1].module = key & kShaderBlend ? frag_blend_ : frag_;
     stages[1].pName = "main";
     VkVertexInputBindingDescription binding{0, sizeof(PackedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[5] = {
+    VkVertexInputAttributeDescription attributes[6] = {
         {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PackedVertex, x)},
         {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(PackedVertex, r)},
         {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PackedVertex, s)},
         {3, 0, VK_FORMAT_R32_UINT, offsetof(PackedVertex, z)},
-        {4, 0, VK_FORMAT_R8_UNORM, offsetof(PackedVertex, fog)}};
+        {4, 0, VK_FORMAT_R8_UNORM, offsetof(PackedVertex, fog)},
+        {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(PackedVertex, range)}};
     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 5;
+    input.vertexAttributeDescriptionCount = 6;
     input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1763,12 +1771,34 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
         }
         drawn_any_ = true;
     }
+    // A sprite's S and T at its first and last pixels (the GS samples a
+    // pixel at its whole coordinates: x from ceil(x0) to ceil(x1) - 1).
+    float range[4] = {0, 0, 0, 0};
+    if (state.sprite && count >= 3) {
+        float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y, s0 = 0, s1 = 0, t0 = 0, t1 = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const float q = v[i].q != 0.0f ? v[i].q : 1.0f;
+            if (v[i].x <= x0) x0 = v[i].x, s0 = v[i].s / q;
+            if (v[i].x >= x1) x1 = v[i].x, s1 = v[i].s / q;
+            if (v[i].y <= y0) y0 = v[i].y, t0 = v[i].t / q;
+            if (v[i].y >= y1) y1 = v[i].y, t1 = v[i].t / q;
+        }
+        auto at = [](float a0, float a1, float c0, float c1, float first, float* lo, float* hi) {
+            const float last = std::max(first, std::ceil(a1) - 1.0f);
+            const float per = a1 > a0 ? (c1 - c0) / (a1 - a0) : 0.0f;
+            *lo = c0 + (first - a0) * per;
+            *hi = c0 + (last - a0) * per;
+        };
+        at(x0, x1, s0, s1, std::ceil(x0), &range[0], &range[2]);
+        at(y0, y1, t0, t1, std::ceil(y0), &range[1], &range[3]);
+    }
     for (std::size_t i = 0; i + 2 < count; i += 3) {
         for (int k = 0; k < 3; ++k) {
             // Flat shading takes the colour of the triangle's last vertex.
             const GsVertex& c = state.gouraud ? v[i + k] : v[i + 2];
             const GsVertex& p = v[i + k];
-            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q, p.z, p.fog, {0, 0, 0}});
+            pending_.push_back({p.x, p.y, c.r, c.g, c.b, c.a, p.s, p.t, p.q, p.z, p.fog, {0, 0, 0},
+                                {range[0], range[1], range[2], range[3]}, {0, 0, 0, 0}});
         }
     }
 }
@@ -2119,6 +2149,37 @@ bool VulkanGsRenderer::ReadTexture(std::uint64_t key, std::vector<std::uint32_t>
     *width = found->second.image.width;
     *height = found->second.image.height;
     return ReadImage(found->second.image, pixels);
+}
+
+bool VulkanGsRenderer::ReadTargetFull(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
+                                      std::vector<std::uint32_t>* pixels, std::uint32_t* width,
+                                      std::uint32_t* height) {
+    Flush();
+    auto found = targets_.find(Key{fbp, fbw, psm});
+    if (found == targets_.end()) return false;
+    Image& t = found->second;
+    const VkDeviceSize bytes = VkDeviceSize(t.pw()) * t.ph() * 4;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!Buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buffer, &memory, &mapped)) return false;
+    g_.Run([&](VkCommandBuffer cmd) {
+        Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {t.pw(), t.ph(), 1};
+        vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        g_.Mark(cmd, kProfReadback);
+    }, "a target read-back");
+    const std::uint32_t* from = static_cast<const std::uint32_t*>(mapped);
+    pixels->assign(from, from + std::size_t(t.pw()) * t.ph());
+    *width = t.pw();
+    *height = t.ph();
+    vkUnmapMemory(g_.device, memory);
+    vkDestroyBuffer(g_.device, buffer, nullptr);
+    vkFreeMemory(g_.device, memory, nullptr);
+    return true;
 }
 
 bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,

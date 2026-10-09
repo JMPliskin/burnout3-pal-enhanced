@@ -239,6 +239,11 @@ public:
     virtual bool ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
                             std::vector<std::uint32_t>* pixels, std::uint32_t* width,
                             std::uint32_t* height) = 0;
+    /* The same at the internal resolution, every pixel (a capture). */
+    virtual bool ReadTargetFull(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
+                                std::vector<std::uint32_t>* pixels, std::uint32_t* width, std::uint32_t* height) {
+        return ReadTarget(fbp, fbw, psm, pixels, width, height);
+    }
 };
 std::unique_ptr<GsRenderer> CreateGsRenderer(Gpu& gpu, std::string* error);
 

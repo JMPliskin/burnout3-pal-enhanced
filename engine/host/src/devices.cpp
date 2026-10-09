@@ -27,6 +27,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -42,6 +44,7 @@
 #include "ps2host/memory.h"
 #include "ps2host/path3.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 #include "ps2host/vif.h"
 #include "ps2host/vu.h"
 #include "ps2host/profile.h"
@@ -444,6 +447,72 @@ void FrameTimes(u64 frame) {
 }
 bool UntilFrameReached() { return g_until_reached; }
 
+// F12 (or L3+R3): the next frame captured whole, for looking into what it
+// drew - captures/<time>-frame<N>/ beside the PC settings: the picture at
+// the internal resolution and at the PS2's, every drawing pass, GS local
+// memory and the GS trace of the frame.
+std::atomic<bool> g_capture_request{false};
+long long g_capture_frame = -1;
+std::string g_capture_dir;
+
+void StartCapture(u64 frame) {
+    namespace fs = std::filesystem;
+    fs::path base = SettingsPath().empty() ? fs::path("captures") : fs::path(SettingsPath()).parent_path() / "captures";
+    char name[64];
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &now);
+    std::snprintf(name, sizeof name, "%04d%02d%02d-%02d%02d%02d-frame%llu", tm.tm_year + 1900, tm.tm_mon + 1,
+                  tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<unsigned long long>(frame + 1));
+    const fs::path dir = base / name;
+    std::error_code error;
+    fs::create_directories(dir / "passes", error);
+    if (error) {
+        std::fprintf(stderr, "[capture] no directory %s: %s\n", dir.string().c_str(), error.message().c_str());
+        return;
+    }
+    g_capture_dir = dir.string();
+    g_capture_frame = (long long)frame + 1;
+    GpuCaptureBegin(frame + 1, (dir / "passes").string());
+    gs::Gs& g = gs::TheGs();
+    if (std::FILE* f = std::fopen((dir / "trace.txt").string().c_str(), "w")) {
+        g.trace_out = f;
+        g.trace = true;
+        std::fprintf(f, "[gs] ---- frame %llu (a capture)\n", static_cast<unsigned long long>(frame + 1));
+    }
+    std::fprintf(stderr, "[capture] frame %llu to %s\n", static_cast<unsigned long long>(frame + 1),
+                 g_capture_dir.c_str());
+}
+
+void FinishCapture(u64 frame) {
+    gs::Gs& g = gs::TheGs();
+    if (g.trace_out != stderr) {
+        g.trace = false;
+        std::fclose(g.trace_out);
+        g.trace_out = stderr;
+    }
+    const std::string screen = GpuCaptureScreen(g_capture_dir);
+    g.Finish();
+    if (g.on_memory) g.on_memory(0, 16384, false);      // the GPU's drawing, back in memory
+    if (std::FILE* f = std::fopen((g_capture_dir + "/gsmem.bin").c_str(), "wb")) {
+        std::fwrite(g.memory.data(), 1, 4u << 20, f);
+        std::fclose(f);
+    }
+    if (std::FILE* f = std::fopen((g_capture_dir + "/info.txt").c_str(), "w")) {
+        std::fprintf(f, "frame %llu\n%s\nresolution setting: %s\n", static_cast<unsigned long long>(frame),
+                     screen.c_str(), Setting("resolution", "original").c_str());
+        std::fprintf(f, "files: screen.bmp (as drawn, at the internal resolution), screen_1x.bmp (the PS2's "
+                        "640x448), passes/ (each target as a pass left it, at 1x), gsmem.bin (GS local memory "
+                        "after the frame: engine/tools/gsmem.py), trace.txt (the frame's GS packets and "
+                        "primitives)\n");
+        std::fclose(f);
+    }
+    std::fprintf(stderr, "[capture] saved %s\n", g_capture_dir.c_str());
+    g_capture_frame = -1;
+}
+
+void RequestCapture() { g_capture_request = true; }
+
 void FrameDone(u64 frame) {
     FrameTimes(frame);
     SampleFrame(frame);
@@ -464,7 +533,13 @@ void FrameDone(u64 frame) {
     // no trace): the GS thread ends the frame itself where the frame's
     // packets end - the GPU's frame, the window's picture - and the EE goes
     // straight on (it waited for the GS and the GPU at every frame before).
-    const bool cpu_reads_gs = dump || (g_dump_frame >= 0 && (long long)frame == g_dump_frame) || g_trace_frame >= 0;
+    // PS2HOST_CAPTURE_FRAME=N: as F12 at frame N (a scripted run's).
+    static const long long capture_at = std::getenv("PS2HOST_CAPTURE_FRAME") ? std::atoll(std::getenv("PS2HOST_CAPTURE_FRAME")) : -1;
+    if ((long long)frame == capture_at) g_capture_request = true;
+    if (g_capture_request.exchange(false) && g_capture_frame < 0 && GpuPrimary()) StartCapture(frame);
+    const bool capturing = g_capture_frame >= 0 && (long long)frame == g_capture_frame;
+    const bool cpu_reads_gs = dump || (g_dump_frame >= 0 && (long long)frame == g_dump_frame) || g_trace_frame >= 0 ||
+                              capturing;
     if (!cpu_reads_gs && GsFrame(frame)) {
         DbcFrame();
         if (!PumpWindow()) throw GuestExit{0};          // the user closed the window
@@ -474,6 +549,7 @@ void FrameDone(u64 frame) {
     // dumps - sees it with all of the frame's packets taken.
     JoinVif1();
     SyncGs();
+    if (capturing) FinishCapture(frame);
     if (g_dump_frame >= 0 && (long long)frame == g_dump_frame) {
         gs::Gs& g = gs::TheGs();
         g.Finish();
@@ -492,7 +568,7 @@ void FrameDone(u64 frame) {
         // game draws a picture across several.
         if ((long long)frame + 1 == g_trace_frame) gs::TheGs().trace = true;
         else if ((long long)frame == g_trace_frame + 5) gs::TheGs().trace = false;
-        if (gs::TheGs().trace) std::fprintf(stderr, "[gs] ---- frame %llu\n", static_cast<unsigned long long>(frame + 1));
+        if (gs::TheGs().trace) std::fprintf(gs::TheGs().trace_out, "[gs] ---- frame %llu\n", static_cast<unsigned long long>(frame + 1));
     }
     DbcFrame();
     PresentFrame();
@@ -582,7 +658,7 @@ void InstallDevices() {
                               "DMA %s started: CHCR=0x%08X MADR=0x%08X QWC=%u TADR=0x%08X (completed at once)",
                               ch.name, unsigned(value), unsigned(memory.Read(madr, 4)),
                               unsigned(memory.Read(qwc, 4)), unsigned(memory.Read(ch.base + kTadr, 4)));
-            if (traced) std::fprintf(stderr, "[dma] %s\n", text);
+            if (traced) std::fprintf(gs::TheGs().trace_out, "[dma] %s\n", text);
             if (ch.base == 0x10009000u) ++g_vif1_transfers;
             const std::string walked = ch.walked ? Walk(ch, u32(value), describe) : std::string();
             if (describe) Note(key, ch.walked ? std::string(text) + ": " + walked : std::string(text));
@@ -608,7 +684,7 @@ void InstallDevices() {
     Vif1().on_direct = [](u32 word) { GsWord(2, word); };
     Vif1().on_direct_block = [](const u32* words, u32 count, u32 from) { GsWords(2, words, count, from); };
     Vif1().on_trace = [](const char* what) {
-        if (gs::TheGs().trace) std::fprintf(stderr, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
+        if (gs::TheGs().trace) std::fprintf(gs::TheGs().trace_out, "[vif1] %s, %zu PATH3 words held\n", what, g_path3_held.size());
         // FLUSHA waits for PATH3 to finish: unmasked, all it holds goes.
         if (!g_path3_masked) ReleasePath3(true);
     };
