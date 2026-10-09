@@ -43,7 +43,7 @@ layout(push_constant) uniform Params {
     uint logic;         // FBMSK masking part of a channel: 1 the AND pass, 2 the OR pass, 0 neither
     uint keep;          // ...the bits FBMSK keeps, RGBA bytes as the target holds them
     uint scale;         // a target drawn larger (the internal resolution): its pixels to a GS texel
-    uint blend_ops;     // SHADER_BLEND: ALPHA's A, B, C, D, two bits each
+    uint blend_ops;     // bits 0-7, SHADER_BLEND: ALPHA's A, B, C, D, two bits each; 8-15: Snap's scale
 } p;
 
 // A texel coordinate wrapped as CLAMP says, as the software GS's Wrap. A
@@ -117,7 +117,16 @@ void main() {
     vec4 v = round(shade * 255.0);
     vec4 c = v;
     if (p.textured != 0u) {
-        vec4 t = Sample(coordinate.xy / coordinate.z * vec2(TextureSize()));
+        vec2 uv = coordinate.xy / coordinate.z * vec2(TextureSize());
+        // A sprite on a target drawn larger: sampled where the GS samples, at
+        // the centre of the GS pixel this one is part of (its coordinates are
+        // affine: the derivatives move them there exactly).
+        const uint snap = (p.blend_ops >> 8) & 255u;
+        if (snap > 1u) {
+            const vec2 centre = (floor(gl_FragCoord.xy / float(snap)) + 0.5) * float(snap);
+            uv += dFdx(uv) * (centre.x - gl_FragCoord.x) + dFdy(uv) * (centre.y - gl_FragCoord.y);
+        }
+        vec4 t = Sample(uv);
         vec3 product = floor(t.rgb * v.rgb / 128.0);
         if (p.tfx == 0u) {
             c.rgb = product;
@@ -164,7 +173,7 @@ void main() {
 #ifdef SHADER_BLEND
     // Cv = ((A - B) * C >> 7) + D, clamped (COLCLAMP), as the software GS.
     vec4 dst = round(texelFetch(destination, ivec2(gl_FragCoord.xy), 0) * 255.0);
-    uint ops = p.blend_ops;
+    uint ops = p.blend_ops & 255u;
     vec3 op_a = (ops & 3u) == 0u ? c.rgb : (ops & 3u) == 1u ? dst.rgb : vec3(0.0);
     vec3 op_b = ((ops >> 2) & 3u) == 0u ? c.rgb : ((ops >> 2) & 3u) == 1u ? dst.rgb : vec3(0.0);
     float op_c = ((ops >> 4) & 3u) == 0u ? c.a : ((ops >> 4) & 3u) == 1u ? dst.a : float(p.fix);

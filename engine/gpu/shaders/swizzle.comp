@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 // GS local memory on the GPU: pixels moved between an image's rows (linear,
 // one 32-bit value a pixel) and the GS's swizzled layout (GS User's Manual,
 // chapter 8; the tables are engine/host/src/gs_memory.cpp's). One invocation
@@ -9,6 +10,17 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(std430, binding = 0) buffer Memory { uint mem[]; };     // 4 MB
 layout(std430, binding = 1) buffer Linear { uint lin[]; };
+#ifdef IMAGE
+// Compiled a second time with IMAGE: a colour target's pixels straight from
+// and to the image (no copy of it through Linear - at 3x those copies were
+// most of the GPU's time).
+layout(set = 1, binding = 0, rgba8) uniform image2D target;
+#endif
+#ifdef DEPTH_IMAGE
+// ...and with DEPTH_IMAGE: a depth buffer's Z sampled straight from it, to
+// memory (depth_load.frag brings it back).
+layout(set = 1, binding = 0) uniform sampler2D depth_image;
+#endif
 
 layout(push_constant) uniform Params {
     uint bp;            // base, in 256-byte blocks
@@ -22,58 +34,7 @@ layout(push_constant) uniform Params {
     uint scale;         // the image's pixels to a GS pixel, each way (the internal resolution)
 } p;
 
-const uint PSMCT32 = 0x00u, PSMCT24 = 0x01u, PSMCT16 = 0x02u, PSMCT16S = 0x0Au;
-const uint PSMZ32 = 0x30u, PSMZ24 = 0x31u, PSMZ16 = 0x32u, PSMZ16S = 0x3Au;
-
-const uint kBlock32[32] = uint[](0, 1, 4, 5, 16, 17, 20, 21, 2, 3, 6, 7, 18, 19, 22, 23,
-                                 8, 9, 12, 13, 24, 25, 28, 29, 10, 11, 14, 15, 26, 27, 30, 31);
-const uint kBlockZ32[32] = uint[](24, 25, 28, 29, 8, 9, 12, 13, 26, 27, 30, 31, 10, 11, 14, 15,
-                                  16, 17, 20, 21, 0, 1, 4, 5, 18, 19, 22, 23, 2, 3, 6, 7);
-const uint kBlock16[32] = uint[](0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15,
-                                 16, 18, 24, 26, 17, 19, 25, 27, 20, 22, 28, 30, 21, 23, 29, 31);
-const uint kBlock16S[32] = uint[](0, 2, 16, 18, 1, 3, 17, 19, 8, 10, 24, 26, 9, 11, 25, 27,
-                                  4, 6, 20, 22, 5, 7, 21, 23, 12, 14, 28, 30, 13, 15, 29, 31);
-const uint kBlockZ16[32] = uint[](24, 26, 16, 18, 25, 27, 17, 19, 28, 30, 20, 22, 29, 31, 21, 23,
-                                  8, 10, 0, 2, 9, 11, 1, 3, 12, 14, 4, 6, 13, 15, 5, 7);
-const uint kBlockZ16S[32] = uint[](24, 26, 8, 10, 25, 27, 9, 11, 16, 18, 0, 2, 17, 19, 1, 3,
-                                   28, 30, 12, 14, 29, 31, 13, 15, 20, 22, 4, 6, 21, 23, 5, 7);
-const uint kColumn32[64] = uint[](0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15,
-                                  16, 17, 20, 21, 24, 25, 28, 29, 18, 19, 22, 23, 26, 27, 30, 31,
-                                  32, 33, 36, 37, 40, 41, 44, 45, 34, 35, 38, 39, 42, 43, 46, 47,
-                                  48, 49, 52, 53, 56, 57, 60, 61, 50, 51, 54, 55, 58, 59, 62, 63);
-const uint kColumn16[128] = uint[](
-    0, 2, 8, 10, 16, 18, 24, 26, 1, 3, 9, 11, 17, 19, 25, 27,
-    4, 6, 12, 14, 20, 22, 28, 30, 5, 7, 13, 15, 21, 23, 29, 31,
-    32, 34, 40, 42, 48, 50, 56, 58, 33, 35, 41, 43, 49, 51, 57, 59,
-    36, 38, 44, 46, 52, 54, 60, 62, 37, 39, 45, 47, 53, 55, 61, 63,
-    64, 66, 72, 74, 80, 82, 88, 90, 65, 67, 73, 75, 81, 83, 89, 91,
-    68, 70, 76, 78, 84, 86, 92, 94, 69, 71, 77, 79, 85, 87, 93, 95,
-    96, 98, 104, 106, 112, 114, 120, 122, 97, 99, 105, 107, 113, 115, 121, 123,
-    100, 102, 108, 110, 116, 118, 124, 126, 101, 103, 109, 111, 117, 119, 125, 127);
-
-const uint kMask = (4u << 20) - 1u;
-
-uint Page(uint px, uint py) { return p.bp + 32u * (py * max(p.bw, 1u) + px); }
-
-bool Is16() { return p.psm == PSMCT16 || p.psm == PSMCT16S || p.psm == PSMZ16 || p.psm == PSMZ16S; }
-
-// The byte address of pixel (x, y).
-uint Address(uint x, uint y) {
-    if (Is16()) {
-        const uint i = ((y % 64u) / 8u) * 4u + (x % 64u) / 16u;
-        uint b;
-        if (p.psm == PSMCT16) b = kBlock16[i];
-        else if (p.psm == PSMCT16S) b = kBlock16S[i];
-        else if (p.psm == PSMZ16) b = kBlockZ16[i];
-        else b = kBlockZ16S[i];
-        const uint block = Page(x / 64u, y / 64u) + b;
-        return (block * 256u + kColumn16[(y % 8u) * 16u + x % 16u] * 2u) & kMask;
-    }
-    const uint i = ((y % 32u) / 8u) * 8u + (x % 64u) / 8u;
-    const uint b = (p.psm == PSMZ32 || p.psm == PSMZ24) ? kBlockZ32[i] : kBlock32[i];
-    const uint block = Page(x / 64u, y / 32u) + b;
-    return (block * 256u + kColumn32[(y % 8u) * 8u + x % 8u] * 4u) & kMask;
-}
+#include "gs_address.glsl"
 
 uint To16(uint c) {
     return ((c >> 3) & 31u) | (((c >> 11) & 31u) << 5) | (((c >> 19) & 31u) << 10) | ((c >> 31) << 15);
@@ -90,12 +51,25 @@ void main() {
     const uint a = Address(x, y + p.row0);
     const uint word = a >> 2;
     // The image's pixels for GS pixel (x, y): a square of scale x scale,
-    // its first taken to memory, all of it filled from memory.
+    // all of it filled from memory; the one at its middle (k/2, k/2) taken to
+    // memory - the one a primitive covers when the GS pixel's centre is
+    // covered (a sprite's edge at a half pixel - Burnout 3's channel shuffle
+    // - left the square's first one out, and its column stale).
     const uint k = max(p.scale, 1u);
     const uint li = (y * k) * p.stride + x * k;
+    const uint mid = li + (k / 2u) * p.stride + k / 2u;
+#if defined(IMAGE) || defined(DEPTH_IMAGE)
+    const ivec2 at = ivec2(x * k, (y + p.row0) * k);
+#endif
     const bool z24 = p.psm == PSMCT24 || p.psm == PSMZ24;
     if (p.to_memory == 1u) {
-        uint v = lin[li];
+#ifdef IMAGE
+        uint v = packUnorm4x8(imageLoad(target, at + ivec2(k / 2u)));
+#elif defined(DEPTH_IMAGE)
+        uint v = floatBitsToUint(texelFetch(depth_image, at + ivec2(k / 2u), 0).r);
+#else
+        uint v = lin[mid];
+#endif
         if (p.depth == 1u) v = uint(clamp(uintBitsToFloat(v) * 4294967296.0, 0.0, 4294967040.0));
         if (Is16()) {
             const uint shift = (a & 2u) * 8u;
@@ -118,7 +92,12 @@ void main() {
             v = z24 ? (w & 0xFFFFFFu) : w;
         }
         const uint value = p.depth == 1u ? floatBitsToUint(float(v) * (1.0 / 4294967296.0)) : v;
+#ifdef IMAGE
+        for (uint dy = 0u; dy < k; ++dy)
+            for (uint dx = 0u; dx < k; ++dx) imageStore(target, at + ivec2(dx, dy), unpackUnorm4x8(value));
+#else
         for (uint dy = 0u; dy < k; ++dy)
             for (uint dx = 0u; dx < k; ++dx) lin[li + dy * p.stride + dx] = value;
+#endif
     }
 }

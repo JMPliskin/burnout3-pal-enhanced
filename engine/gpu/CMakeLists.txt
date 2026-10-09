@@ -54,13 +54,14 @@ FetchContent_MakeAvailable(glslang)
 set(PS2GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${PS2GPU_SHADER_DIR})
 set(PS2GPU_SHADER_HEADERS)
-foreach(shader gs.vert gs.frag date.vert date.frag swizzle.comp decode.comp)
+foreach(shader gs.vert gs.frag date.vert date.frag swizzle.comp decode.comp depth_load.frag)
     string(REPLACE "." "_" name ${shader})
     set(out ${PS2GPU_SHADER_DIR}/${name}.h)
     add_custom_command(OUTPUT ${out}
         COMMAND glslang-standalone -V --target-env vulkan1.3 --vn spirv_${name}
                 -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/${shader}
-        DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/${shader} glslang-standalone
+        DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/${shader} ${CMAKE_CURRENT_LIST_DIR}/shaders/gs_address.glsl
+                glslang-standalone
         COMMENT "glslang ${shader}")
     list(APPEND PS2GPU_SHADER_HEADERS ${out})
 endforeach()
@@ -72,6 +73,24 @@ add_custom_command(OUTPUT ${out}
             -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag
     DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag glslang-standalone
     COMMENT "glslang gs.frag (single output)")
+list(APPEND PS2GPU_SHADER_HEADERS ${out})
+# The swizzle straight to and from a colour target (a storage image).
+set(out ${PS2GPU_SHADER_DIR}/swizzle_image_comp.h)
+add_custom_command(OUTPUT ${out}
+    COMMAND glslang-standalone -V --target-env vulkan1.3 -DIMAGE --vn spirv_swizzle_image_comp
+            -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/swizzle.comp
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/swizzle.comp ${CMAKE_CURRENT_LIST_DIR}/shaders/gs_address.glsl
+            glslang-standalone
+    COMMENT "glslang swizzle.comp (a target's image)")
+list(APPEND PS2GPU_SHADER_HEADERS ${out})
+# ...and from a depth buffer, sampled.
+set(out ${PS2GPU_SHADER_DIR}/swizzle_depth_comp.h)
+add_custom_command(OUTPUT ${out}
+    COMMAND glslang-standalone -V --target-env vulkan1.3 -DDEPTH_IMAGE --vn spirv_swizzle_depth_comp
+            -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/swizzle.comp
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/swizzle.comp ${CMAKE_CURRENT_LIST_DIR}/shaders/gs_address.glsl
+            glslang-standalone
+    COMMENT "glslang swizzle.comp (a depth buffer)")
 list(APPEND PS2GPU_SHADER_HEADERS ${out})
 # ...and blending in the shader, from a copy of the target (a factor over 1).
 set(out ${PS2GPU_SHADER_DIR}/gs_frag_blend.h)

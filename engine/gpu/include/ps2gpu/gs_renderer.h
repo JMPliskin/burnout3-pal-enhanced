@@ -64,6 +64,10 @@ struct GsDrawState {
     std::uint32_t width = 640, height = 448;            /* how much of it to make */
     std::int32_t scissor_x0 = 0, scissor_y0 = 0, scissor_x1 = 639, scissor_y1 = 447;   /* inclusive */
     bool gouraud = true;                                 /* else the last vertex's colour */
+    /* A sprite (PRIM 6): on a target drawn larger, sampled where the GS
+       samples - at its pixel's centre - not between (a 2D blit's strips met
+       at seams of texels from beyond them). */
+    bool sprite = false;
 
     /* Texturing (PRIM.TME): a texture uploaded under this key. */
     bool textured = false;
@@ -247,6 +251,8 @@ std::string RendererCounters();
 /* The GPU's time on the frames' command buffers, in all (nanoseconds; 0
    where the GPU keeps no time). */
 std::uint64_t GpuBusyNanoseconds();
+/* PS2HOST_GPU_PROFILE: the GPU's time since the last call, by what it did. */
+std::string GpuProfileReport();
 
 }  // namespace ps2gpu
 

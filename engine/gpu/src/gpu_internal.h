@@ -28,6 +28,10 @@ inline double g_wait_seconds = 0;
 /* The GPU's time on the command buffers handed over, in all (timestamps at
    each one's start and end; GpuBusyNanoseconds). */
 inline std::atomic<std::uint64_t> g_gpu_ns{0};
+/* PS2HOST_GPU_PROFILE: the GPU's time by what it did (GpuProfileReport). */
+enum ProfileKind { kProfOther, kProfDraw, kProfSwizzle, kProfLinear, kProfMemory, kProfFeedback, kProfDecode,
+                   kProfUpload, kProfClear, kProfDate, kProfReadback, kProfKinds };
+inline std::atomic<std::uint64_t> g_profile_ns[kProfKinds] = {};
 struct WaitReason { const char* why; std::uint64_t count; double seconds; };
 inline WaitReason g_waits[16] = {};
 inline void CountWait(const char* why, double seconds) {
@@ -73,6 +77,15 @@ public:
     bool Flush();
     void AfterSubmit(std::function<void()> done) { after_submit_.push_back(std::move(done)); }
     bool recording() const { return open_; }
+    /* PS2HOST_GPU_PROFILE: the GPU's time since the last mark (or the command
+       buffer's start) counted as `kind` - a timestamp as the work before it
+       ends. */
+    void Mark(VkCommandBuffer c, int kind) {
+        if (!profile_ || marks_[current_].size() >= kMarks) return;
+        vkCmdWriteTimestamp(c, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, profile_,
+                            std::uint32_t(current_) * kMarks + std::uint32_t(marks_[current_].size()));
+        marks_[current_].push_back(kind);
+    }
     /* Counts command buffers begun: what was set in one is not in the next. */
     std::uint64_t recording_id() const { return recordings_; }
     static constexpr int kSlots = 3;
@@ -107,6 +120,9 @@ private:
     double timestamp_ns_ = 0;               // a tick, in nanoseconds
     bool stamped_[kSlots] = {};
     void MakeTimestamps();
+    static constexpr std::uint32_t kMarks = 8192;
+    VkQueryPool profile_ = VK_NULL_HANDLE;
+    std::vector<int> marks_[kSlots];
     std::vector<std::function<void()>> after_submit_;
     int current_ = 0;
     bool in_flight_[kSlots] = {};
@@ -128,6 +144,11 @@ void VulkanGpu::RecordInPass(F&& record) {
         if (timestamps_) {
             vkCmdResetQueryPool(cmd, timestamps_, 2 * std::uint32_t(current_), 2);
             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps_, 2 * std::uint32_t(current_));
+        }
+        if (profile_) {
+            vkCmdResetQueryPool(cmd, profile_, std::uint32_t(current_) * kMarks, kMarks);
+            marks_[current_].clear();
+            Mark(cmd, kProfOther);
         }
     }
     record(cmd);
@@ -156,6 +177,16 @@ inline bool VulkanGpu::Retire(int slot, const char* why) {
             g_gpu_ns += std::uint64_t(double(ticks[1] - ticks[0]) * timestamp_ns_);
         stamped_[slot] = false;
     }
+    if (profile_ && marks_[slot].size() > 1) {
+        std::vector<std::uint64_t> ticks(marks_[slot].size());
+        if (vkGetQueryPoolResults(device, profile_, std::uint32_t(slot) * kMarks, std::uint32_t(ticks.size()),
+                                  ticks.size() * sizeof ticks[0], ticks.data(), sizeof ticks[0],
+                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            for (std::size_t i = 1; i < ticks.size(); ++i)
+                if (ticks[i] > ticks[i - 1])
+                    g_profile_ns[marks_[slot][i]] += std::uint64_t(double(ticks[i] - ticks[i - 1]) * timestamp_ns_);
+        marks_[slot].clear();
+    }
     std::vector<std::function<void()>> done;
     done.swap(slot_done_[slot]);
     for (auto& f : done) f();
@@ -165,6 +196,7 @@ inline bool VulkanGpu::Retire(int slot, const char* why) {
 inline bool VulkanGpu::Flush() {
     if (!open_) return true;
     if (end_pass) end_pass(cmd);
+    Mark(cmd, kProfOther);
     open_ = false;
     if (timestamps_) {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps_, 2 * std::uint32_t(current_) + 1);

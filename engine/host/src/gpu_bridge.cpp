@@ -960,6 +960,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.scissor_y1 = int(Bits(c.scissor, 48, 11));
     state.gouraud = (call.prim >> 3) & 1;
     state.textured = (call.prim >> 4) & 1;
+    state.sprite = type == 6 && s.renderer->Scale() > 1;     // (at 1x it would only split batches)
     const bool fst = (call.prim >> 8) & 1;
     const u32 tw = 1u << std::min(Bits(c.tex0, 26, 4), 10u), th = 1u << std::min(Bits(c.tex0, 30, 4), 10u);
     // The primitive as triangles, and the pixels it can reach.
@@ -1301,7 +1302,8 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
    has (at most 4). */
 u32 WantedScale(const ps2gpu::Display* display) {
     const std::string wanted = Setting("resolution", "original");
-    if (wanted == "2x") return 2;
+    // "2x" (the menu's), or 3x and 4x written into the file by hand.
+    if (wanted.size() == 2 && wanted[1] == 'x' && wanted[0] >= '2' && wanted[0] <= '4') return u32(wanted[0] - '0');
     if (wanted == "display") {
         const u32 lines = display ? display->PixelHeight() : 0;
         return std::min(4u, std::max(1u, lines / 448u));
@@ -1449,6 +1451,9 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir) {
                          static_cast<unsigned long long>(frame), static_cast<unsigned long long>(s.serial),
                          static_cast<unsigned long long>(s.write_backs), static_cast<unsigned long long>(s.reloads),
                          static_cast<unsigned long long>(s.decodes), s.owned.size(), s.textures.size());
+        if (frame % 300 == 0 && std::getenv("PS2HOST_GPU_PROFILE"))
+            std::fprintf(stderr, "[gpu] frame %llu: %s\n", static_cast<unsigned long long>(frame),
+                         ps2gpu::GpuProfileReport().c_str());
         if (frame % 100 == 0 && std::getenv("PS2HOST_GPU_COUNT")) {
             std::fprintf(stderr, "[gpu]   last 100 frames: %s\n", ps2gpu::RendererCounters().c_str());
             std::vector<std::pair<u64, std::string>> kinds;

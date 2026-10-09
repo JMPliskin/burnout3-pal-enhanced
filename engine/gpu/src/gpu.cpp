@@ -5,6 +5,8 @@
 
 #include "gpu_internal.h"
 
+#include <cstdlib>
+
 #include <cstdio>
 #include <vector>
 
@@ -126,6 +128,10 @@ void VulkanGpu::MakeTimestamps() {
         return;
     }
     timestamp_ns_ = properties.limits.timestampPeriod;
+    if (std::getenv("PS2HOST_GPU_PROFILE")) {
+        qci.queryCount = kMarks * kSlots;
+        if (vkCreateQueryPool(device, &qci, nullptr, &profile_) != VK_SUCCESS) profile_ = VK_NULL_HANDLE;
+    }
 }
 
 bool VulkanGpu::InitShared(VkInstance shared_instance, VkPhysicalDevice shared_gpu, VkDevice shared_device,
