@@ -120,10 +120,10 @@ void main() {
     if (p.textured != 0u) {
         vec2 uv = coordinate.xy / coordinate.z * vec2(TextureSize());
         // A sprite on a target drawn larger: sampled as finely as the target
-        // is drawn, within the sprite's own pixels (a pixel of it only partly
-        // covered reached into the next strip's texels), and - REPEAT, the
-        // sprite within one copy of the texture - not wrapping round to its
-        // far side (a tile's edge: seams). Strips of one texture meet as one.
+        // is drawn, within the coordinates the GS reads at its first and last
+        // pixels (gs_renderer.cpp's DrawTriangles: further, where it meets
+        // another), and - REPEAT, the sprite within one copy of the texture -
+        // not wrapping round to its far side (a tile's edge: seams).
         const uint snap = (p.blend_ops >> 8) & 255u;
         if (snap > 1u) {
             const vec2 size = vec2(TextureSize());

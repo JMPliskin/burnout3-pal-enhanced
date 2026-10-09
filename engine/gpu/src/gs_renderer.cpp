@@ -333,6 +333,33 @@ private:
        picture before them - a fainter blur). */
     bool drawn_any_ = false;
     int drawn_x0_ = 0, drawn_y0_ = 0, drawn_x1_ = 0, drawn_y1_ = 0;     /* pixels, inclusive */
+    /* The batch's sprites (DrawTriangles: those meeting another edge to edge
+       reach that edge): where on the screen and in the texture, and their
+       first vertex in pending_. */
+    struct SpriteSpan {
+        float x0, x1, y0, y1, s0, s1, t0, t1;
+        std::size_t vertex;
+    };
+    std::vector<SpriteSpan> sprites_;
+    /* A flat triangle (one Z, one Q: text, a HUD) on a target drawn larger,
+       the last one (a quad is two, sharing a diagonal), and the batch's
+       quads: each kept half a texel inside its texels (a letter of a font
+       page off its neighbour's: dark lines along italic letters' edges),
+       but for an edge it shares with another (a mesh of one picture). */
+    struct FlatTriangle {
+        GsVertex v[3];
+        std::size_t vertex;
+    };
+    FlatTriangle last_flat_{};
+    bool last_flat_valid_ = false;
+    struct FlatQuad {
+        GsVertex v[4];
+        std::size_t vertex[2];          // its triangles' first vertices in pending_
+        float lo[2], hi[2];             // S, T: its texels' extent
+        float range[4];                 // ...and what it keeps to
+    };
+    std::vector<FlatQuad> quads_;
+    void FlatQuadRange(FlatQuad& q, const GsDrawState& state);
     /* ...and what it reads of its target (texels; for blending in the shader
        the pixels it draws), so the copy is of that alone - a whole target a
        copy was 60 a race frame, ten megabytes each at 3x. read_all_: what it
@@ -1771,32 +1798,110 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
         }
         drawn_any_ = true;
     }
-    // A sprite's S and T at the outer edges of its first and last pixels
-    // (the GS samples a pixel at its whole coordinates: x from ceil(x0) to
-    // ceil(x1) - 1, each pixel half a pixel either side of it) - strips of
-    // one texture (a movie, text, a menu's pictures) meeting as one. A
-    // target sampled (a post effect over strips of a buffer cut up in
-    // memory - the race's glow) only as far as the GS reads, its first and
-    // last pixels' own coordinates: past them, bright columns at its strips.
-    const float edge = state.texture_target ? 0.0f : 0.5f;
-    float range[4] = {0, 0, 0, 0};
+    // A sprite's S and T at its first and last pixels (the GS samples a
+    // pixel at its whole coordinates: x from ceil(x0) to ceil(x1) - 1): no
+    // further than the GS reads - a glyph of a font's page stays off its
+    // neighbour's texels (a dark line between letters). Where a sprite meets
+    // another of the batch edge to edge, on the screen and in the texture
+    // (strips of a movie, a picture), both reach the outer edge of their
+    // pixels there, half a pixel on, and meet as one: no seam either.
+    // (Not kept: a range no coordinate reaches.)
+    float range[4] = {-1e9f, -1e9f, 1e9f, 1e9f};
     if (state.sprite && count >= 3) {
-        float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y, s0 = 0, s1 = 0, t0 = 0, t1 = 0;
+        SpriteSpan sp{};
+        sp.x0 = sp.x1 = v[0].x;
+        sp.y0 = sp.y1 = v[0].y;
         for (std::size_t i = 0; i < count; ++i) {
             const float q = v[i].q != 0.0f ? v[i].q : 1.0f;
-            if (v[i].x <= x0) x0 = v[i].x, s0 = v[i].s / q;
-            if (v[i].x >= x1) x1 = v[i].x, s1 = v[i].s / q;
-            if (v[i].y <= y0) y0 = v[i].y, t0 = v[i].t / q;
-            if (v[i].y >= y1) y1 = v[i].y, t1 = v[i].t / q;
+            if (v[i].x <= sp.x0) sp.x0 = v[i].x, sp.s0 = v[i].s / q;
+            if (v[i].x >= sp.x1) sp.x1 = v[i].x, sp.s1 = v[i].s / q;
+            if (v[i].y <= sp.y0) sp.y0 = v[i].y, sp.t0 = v[i].t / q;
+            if (v[i].y >= sp.y1) sp.y1 = v[i].y, sp.t1 = v[i].t / q;
         }
-        auto at = [edge](float a0, float a1, float c0, float c1, float first, float* lo, float* hi) {
-            const float last = std::max(first, std::ceil(a1) - 1.0f);
+        // The coordinate at a's position along an axis: its first or last
+        // pixel's, `out` pixels further out.
+        auto at = [](float a0, float a1, float c0, float c1, bool last_end, float out) {
+            const float first = std::ceil(a0), last = std::max(first, std::ceil(a1) - 1.0f);
             const float per = a1 > a0 ? (c1 - c0) / (a1 - a0) : 0.0f;
-            *lo = c0 + (first - edge - a0) * per;
-            *hi = c0 + (last + edge - a0) * per;
+            return last_end ? c0 + (last + out - a0) * per : c0 + (first - out - a0) * per;
         };
-        at(x0, x1, s0, s1, std::ceil(x0), &range[0], &range[2]);
-        at(y0, y1, t0, t1, std::ceil(y0), &range[1], &range[3]);
+        range[0] = at(sp.x0, sp.x1, sp.s0, sp.s1, false, 0.0f);
+        range[2] = at(sp.x0, sp.x1, sp.s0, sp.s1, true, 0.0f);
+        range[1] = at(sp.y0, sp.y1, sp.t0, sp.t1, false, 0.0f);
+        range[3] = at(sp.y0, sp.y1, sp.t0, sp.t1, true, 0.0f);
+        {
+            // (A target's strips too: the frame's copy to the display buffer in
+            // 32-pixel strips - a faint line through text at each. The race's
+            // glow, over strips of a buffer cut up in memory, comes a strip a
+            // batch: those keep to the GS's reach.)
+            auto same = [](float a, float b) { return std::fabs(a - b) <= 1e-4f * std::max(1.0f, std::fabs(a)); };
+            const std::size_t first_vertex = pending_.size();
+            for (std::size_t n = sprites_.size(); n-- > 0 && sprites_.size() - n <= 256;) {
+                SpriteSpan& o = sprites_[n];
+                auto widen = [&](int mine, int theirs, float value_mine, float value_theirs) {
+                    range[mine] = value_mine;
+                    for (int k = 0; k < 6 && o.vertex + k < pending_.size(); ++k)
+                        pending_[o.vertex + k].range[theirs] = value_theirs;
+                };
+                if (same(o.y0, sp.y0) && same(o.y1, sp.y1) && same(o.t0, sp.t0) && same(o.t1, sp.t1)) {
+                    if (same(o.x1, sp.x0) && same(o.s1, sp.s0))         // it, then this one to its right
+                        widen(0, 2, at(sp.x0, sp.x1, sp.s0, sp.s1, false, 0.5f),
+                              at(o.x0, o.x1, o.s0, o.s1, true, 0.5f));
+                    else if (same(o.x0, sp.x1) && same(o.s0, sp.s1))    // this one to its left
+                        widen(2, 0, at(sp.x0, sp.x1, sp.s0, sp.s1, true, 0.5f),
+                              at(o.x0, o.x1, o.s0, o.s1, false, 0.5f));
+                }
+                if (same(o.x0, sp.x0) && same(o.x1, sp.x1) && same(o.s0, sp.s0) && same(o.s1, sp.s1)) {
+                    if (same(o.y1, sp.y0) && same(o.t1, sp.t0))         // it, then this one below
+                        widen(1, 3, at(sp.y0, sp.y1, sp.t0, sp.t1, false, 0.5f),
+                              at(o.y0, o.y1, o.t0, o.t1, true, 0.5f));
+                    else if (same(o.y0, sp.y1) && same(o.t0, sp.t1))    // this one above
+                        widen(3, 1, at(sp.y0, sp.y1, sp.t0, sp.t1, true, 0.5f),
+                              at(o.y0, o.y1, o.t0, o.t1, false, 0.5f));
+                }
+            }
+            sp.vertex = first_vertex;
+            sprites_.push_back(sp);
+        }
+    }
+    const bool flat = scale_ > 1 && state.textured && !state.sprite && !state.texture_target && count == 3 &&
+                      v[0].z == v[1].z && v[1].z == v[2].z && v[0].q == v[1].q && v[1].q == v[2].q;
+    if (!flat) last_flat_valid_ = false;
+    if (flat) {
+        auto same = [](const GsVertex& a, const GsVertex& b) {
+            return a.x == b.x && a.y == b.y && a.s == b.s && a.t == b.t;
+        };
+        int shared = 0, lone = -1;
+        if (last_flat_valid_) {
+            for (int i = 0; i < 3; ++i) {
+                bool found = false;
+                for (int j = 0; j < 3; ++j) found = found || same(v[i], last_flat_.v[j]);
+                if (found) ++shared;
+                else lone = i;
+            }
+        }
+        if (shared == 2 && lone >= 0) {
+            // The second of a quad: the two kept to the quad's texels.
+            FlatQuad q{};
+            q.v[0] = last_flat_.v[0];
+            q.v[1] = last_flat_.v[1];
+            q.v[2] = last_flat_.v[2];
+            q.v[3] = v[lone];
+            q.vertex[0] = last_flat_.vertex;
+            q.vertex[1] = pending_.size();
+            FlatQuadRange(q, state);
+            for (int n = 0; n < 4; ++n) range[n] = q.range[n];
+            for (int k = 0; k < 3; ++k)
+                for (int n = 0; n < 4; ++n) pending_[q.vertex[0] + k].range[n] = q.range[n];
+            quads_.push_back(q);
+            last_flat_valid_ = false;
+        } else {
+            last_flat_.v[0] = v[0];
+            last_flat_.v[1] = v[1];
+            last_flat_.v[2] = v[2];
+            last_flat_.vertex = pending_.size();
+            last_flat_valid_ = true;
+        }
     }
     for (std::size_t i = 0; i + 2 < count; i += 3) {
         for (int k = 0; k < 3; ++k) {
@@ -1809,8 +1914,67 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
     }
 }
 
+void VulkanGsRenderer::FlatQuadRange(FlatQuad& q, const GsDrawState& state) {
+    const float tw = float(state.tw ? state.tw : 2048), th = float(state.th ? state.th : 2048);
+    for (int a = 0; a < 2; ++a) {
+        q.lo[a] = 1e30f;
+        q.hi[a] = -1e30f;
+    }
+    for (const GsVertex& p : q.v) {
+        const float w = p.q != 0.0f ? p.q : 1.0f;
+        q.lo[0] = std::min(q.lo[0], p.s / w);
+        q.hi[0] = std::max(q.hi[0], p.s / w);
+        q.lo[1] = std::min(q.lo[1], p.t / w);
+        q.hi[1] = std::max(q.hi[1], p.t / w);
+    }
+    // Half a texel in (bilinear reads a texel either side of the coordinate).
+    const float in[2] = {(state.bilinear ? 0.5f : 0.01f) / tw, (state.bilinear ? 0.5f : 0.01f) / th};
+    bool open_lo[2] = {false, false}, open_hi[2] = {false, false};
+    // An edge shared with another quad of the batch (both its corners, in
+    // place and texture): that side not kept, on either.
+    auto corner_on = [](const FlatQuad& f, const GsVertex& p, int axis, bool high) {
+        const float w = p.q != 0.0f ? p.q : 1.0f;
+        const float c = axis == 0 ? p.s / w : p.t / w;
+        return std::fabs(c - (high ? f.hi[axis] : f.lo[axis])) <= 1e-6f;
+    };
+    for (std::size_t n = quads_.size(); n-- > 0 && quads_.size() - n <= 256;) {
+        FlatQuad& o = quads_[n];
+        int shared[2], found = 0;
+        for (int i = 0; i < 4 && found < 2; ++i)
+            for (int j = 0; j < 4; ++j)
+                if (q.v[i].x == o.v[j].x && q.v[i].y == o.v[j].y && q.v[i].s == o.v[j].s && q.v[i].t == o.v[j].t) {
+                    shared[found++] = i;
+                    break;
+                }
+        if (found < 2) continue;
+        bool changed = false;
+        for (int axis = 0; axis < 2; ++axis)
+            for (int high = 0; high < 2; ++high) {
+                if (!corner_on(q, q.v[shared[0]], axis, high) || !corner_on(q, q.v[shared[1]], axis, high)) continue;
+                (high ? open_hi : open_lo)[axis] = true;
+                // ...and the other quad's side through the same corners.
+                for (int other = 0; other < 2; ++other)
+                    if (corner_on(o, q.v[shared[0]], axis, other) && corner_on(o, q.v[shared[1]], axis, other)) {
+                        o.range[axis + (other ? 2 : 0)] = other ? o.hi[axis] : o.lo[axis];
+                        changed = true;
+                    }
+            }
+        if (changed)
+            for (int t = 0; t < 2; ++t)
+                for (int k = 0; k < 3; ++k)
+                    for (int c = 0; c < 4; ++c) pending_[o.vertex[t] + k].range[c] = o.range[c];
+    }
+    for (int axis = 0; axis < 2; ++axis) {
+        q.range[axis] = open_lo[axis] ? q.lo[axis] : std::min(q.lo[axis] + in[axis], 0.5f * (q.lo[axis] + q.hi[axis]));
+        q.range[axis + 2] = open_hi[axis] ? q.hi[axis] : std::max(q.hi[axis] - in[axis], 0.5f * (q.lo[axis] + q.hi[axis]));
+    }
+}
+
 void VulkanGsRenderer::Flush() {
     drawn_any_ = false;
+    sprites_.clear();
+    quads_.clear();
+    last_flat_valid_ = false;
     // What the batch reads of its own target (DrawTriangles), for its copy.
     const bool read_all = read_all_ || !read_any_;
     const int read_x0 = read_x0_, read_y0 = read_y0_, read_x1 = read_x1_, read_y1 = read_y1_;
@@ -1930,7 +2094,7 @@ void VulkanGsRenderer::Flush() {
     params.scale = source ? source->scale : 1;
     params.blend_ops = std::uint32_t(state_.a) | std::uint32_t(state_.b) << 2 | std::uint32_t(state_.c) << 4 |
                        std::uint32_t(state_.d) << 6;
-    if (state_.sprite && state_.textured && t->scale > 1) params.blend_ops |= (t->scale & 0xFFu) << 8;
+    if (state_.textured && t->scale > 1) params.blend_ops |= (t->scale & 0xFFu) << 8;
     const std::uint32_t count = std::uint32_t(pending_.size());
     static int complaints = 0;
     if ((!pipeline || !set) && complaints < 5) {
