@@ -95,6 +95,12 @@ private:
     VkCommandBuffer cmds_[kInFlight] = {};
     VkSemaphore acquireds_[kInFlight] = {};
     VkFence fences_[kInFlight] = {};
+    /* Signalled as the acquired image is free (BeginPresent waits for it on
+       the CPU): the present's submission never waits on the queue for the
+       display - the queue the renderer shares, its work held behind each
+       present's wait for a refresh (at 144 Hz the GS thread waited on its
+       fences most of a loading screen, kept to 144 frames a second). */
+    VkFence acquire_fences_[kInFlight] = {};
     int slot_ = 0;
     // The current present's (slot_'s).
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
@@ -298,6 +304,8 @@ bool VulkanDisplay::Init(const char* title, int width, int height) {
     for (int i = 0; i < kInFlight; ++i) {
         if (!Check(vkCreateSemaphore(device_, &sci, nullptr, &acquireds_[i]), "vkCreateSemaphore")) return false;
         if (!Check(vkCreateFence(device_, &fci, nullptr, &fences_[i]), "vkCreateFence")) return false;
+        VkFenceCreateInfo unsignalled{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (!Check(vkCreateFence(device_, &unsignalled, nullptr, &acquire_fences_[i]), "vkCreateFence")) return false;
     }
     cmd_ = cmds_[0];
     acquired_ = acquireds_[0];
@@ -475,7 +483,9 @@ bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
     acquired_ = acquireds_[slot_];
     fence_ = fences_[slot_];
     vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
-    VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_, VK_NULL_HANDLE, index);
+    VkFence acquire_fence = acquire_fences_[slot_];
+    vkResetFences(device_, 1, &acquire_fence);
+    VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_, acquire_fence, index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         stale_ = true;
         return false;
@@ -484,6 +494,7 @@ bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
         *ok = false;
         return false;
     }
+    vkWaitForFences(device_, 1, &acquire_fence, VK_TRUE, UINT64_MAX);
     vkResetFences(device_, 1, &fence_);
     vkResetCommandBuffer(cmd_, 0);
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -892,6 +903,7 @@ VulkanDisplay::~VulkanDisplay() {
     if (device_) {
         for (int i = 0; i < kInFlight; ++i) {
             if (fences_[i]) vkDestroyFence(device_, fences_[i], nullptr);
+            if (acquire_fences_[i]) vkDestroyFence(device_, acquire_fences_[i], nullptr);
             if (acquireds_[i]) vkDestroySemaphore(device_, acquireds_[i], nullptr);
         }
         if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
