@@ -1189,6 +1189,13 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.ztst = Bits(c.test, 17, 2);
     state.zbp = Bits(c.zbuf, 0, 9);
     state.depth_write = Bits(c.zbuf, 32, 1) == 0;
+    // An alpha test failing every pixel (ATST NEVER) writes Z only for AFAIL
+    // ZB_ONLY: otherwise none, whatever ZMSK says. Burnout 3's glow passes
+    // (ATST NEVER, FB_ONLY, ZTST ALWAYS, ZMSK 0) were taken as writing their
+    // depth buffer - over the glow images' own memory: each pass made those
+    // stale, and reloaded the depth buffer (at 4x, a third of the GPU's time
+    // went to moving pictures to and from its memory).
+    if (state.alpha_test && state.atst == 0 && state.afail != 2) state.depth_write = false;
     // ZTST ALWAYS with ZMSK: the depth buffer plays no part. Burnout 3's race
     // blurs into scratch targets at its depth buffer's address with ZBUF left
     // there; treating that as a depth buffer would bring it up to date - a
