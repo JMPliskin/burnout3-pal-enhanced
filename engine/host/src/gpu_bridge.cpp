@@ -741,14 +741,24 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     key ^= texa * 0x165667B19E3779F9ull;
     const u32 clut_rows = ClutRowsOf(psm, Bits(c.tex0, 56, 5));
     key ^= ClutHash(b, psm, Bits(c.tex0, 56, 5)) * 0x27D4EB2F165667C5ull;
+    gs::MipLevels mips = gs::LevelsOf(c);
+    if (!gs::MipMode(c)) mips.count = 1;        // levels never read: not decoded
+    for (u32 n = 1; n < mips.count; ++n) key ^= (u64(mips.tbp[n]) << 6 | mips.tbw[n]) * (0x9E3779B97F4A7C15ull + n);
     Cached& t = b.textures[key];
     if (!t.renderer_key) {
         t.renderer_key = b.next_texture++;
         b.texture_lru.push_front(key);
         t.lru = b.texture_lru.begin();
         ++g_mutations;
-        t.begin = tbp;
-        t.end = std::min(16384u, tbp + std::max(1u, tbw * 64 * th * PixelBits(psm) / 8 / 256 + 32));
+        // Every level's blocks (they follow level 0, as a rule).
+        t.begin = 16384;
+        t.end = 0;
+        for (u32 n = 0; n < mips.count; ++n) {
+            const u32 h = std::max(1u, th >> n);
+            t.begin = std::min(t.begin, mips.tbp[n]);
+            t.end = std::max(t.end, std::min(16384u, mips.tbp[n] + std::max(1u, std::max(1u, mips.tbw[n]) * 64 * h *
+                                                                                    PixelBits(psm) / 8 / 256 + 32)));
+        }
         b.IndexTexture(&t, true);
     } else {
         b.texture_lru.splice(b.texture_lru.begin(), b.texture_lru, t.lru);
@@ -784,6 +794,11 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         d.texa_lo = u32(texa & 0x80FF);
         d.ta1 = Bits(texa, 32, 8);
         d.csa = Bits(c.tex0, 56, 5);
+        d.levels = mips.count;
+        for (u32 n = 0; n < mips.count; ++n) {
+            d.level_tbp[n] = mips.tbp[n];
+            d.level_tbw[n] = mips.tbw[n];
+        }
         // Through the GPU's CLUT, its rows the GPU lacks sent over first.
         d.clut = nullptr;
         if (clut_rows) {
@@ -1009,7 +1024,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         bool valid = false;
         u64 mutations = 0;
         const gs::Context* context = nullptr;
-        u64 regs[11] = {};
+        u64 regs[12] = {};
         u32 rows = 0, zmax = 0;
         ps2gpu::GsDrawState state;
         Owned* target = nullptr;
@@ -1018,8 +1033,8 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         bool draws_colour = false;
     };
     static Fast fast;
-    const u64 regs[11] = {call.prim, c.frame, c.scissor, c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf,
-                          call.texa, call.fogcol | (u64(call.pabe) << 63)};
+    const u64 regs[12] = {call.prim, c.frame, c.scissor, c.tex0, c.tex1, c.clamp, c.alpha, c.test, c.zbuf,
+                          call.texa, call.fogcol | (u64(call.pabe) << 63), c.miptbp1 ^ (c.miptbp2 * 31)};
     if (s.primary && fast.valid && fast.mutations == g_mutations && fast.context == call.context &&
         rows <= fast.rows && std::memcmp(regs, fast.regs, sizeof regs) == 0 && !s.Dumping() &&
         (!fast.source || !fast.source->stale)) {
@@ -1123,6 +1138,9 @@ void OnDraw(const gs::Gs::DrawCall& call) {
         const int k = int(std::int32_t(Bits(c.tex1, 32, 12) << 20) >> 20);
         const u32 mmin = Bits(c.tex1, 6, 3);
         state.bilinear = k <= 0 ? Bits(c.tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
+        // Mipmapped, per pixel (gs.frag's Sample): the levels decoded with it
+        // (CachedTexture). A texture of K alone that never minifies, as before.
+        state.mip = s.primary && !state.texture_target ? gs::MipMode(c) : 0;
         state.wms = Bits(c.clamp, 0, 2);
         state.wmt = Bits(c.clamp, 2, 2);
         state.minu = Bits(c.clamp, 4, 10);

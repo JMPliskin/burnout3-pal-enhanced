@@ -16,7 +16,7 @@
  * the queue first (Gs::Finish).
  *
  * Stage one samples textures at the nearest texel or bilinearly and does not
- * dither; anti-aliasing and mipmapping are not modelled.
+ * dither; anti-aliasing is not modelled.
  */
 
 #include <algorithm>
@@ -159,6 +159,60 @@ void Coords(const Vertex& v, bool fst, u32 tw, u32 th, float* u, float* t) {
 }
 
 }  // namespace
+
+MipLevels LevelsOf(const Context& c) {
+    MipLevels m;
+    m.tbp[0] = Bits(c.tex0, 0, 14);
+    m.tbw[0] = Bits(c.tex0, 14, 6);
+    const u32 mxl = std::min(Bits(c.tex1, 2, 3), 6u), mmin = Bits(c.tex1, 6, 3);
+    if (mxl == 0 || mmin < 2 || mmin > 5) return m;
+    m.count = mxl + 1;
+    const u32 tw = 1u << std::min(Bits(c.tex0, 26, 4), 10u), th = 1u << std::min(Bits(c.tex0, 30, 4), 10u);
+    const u32 bits = BitsPerPixel(Bits(c.tex0, 20, 6));
+    for (u32 n = 1; n <= mxl; ++n) {
+        if (n <= 3 && Bits(c.tex1, 9, 1)) {
+            const u32 w = std::max(1u, tw >> (n - 1)), h = std::max(1u, th >> (n - 1));
+            m.tbp[n] = m.tbp[n - 1] + w * h * bits / 8 / 256;
+            m.tbw[n] = std::max(1u, m.tbw[n - 1] / 2);
+        } else {
+            const u64 r = n <= 3 ? c.miptbp1 : c.miptbp2;
+            const int shift = int((n - 1) % 3) * 20;
+            m.tbp[n] = Bits(r, shift, 14);
+            m.tbw[n] = Bits(r, shift + 14, 6);
+        }
+    }
+    return m;
+}
+
+u32 MipMode(const Context& c) {
+    static const bool off = std::getenv("PS2HOST_NO_MIPMAPS") != nullptr;     // to compare: level 0 alone, as before
+    if (off) return 0;
+    const int k = int(s32(Bits(c.tex1, 32, 12) << 20) >> 20);
+    if (LevelsOf(c).count == 1 || (Bits(c.tex1, 0, 1) && k <= 0)) return 0;
+    return 2u | std::min(Bits(c.tex1, 2, 3), 6u) << 2 | Bits(c.tex1, 6, 3) << 5 | Bits(c.tex1, 5, 1) << 8 |
+           Bits(c.tex1, 0, 1) << 9 | Bits(c.tex1, 19, 2) << 10 | Bits(c.tex1, 32, 12) << 16;
+}
+
+MipChoice ChooseLevel(u32 m, float q) {
+    MipChoice out;
+    const int mxl = int((m >> 2) & 7), mmin = int((m >> 5) & 7);
+    float lod = float(s32(m << 4) >> 20) / 16.0f;      // K, 4 fractional bits
+    if (!((m >> 9) & 1)) lod += -std::log2(std::fabs(q)) * float(1u << ((m >> 10) & 3));
+    if (!(lod > 0.0f)) {
+        out.linear = (m >> 8) & 1;
+        return out;
+    }
+    out.linear = mmin == 4 || mmin == 5;
+    if (mmin == 2 || mmin == 4) {
+        out.n0 = out.n1 = int(std::min(std::floor(lod + 0.5f), float(mxl)));
+        return out;
+    }
+    lod = std::min(lod, float(mxl));
+    out.n0 = int(std::floor(lod));
+    out.f = lod - float(out.n0);
+    out.n1 = out.n0 < mxl && out.f > 0.0f ? out.n0 + 1 : out.n0;
+    return out;
+}
 
 // ---------------------------------------------------------------- primitives
 
@@ -440,7 +494,7 @@ void Gs::DrawTriangle(const Job& job, int band, int bands) {
                 const float s = w0 * a.s + w1 * b.s + w2 * c.s, t = w0 * a.t + w1 * b.t + w2 * c.t;
                 const float q = w0 * a.q + w1 * b.q + w2 * c.q;
                 const float qq = q != 0.0f ? q : 1.0f;
-                Plot(st, x, y, z, r, g, bl, al, s / qq * float(tw), t / qq * float(th), tme, fog);
+                Plot(st, x, y, z, r, g, bl, al, s / qq * float(tw), t / qq * float(th), tme, fog, qq);
             }
         }
     }
@@ -489,6 +543,8 @@ void Gs::Prepare() {
     const int k = int(s32(Bits(c.tex1, 32, 12) << 20) >> 20);
     const u32 mmin = Bits(c.tex1, 6, 3);
     s.linear = k <= 0 ? Bits(c.tex1, 5, 1) != 0 : (mmin == 1 || mmin == 4 || mmin == 5);
+    s.mip = MipMode(c);
+    s.levels = LevelsOf(c);
     s.tbp = Bits(c.tex0, 0, 14);
     s.tbw = Bits(c.tex0, 14, 6);
     s.tpsm = Bits(c.tex0, 20, 6);
@@ -533,21 +589,44 @@ void Gs::Prepare() {
     // the scissor's last row).
     const u32 rows = u32(std::max(0, s.sy1 + 1));
     s.tex_end = s.tbp + std::max(1u, s.tbw * 64 * s.th * BitsPerPixel(s.tpsm) / 8 / 256);
+    for (u32 n = 1; n < s.levels.count; ++n)        // and its mipmap levels'
+        s.tex_end = std::max(s.tex_end, s.levels.tbp[n] + std::max(1u, std::max(1u, s.levels.tbw[n]) * 64 *
+                                                                            std::max(1u, s.th >> n) *
+                                                                            BitsPerPixel(s.tpsm) / 8 / 256));
     s.frame_end = s.fbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.fpsm) / 8 / 256);
     s.z_end = s.zbp + std::max(1u, s.fbw * 64 * rows * BitsPerPixel(s.zpsm) / 8 / 256);
 }
 
 // TEX1: MMAG (bit 5) filters magnification, MMIN (6-8) minification, chosen by
-// the level of detail - K (bits 32-43, 4 fractional bits) here; LOD from Q is
-// not modelled yet. Linear filtering samples the four texels around
-// (u - 0.5, v - 0.5), as the GS does.
-u32 Gs::Texel(const Setup& st, float fu, float fv) const {
-    if (!st.linear) return TexelAt(st, int(std::floor(fu)), int(std::floor(fv)));
+// the level of detail: K (bits 32-43, 4 fractional bits) alone for the whole
+// primitive, or per pixel by its Q when mipmapped (MipMode, ChooseLevel).
+u32 Gs::Texel(const Setup& st, float fu, float fv, float q) const {
+    if (!st.mip) return Texel(st, fu, fv, 0, st.linear);
+    const MipChoice m = ChooseLevel(st.mip, q);
+    const u32 c0 = Texel(st, fu, fv, m.n0, m.linear);
+    if (m.n1 == m.n0) return c0;
+    const u32 c1 = Texel(st, fu, fv, m.n1, m.linear);
+    u32 out = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        const float a = float((c0 >> shift) & 0xFF), b = float((c1 >> shift) & 0xFF);
+        out |= u32(std::floor(a + (b - a) * m.f + 0.5f)) << shift;
+    }
+    return out;
+}
+
+// Level n's texel at (u, v) in level 0's texels: the nearest, or (linear) the
+// four around (u - 0.5, v - 0.5), as the GS does.
+u32 Gs::Texel(const Setup& st, float fu, float fv, int n, bool linear) const {
+    if (n) {
+        fu /= float(1 << n);
+        fv /= float(1 << n);
+    }
+    if (!linear) return TexelAt(st, int(std::floor(fu)), int(std::floor(fv)), n);
     const float x = fu - 0.5f, y = fv - 0.5f;
     const int u0 = int(std::floor(x)), v0 = int(std::floor(y));
     const float a = x - float(u0), b = y - float(v0);
-    const u32 t00 = TexelAt(st, u0, v0), t10 = TexelAt(st, u0 + 1, v0);
-    const u32 t01 = TexelAt(st, u0, v0 + 1), t11 = TexelAt(st, u0 + 1, v0 + 1);
+    const u32 t00 = TexelAt(st, u0, v0, n), t10 = TexelAt(st, u0 + 1, v0, n);
+    const u32 t01 = TexelAt(st, u0, v0 + 1, n), t11 = TexelAt(st, u0 + 1, v0 + 1, n);
     u32 out = 0;
     for (int shift = 0; shift < 32; shift += 8) {
         const float c00 = float((t00 >> shift) & 0xFF), c10 = float((t10 >> shift) & 0xFF);
@@ -558,10 +637,19 @@ u32 Gs::Texel(const Setup& st, float fu, float fv) const {
     return out;
 }
 
-u32 Gs::TexelAt(const Setup& s, int iu, int iv) const {
-    const int u = Wrap(iu, s.tw, s.wms, s.minu, s.maxu);
-    const int v = Wrap(iv, s.th, s.wmt, s.minv, s.maxv);
-    const u32 raw = memory.Read(s.tbp, s.tbw, u32(u) & 2047, u32(v) & 2047, s.tpsm);
+u32 Gs::TexelAt(const Setup& s, int iu, int iv, int n) const {
+    u32 raw;
+    if (n == 0) {
+        const int u = Wrap(iu, s.tw, s.wms, s.minu, s.maxu);
+        const int v = Wrap(iv, s.th, s.wmt, s.minv, s.maxv);
+        raw = memory.Read(s.tbp, s.tbw, u32(u) & 2047, u32(v) & 2047, s.tpsm);
+    } else {
+        // Level n: TW-n by TH-n, a region's bounds shifted as its coordinates.
+        const u32 w = std::max(1u, s.tw >> n), h = std::max(1u, s.th >> n);
+        const int u = std::clamp(Wrap(iu, w, s.wms, s.minu >> n, s.maxu >> n), 0, int(w) - 1);
+        const int v = std::clamp(Wrap(iv, h, s.wmt, s.minv >> n, s.maxv >> n), 0, int(h) - 1);
+        raw = memory.Read(s.levels.tbp[n], std::max(1u, s.levels.tbw[n]), u32(u), u32(v), s.tpsm);
+    }
     // A Z-format texture reads as its CT counterpart (Burnout 3's race reads
     // its depth buffer as a PSMZ16 texture, into the frame's alpha).
     switch (s.tpsm) {
@@ -579,12 +667,12 @@ u32 Gs::TexelAt(const Setup& s, int iu, int iv) const {
 }
 
 void Gs::Plot(const Setup& st, int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float u, float v, bool textured,
-              u8 fog) {
+              u8 fog, float q) {
     // Scissor.
     if (x < st.sx0 || x > st.sx1 || y < st.sy0 || y > st.sy1 || x < 0 || y < 0) return;
     u32 cr = r, cg = g, cb = b, ca = a;
     if (textured) {
-        const u32 texel = Texel(st, u, v);
+        const u32 texel = Texel(st, u, v, q);
         const u32 tr = texel & 0xFF, tg = (texel >> 8) & 0xFF, tb = (texel >> 16) & 0xFF, ta = texel >> 24;
         const bool tcc = st.tcc;
         switch (st.tfx) {

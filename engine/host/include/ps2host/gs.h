@@ -77,7 +77,34 @@ struct Vertex {
 struct Context {                // one of the two drawing contexts
     u64 tex0 = 0, clamp = 0, tex1 = 0, xyoffset = 0, scissor = 0, alpha = 0;
     u64 test = 0, fba = 0, frame = 0, zbuf = 0;
+    u64 miptbp1 = 0, miptbp2 = 0;   // mipmap levels 1-3 and 4-6: TBP and TBW of each
 };
+
+/* TEX1's mipmapping. The levels a primitive samples: MXL + 1 when MMIN picks
+   among them (2-5), else level 0 alone - and where each lies: MIPTBP1/2's TBP
+   and TBW, or for levels 1-3 with MTBA each straight after the one before
+   (TBW halved, at least 1). Level n is TW-n by TH-n. */
+struct MipLevels {
+    u32 count = 1;
+    u32 tbp[7] = {}, tbw[7] = {};
+};
+MipLevels LevelsOf(const Context& c);
+/* How a pixel picks among them, packed (the GPU's GsDrawState::mip): 0 none -
+   MMAG or MMIN by K alone, as the whole primitive - else bit 1, MXL in bits
+   2-4, MMIN 5-7, MMAG 8, LCM 9, L 10-11, K 16-27. A primitive of K alone that
+   never minifies has none. */
+u32 MipMode(const Context& c);
+/* A pixel's choice by its Q: level n0 (and n1, mixed by f, or n1 == n0), each
+   filtered bilinear or not - the GS's LOD, (log2(1/|Q|) << L) + K or K alone
+   (LCM), magnifying (MMAG, level 0) up to 0, else MMIN: 2 and 4 the nearest
+   level, 3 and 5 the two around; 4 and 5 bilinear within one. gs.frag's
+   Sample does the same. */
+struct MipChoice {
+    int n0 = 0, n1 = 0;
+    float f = 0.0f;
+    bool linear = false;
+};
+MipChoice ChooseLevel(u32 mode, float q);
 
 class Gs {
 public:
@@ -183,6 +210,8 @@ private:
         u32 tfx;
         bool tcc, linear;
         u32 tbp, tbw, tpsm, tw, th, csa;            // TEX0
+        u32 mip;                                    // MipMode: levels 1 and on in `levels`
+        MipLevels levels;
         u32 wms, wmt, minu, maxu, minv, maxv;       // CLAMP
         bool ate, date, zte, zmsk, abe, colclamp, fba, pabe, fge;
         u32 fcr, fcg, fcb;                          // FOGCOL
@@ -213,9 +242,11 @@ private:
     void DrawSprite(const Job& job, int band, int bands);
     void DrawTriangle(const Job& job, int band, int bands);
     void DrawLine(const Job& job, int band, int bands);
-    void Plot(const Setup& st, int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float u, float v, bool textured, u8 fog);
-    u32 Texel(const Setup& st, float u, float v) const;      /* filtered as TEX1 says */
-    u32 TexelAt(const Setup& st, int u, int v) const;        /* one texel, wrapped or clamped */
+    void Plot(const Setup& st, int x, int y, u32 z, u8 r, u8 g, u8 b, u8 a, float u, float v, bool textured, u8 fog,
+              float q = 1.0f);
+    u32 Texel(const Setup& st, float u, float v, float q) const;     /* filtered as TEX1 says, by Q */
+    u32 Texel(const Setup& st, float u, float v, int n, bool linear) const;    /* in level n */
+    u32 TexelAt(const Setup& st, int u, int v, int n = 0) const;      /* one texel, wrapped or clamped */
     void Transfer(u64 low, u64 high);           // HWREG data: host to local
     void TransferBlock(const u8* data, u32 qwords);     // IMAGE data, quadwords of it
     /* Tells on_memory of a rectangle of a buffer about to be read or written. */

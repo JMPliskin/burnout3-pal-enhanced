@@ -197,6 +197,8 @@ void Gs::WriteRegister(u32 address, u64 value) {
             break;
         case 0x08: case 0x09: ctx_[address - 0x08].clamp = value; break;
         case 0x14: case 0x15: ctx_[address - 0x14].tex1 = value; break;
+        case 0x34: case 0x35: ctx_[address - 0x34].miptbp1 = value; break;
+        case 0x36: case 0x37: ctx_[address - 0x36].miptbp2 = value; break;
         case 0x16: case 0x17: {
             // TEX2: TEX0's format and CLUT fields only.
             u64& tex0 = ctx_[address - 0x16].tex0;

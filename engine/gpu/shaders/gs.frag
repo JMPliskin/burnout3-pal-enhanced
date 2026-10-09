@@ -35,7 +35,7 @@ layout(push_constant) uniform Params {
     uint fge;           // fog
     uint fogcol;        // FOGCOL, R G B in bytes 0-2
     uint pabe;          // which pixels this pass draws: 0 all, 1 As >= 0x80, 2 As < 0x80
-    uint bilinear;      // the four texels around, else the nearest
+    uint bilinear;      // bit 0: the four texels around, else the nearest; bits 1 and on: Mip
     uint wms, wmt;      // CLAMP: 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP, 3 REGION_REPEAT
     uint minu, maxu, minv, maxv;
     uint tw, th;        // TEX0's size (0: the image's own)
@@ -65,17 +65,9 @@ ivec2 TextureSize() {
     return p.tw != 0u ? ivec2(int(p.tw), int(p.th)) : textureSize(texture_image, 0);
 }
 
-vec4 Texel(int u, int v) {
-    const int k = Fine() ? int(p.scale) : 1;
-    ivec2 size = TextureSize() * k;
-    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu, k), Wrap(v, size.y, p.wmt, p.minv, p.maxv, k));
-    if (k == 1) at &= 2047;
-    // A target drawn larger with REGION_REPEAT: the GS texel, and the middle
-    // of its square.
-    if (k == 1 && p.scale > 1u) at = at * int(p.scale) + int(p.scale / 2u);
-    // A target may be smaller than TEX0 says: what lies beyond is not drawn here.
-    at = min(at, textureSize(texture_image, 0) - 1);
-    vec4 t = floor(texelFetch(texture_image, at, 0) * 255.0 + 0.5);
+// A texel as the GS expands it: TEXA's alpha for 24- and 16-bit texels, a
+// target read as PSMT8H through the CLUT.
+vec4 Expand(vec4 t) {
     if (p.tex_format == 4u) {                       // PSMT8H: the alpha byte indexes the CLUT
         const uint c = clut[uint(t.a) & 255u];
         return vec4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float(c >> 24));
@@ -92,19 +84,75 @@ vec4 Texel(int u, int v) {
     return t;
 }
 
-// The texel at (u, v) in texels: the nearest, or the four around (u - 0.5,
-// v - 0.5) mixed and rounded per channel.
-vec4 Sample(vec2 uv) {
+vec4 Fetch(ivec2 at) { return Expand(floor(texelFetch(texture_image, at, 0) * 255.0 + 0.5)); }
+
+vec4 Texel(int u, int v) {
+    const int k = Fine() ? int(p.scale) : 1;
+    ivec2 size = TextureSize() * k;
+    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu, k), Wrap(v, size.y, p.wmt, p.minv, p.maxv, k));
+    if (k == 1) at &= 2047;
+    // A target drawn larger with REGION_REPEAT: the GS texel, and the middle
+    // of its square.
+    if (k == 1 && p.scale > 1u) at = at * int(p.scale) + int(p.scale / 2u);
+    // A target may be smaller than TEX0 says: what lies beyond is not drawn here.
+    at = min(at, textureSize(texture_image, 0) - 1);
+    return Fetch(at);
+}
+
+// A texel of mipmap level n (n > 0: a texture from memory, never a target):
+// TW-n by TH-n, below the levels before it at the image's left edge
+// (gs_renderer.cpp's TextureFromMemory), a region's bounds shifted as its
+// coordinates are.
+vec4 Texel(int u, int v, int n) {
+    if (n == 0) return Texel(u, v);
+    const ivec2 size = max(TextureSize() >> n, ivec2(1));
+    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu >> n, p.maxu >> n, 1),
+                     Wrap(v, size.y, p.wmt, p.minv >> n, p.maxv >> n, 1));
+    at = clamp(at, ivec2(0), size - 1);
+    for (int i = 0; i < n; ++i) at.y += max(TextureSize().y >> i, 1);
+    return Fetch(at);
+}
+
+// The texel at (u, v) in level 0's texels, in level n: the nearest, or the
+// four around (u - 0.5, v - 0.5) mixed and rounded per channel.
+vec4 Sample(vec2 uv, int n, bool linear) {
     if (Fine()) uv *= float(p.scale);               // in the target's own pixels
-    if (p.bilinear == 0u) return Texel(int(floor(uv.x)), int(floor(uv.y)));
+    uv /= float(1 << n);
+    if (!linear) return Texel(int(floor(uv.x)), int(floor(uv.y)), n);
     vec2 xy = uv - 0.5;
     ivec2 i0 = ivec2(floor(xy));
     vec2 f = xy - vec2(i0);
     // In the software GS's order of operations, so the two round alike.
-    vec4 c00 = Texel(i0.x, i0.y), c10 = Texel(i0.x + 1, i0.y);
-    vec4 c01 = Texel(i0.x, i0.y + 1), c11 = Texel(i0.x + 1, i0.y + 1);
+    vec4 c00 = Texel(i0.x, i0.y, n), c10 = Texel(i0.x + 1, i0.y, n);
+    vec4 c01 = Texel(i0.x, i0.y + 1, n), c11 = Texel(i0.x + 1, i0.y + 1, n);
     vec4 top = c00 + (c10 - c00) * f.x, bottom = c01 + (c11 - c01) * f.x;
     return floor(top + (bottom - top) * f.y + 0.5);
+}
+
+// TEX1's mipmapping (GsDrawState::mip, in p.bilinear): the GS's LOD from the
+// pixel's Q - (log2(1/|Q|) << L) + K, or K alone (LCM) - magnifies (MMAG,
+// level 0) up to 0, else minifies by MMIN: 2 and 4 the nearest level, 3 and 5
+// the two around mixed; 4 and 5 bilinear within a level. The GS's own
+// selection, not the GPU's: the levels it picks at any internal resolution
+// (the software GS's ChooseLevel).
+vec4 Sample(vec2 uv) {
+    const uint m = p.bilinear;
+    if ((m & 2u) == 0u) return Sample(uv, 0, (m & 1u) != 0u);
+    const int mxl = int((m >> 2) & 7u);
+    const uint mmin = (m >> 5) & 7u;
+    float lod = float(int(m << 4) >> 20) / 16.0;    // K, 4 fractional bits
+    const float q = coordinate.z != 0.0 ? abs(coordinate.z) : 1.0;     // as the software GS's
+    if (((m >> 9) & 1u) == 0u) lod += -log2(q) * float(1u << ((m >> 10) & 3u));
+    if (lod <= 0.0) return Sample(uv, 0, ((m >> 8) & 1u) != 0u);
+    const bool linear = mmin == 4u || mmin == 5u;
+    if (mmin == 2u || mmin == 4u) return Sample(uv, int(min(floor(lod + 0.5), float(mxl))), linear);
+    lod = min(lod, float(mxl));
+    const int n = int(floor(lod));
+    const float f = lod - float(n);
+    const vec4 c0 = Sample(uv, n, linear);
+    if (n >= mxl || f == 0.0) return c0;
+    const vec4 c1 = Sample(uv, n + 1, linear);
+    return floor(c0 + (c1 - c0) * f + 0.5);
 }
 
 #ifdef SINGLE_OUTPUT

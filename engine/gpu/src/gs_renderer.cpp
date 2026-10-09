@@ -230,7 +230,7 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
     return x.fbp == y.fbp && x.fbw == y.fbw && x.psm == y.psm && x.fbmsk == y.fbmsk && x.scissor_x0 == y.scissor_x0 &&
            x.scissor_y0 == y.scissor_y0 && x.scissor_x1 == y.scissor_x1 && x.scissor_y1 == y.scissor_y1 &&
            x.textured == y.textured && (!x.textured || (x.texture == y.texture && x.tfx == y.tfx &&
-           x.tcc == y.tcc && x.bilinear == y.bilinear && x.wms == y.wms && x.wmt == y.wmt && x.minu == y.minu &&
+           x.tcc == y.tcc && x.bilinear == y.bilinear && x.mip == y.mip && x.wms == y.wms && x.wmt == y.wmt && x.minu == y.minu &&
            x.maxu == y.maxu && x.minv == y.minv && x.maxv == y.maxv && x.tw == y.tw && x.th == y.th &&
            x.texture_target == y.texture_target && x.tex_fbp == y.tex_fbp && x.tex_fbw == y.tex_fbw &&
            x.tex_target_psm == y.tex_target_psm && x.tex_format == y.tex_format && x.ta0 == y.ta0 &&
@@ -1537,32 +1537,45 @@ Texture* VulkanGsRenderer::TextureImage(std::uint64_t key, std::uint32_t width, 
 
 void VulkanGsRenderer::TextureFromMemory(std::uint64_t key, const GsTextureDecode& d) {
     Flush();                        // what is pending may sample the old contents
-    Texture* texture = TextureImage(key, d.tw, d.th);
+    // Mipmap levels below level 0, each at the left edge (gs.frag's Texel).
+    const std::uint32_t levels = std::min(7u, std::max(1u, d.levels));
+    std::uint32_t height = 0;
+    for (std::uint32_t n = 0; n < levels; ++n) height += std::max(1u, d.th >> n);
+    Texture* texture = TextureImage(key, d.tw, height);
     if (!texture) return;
     Image& t = texture->image;
-    const DecodeParams params{d.tbp, d.tbw, d.psm, d.tw, d.th, d.wms, d.wmt, d.minu, d.maxu, d.minv, d.maxv,
-                              d.texa_lo, d.ta1, d.csa};
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
         if (d.clut) vkCmdUpdateBuffer(cmd, clut_, 0, 1024, d.clut);
         MemoryBarrier(cmd);
         drawn_ = DrawState{};
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
-                                nullptr);
-        vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
-        ++g_dispatches;
-        vkCmdDispatch(cmd, (d.tw + 7) / 8, (d.th + 7) / 8, 1);
-        g_.Mark(cmd, kProfDecode);
-        MemoryBarrier(cmd);
-        Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                   VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkBufferImageCopy copy{};
-        copy.bufferRowLength = t.width;
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {t.width, t.height, 1};
-        vkCmdCopyBufferToImage(cmd, linear_, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        g_.Mark(cmd, kProfDecode);
+        std::uint32_t y = 0;
+        for (std::uint32_t n = 0; n < levels; ++n) {
+            const std::uint32_t w = std::max(1u, d.tw >> n), h = std::max(1u, d.th >> n);
+            const DecodeParams params{n ? d.level_tbp[n] : d.tbp, n ? std::max(1u, d.level_tbw[n]) : d.tbw, d.psm,
+                                      w, h, d.wms, d.wmt, d.minu >> n, d.maxu >> n, d.minv >> n, d.maxv >> n,
+                                      d.texa_lo, d.ta1, d.csa};
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, decode_pipeline_);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swizzle_layout_, 0, 1, &swizzle_set_, 0,
+                                    nullptr);
+            vkCmdPushConstants(cmd, swizzle_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof params, &params);
+            ++g_dispatches;
+            vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+            g_.Mark(cmd, kProfDecode);
+            MemoryBarrier(cmd);
+            Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VkBufferImageCopy copy{};
+            copy.bufferRowLength = w;
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageOffset = {0, std::int32_t(y), 0};
+            copy.imageExtent = {std::min(w, t.width), std::min(h, t.height - y), 1};
+            vkCmdCopyBufferToImage(cmd, linear_, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            g_.Mark(cmd, kProfDecode);
+            y += h;
+            // The next level's decode writes where this copy reads.
+            if (n + 1 < levels) MemoryBarrier(cmd);
+        }
         Transition(cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         MemoryBarrier(cmd);
@@ -2078,7 +2091,7 @@ void VulkanGsRenderer::Flush() {
     params.fogcol = state_.fogcol;
     params.fix_factor = state_.c == BlendAlpha::Fix;
     params.fix = state_.fix;
-    params.bilinear = state_.bilinear;
+    params.bilinear = std::uint32_t(state_.bilinear) | (source ? 0u : state_.mip);   // gs.frag's Mip
     params.wms = state_.wms;
     params.wmt = state_.wmt;
     params.minu = state_.minu;

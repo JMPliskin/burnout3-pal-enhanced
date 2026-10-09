@@ -75,6 +75,11 @@ struct GsDrawState {
     TextureFunction tfx = TextureFunction::Modulate;
     bool tcc = true;                                     /* TEX0.TCC: the texel's alpha counts */
     bool bilinear = false;                               /* TEX1: the four texels around */
+    /* TEX1's mipmapping, per pixel (0: none - `bilinear` throughout): bit 1
+       set, MXL in bits 2-4, MMIN 5-7, MMAG 8, LCM 9, L 10-11, K 16-27 (as
+       TEX1 has them). A texture decoded with MXL + 1 levels holds levels 1
+       and on below level 0 (GsTextureDecode). */
+    std::uint32_t mip = 0;
     /* CLAMP: WMS/WMT 0 REPEAT, 1 CLAMP, 2 REGION_CLAMP (to MIN..MAX), 3
        REGION_REPEAT (MIN is a mask, MAX ORed in). */
     std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
@@ -127,6 +132,11 @@ struct GsTextureDecode {
     std::uint32_t wms = 0, wmt = 0, minu = 0, maxu = 0, minv = 0, maxv = 0;
     std::uint32_t texa_lo = 0;      // TA0, and AEM at bit 15
     std::uint32_t ta1 = 0, csa = 0;
+    /* Mipmap levels (1-7): level n, TW-n by TH-n from level_tbp[n] and
+       level_tbw[n] (MIPTBP1/2), goes below level n-1 in the same image, at
+       its left edge - the image tw wide, as tall as all of them. */
+    std::uint32_t levels = 1;
+    std::uint32_t level_tbp[7] = {}, level_tbw[7] = {};
     /* The CLUT as the GS model holds it, or null: the CLUT the GPU holds
        (ClutFromMemory, ClutRows) at this point of what is recorded. */
     const std::uint32_t* clut = nullptr;
