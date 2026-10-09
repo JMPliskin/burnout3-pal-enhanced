@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <xmmintrin.h>
 
 namespace lifted {
 
@@ -196,7 +197,18 @@ void RunFmac(Context& c, const FmacOp& f) {
         if (f.dest & (8u >> lane)) to[lane] = out[lane];
 }
 
+/* The VU's float arithmetic rounds toward zero and flushes denormals: the
+   host's SSE control word set so for an instruction, as ps2host's Vu::Run sets
+   it for a microprogram (VuRounding) - macro mode is the same VU0, called from
+   EE code, which runs with the host's default (to nearest). */
+struct MacroRounding {
+    unsigned saved = _mm_getcsr();
+    MacroRounding() { _mm_setcsr((saved & ~0x6000u) | 0x6000u | 0x8000u | 0x0040u); }
+    ~MacroRounding() { _mm_setcsr(saved); }
+};
+
 void Cop2(Context& c, u32 word) {
+    MacroRounding rounding;
     const u32 fd = (word >> 6) & 0x1F, fs = (word >> 11) & 0x1F, ft = (word >> 16) & 0x1F;
     const u32 dest = (word >> 21) & 0xF;
     const bool lane_on[4] = {(dest & 8) != 0, (dest & 4) != 0, (dest & 2) != 0, (dest & 1) != 0};

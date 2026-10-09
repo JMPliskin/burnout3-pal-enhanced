@@ -18,13 +18,19 @@
  * square root (double has more than twice the precision of float, so the double
  * rounding is innocuous).
  *
- * What is *not* modelled, because the interpreter does not model it either: the
- * EE flushes denormal operands and results to zero.
+ *  - Results are rounded toward zero, not to nearest, and denormal operands and
+ *    results are flushed to zero - the EE's FPU, as PCSX2 runs it by default
+ *    ("Chop/Zero"). The VUs round so too (ps2host's Vu::Run): Burnout 3 leans on
+ *    it there. PS2RT_EE_ROUND_NEAREST=1 rounds to nearest and keeps denormals,
+ *    as tools/ps2decomp/emu.py's interpreter does (what cppcheck compares
+ *    against).
  */
 
 #include "ps2rt/generated.h"
 
+#include <cfloat>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace generated {
@@ -33,13 +39,20 @@ namespace {
 
 const double kFloatMax = 3.4028234663852886e38;   // bit pattern 0x7F7FFFFF
 
+const bool kNearest = std::getenv("PS2RT_EE_ROUND_NEAREST") != nullptr;
+
 float FromBits(u32 bits) {
+    if (!kNearest && (bits & 0x7F800000u) == 0) bits &= 0x80000000u;     // a denormal operand is zero
     float value;
     std::memcpy(&value, &bits, sizeof value);
     return value;
 }
 
-u32 ToBits(double value) {
+u32 ToBits(double value) { return FloatNarrow(value); }
+
+}  // namespace
+
+u32 FloatNarrow(double value) {
     if (value != value) {
         value = 0.0;
     } else if (value > kFloatMax) {
@@ -47,13 +60,16 @@ u32 ToBits(double value) {
     } else if (value < -kFloatMax) {
         value = -kFloatMax;
     }
-    const float narrowed = static_cast<float>(value);
+    float narrowed = static_cast<float>(value);
+    if (!kNearest) {
+        // Toward zero: a value rounded away from it steps back one.
+        if (std::fabs(double(narrowed)) > std::fabs(value)) narrowed = std::nextafter(narrowed, 0.0f);
+        if (std::fabs(narrowed) < FLT_MIN) narrowed = std::copysign(0.0f, narrowed);
+    }
     u32 bits;
     std::memcpy(&bits, &narrowed, sizeof bits);
     return bits;
 }
-
-}  // namespace
 
 u32 FloatAdd(u32 a, u32 b) { return ToBits(double(FromBits(a)) + double(FromBits(b))); }
 u32 FloatSub(u32 a, u32 b) { return ToBits(double(FromBits(a)) - double(FromBits(b))); }

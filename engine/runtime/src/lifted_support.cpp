@@ -58,18 +58,12 @@ void Divide(u64& hi, u64& lo, u64 a, u64 b, bool is_signed) {
 }
 
 u32 FloatMulAdd(u32 acc, u32 a, u32 b, bool subtract) {
-    const double x = generated::FloatValue(acc);
-    const double product = double(generated::FloatValue(a)) * double(generated::FloatValue(b));
-    double value = subtract ? x - product : x + product;
-    /* Saturate and drop NaN as every FPU result does (see eefpu.cpp). */
-    const double kFloatMax = 3.4028234663852886e38;
-    if (value != value) value = 0.0;
-    else if (value > kFloatMax) value = kFloatMax;
-    else if (value < -kFloatMax) value = -kFloatMax;
-    const float narrowed = static_cast<float>(value);
-    u32 bits;
-    std::memcpy(&bits, &narrowed, sizeof bits);
-    return bits;
+    // Operands as the FPU reads them (a denormal is zero), the result as every
+    // FPU result is narrowed (eefpu.cpp).
+    const auto operand = [](u32 bits) { return double(generated::FloatValue(generated::FloatMove(bits))); };
+    const double x = operand(acc);
+    const double product = operand(a) * operand(b);
+    return generated::FloatNarrow(subtract ? x - product : x + product);
 }
 
 void AddBytes(u64& lo, u64& hi, u64 alo, u64 ahi, u64 blo, u64 bhi, bool subtract) {

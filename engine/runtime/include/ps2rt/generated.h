@@ -144,6 +144,9 @@ inline void Write64(u32 a, u64 v) { if (!RamStore(a, v)) PortWrite(a, v, 8); }
  *    diverge.
  *  - Division by zero does not trap. It yields zero.
  */
+/* A double result as the EE's FPU leaves it in single precision: saturated, NaN
+   to zero, rounded toward zero, denormals flushed (eefpu.cpp). */
+u32 FloatNarrow(double value);
 u32 FloatAdd(u32 a, u32 b);
 u32 FloatSub(u32 a, u32 b);
 u32 FloatMul(u32 a, u32 b);
