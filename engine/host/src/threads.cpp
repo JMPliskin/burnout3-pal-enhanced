@@ -30,6 +30,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <timeapi.h>
+#pragma comment(lib, "synchronization.lib")
 
 #include <atomic>
 #include <chrono>
@@ -352,6 +353,15 @@ bool TakeVblank(Scheduler& s) {
 // interrupt waits to be taken, the budget is spent again every half
 // millisecond.
 std::atomic<unsigned> g_fast_forward{1};    // SetFastForward
+std::atomic<int> g_interrupt_waits{0};      // InterruptWait
+// Counted up as the timer marks a blank or a timer due (or looks at the EE's
+// loop heads): what an idle loop's wait sleeps on (WaitOnAddress), woken at
+// once - a sleep of 200 us was a millisecond or more, the frame late with it.
+std::atomic<u32> g_timer_seq{0};
+void TimerTick() {
+    g_timer_seq.fetch_add(1, std::memory_order_release);
+    WakeByAddressAll(&g_timer_seq);
+}
 std::atomic<u64> g_last_vblank_ns{0};       // LastVblankNs
 
 void VblankTimer() {
@@ -373,6 +383,19 @@ void VblankTimer() {
         const auto retry_at = clock::now() + std::chrono::microseconds(500);
         const bool retrying = untaken && retry_at < wake;
         if (retrying) wake = retry_at;
+        // Far from the next event, while the EE is in a function that waits
+        // for an interrupt (InterruptWait): a look at its loop heads every
+        // millisecond meanwhile (a plain sleep, not the precise wait below) -
+        // its idle loop (AddIdleLoop) then waits there asleep, not spinning a
+        // core through the rest of its frame (LoopHead). Not otherwise: a
+        // look at the loop heads of busy code cost the race a fifth of a core.
+        const auto poke_at = clock::now() + std::chrono::milliseconds(1);
+        if (g_interrupt_waits.load(std::memory_order_relaxed) > 0 && poke_at + margin < wake) {
+            std::this_thread::sleep_until(poke_at);
+            if (lifted::Context* c = s.running.load()) SpendBudget(*c);
+            TimerTick();
+            continue;
+        }
         if (wake - clock::now() > margin) std::this_thread::sleep_until(wake - margin);
         while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
         if (clock::now() >= next) {
@@ -391,6 +414,7 @@ void VblankTimer() {
         if (timer >= 0 && (!retrying || clock::now() >= timer_at)) s.timer_due = true;
         if (lifted::Context* c = s.running.load())
             if (!retrying || s.vblank_due.load() || s.timer_due.load()) SpendBudget(*c);
+        TimerTick();
     }
 }
 
@@ -425,6 +449,22 @@ void LoopHead(lifted::Context& c, u32 address) {
     if (StopRequested() || s.in_interrupt || !s.current || &c != &s.current->context)
         throw lifted::Abort{address, 2};
     const bool idle = s.virtual_time && IdleLoops().count(address) != 0;
+    // Real time in an idle loop (a game's wait for an interrupt - Burnout 3's
+    // for its next picture's vertical blank, 60% of the EE's time in its
+    // menus): wait for one asleep, and come back soon (a small budget). The
+    // IOP runs as it did while the loop spun: at the interrupts.
+    const bool realtime_idle = s.realtime && IdleLoops().count(address) != 0;
+    if (realtime_idle) {
+        const auto idle_from = std::chrono::steady_clock::now();
+        for (;;) {
+            u32 seen = g_timer_seq.load(std::memory_order_acquire);
+            if (s.vblank_due || s.timer_due || s.delivery_requested || StopRequested() || IopReplyPending()) break;
+            WaitOnAddress(&g_timer_seq, &seen, sizeof seen, 2);
+        }
+        g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now() - idle_from).count()),
+                            std::memory_order_relaxed);
+    }
     if (s.virtual_time && !s.delivery_requested) {
         // A slice ran: its time passes; what that time brings is delivered. In
         // an idle loop, the time to the next event passes at once.
@@ -448,7 +488,8 @@ void LoopHead(lifted::Context& c, u32 address) {
     if (!frame && !timers && !requested && !s.realtime && !s.virtual_time) throw lifted::Abort{address, 2};
     s.delivery_requested = false;
     c.budget = requested ? s.saved_budget
-             : s.virtual_time ? (idle ? kIdleSliceIterations : kSliceIterations) : s.loop_budget;
+             : s.virtual_time ? (idle ? kIdleSliceIterations : kSliceIterations)
+             : realtime_idle ? kIdleSliceIterations : s.loop_budget;
     if (StopRequested()) c.budget = -1;         // the watchdog fired meanwhile
     // In real time the timer may have spent the budget since the blank and
     // timers were looked at: its spend kept (VblankTimer).
@@ -472,6 +513,9 @@ void LoopHead(lifted::Context& c, u32 address) {
 }  // namespace
 
 void AddIdleLoop(u32 address) { IdleLoops().insert(address); }
+
+InterruptWait::InterruptWait() { g_interrupt_waits.fetch_add(1, std::memory_order_relaxed); }
+InterruptWait::~InterruptWait() { g_interrupt_waits.fetch_sub(1, std::memory_order_relaxed); }
 
 std::atomic<bool>& StopRequested() {
     static std::atomic<bool> stop{false};

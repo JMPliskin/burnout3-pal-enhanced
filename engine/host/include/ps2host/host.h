@@ -51,8 +51,20 @@ void Override(u32 address, GuestFunction function, const char* name);
    the clock goes straight to the next event - vertical blank, timer, alarm -
    as when every thread waits, rather than a slice's worth at a time; and it
    gets short slices, so a wait that is over ends soon after. `address` is the
-   loop's head, the target of its backward branch. */
+   loop's head, the target of its backward branch. In real time the loop
+   waits asleep instead of spinning, while an InterruptWait is held (the
+   port's around the function the loop is in). */
 void AddIdleLoop(u32 address);
+/* Held around a guest function that may wait in an idle loop (an override's):
+   meanwhile the vertical blank timer looks at the EE's loop heads every
+   millisecond, so the loop's wait starts asleep soon after it starts - not
+   at the next interrupt, a core spun until then. */
+struct InterruptWait {
+    InterruptWait();
+    ~InterruptWait();
+    InterruptWait(const InterruptWait&) = delete;
+    InterruptWait& operator=(const InterruptWait&) = delete;
+};
 
 /* The name of the function at `address`, or null. */
 const char* FunctionName(u32 address);

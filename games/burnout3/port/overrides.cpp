@@ -36,6 +36,8 @@ void F_001313C0(lifted::Context& c);
 // The race's loading, and the game's (boot, after a race), a step each
 // frame (see FastLoading).
 void F_0019A950(lifted::Context& c);
+// RenderWare's wait for its packet buffers to flip (see AddIdleLoop below).
+void F_001F2408(lifted::Context& c);
 void F_001322B0(lifted::Context& c);
 // The frontend: its string lookup, the main menu's input, a message box.
 void F_00271A00(lifted::Context& c);
@@ -127,6 +129,14 @@ void SkipMovie(lifted::Context& c) {
    CPU busy. While one returns 0 the vertical blanks come faster
    (SetFastForward): the loading screen, a still picture and a spinner, goes
    by sooner. PS2HOST_LOAD_SPEED says how much faster (1: as the console). */
+/* A function that may wait in an idle loop: in real time the wait sleeps
+   (ps2host::InterruptWait). */
+template <void (*Wait)(lifted::Context&)>
+void WaitsForInterrupt(lifted::Context& c) {
+    ps2host::InterruptWait waiting;
+    Wait(c);
+}
+
 template <void (*Load)(lifted::Context&)>
 void FastLoading(lifted::Context& c) {
     static const char* forced = std::getenv("PS2HOST_LOAD_SPEED");
@@ -514,8 +524,10 @@ void RegisterGameOverrides() {
     // RenderWare's wait for its DMA packet buffers to flip (0x001F2408, the
     // loop at 0x001F24E0: two globals the DMA-end interrupt updates, and a
     // callback each turn): a third of the race's time under --virtual-time
-    // went to spinning there (--sample).
+    // went to spinning there (--sample); in real time, 60% of the EE's in the
+    // menus, a core spun while it waited for its next picture's blank.
     ps2host::AddIdleLoop(0x001F24E0u);
+    ps2host::Override(0x001F2408u, WaitsForInterrupt<F_001F2408>, "RenderWare's packet wait: asleep in real time");
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
