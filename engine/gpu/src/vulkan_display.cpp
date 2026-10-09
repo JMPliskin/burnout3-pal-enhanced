@@ -52,6 +52,13 @@ public:
         return asked;
     }
     bool capture_ = false;
+    void SetAspect(float aspect) override { aspect_.store(aspect); }
+    float WindowAspect() const override {
+        int w = 0, h = 0;
+        if (!window_ || !SDL_GetWindowSizeInPixels(window_, &w, &h) || w <= 0 || h <= 0) return 0.0f;
+        return float(w) / float(h);
+    }
+    std::atomic<float> aspect_{4.0f / 3.0f};
     std::uint32_t PixelHeight() const override {
         int w = 0, h = 0;
         if (!window_ || !SDL_GetWindowSizeInPixels(window_, &w, &h)) return 0;
@@ -516,11 +523,15 @@ bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint
     const VkClearColorValue black{};
     const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cmd_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    // 4:3, as a television shows it, centred in the window.
+    // 4:3 as a television shows it, 16:9, or the window's own shape (SetAspect),
+    // centred in the window.
     std::int32_t w = std::int32_t(extent_.width), h = std::int32_t(extent_.height);
     std::int32_t dw = w, dh = h;
-    if (std::int64_t(w) * 3 > std::int64_t(h) * 4) dw = h * 4 / 3;
-    else dh = w * 3 / 4;
+    const float aspect = aspect_.load();
+    if (aspect > 0.0f) {
+        if (float(w) > float(h) * aspect) dw = std::int32_t(float(h) * aspect + 0.5f);
+        else dh = std::int32_t(float(w) / aspect + 0.5f);
+    }
     const std::int32_t x0 = (w - dw) / 2, y0 = (h - dh) / 2;
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};

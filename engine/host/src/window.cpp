@@ -111,6 +111,15 @@ void PresentGdi() {
     ReleaseDC(g_window, dc);
 }
 
+/* The "aspect" setting as the display takes it: "4:3" (the default), "16:9",
+   or "auto" (0, the window's own shape). */
+float SettingAspect() {
+    const std::string aspect = Setting("aspect", "4:3");
+    if (aspect == "16:9") return 16.0f / 9.0f;
+    if (aspect == "auto") return 0.0f;
+    return 4.0f / 3.0f;
+}
+
 }  // namespace
 
 bool OpenWindow(const wchar_t* title, int width, int height) {
@@ -123,6 +132,7 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
         Note("window", "window: Vulkan on " + g_display->Describe());
         if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
         if (SettingOn("vsync")) g_display->SetVsync(true);
+        g_display->SetAspect(SettingAspect());
         return true;
     }
     Note("window", "window: no Vulkan display (" + error + "); drawing with GDI");
@@ -209,6 +219,25 @@ void SetWindowFullscreen(bool on) {
 #ifdef PS2HOST_VULKAN
     if (g_display) g_display->SetFullscreen(on);
 #endif
+}
+
+void SetWindowAspect(const std::string& aspect) {
+    SetSetting("aspect", aspect);
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->SetAspect(SettingAspect());
+#endif
+}
+
+float PictureAspect() {
+    const float aspect = SettingAspect();
+    if (aspect > 0.0f) return aspect;
+#ifdef PS2HOST_VULKAN
+    if (g_display) {
+        const float window = g_display->WindowAspect();
+        if (window > 0.0f) return window;
+    }
+#endif
+    return 4.0f / 3.0f;
 }
 
 void SetWindowVsync(bool on) {

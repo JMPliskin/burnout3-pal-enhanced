@@ -252,6 +252,11 @@ bool WindowFullscreen();
    delay. */
 void SetWindowVsync(bool on);
 bool WindowVsync();
+/* The picture's shape (the "aspect" setting: "4:3", "16:9" or "auto", the
+   window's own), shown so; and as width over height, for a game to draw it
+   so - auto's the window's now. */
+void SetWindowAspect(const std::string& aspect);
+float PictureAspect();
 /* The window's display, null when there is none (or no Vulkan one). */
 ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as

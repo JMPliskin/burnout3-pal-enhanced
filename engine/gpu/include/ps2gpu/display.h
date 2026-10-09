@@ -70,6 +70,13 @@ public:
     /* Fullscreen (borderless, the desktop's resolution) or a window. */
     virtual void SetFullscreen(bool on) { (void)on; }
     virtual bool Fullscreen() const { return false; }
+    /* The picture's shape on the screen, width over height: 4:3 as a
+       television showed it (the default), 16:9, or 0 - the window's own
+       shape, filled. Letterboxed or pillarboxed in the window otherwise. */
+    virtual void SetAspect(float aspect) { (void)aspect; }
+    /* The window's shape in the screen's pixels, width over height (0 when
+       not known). */
+    virtual float WindowAspect() const { return 0.0f; }
     /* F12, or L3 with R3 on a controller, since the last call: a capture asked for. */
     virtual bool TakeCapture() { return false; }
 

@@ -8,6 +8,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +39,8 @@ void F_001313C0(lifted::Context& c);
 void F_0019A950(lifted::Context& c);
 // RenderWare's wait for its packet buffers to flip (see AddIdleLoop below).
 void F_001F2408(lifted::Context& c);
+// RenderWare's RwCameraSetViewWindow (see SetViewWindow).
+void F_001E2110(lifted::Context& c);
 // The frame's post effects: glow and speed blur (see PostEffects).
 void F_002FA9A0(lifted::Context& c);
 void F_001322B0(lifted::Context& c);
@@ -229,8 +232,10 @@ constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its desc
 constexpr u32 kEntries = 6;                 // the game's five, and QUIT GAME
 constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
 
-/* The settings PC SETTINGS lists, then BACK: each a few values, Cross
-   going to the next (ON/OFF, or the internal resolution's three). */
+/* The settings PC SETTINGS lists: each a few values, Cross going to the
+   next (ON/OFF, or the internal resolution's three). Triangle goes back, as
+   on the game's own screens (the legend says so): no BACK row - the list's
+   six rows are the settings'. */
 struct Option {
     const char* name;
     const char* help;
@@ -255,6 +260,14 @@ int Resolution() {
 void SetResolution(int which) { ps2host::SetSetting("resolution", kResolutions[which]); }
 int Blur() { return ps2host::Setting("blur", "original") == "off" ? 1 : 0; }
 void SetBlur(int off) { ps2host::SetSetting("blur", off ? "off" : "original"); }
+const char* const kAspects[] = {"4:3", "16:9", "auto"};
+int Aspect() {
+    const std::string now = ps2host::Setting("aspect", "4:3");
+    for (int i = 0; i < 3; ++i)
+        if (now == kAspects[i]) return i;
+    return 0;
+}
+void SetAspect(int which) { ps2host::SetWindowAspect(kAspects[which]); }
 const Option kOptions[] = {
     {"FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {"VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
@@ -262,9 +275,11 @@ const Option kOptions[] = {
     {"RESOLUTION", "DRAWN AS THE PS2 DID, TWICE AS SHARP, OR AS SHARP AS THE SCREEN", Resolution, SetResolution,
      {"ORIGINAL", "2X", "DISPLAY"}, 3},
     {"BLUR", "THE SPEED BLUR AND GLOW, OR A CLEAR PICTURE", Blur, SetBlur, {"ORIGINAL", "OFF"}, 2},
+    {"ASPECT RATIO", "THE PICTURE'S SHAPE: A TELEVISION'S, WIDESCREEN, OR THE SCREEN'S OWN", Aspect, SetAspect,
+     {"ORIGINAL (4:3)", "WIDESCREEN (16:9)", "AUTO"}, 3},
 };
 constexpr u32 kOptionCount = sizeof kOptions / sizeof kOptions[0];
-constexpr u32 kSettingsRows = kOptionCount + 1;     // and BACK
+constexpr u32 kSettingsRows = kOptionCount;
 static_assert(kSettingsRows <= kEntries, "the settings fit the menu's rows");
 
 struct MainMenuState {
@@ -272,7 +287,7 @@ struct MainMenuState {
     u32 entries = 0, helps = 0;             // our arrays: kEntries entries (8 bytes), help pointers
     u32 game_entries[kEntries][2] = {};     // the main menu's rows, kept while PC SETTINGS shows
     u32 game_helps[kEntries] = {};
-    GuestText pc_settings, pc_settings_help, quit, quit_help, back, back_help, quit_question, blank;
+    GuestText pc_settings, pc_settings_help, quit, quit_help, quit_question, blank;
     GuestText option_names[kOptionCount], option_helps[kOptionCount];
     bool made = false, settings = false, quitting = false;
 };
@@ -291,16 +306,12 @@ void MakeTexts(lifted::Context& c) {
     g_main.quit.Set("QUIT GAME");
     g_main.quit_help.Make(32);
     g_main.quit_help.Set("CLOSE BURNOUT 3");
-    g_main.back.Make(8);
-    g_main.back.Set("BACK");
-    g_main.back_help.Make(32);
-    g_main.back_help.Set("RETURN TO THE MAIN MENU");
     g_main.quit_question.Make(32);
     g_main.quit_question.Set("Quit Burnout 3?");
     g_main.blank.Make(2);
     g_main.blank.Set(" ");               // (an empty string the list does not draw as empty)
     for (u32 i = 0; i < kOptionCount; ++i) {
-        g_main.option_names[i].Make(24);
+        g_main.option_names[i].Make(36);
         g_main.option_helps[i].Make(64);
         g_main.option_helps[i].Set(kOptions[i].help);
     }
@@ -386,8 +397,8 @@ void RefreshList(lifted::Context& c) {
     for (u32 row = 0; row < kEntries; ++row) GuestCall(c, 0x0031FE40u, {0x01E89544u, row, 1});
 }
 
-/* PC SETTINGS: the list's rows become the settings (and BACK), the main
-   menu's kept to come back to. */
+/* PC SETTINGS: the list's rows become the settings, the main menu's kept to
+   come back to. */
 void ShowSettings(lifted::Context& c, bool on) {
     const u32 menu = g_main.menu;
     if (on) {
@@ -402,11 +413,8 @@ void ShowSettings(lifted::Context& c, bool on) {
             generated::Write32(g_main.entries + 8 * i + 4, 0);
             generated::Write32(g_main.helps + 4 * i, g_main.option_helps[i].at);
         }
-        generated::Write32(g_main.entries + 8 * kOptionCount, g_main.back.at);
-        generated::Write32(g_main.entries + 8 * kOptionCount + 4, 0);
-        generated::Write32(g_main.helps + 4 * kOptionCount, g_main.back_help.at);
-        // The list keeps its six rows (it is set up with them): those past
-        // BACK are blank, and the count Up and Down keep to is BACK's.
+        // The list keeps its six rows (it is set up with them): any past the
+        // settings are blank, and the count Up and Down keep to is theirs.
         for (u32 i = kSettingsRows; i < kEntries; ++i) {
             generated::Write32(g_main.entries + 8 * i, g_main.blank.at);
             generated::Write32(g_main.entries + 8 * i + 4, 0);
@@ -464,7 +472,7 @@ bool TrianglePressed() {
 /* 0x003181E0(menu), the main menu's input each frame: Cross (0x0022CFE0) on
    an entry opens it (0x0030D560), Up and Down move. Cross on PC SETTINGS
    lists the settings; on one of them, it switches it (and saves it,
-   ps2host/settings.h); BACK or Triangle goes back. Cross on QUIT GAME asks
+   ps2host/settings.h); Triangle goes back. Cross on QUIT GAME asks
    first. */
 void MainMenuInput(lifted::Context& c) {
     const u32 menu = u32(c.r[4]);
@@ -522,6 +530,37 @@ void MainMenu(lifted::Context& c) {
     }
 }
 
+// ------------------------------------------------------------ ASPECT RATIO
+//
+// The game draws for a 4:3 television: its cameras (0x00211CC0 sets one's
+// field of view) give RenderWare a view window of tan(fov / 2) across and
+// that over 4/3 up, each frame (the field of view follows the speed). For a
+// wider picture (ASPECT RATIO, PC SETTINGS) a 4:3 window is made wider by
+// as much - the same view up and down, more at the sides - and the display
+// shows the picture that shape. RenderWare culls to the window it is given.
+
+/* 0x001E2110(camera, &window): RenderWare's RwCameraSetViewWindow. */
+void SetViewWindow(lifted::Context& c) {
+    const float wider = ps2host::PictureAspect() / (4.0f / 3.0f);
+    const u32 window = u32(c.r[5]);
+    const u32 x_bits = generated::ReadU32(window), y_bits = generated::ReadU32(window + 4);
+    float x, y;
+    std::memcpy(&x, &x_bits, 4);
+    std::memcpy(&y, &y_bits, 4);
+    // A 4:3 window alone (a camera drawing for the screen), the game's own
+    // copy put back after.
+    if (std::fabs(wider - 1.0f) < 0.001f || !(x > 0.0f) || std::fabs(y / x - 0.75f) > 0.002f) {
+        F_001E2110(c);
+        return;
+    }
+    const float wide = x * wider;
+    u32 wide_bits;
+    std::memcpy(&wide_bits, &wide, 4);
+    generated::Write32(window, wide_bits);
+    F_001E2110(c);
+    generated::Write32(window, x_bits);
+}
+
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
@@ -544,6 +583,7 @@ void RegisterGameOverrides() {
     ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001F2408u, WaitsForInterrupt<F_001F2408>, "RenderWare's packet wait: asleep in real time");
     ps2host::Override(0x002FA9A0u, PostEffects, "the frame's speed blur and glow: BLUR (PC SETTINGS)");
+    ps2host::Override(0x001E2110u, SetViewWindow, "RwCameraSetViewWindow: wider for ASPECT RATIO (PC SETTINGS)");
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
