@@ -48,6 +48,8 @@ void F_00219D50(lifted::Context& c);
 void F_00219F20(lifted::Context& c);
 void F_0021A4F0(lifted::Context& c);
 void F_00364920(lifted::Context& c);
+// The race's world each frame: the cars, the traffic, the clock (see RaceWorld).
+void F_0019A550(lifted::Context& c);
 
 namespace {
 
@@ -194,7 +196,9 @@ void Caller(ElementId* id) {
 // F10 in a wider picture: a panel over the picture lists the elements on
 // screen and their anchors; Page Up and Page Down choose one (it blinks),
 // Home or numpad 4 anchors it left, Insert or numpad 5 in the middle, End or
-// numpad 6 right, Delete or numpad 8 stretches it across the picture - saved at once.
+// numpad 6 right, Delete or numpad 8 stretches it across the picture.
+// P holds the race still (the world not moved on, its picture and HUD
+// drawn every frame) - till P again or the editor closes - saved at once.
 
 struct Editor {
     bool on = false;
@@ -202,6 +206,7 @@ struct Editor {
     std::map<ElementId, std::chrono::steady_clock::time_point> seen;   // drawn lately
     bool keys[8] = {};
     std::size_t shown = ~std::size_t(0);   // how many the panel lists
+    bool paused = false;                    // the race held still (P)
 };
 Editor g_editor;
 
@@ -245,7 +250,8 @@ void ShowStatus() {
         ps2host::SetWindowStatus("");
         return;
     }
-    std::vector<std::string> lines = {"HUD EDITOR  (F10 closes)",
+    std::vector<std::string> lines = {g_editor.paused ? "HUD EDITOR  (F10 closes)   - PAUSED (P resumes)"
+                                                      : "HUD EDITOR  (F10 closes)   P pauses the race",
                                       "PgUp/PgDn choose   Home left   Insert centre   End right   Delete stretch", ""};
     std::size_t index = 0, count = 0;
     for (const auto& [id, when] : g_editor.seen) {
@@ -276,9 +282,10 @@ bool Press(int slot, int vk, int vk2 = 0) {
 /* The editor's keys, read as the 2D is drawn. */
 void EditorInput() {
     constexpr int kF10 = 0x79, kPageUp = 0x21, kPageDown = 0x22, kHome = 0x24, kEnd = 0x23, kInsert = 0x2D;
-    constexpr int kPad4 = 0x64, kPad5 = 0x65, kPad6 = 0x66, kDelete = 0x2E, kPad8 = 0x68;
+    constexpr int kPad4 = 0x64, kPad5 = 0x65, kPad6 = 0x66, kDelete = 0x2E, kPad8 = 0x68, kP = 'P';
     if (Press(0, kF10)) {
         g_editor.on = !g_editor.on && Squeeze() < 1.0f;
+        g_editor.paused = false;
         g_editor.seen.clear();
         g_editor.chosen = ElementId{};
         g_editor.shown = ~std::size_t(0);
@@ -309,6 +316,11 @@ void EditorInput() {
     if (Press(4, kInsert, kPad5)) setting = true, set = Anchor::kCentre;
     if (Press(5, kEnd, kPad6)) setting = true, set = Anchor::kRight;
     if (Press(6, kDelete, kPad8)) setting = true, set = Anchor::kStretch;
+    if (Press(7, kP)) {
+        g_editor.paused = !g_editor.paused;
+        std::fprintf(stderr, "[hud] race %s\n", g_editor.paused ? "paused" : "resumed");
+        ShowStatus();
+    }
     if (setting && g_editor.chosen.known()) {
         const std::string key = g_editor.chosen.Key();
         ps2host::SetSetting(key, AnchorName(set));
@@ -584,9 +596,19 @@ void Sprites2D(lifted::Context& c) {
     }
 }
 
+/* 0x0019A550, the race's world each frame (the cars, the traffic, the
+   clock): not run while the HUD editor holds the race still. Its picture
+   is drawn apart (0x00134A20), so the race stands, drawn - the HUD's
+   placing seen as it changes. */
+void RaceWorld(lifted::Context& c) {
+    if (g_editor.on && g_editor.paused) return;
+    F_0019A550(c);
+}
+
 }  // namespace
 
 void RegisterWidescreen() {
+    ps2host::Override(0x0019A550u, RaceWorld, "the race's world each frame: held still by the HUD editor (P)");
     ps2host::Override(0x001E2110u, SetViewWindow, "RwCameraSetViewWindow: wider for ASPECT RATIO (PC SETTINGS)");
     ps2host::Override(0x0021A4F0u, Flush2D, "a 2D batch's flush: the HUD placed in a wider picture");
     ps2host::Override(0x00364920u, Sprites2D, "the frontend's sprites: placed in a wider picture");
