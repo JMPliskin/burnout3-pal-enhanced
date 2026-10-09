@@ -169,18 +169,39 @@ void Caller(ElementId* id) {
 
 // ------------------------------------------------------------ the HUD editor
 //
-// F10 in a wider picture: the elements on screen one at a time (Page Up,
-// Page Down), the one chosen blinking, and its anchor set (Home or numpad 4
-// left, Insert or numpad 5 the middle, End or numpad 6 right) and saved. The
-// window's title says which and how.
+// F10 in a wider picture: a panel over the picture lists the elements on
+// screen and their anchors; Page Up and Page Down choose one (it blinks),
+// Home or numpad 4 anchors it left, Insert or numpad 5 in the middle, End or
+// numpad 6 right - saved at once.
 
 struct Editor {
     bool on = false;
     ElementId chosen;
     std::map<ElementId, std::chrono::steady_clock::time_point> seen;   // drawn lately
     bool keys[8] = {};
+    std::size_t shown = ~std::size_t(0);   // how many the panel lists
 };
 Editor g_editor;
+
+/* What the race's HUD elements are (the panel names them). */
+const char* ElementName(const ElementId& id) {
+    switch (id.object) {
+        case 0x003CD920: return "panel";
+        case 0x00381AB0: return id.cell[1] == 'L' ? "position" : id.cell[1] == 'R' ? "lap" : "counter";
+        case 0x00381030: return "speed";
+        case 0x001A8180: return "boost bar";
+        default: return "";
+    }
+}
+
+const char* CellName(const char cell[3]) {
+    static const char* const kRows[] = {"top", "middle", "bottom"};
+    static const char* const kColumns[] = {"left", "centre", "right"};
+    static char name[24];
+    const std::size_t row = std::string("TMB").find(cell[0]), column = std::string("LCR").find(cell[1]);
+    std::snprintf(name, sizeof name, "%s %s", row < 3 ? kRows[row] : "?", column < 3 ? kColumns[column] : "?");
+    return name;
+}
 
 /* An element was drawn (the editor lists what is on screen). */
 void Seen(const ElementId& id) {
@@ -195,23 +216,31 @@ bool Hidden(const ElementId& id) {
     return (ms / 250) % 2 == 1;
 }
 
+/* The panel: what is on screen, the one chosen, the keys. */
 void ShowStatus() {
     if (!g_editor.on) {
+        ps2host::SetWindowOverlay({});
         ps2host::SetWindowStatus("");
         return;
     }
-    std::vector<ElementId> list;
-    for (const auto& [id, when] : g_editor.seen) list.push_back(id);
-    std::size_t index = 0;
-    for (std::size_t i = 0; i < list.size(); ++i)
-        if (list[i] == g_editor.chosen) index = i + 1;
-    char text[200];
-    if (g_editor.chosen.known())
-        std::snprintf(text, sizeof text, "HUD EDIT %zu/%zu: %s anchored %s  (PgUp/PgDn choose, Home/Ins/End anchor, F10 done)",
-                      index, list.size(), g_editor.chosen.Key().c_str(), AnchorName(AnchorOf(g_editor.chosen)));
-    else
-        std::snprintf(text, sizeof text, "HUD EDIT: nothing chosen  (PgUp/PgDn choose, F10 done)");
-    ps2host::SetWindowStatus(text);
+    std::vector<std::string> lines = {"HUD EDITOR  (F10 closes)",
+                                      "PgUp/PgDn choose   Home left   Insert centre   End right", ""};
+    std::size_t index = 0, count = 0;
+    for (const auto& [id, when] : g_editor.seen) {
+        ++count;
+        const bool chosen = id == g_editor.chosen;
+        if (chosen) index = count;
+        char text[160];
+        std::snprintf(text, sizeof text, "%s %-13s %-10s %06X/%06X   %s", chosen ? ">" : " ", CellName(id.cell),
+                      ElementName(id), unsigned(id.object), unsigned(id.context), AnchorName(AnchorOf(id)));
+        lines.push_back(text);
+    }
+    if (!count) lines.push_back("  (no HUD drawn)");
+    g_editor.shown = count;
+    char title[96];
+    std::snprintf(title, sizeof title, "HUD EDIT %zu/%zu", index, count);
+    ps2host::SetWindowStatus(title);
+    ps2host::SetWindowOverlay(lines);
 }
 
 /* A key's press (down now, up before). */
@@ -226,17 +255,21 @@ bool Press(int slot, int vk, int vk2 = 0) {
 void EditorInput() {
     constexpr int kF10 = 0x79, kPageUp = 0x21, kPageDown = 0x22, kHome = 0x24, kEnd = 0x23, kInsert = 0x2D;
     constexpr int kPad4 = 0x64, kPad5 = 0x65, kPad6 = 0x66;
-    if (Press(0, kF10) && Squeeze() < 1.0f) {
-        g_editor.on = !g_editor.on;
+    if (Press(0, kF10)) {
+        g_editor.on = !g_editor.on && Squeeze() < 1.0f;
         g_editor.seen.clear();
         g_editor.chosen = ElementId{};
+        g_editor.shown = ~std::size_t(0);
+        std::fprintf(stderr, "[hud] editor %s\n", g_editor.on ? "on" : Squeeze() < 1.0f ? "off" : "off (a 4:3 picture)");
         ShowStatus();
     }
     if (!g_editor.on) return;
-    // What has not been drawn for a while is off the screen.
+    // What has not been drawn for a while is off the screen; the panel
+    // follows what is.
     const auto now = std::chrono::steady_clock::now();
     for (auto it = g_editor.seen.begin(); it != g_editor.seen.end();)
         it = now - it->second > std::chrono::milliseconds(500) ? g_editor.seen.erase(it) : std::next(it);
+    if (g_editor.seen.size() != g_editor.shown) ShowStatus();
     std::vector<ElementId> list;
     for (const auto& [id, when] : g_editor.seen) list.push_back(id);
     const bool next = Press(1, kPageDown), previous = Press(2, kPageUp);

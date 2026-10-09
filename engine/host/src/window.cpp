@@ -234,6 +234,67 @@ void SetWindowFullscreen(bool on) {
 #endif
 }
 
+void SetWindowOverlay(const std::vector<std::string>& lines) {
+#ifdef PS2HOST_VULKAN
+    if (!g_display) return;
+    if (lines.empty()) {
+        g_display->SetOverlay({}, 0, 0);
+        return;
+    }
+    // Text as Windows draws it, sized to the window (a 1080-line screen:
+    // 22-pixel lines), white on a dark panel; a line starting with '>' in
+    // yellow (the one chosen).
+    const std::uint32_t screen = std::max(480u, g_display->PixelHeight());
+    const int line = std::max(14, int(screen / 48));
+    HDC dc = CreateCompatibleDC(nullptr);
+    HFONT font = CreateFontA(-(line - 4), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+    HGDIOBJ old_font = SelectObject(dc, font);
+    int width = 0;
+    for (const std::string& text : lines) {
+        SIZE size{};
+        GetTextExtentPoint32A(dc, text.c_str(), int(text.size()), &size);
+        width = std::max(width, int(size.cx));
+    }
+    width = std::min(1280, width + line);
+    const int height = std::min(720, int(lines.size()) * line + line / 2);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof info.bmiHeader;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    std::vector<std::uint32_t> pixels;
+    if (bitmap && bits) {
+        HGDIOBJ old_bitmap = SelectObject(dc, bitmap);
+        const RECT all{0, 0, width, height};
+        HBRUSH panel = CreateSolidBrush(RGB(16, 20, 32));
+        FillRect(dc, &all, panel);
+        DeleteObject(panel);
+        SetBkMode(dc, TRANSPARENT);
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const bool chosen = !lines[i].empty() && lines[i][0] == '>';
+            SetTextColor(dc, chosen ? RGB(255, 210, 60) : i == 0 ? RGB(120, 190, 255) : RGB(235, 235, 235));
+            TextOutA(dc, line / 2, int(i) * line + line / 4, lines[i].c_str(), int(lines[i].size()));
+        }
+        GdiFlush();
+        pixels.assign(static_cast<const std::uint32_t*>(bits), static_cast<const std::uint32_t*>(bits) + width * height);
+        for (std::uint32_t& p : pixels) p |= 0xFF000000u;
+        SelectObject(dc, old_bitmap);
+        DeleteObject(bitmap);
+    }
+    SelectObject(dc, old_font);
+    DeleteObject(font);
+    DeleteDC(dc);
+    g_display->SetOverlay(std::move(pixels), std::uint32_t(width), std::uint32_t(height));
+#else
+    (void)lines;
+#endif
+}
+
 void SetWindowStatus(const std::string& status) {
 #ifdef PS2HOST_VULKAN
     if (g_display) g_display->SetTitle(status.empty() ? g_title : g_title + "  -  " + status);

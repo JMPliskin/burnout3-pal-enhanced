@@ -260,6 +260,9 @@ float PictureAspect();
 /* A line after the window's title (a game's tool says what it is doing);
    empty for the title alone. */
 void SetWindowStatus(const std::string& status);
+/* A panel of text over the picture (a game's tool, its menu): the lines,
+   the first a heading, one starting with '>' picked out; none when empty. */
+void SetWindowOverlay(const std::vector<std::string>& lines);
 /* The window's display, null when there is none (or no Vulkan one). */
 ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as

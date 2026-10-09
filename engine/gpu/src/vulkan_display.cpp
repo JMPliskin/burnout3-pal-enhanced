@@ -53,6 +53,23 @@ public:
     }
     bool capture_ = false;
     void SetAspect(float aspect) override { aspect_.store(aspect); }
+    void SetOverlay(std::vector<std::uint32_t> pixels, std::uint32_t width, std::uint32_t height) override {
+        std::lock_guard<std::mutex> hold(overlay_lock_);
+        overlay_ = std::move(pixels);
+        overlay_width_ = width;
+        overlay_height_ = height;
+        overlay_dirty_ = true;
+    }
+    /* The overlay into the swapchain image (TRANSFER_DST) being made. */
+    void DrawOverlay(VkImage target);
+    std::mutex overlay_lock_;
+    std::vector<std::uint32_t> overlay_;
+    std::uint32_t overlay_width_ = 0, overlay_height_ = 0;
+    bool overlay_dirty_ = false;
+    static constexpr VkDeviceSize kOverlayBytes = VkDeviceSize(1280) * 720 * 4;
+    VkBuffer overlay_buffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory overlay_memory_ = VK_NULL_HANDLE;
+    void* overlay_mapped_ = nullptr;
     void SetTitle(const std::string& title) override {
         std::lock_guard<std::mutex> hold(title_lock_);
         title_ = title;
@@ -524,6 +541,40 @@ bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
     return true;
 }
 
+void VulkanDisplay::DrawOverlay(VkImage target) {
+    std::lock_guard<std::mutex> hold(overlay_lock_);
+    if (overlay_.empty() || !overlay_width_ || !overlay_height_) return;
+    if (!overlay_buffer_) {
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = kOverlayBytes;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(device_, &bci, nullptr, &overlay_buffer_) != VK_SUCCESS) return;
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(device_, overlay_buffer_, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(device_, &mai, nullptr, &overlay_memory_) != VK_SUCCESS) return;
+        vkBindBufferMemory(device_, overlay_buffer_, overlay_memory_, 0);
+        vkMapMemory(device_, overlay_memory_, 0, kOverlayBytes, 0, &overlay_mapped_);
+        overlay_dirty_ = true;
+    }
+    const std::uint32_t w = std::min(overlay_width_, extent_.width > 16 ? extent_.width - 16 : 0u);
+    const std::uint32_t h = std::min(overlay_height_, extent_.height > 16 ? extent_.height - 16 : 0u);
+    if (!w || !h || VkDeviceSize(overlay_width_) * overlay_height_ * 4 > kOverlayBytes) return;
+    if (overlay_dirty_) {
+        std::memcpy(overlay_mapped_, overlay_.data(), std::size_t(overlay_width_) * overlay_height_ * 4);
+        overlay_dirty_ = false;
+    }
+    VkBufferImageCopy copy{};
+    copy.bufferRowLength = overlay_width_;
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageOffset = {16, 16, 0};
+    copy.imageExtent = {w, h, 1};
+    vkCmdCopyBufferToImage(cmd_, overlay_buffer_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+}
+
 bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint32_t width, std::uint32_t height) {
     const VkImage target = images_[index];
     Barrier(cmd_, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
@@ -549,6 +600,7 @@ bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint
     blit.dstOffsets[1] = {x0 + dw, y0 + dh, 1};
     vkCmdBlitImage(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    DrawOverlay(target);
     Barrier(cmd_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -972,6 +1024,8 @@ VulkanDisplay::~VulkanDisplay() {
     DestroyPaced();
     if (copy_pool_) vkDestroyCommandPool(device_, copy_pool_, nullptr);
     DestroyPicture();
+    if (overlay_buffer_) vkDestroyBuffer(device_, overlay_buffer_, nullptr);
+    if (overlay_memory_) vkFreeMemory(device_, overlay_memory_, nullptr);
     DestroySwapchain();
     if (device_) {
         for (int i = 0; i < kInFlight; ++i) {
