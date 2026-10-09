@@ -39,11 +39,6 @@ void F_001313C0(lifted::Context& c);
 void F_0019A950(lifted::Context& c);
 // RenderWare's wait for its packet buffers to flip (see AddIdleLoop below).
 void F_001F2408(lifted::Context& c);
-// The 2D drawing: a batch of GS packets flushed, the frontend's sprites (see Flush2D, Sprites2D).
-void F_0021A4F0(lifted::Context& c);
-void F_00364920(lifted::Context& c);
-// RenderWare's RwCameraSetViewWindow (see SetViewWindow).
-void F_001E2110(lifted::Context& c);
 // The frame's post effects: glow and speed blur (see PostEffects).
 void F_002FA9A0(lifted::Context& c);
 void F_001322B0(lifted::Context& c);
@@ -533,219 +528,14 @@ void MainMenu(lifted::Context& c) {
     }
 }
 
-// ------------------------------------------------------------ ASPECT RATIO
-//
-// The game draws for a 4:3 television: its cameras (0x00211CC0 sets one's
-// field of view) give RenderWare a view window of tan(fov / 2) across and
-// that over 4/3 up, each frame (the field of view follows the speed). For a
-// wider picture (ASPECT RATIO, PC SETTINGS) a 4:3 window is made wider by
-// as much - the same view up and down, more at the sides - and the display
-// shows the picture that shape. RenderWare culls to the window it is given.
-
-/* 0x001E2110(camera, &window): RenderWare's RwCameraSetViewWindow. */
-void SetViewWindow(lifted::Context& c) {
-    const float wider = ps2host::PictureAspect() / (4.0f / 3.0f);
-    const u32 window = u32(c.r[5]);
-    const u32 x_bits = generated::ReadU32(window), y_bits = generated::ReadU32(window + 4);
-    float x, y;
-    std::memcpy(&x, &x_bits, 4);
-    std::memcpy(&y, &y_bits, 4);
-    // A 4:3 window alone (a camera drawing for the screen), the game's own
-    // copy put back after.
-    if (std::fabs(wider - 1.0f) < 0.001f || !(x > 0.0f) || std::fabs(y / x - 0.75f) > 0.002f) {
-        F_001E2110(c);
-        return;
-    }
-    const float wide = x * wider;
-    u32 wide_bits;
-    std::memcpy(&wide_bits, &wide, 4);
-    generated::Write32(window, wide_bits);
-    F_001E2110(c);
-    generated::Write32(window, x_bits);
-}
-
-// The 2D drawing - the HUD, the frontend's words and sprites, the labels
-// over the rivals (placed by the game's own 4:3 projection) - is laid out
-// for 4:3 too. In a wider picture it keeps its shape, centred: each 2D
-// vertex's x is brought towards the middle of the screen by 4:3 over the
-// picture's shape. Two ways in:
-//   0x0021A4F0 flushes a batch of finished GS packets (the HUD: 0x00218D00,
-//     0x002187B0, 0x00219D50 and the like build them in scratchpad): its
-//     XYZ words, in GS pixels with XYOFFSET, where it draws into the
-//     640-wide picture (FRAME's FBW 10) and not across all of it (a
-//     backdrop, a fade); not into the small targets it also draws (a 64x32
-//     the race's sky reads).
-//   0x00364920(vertices, count) draws the frontend objects' sprites (and the
-//     rivals' labels): 32-byte vertices, x a float about the screen's middle.
-
-/* 4:3 over the picture's shape: 1 for a 4:3 picture. */
-float HudSqueeze() { return std::min(1.0f, (4.0f / 3.0f) / ps2host::PictureAspect()); }
-
-bool IsXyz(u32 reg) { return reg == 0x4 || reg == 0x5 || reg == 0xC || reg == 0xD; }
-u64 Read64(u32 at) { return generated::ReadU32(at) | u64(generated::ReadU32(at + 4)) << 32; }
-
-/* What the batches' A+D writes leave set, from one flush to the next. */
-struct Batch2D {
-    u32 fbw = 10;                       // FRAME_1's FBW: 10 the 640-wide picture
-    int centre = 0x8000;                // XYOFFSET_1's X + 320 pixels, in GS units (1/16)
-    u32 prim = 6;                       // PRIM's type: 6 a sprite
-    u32 starts = 0;                     // PRIM writes so far: each begins a strip or fan afresh
-};
-Batch2D g_batch;
-
-/* An XYZ word, and the primitive type it is a vertex of. */
-struct Vertex2D {
-    u32 at, prim, start;
-};
-
-/* SCISSOR_1 (an A+D write at `at`) narrower than the picture: brought in
-   with what it clips (the frontend's tickers), or it shows past the
-   panels. The whole picture's stays. */
-void SqueezeScissor(u32 at, float k) {
-    const u64 scissor = Read64(at);
-    const int x0 = int(scissor & 0x7FF), x1 = int((scissor >> 16) & 0x7FF);
-    if (x0 <= 8 && x1 >= 631) return;
-    const auto in = [k](int x) { return std::clamp(int(320.0f + float(x - 320) * k + 0.5f), 0, 2047); };
-    const u64 squeezed = (scissor & ~0x07FF07FFull) | u64(in(x0)) | u64(in(x1)) << 16;
-    generated::Write32(at, u32(squeezed));
-}
-
-/* One GIF tag's vertices (PACKED: its XYZ registers and A+D's; REGLIST)
-   with their primitives' types, its A+D writes applied to g_batch (and a
-   narrow scissor squeezed); where the next tag begins. */
-u32 TagVertices(u32 at, u32 end, std::vector<Vertex2D>* vertices, float k) {
-    const u64 tag = Read64(at), regs = Read64(at + 8);
-    at += 16;
-    const u32 nloop = u32(tag & 0x7FFF), flg = u32(tag >> 58) & 3;
-    const auto set_prim = [](u32 value) {
-        g_batch.prim = value & 7;
-        ++g_batch.starts;
-    };
-    if ((tag >> 46) & 1) set_prim(u32(tag >> 47));                // PRE: the tag's PRIM
-    u32 nreg = u32(tag >> 60) & 0xF;
-    if (!nreg) nreg = 16;
-    if (flg == 0) {
-        for (u32 l = 0; l < nloop && at + 16 <= end; ++l)
-            for (u32 r = 0; r < nreg && at + 16 <= end; ++r, at += 16) {
-                const u32 reg = u32(regs >> (4 * r)) & 0xF;
-                if (IsXyz(reg)) {
-                    vertices->push_back({at, g_batch.prim, g_batch.starts});
-                } else if (reg == 0x0) {
-                    set_prim(generated::ReadU32(at));
-                } else if (reg == 0xE) {
-                    const u32 address = generated::ReadU8(at + 8);
-                    if (IsXyz(address)) vertices->push_back({at, g_batch.prim, g_batch.starts});
-                    else if (address == 0x00) set_prim(generated::ReadU32(at));
-                    else if (address == 0x4C) g_batch.fbw = u32(Read64(at) >> 16) & 0x3F;
-                    else if (address == 0x18) g_batch.centre = int(Read64(at) & 0xFFFF) + 320 * 16;
-                    else if (address == 0x40 && k < 1.0f && g_batch.fbw == 10) SqueezeScissor(at, k);
-                }
-            }
-        return at;
-    }
-    if (flg == 1) {
-        const u32 words = nloop * nreg;
-        for (u32 i = 0; i < words; ++i) {
-            const u32 reg = u32(regs >> (4 * (i % nreg))) & 0xF;
-            if (IsXyz(reg)) vertices->push_back({at + 8 * i, g_batch.prim, g_batch.starts});
-            else if (reg == 0x0) set_prim(generated::ReadU32(at + 8 * i));
-        }
-        return at + (words + 1) / 2 * 16;
-    }
-    return at + nloop * 16;
-}
-
-/* Vertices per primitive of a type: a point, a line, a triangle, a sprite;
-   0 for a strip or fan (all of its run, one shape). */
-u32 PrimitiveVertices(u32 prim) {
-    switch (prim) {
-        case 0: return 1;
-        case 1: case 6: return 2;
-        case 3: return 3;
-        default: return 0;
-    }
-}
-
-/* Each primitive squeezed towards the middle - but for one that spans the
-   picture, its vertices at the edges. */
-void SqueezePrimitives(const std::vector<Vertex2D>& vertices, float k) {
-    const int centre = g_batch.centre, half = 312 * 16;
-    for (std::size_t i = 0; i < vertices.size();) {
-        const u32 prim = vertices[i].prim, size = PrimitiveVertices(prim);
-        std::size_t j = i + 1;
-        if (size == 0) {
-            while (j < vertices.size() && vertices[j].start == vertices[i].start) ++j;
-        } else {
-            j = std::min(vertices.size(), i + size);
-        }
-        int x0 = 0x10000, x1 = -1;
-        for (std::size_t v = i; v < j; ++v) {
-            const int x = int(generated::ReadU32(vertices[v].at) & 0xFFFF);
-            x0 = std::min(x0, x);
-            x1 = std::max(x1, x);
-        }
-        // One across the picture keeps its vertices at the edges there (a
-        // backdrop, a fade stay whole; a highlight's rule still reaches the
-        // edges, its ends brought in with the words).
-        const bool across = x0 <= centre - half && x1 >= centre + half;
-        {
-            for (std::size_t v = i; v < j; ++v) {
-                const u32 word = generated::ReadU32(vertices[v].at);
-                const int at_x = int(word & 0xFFFF);
-                if (across && (at_x <= centre - half || at_x >= centre + half)) continue;
-                const float x = float(at_x - centre) * k;
-                const int squeezed = centre + int(x < 0.0f ? x - 0.5f : x + 0.5f);
-                generated::Write32(vertices[v].at, (word & ~0xFFFFu) | (u32(squeezed) & 0xFFFFu));
-            }
-        }
-        i = j;
-    }
-}
-
-/* 0x0021A4F0: the batch in [gp-0x6D20], to [gp-0x5D98], squeezed as it goes. */
-void Flush2D(lifted::Context& c) {
-    const u32 gp = u32(c.r[28]);
-    u32 at = generated::ReadU32(gp - 0x6D20u);
-    const u32 end = generated::ReadU32(gp - 0x5D98u);
-    const float k = HudSqueeze();
-    std::vector<Vertex2D> vertices;
-    while (at + 16 <= end && end - at < 0x10000) {
-        vertices.clear();
-        at = TagVertices(at, end, &vertices, k);
-        if (!vertices.empty() && k < 1.0f && g_batch.fbw == 10) SqueezePrimitives(vertices, k);
-    }
-    F_0021A4F0(c);
-}
-
-/* 0x00364920(vertices, count): the vertices squeezed for the draw, the
-   objects' own put back after (they are kept from frame to frame). */
-void Sprites2D(lifted::Context& c) {
-    const float k = HudSqueeze();
-    const u32 vertices = u32(c.r[4]), count = u32(c.r[5]);
-    if (k >= 1.0f || count > 4096) {
-        F_00364920(c);
-        return;
-    }
-    std::vector<u32> saved(count);
-    for (u32 i = 0; i < count; ++i) {
-        saved[i] = generated::ReadU32(vertices + 32 * i);
-        float x;
-        std::memcpy(&x, &saved[i], 4);
-        x *= k;
-        u32 bits;
-        std::memcpy(&bits, &x, 4);
-        generated::Write32(vertices + 32 * i, bits);
-    }
-    F_00364920(c);
-    for (u32 i = 0; i < count; ++i) generated::Write32(vertices + 32 * i, saved[i]);
-}
-
 }  // namespace
 
 void RegisterGameIopServers();     // iop_servers.cpp
+void RegisterWidescreen();         // widescreen.cpp
 
 void RegisterGameOverrides() {
     RegisterGameIopServers();
+    RegisterWidescreen();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");
@@ -762,9 +552,6 @@ void RegisterGameOverrides() {
     ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001F2408u, WaitsForInterrupt<F_001F2408>, "RenderWare's packet wait: asleep in real time");
     ps2host::Override(0x002FA9A0u, PostEffects, "the frame's speed blur and glow: BLUR (PC SETTINGS)");
-    ps2host::Override(0x0021A4F0u, Flush2D, "a 2D batch's flush: the HUD centred in a wider picture");
-    ps2host::Override(0x00364920u, Sprites2D, "the frontend's sprites: centred in a wider picture");
-    ps2host::Override(0x001E2110u, SetViewWindow, "RwCameraSetViewWindow: wider for ASPECT RATIO (PC SETTINGS)");
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");

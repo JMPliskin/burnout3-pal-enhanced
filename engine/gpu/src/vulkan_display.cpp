@@ -53,6 +53,14 @@ public:
     }
     bool capture_ = false;
     void SetAspect(float aspect) override { aspect_.store(aspect); }
+    void SetTitle(const std::string& title) override {
+        std::lock_guard<std::mutex> hold(title_lock_);
+        title_ = title;
+        title_changed_ = true;
+    }
+    std::mutex title_lock_;
+    std::string title_;
+    bool title_changed_ = false;
     float WindowAspect() const override {
         int w = 0, h = 0;
         if (!window_ || !SDL_GetWindowSizeInPixels(window_, &w, &h) || w <= 0 || h <= 0) return 0.0f;
@@ -878,6 +886,11 @@ bool VulkanDisplay::Fullscreen() const {
 }
 
 bool VulkanDisplay::Pump() {
+    {
+        std::lock_guard<std::mutex> hold(title_lock_);
+        if (title_changed_ && window_) SDL_SetWindowTitle(window_, title_.c_str());
+        title_changed_ = false;
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) closed_ = true;

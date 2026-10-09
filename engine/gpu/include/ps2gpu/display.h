@@ -77,6 +77,8 @@ public:
     /* The window's shape in the screen's pixels, width over height (0 when
        not known). */
     virtual float WindowAspect() const { return 0.0f; }
+    /* The window's title (taken up by the window's own thread, in Pump). */
+    virtual void SetTitle(const std::string& title) { (void)title; }
     /* F12, or L3 with R3 on a controller, since the last call: a capture asked for. */
     virtual bool TakeCapture() { return false; }
 

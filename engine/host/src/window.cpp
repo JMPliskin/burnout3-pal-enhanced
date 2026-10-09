@@ -47,8 +47,18 @@ int Scancode(int key) {
         case VK_DOWN: return SDL_SCANCODE_DOWN;
         case VK_LEFT: return SDL_SCANCODE_LEFT;
         case VK_RIGHT: return SDL_SCANCODE_RIGHT;
+        // Keys a game's own tools read (Burnout 3's HUD editing).
+        case VK_PRIOR: return SDL_SCANCODE_PAGEUP;
+        case VK_NEXT: return SDL_SCANCODE_PAGEDOWN;
+        case VK_HOME: return SDL_SCANCODE_HOME;
+        case VK_END: return SDL_SCANCODE_END;
+        case VK_INSERT: return SDL_SCANCODE_INSERT;
+        case VK_NUMPAD4: return SDL_SCANCODE_KP_4;
+        case VK_NUMPAD5: return SDL_SCANCODE_KP_5;
+        case VK_NUMPAD6: return SDL_SCANCODE_KP_6;
         default: break;
     }
+    if (key >= VK_F1 && key <= VK_F11) return SDL_SCANCODE_F1 + (key - VK_F1);
     if (key >= 'A' && key <= 'Z') return SDL_SCANCODE_A + (key - 'A');
     if (key >= '1' && key <= '9') return SDL_SCANCODE_1 + (key - '1');
     if (key == '0') return SDL_SCANCODE_0;
@@ -122,10 +132,13 @@ float SettingAspect() {
 
 }  // namespace
 
+std::string g_title;                // the window's title as opened (SetWindowStatus adds to it)
+
 bool OpenWindow(const wchar_t* title, int width, int height) {
 #ifdef PS2HOST_VULKAN
     std::string narrow;
     for (const wchar_t* p = title; *p; ++p) narrow += char(*p < 128 ? *p : '?');
+    g_title = narrow;
     std::string error;
     g_display = ps2gpu::CreateVulkanDisplay(narrow.c_str(), width, height, &error);
     if (g_display) {
@@ -218,6 +231,14 @@ void SetWindowFullscreen(bool on) {
     SetSettingOn("fullscreen", on);
 #ifdef PS2HOST_VULKAN
     if (g_display) g_display->SetFullscreen(on);
+#endif
+}
+
+void SetWindowStatus(const std::string& status) {
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->SetTitle(status.empty() ? g_title : g_title + "  -  " + status);
+#else
+    (void)status;
 #endif
 }
 

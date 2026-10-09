@@ -257,6 +257,9 @@ bool WindowVsync();
    so - auto's the window's now. */
 void SetWindowAspect(const std::string& aspect);
 float PictureAspect();
+/* A line after the window's title (a game's tool says what it is doing);
+   empty for the title alone. */
+void SetWindowStatus(const std::string& status);
 /* The window's display, null when there is none (or no Vulkan one). */
 ps2gpu::Display* WindowDisplay();
 /* What the window shows instead of the software GS's picture (BGRA, as
