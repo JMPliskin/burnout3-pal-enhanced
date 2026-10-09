@@ -407,6 +407,16 @@ private:
        frame, each beginning and ending its own, cost the GPU most of its
        time); anything else recorded ends it (VulkanGpu::end_pass). */
     std::uint32_t scale_ = 1;        // the internal resolution: targets' pixels to a GS pixel
+    /* The scale an image of this width is drawn at (targets and depth
+       buffers alike: one width, one scale, so the images a key names agree):
+       the internal resolution, but a small one's - 320 wide or less: a
+       game's scratch targets for its glow, blur and reflections, which it
+       only reads blurred - at the PS2's own. Burnout 3's glow bounces
+       through 64-320-wide views of one memory some fifty times a frame,
+       each brought back from memory: at 4x those were a third of the GPU's
+       time, and the upscaled glow ghosted (a second, offset outline around
+       its words). */
+    std::uint32_t ScaleOf(std::uint32_t width) const { return width <= 320 ? 1u : scale_; }
     Image* open_target_ = nullptr;
     Image* open_depth_ = nullptr;
     void EndPass(VkCommandBuffer cmd) {
@@ -1710,7 +1720,7 @@ Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
     MakeImage(t, state.width, state.height,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-              VK_FORMAT_R8G8B8A8_UNORM, scale_);
+              VK_FORMAT_R8G8B8A8_UNORM, ScaleOf(state.width));
     // Local memory starts as zeros.
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1729,7 +1739,7 @@ Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::u
     MakeImage(d, width, height,
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-              kDepthFormat, scale_);
+              kDepthFormat, ScaleOf(width));
     // Local memory starts as zeros: the farthest Z.
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
