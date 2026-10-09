@@ -1466,6 +1466,10 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
 
 bool GpuPrimary() { return g_bridge && g_bridge->primary; }
 
+void GpuSetScale(u32 scale) {
+    if (g_bridge && scale != g_bridge->renderer->Scale()) Rescale(*g_bridge, scale);
+}
+
 void GpuCaptureBegin(u64 frame, const std::string& passes_dir) {
     if (!g_bridge) return;
     g_bridge->dump_passes = passes_dir;
@@ -1627,6 +1631,7 @@ bool StartGpuRenderer(std::string* error, GpuMode, bool) {
     if (error) *error = "built without the GPU renderer (PS2HOST_VULKAN)";
     return false;
 }
+void GpuSetScale(u32) {}
 void GpuShadowFrame(gs::u64, const std::string&) {}
 std::string GpuShadowSummary() { return ""; }
 

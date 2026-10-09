@@ -36,7 +36,10 @@ namespace ps2host {
    then GIF packets, privileged registers and vertical blanks in turn - each
    blank's picture to <dir>/replay_<n>.bmp, the GS trace to <dir>/trace.txt.
    What the model draws from the console's own commands, beside what PCSX2
-   drew (the dump's picture): a GS fault or one before it, told apart. */
+   drew (the dump's picture): a GS fault or one before it, told apart.
+   PS2HOST_REPLAY_GPU=1: the GPU renderer draws instead (as --gpu), each
+   picture to <dir>/gpu_<n>/ (screen.bmp at the internal resolution,
+   PS2HOST_REPLAY_SCALE, default 1; screen_1x.bmp). */
 int GsReplay(const std::string& file, const std::string& out) {
     std::FILE* f = std::fopen(file.c_str(), "rb");
     if (!f) {
@@ -58,6 +61,17 @@ int GsReplay(const std::string& file, const std::string& out) {
     std::filesystem::create_directories(out);
     gs::Gs& g = gs::TheGs();
     std::memcpy(g.memory.data(), data.data() + 5, kMemory);
+    const bool gpu = std::getenv("PS2HOST_REPLAY_GPU") != nullptr;
+    if (gpu) {
+        std::string error;
+        if (!StartGpuRenderer(&error, GpuMode::Primary, false)) {
+            std::fprintf(stderr, "gs-replay: no GPU (%s)\n", error.c_str());
+            return 69;
+        }
+        const char* scale = std::getenv("PS2HOST_REPLAY_SCALE");
+        if (scale) GpuSetScale(u32(std::max(1, std::atoi(scale))));
+        if (g.on_memory) g.on_memory(0, 16384, true);       // local memory as the dump has it, on the GPU too
+    }
     std::FILE* trace = std::fopen((out + "/trace.txt").c_str(), "w");
     if (trace) {
         g.trace_out = trace;
@@ -87,7 +101,14 @@ int GsReplay(const std::string& file, const std::string& out) {
         } else if (kind == 'V') {
             g.Finish();
             if (trace) std::fprintf(trace, "[gs] ---- vertical blank %d\n", pictures);
-            g.WriteBmp(out + "/replay_" + std::to_string(pictures++) + ".bmp");
+            if (gpu) {
+                GpuShadowFrame(u64(pictures), std::string());
+                const std::string dir = out + "/gpu_" + std::to_string(pictures++);
+                std::filesystem::create_directories(dir);
+                GpuCaptureScreen(dir);
+            } else {
+                g.WriteBmp(out + "/replay_" + std::to_string(pictures++) + ".bmp");
+            }
         } else {
             std::fprintf(stderr, "gs-replay: bad record at %zu\n", at - 1);
             return 65;

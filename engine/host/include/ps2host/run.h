@@ -144,6 +144,9 @@ void GpuShadowFrame(u64 frame, const std::string& dump_dir);
 void GpuCaptureBegin(u64 frame, const std::string& passes_dir);
 std::string GpuCaptureScreen(const std::string& dir);
 bool GpuPrimary();
+/* The GPU renderer's internal resolution, now (a GS replay's; a run takes
+   the "resolution" setting between frames). */
+void GpuSetScale(u32 scale);
 /* F12 or L3+R3 (the window's): capture the next frame. */
 void RequestCapture();
 std::string GpuShadowSummary();
