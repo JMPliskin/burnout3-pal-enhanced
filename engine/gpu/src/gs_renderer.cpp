@@ -24,6 +24,7 @@
 #include "gpu_internal.h"
 #include "gs_frag.h"
 #include "gs_frag_single.h"
+#include "gs_frag_blend.h"
 #include "gs_vert.h"
 #include "date_frag.h"
 #include "date_vert.h"
@@ -48,6 +49,8 @@ struct FragmentParams {
     std::uint32_t bilinear, wms, wmt, minu, maxu, minv, maxv;
     std::uint32_t tw, th, tex_format, ta0, ta1, aem;
     std::uint32_t logic, keep;
+    std::uint32_t scale;        // the texture's pixels to a GS texel (a target drawn larger: the internal resolution)
+    std::uint32_t blend_ops;    // blending in the shader: ALPHA's A, B, C, D, two bits each
 };
 constexpr std::uint32_t kFragmentOffset = 16;
 
@@ -55,7 +58,10 @@ struct Image {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
-    std::uint32_t width = 0, height = 0;
+    std::uint32_t width = 0, height = 0;    // in GS pixels
+    std::uint32_t scale = 1;                // the image's pixels to a GS pixel, each way (targets, depth)
+    std::uint32_t pw() const { return width * scale; }
+    std::uint32_t ph() const { return height * scale; }
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     VkDescriptorSet sampled = VK_NULL_HANDLE;   /* a target read by the DATE setup pass */
@@ -107,10 +113,12 @@ struct DecodeParams {
 /* swizzle.comp's push constants. */
 struct SwizzleParams {
     std::uint32_t bp, bw, psm, cols, rows, stride, to_memory, depth, row0;
+    std::uint32_t scale = 1;    // the image's pixels to a GS pixel: one taken to memory, a square filled from it
 };
 
 constexpr VkDeviceSize kLocalMemory = 4u << 20;
-constexpr VkDeviceSize kLinear = VkDeviceSize(2048) * 1024 * 4;    // the largest image, a value a pixel
+constexpr VkDeviceSize kLinear = VkDeviceSize(2048) * 1024 * 4;    // the largest image, a value a pixel (at scale 1)
+constexpr std::uint32_t kMaxScale = 4;
 
 /* FBMSK as the bits of the target's RGBA bytes it keeps. A 16-bit format's
    five bits a channel are the top five of the byte (the rest stay 0 either
@@ -144,13 +152,23 @@ bool PartlyMasked(std::uint32_t kept) {
     return false;
 }
 
+/* A blend the blender cannot do: FIX over 0x80 is a factor over 1.0, which
+   a fixed-point target clamps to 1 (Burnout 3's glow: (Cs - Cd) * 0xFF/128,
+   then Cs * 0xFF/128 - at half its strength). The shader blends instead,
+   from a copy of the target. */
+bool ShaderBlend(const GsDrawState& s) {
+    return s.blend && s.c == BlendAlpha::Fix && s.fix > 0x80 && s.a != s.b;
+}
+constexpr std::uint32_t kShaderBlend = 1u << 15;
+
 /* The pipeline a state needs: blending and its operands, and the write mask
-   (bits 9-12, inverted so that 0 is the plain pipeline). */
+   (bits 9-12, inverted so that 0 is the plain pipeline); bit 15 the blend
+   in the shader. */
 std::uint32_t PipelineKey(const GsDrawState& s) {
     const std::uint32_t masked = (~WriteMask(KeptBits(s.fbmsk, s.psm)) & 0xF) << 9;
     if (!s.blend) return masked;
     return masked | 1u | std::uint32_t(s.a) << 1 | std::uint32_t(s.b) << 3 | std::uint32_t(s.c) << 5 |
-           std::uint32_t(s.d) << 7;
+           std::uint32_t(s.d) << 7 | (ShaderBlend(s) ? kShaderBlend : 0u);
 }
 
 /* Cv = (A - B) * C + D as the blender's src * sf (op) dst * df. Each of Cs and
@@ -161,6 +179,7 @@ VkPipelineColorBlendAttachmentState Blending(std::uint32_t key, bool dual_source
     VkPipelineColorBlendAttachmentState b{};
     b.colorWriteMask = ~(key >> 9) & 0xF;           // R, G, B, A are bits 0-3, as Vulkan has them
     if (!(key & 1) || (key >> 13) & 3) return b;    // (a logic op replaces blending)
+    if (key & kShaderBlend) return b;               // (the shader blends)
     const auto a = BlendColour((key >> 1) & 3), bb = BlendColour((key >> 3) & 3), d = BlendColour((key >> 7) & 3);
     const auto c = BlendAlpha((key >> 5) & 3);
     const bool dest_alpha = c == BlendAlpha::Dest;
@@ -242,11 +261,13 @@ public:
         const Image& t = found->second;
         *image = reinterpret_cast<std::uint64_t>(t.image);
         *layout = int(t.layout);
-        *width = t.width;
-        *height = t.height;
+        *width = t.pw();
+        *height = t.ph();
         return true;
     }
     bool ReadDepth(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t>* z) override;
+    std::uint32_t Scale() const override { return scale_; }
+    void SetScale(std::uint32_t scale) override;
     void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) override;
     void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) override;
     bool TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
@@ -273,7 +294,7 @@ private:
        nothing (dynamic rendering wants one attachment layout throughout). */
     Image* DepthFor(std::uint32_t key, std::uint32_t width, std::uint32_t height);
     bool MakeImage(Image& image, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
-                   VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+                   VkFormat format = VK_FORMAT_R8G8B8A8_UNORM, std::uint32_t scale = 1);
     void DestroyImage(Image& image);
     void Fill(Texture& texture, const std::uint32_t* pixels);
     VkPipeline PipelineFor(std::uint32_t key);
@@ -288,10 +309,19 @@ private:
        several sizes - waited for the GPU each time: 32 s of a race script). */
     std::map<std::pair<std::uint32_t, std::uint32_t>, Image> feedbacks_;
     Image* feedback_ = nullptr;     /* the one the batch being recorded copies into */
+    /* A batch that samples its own target reads one copy, made as it begins;
+       the GS reads each primitive's texels as the ones before it left them.
+       What the batch has drawn so far (GS pixels), so a primitive that reads
+       there starts a batch of its own, with a new copy (Burnout 3's speed
+       blur: layers each drawn over the last, as one batch read all from the
+       picture before them - a fainter blur). */
+    bool drawn_any_ = false;
+    int drawn_x0_ = 0, drawn_y0_ = 0, drawn_x1_ = 0, drawn_y1_ = 0;     /* pixels, inclusive */
     /* The rendering pass the last batch left open, so the next one into the
        same target and depth buffer goes on in it (thousands of batches a
        frame, each beginning and ending its own, cost the GPU most of its
        time); anything else recorded ends it (VulkanGpu::end_pass). */
+    std::uint32_t scale_ = 1;        // the internal resolution: targets' pixels to a GS pixel
     Image* open_target_ = nullptr;
     Image* open_depth_ = nullptr;
     void EndPass(VkCommandBuffer cmd) {
@@ -304,7 +334,7 @@ private:
     bool Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBuffer* buffer, VkDeviceMemory* memory, void** mapped);
 
     VulkanGpu& g_;
-    VkShaderModule vert_ = VK_NULL_HANDLE, frag_ = VK_NULL_HANDLE;
+    VkShaderModule vert_ = VK_NULL_HANDLE, frag_ = VK_NULL_HANDLE, frag_blend_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkSampler samplers_[8] = {};    /* bilinear << 2 | clamp_s << 1 | clamp_t */
@@ -521,15 +551,16 @@ bool VulkanGsRenderer::Buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkBu
 }
 
 bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
-                                 VkFormat format) {
+                                 VkFormat format, std::uint32_t scale) {
     t.width = width;
     t.height = height;
+    t.scale = std::max(1u, scale);
     t.aspect = format == kDepthFormat ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
                                       : VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = format;
-    ici.extent = {width, height, 1};
+    ici.extent = {t.pw(), t.ph(), 1};
     ici.mipLevels = 1;
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -570,7 +601,8 @@ bool VulkanGsRenderer::Init(std::string* error) {
     vert_ = module(spirv_gs_vert, sizeof spirv_gs_vert);
     frag_ = g_.dual_source ? module(spirv_gs_frag, sizeof spirv_gs_frag)
                            : module(spirv_gs_frag_single, sizeof spirv_gs_frag_single);
-    if (!vert_ || !frag_) {
+    frag_blend_ = module(spirv_gs_frag_blend, sizeof spirv_gs_frag_blend);
+    if (!vert_ || !frag_ || !frag_blend_) {
         if (error) *error = "the GS shaders did not load";
         return false;
     }
@@ -607,8 +639,10 @@ bool VulkanGsRenderer::Init(std::string* error) {
     VkPushConstantRange push[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 8},
                                    {VK_SHADER_STAGE_FRAGMENT_BIT, kFragmentOffset, sizeof(FragmentParams)}};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    const VkDescriptorSetLayout set_layouts[2] = {set_layout_, clut_set_layout_};
-    lci.setLayoutCount = 2;
+    // Set 2: the target's copy that blending in the shader reads (a texture's
+    // layout, so a target's sampled set binds there too).
+    const VkDescriptorSetLayout set_layouts[3] = {set_layout_, clut_set_layout_, set_layout_};
+    lci.setLayoutCount = 3;
     lci.pSetLayouts = set_layouts;
     lci.pushConstantRangeCount = 2;
     lci.pPushConstantRanges = push;
@@ -756,10 +790,10 @@ void VulkanGsRenderer::ImageToLinear(VkCommandBuffer cmd, Image& image, VkImageA
     Transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy copy{};
-    copy.bufferRowLength = image.width;
+    copy.bufferRowLength = image.pw();
     copy.imageSubresource = {aspect, 0, 0, 1};
-    copy.imageOffset = {0, std::int32_t(first_row), 0};
-    copy.imageExtent = {image.width, rows, 1};
+    copy.imageOffset = {0, std::int32_t(first_row * image.scale), 0};
+    copy.imageExtent = {image.pw(), rows * image.scale, 1};
     vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, linear_, 1, &copy);
     MemoryBarrier(cmd);
 }
@@ -771,10 +805,10 @@ void VulkanGsRenderer::LinearToImage(VkCommandBuffer cmd, Image& image, VkImageA
     Transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy copy{};
-    copy.bufferRowLength = image.width;
+    copy.bufferRowLength = image.pw();
     copy.imageSubresource = {aspect, 0, 0, 1};
-    copy.imageOffset = {0, std::int32_t(first_row), 0};
-    copy.imageExtent = {image.width, rows, 1};
+    copy.imageOffset = {0, std::int32_t(first_row * image.scale), 0};
+    copy.imageExtent = {image.pw(), rows * image.scale, 1};
     vkCmdCopyBufferToImage(cmd, linear_, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     MemoryBarrier(cmd);
 }
@@ -829,7 +863,7 @@ bool VulkanGsRenderer::TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std:
     if (!cols) return true;
     g_.Record([&](VkCommandBuffer cmd) {
         ImageToLinear(cmd, t, VK_IMAGE_ASPECT_COLOR_BIT, rows, first_row);
-        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, cols, rows, t.width, 1, 0, first_row});
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, cols, rows, t.pw(), 1, 0, first_row, t.scale});
         MemoryBarrier(cmd);
     });
     return true;
@@ -847,7 +881,7 @@ void VulkanGsRenderer::TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, st
     Image* t = TargetFor(state);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, t->height, t->width, 0, 0, 0});
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, t->height, t->pw(), 0, 0, 0, t->scale});
         LinearToImage(cmd, *t, VK_IMAGE_ASPECT_COLOR_BIT);
     });
 }
@@ -866,7 +900,7 @@ bool VulkanGsRenderer::DepthToMemory(std::uint32_t zbp, std::uint32_t width, std
     if (!cols) return true;
     g_.Record([&](VkCommandBuffer cmd) {
         ImageToLinear(cmd, d, VK_IMAGE_ASPECT_DEPTH_BIT, rows, first_row);
-        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, cols, rows, d.width, 1, 1, first_row});
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, cols, rows, d.pw(), 1, 1, first_row, d.scale});
         MemoryBarrier(cmd);
     });
     return true;
@@ -889,7 +923,7 @@ void VulkanGsRenderer::TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw
     rows = std::min(rows, t->height - first_row);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, rows, t->width, 0, 0, first_row});
+        Swizzle(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, rows, t->pw(), 0, 0, first_row, t->scale});
         LinearToImage(cmd, *t, VK_IMAGE_ASPECT_COLOR_BIT, first_row, rows);
     });
 }
@@ -906,7 +940,7 @@ void VulkanGsRenderer::DepthRowsFromMemory(std::uint32_t zbp, std::uint32_t widt
     rows = std::min(rows, d->height - first_row);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, rows, d->width, 0, 1, first_row});
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, rows, d->pw(), 0, 1, first_row, d->scale});
         LinearToImage(cmd, *d, VK_IMAGE_ASPECT_DEPTH_BIT, first_row, rows);
     });
 }
@@ -917,9 +951,51 @@ void VulkanGsRenderer::DepthFromMemory(std::uint32_t zbp, std::uint32_t width, s
     Image* d = DepthFor(zbp, width, height);
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, d->height, d->width, 0, 1, 0});
+        Swizzle(cmd, SwizzleParams{zbp * 32, fbw, zpsm, d->width, d->height, d->pw(), 0, 1, 0, d->scale});
         LinearToImage(cmd, *d, VK_IMAGE_ASPECT_DEPTH_BIT);
     });
+}
+
+void VulkanGsRenderer::SetScale(std::uint32_t scale) {
+    scale = std::min(std::max(1u, scale), kMaxScale);
+    if (scale == scale_) return;
+    // Every target, depth buffer and feedback copy goes (the caller has had
+    // what the GPU drew written to its local memory first); they come back
+    // at the new size, from memory, as they are next asked for. The linear
+    // buffer holds an image's own pixels: it grows with the scale.
+    Flush();
+    g_.Submit();
+    {
+        std::lock_guard<std::mutex> hold(g_queue_lock);
+        vkDeviceWaitIdle(g_.device);
+    }
+    drawn_ = DrawState{};
+    open_target_ = open_depth_ = nullptr;
+    feedback_ = nullptr;
+    auto drop = [&](Image& image) {
+        if (image.sampled) vkFreeDescriptorSets(g_.device, pool_, 1, &image.sampled);
+        DestroyImage(image);
+    };
+    for (auto& [key, t] : targets_) drop(t);
+    for (auto& [key, d] : depths_) drop(d);
+    for (auto& [size, copy] : feedbacks_) drop(copy);
+    targets_.clear();
+    depths_.clear();
+    feedbacks_.clear();
+    vkDestroyBuffer(g_.device, linear_, nullptr);
+    vkFreeMemory(g_.device, linear_memory_, nullptr);
+    const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    DeviceBuffer(kLinear * scale * scale, usage, &linear_, &linear_memory_);
+    const VkDescriptorBufferInfo info{linear_, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = swizzle_set_;
+    write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &info;
+    vkUpdateDescriptorSets(g_.device, 1, &write, 0, nullptr);
+    scale_ = scale;
 }
 
 VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
@@ -937,7 +1013,7 @@ VkPipeline VulkanGsRenderer::PipelineFor(std::uint32_t key) {
     stages[0].module = vert_;
     stages[0].pName = "main";
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag_;
+    stages[1].module = key & kShaderBlend ? frag_blend_ : frag_;
     stages[1].pName = "main";
     VkVertexInputBindingDescription binding{0, sizeof(PackedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[5] = {
@@ -1102,7 +1178,7 @@ void VulkanGsRenderer::DateSetup(VkCommandBuffer cmd, Image& target, Image& dept
     stencil.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   // 0 everywhere first
     stencil.clearValue.depthStencil = {0.0f, 0};
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    ri.renderArea = {{0, 0}, {target.width, target.height}};
+    ri.renderArea = {{0, 0}, {target.pw(), target.ph()}};
     ri.layerCount = 1;
     ri.pDepthAttachment = &z;
     ri.pStencilAttachment = &stencil;
@@ -1110,9 +1186,9 @@ void VulkanGsRenderer::DateSetup(VkCommandBuffer cmd, Image& target, Image& dept
     drawn_ = DrawState{};           // its own pipeline, sets, viewport and scissor
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, date_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &target.sampled, 0, nullptr);
-    VkViewport vp{0, 0, float(target.width), float(target.height), 0, 1};
+    VkViewport vp{0, 0, float(target.pw()), float(target.ph()), 0, 1};
     vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D all{{0, 0}, {target.width, target.height}};
+    VkRect2D all{{0, 0}, {target.pw(), target.ph()}};
     vkCmdSetScissor(cmd, 0, 1, &all);
     FragmentParams params{};
     params.textured = datm;                         // the setup shader's first word is DATM
@@ -1321,7 +1397,8 @@ Image* VulkanGsRenderer::TargetFor(const GsDrawState& state) {
     if (t.image) return &t;
     MakeImage(t, state.width, state.height,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+              VK_FORMAT_R8G8B8A8_UNORM, scale_);
     // Local memory starts as zeros.
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1339,7 +1416,7 @@ Image* VulkanGsRenderer::DepthFor(std::uint32_t key, std::uint32_t width, std::u
     MakeImage(d, width, height,
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-              kDepthFormat);
+              kDepthFormat, scale_);
     // Local memory starts as zeros: the farthest Z.
     g_.Record([&](VkCommandBuffer cmd) {
         Transition(cmd, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1375,7 +1452,57 @@ void VulkanGsRenderer::UploadDepth(std::uint32_t zbp, std::uint32_t width, std::
 
 void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v, std::size_t count) {
     if (!SameBatch(state, state_)) Flush();
+    // A primitive sampling the target it draws into, where the batch has
+    // drawn already: the batch so far first (the next takes a new copy).
+    const bool feedback = state.textured && state.texture_target && state.tex_fbp == state.fbp &&
+                          state.tex_fbw == state.fbw && count >= 3;
+    const bool shader_blend = ShaderBlend(state) && count >= 3;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (feedback || shader_blend) {
+        float fx0 = 1e30f, fy0 = 1e30f, fx1 = -1e30f, fy1 = -1e30f;
+        float u0 = 1e30f, v0 = 1e30f, u1 = -1e30f, v1 = -1e30f;
+        const float tw = float(state.tw ? state.tw : 2048), th = float(state.th ? state.th : 2048);
+        for (std::size_t i = 0; i < count; ++i) {
+            fx0 = std::min(fx0, v[i].x);
+            fy0 = std::min(fy0, v[i].y);
+            fx1 = std::max(fx1, v[i].x);
+            fy1 = std::max(fy1, v[i].y);
+            const float q = v[i].q != 0.0f ? v[i].q : 1.0f;
+            const float u = v[i].s / q * tw, w = v[i].t / q * th;
+            u0 = std::min(u0, u);
+            v0 = std::min(v0, w);
+            u1 = std::max(u1, u);
+            v1 = std::max(v1, w);
+        }
+        // The pixels it covers, and the texels it reads (two by two around
+        // the coordinate when bilinear).
+        x0 = int(std::floor(fx0));
+        y0 = int(std::floor(fy0));
+        x1 = int(std::ceil(fx1)) - 1;
+        y1 = int(std::ceil(fy1)) - 1;
+        const float b = state.bilinear ? 0.5f : 0.0f;
+        const int tu0 = int(std::floor(u0 - b)), tv0 = int(std::floor(v0 - b));
+        const int tu1 = int(std::ceil(u1 + b)) - 1, tv1 = int(std::ceil(v1 + b)) - 1;
+        const auto overlaps = [&](int l, int t, int r, int bottom) {
+            return drawn_any_ && r >= drawn_x0_ && l <= drawn_x1_ && bottom >= drawn_y0_ && t <= drawn_y1_;
+        };
+        if ((feedback && overlaps(tu0, tv0, tu1, tv1)) || (shader_blend && overlaps(x0, y0, x1, y1))) Flush();
+    }
     state_ = state;
+    if (feedback || shader_blend) {
+        if (!drawn_any_) {
+            drawn_x0_ = x0;
+            drawn_y0_ = y0;
+            drawn_x1_ = x1;
+            drawn_y1_ = y1;
+        } else {
+            drawn_x0_ = std::min(drawn_x0_, x0);
+            drawn_y0_ = std::min(drawn_y0_, y0);
+            drawn_x1_ = std::max(drawn_x1_, x1);
+            drawn_y1_ = std::max(drawn_y1_, y1);
+        }
+        drawn_any_ = true;
+    }
     for (std::size_t i = 0; i + 2 < count; i += 3) {
         for (int k = 0; k < 3; ++k) {
             // Flat shading takes the colour of the triangle's last vertex.
@@ -1387,6 +1514,7 @@ void VulkanGsRenderer::DrawTriangles(const GsDrawState& state, const GsVertex* v
 }
 
 void VulkanGsRenderer::Flush() {
+    drawn_any_ = false;
     if (pending_.empty()) return;
     const VkDeviceSize bytes = pending_.size() * sizeof(PackedVertex);
     VkBuffer vertex_buffer = VK_NULL_HANDLE;
@@ -1412,6 +1540,7 @@ void VulkanGsRenderer::Flush() {
     // Render to texture: the target itself, or a copy when it is also drawn into.
     Image* source = nullptr;
     bool copy_first = false;
+    const bool shader_blend = ShaderBlend(state_);
     if (state_.textured && state_.texture_target) {
         auto found = targets_.find(Key{state_.tex_fbp, state_.tex_fbw, state_.tex_target_psm});
         if (found != targets_.end()) {
@@ -1419,7 +1548,8 @@ void VulkanGsRenderer::Flush() {
             if (source == t) {
                 Image& copy = feedbacks_[{t->width, t->height}];
                 if (!copy.image)
-                    MakeImage(copy, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                    MakeImage(copy, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                              VK_FORMAT_R8G8B8A8_UNORM, t->scale);
                 feedback_ = &copy;
                 copy_first = true;
                 set = SampledSet(copy);
@@ -1427,6 +1557,19 @@ void VulkanGsRenderer::Flush() {
                 set = SampledSet(*source);
             }
         }
+    }
+    // Blending in the shader reads the target as the batch began: the copy.
+    VkDescriptorSet destination_set = VK_NULL_HANDLE;
+    if (shader_blend) {
+        if (!copy_first) {
+            Image& copy = feedbacks_[{t->width, t->height}];
+            if (!copy.image)
+                MakeImage(copy, t->width, t->height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                          VK_FORMAT_R8G8B8A8_UNORM, t->scale);
+            feedback_ = &copy;
+            copy_first = true;
+        }
+        destination_set = SampledSet(*feedback_);
     }
     FragmentParams params{};
     params.textured = state_.textured && (texture != &blank_ || source);
@@ -1484,6 +1627,9 @@ void VulkanGsRenderer::Flush() {
     params.ta0 = state_.ta0;
     params.ta1 = state_.ta1;
     params.aem = state_.aem;
+    params.scale = source ? source->scale : 1;
+    params.blend_ops = std::uint32_t(state_.a) | std::uint32_t(state_.b) << 2 | std::uint32_t(state_.c) << 4 |
+                       std::uint32_t(state_.d) << 6;
     const std::uint32_t count = std::uint32_t(pending_.size());
     static int complaints = 0;
     if ((!pipeline || !set) && complaints < 5) {
@@ -1507,7 +1653,7 @@ void VulkanGsRenderer::Flush() {
                 VkImageCopy region{};
                 region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                 region.dstSubresource = region.srcSubresource;
-                region.extent = {t->width, t->height, 1};
+                region.extent = {t->pw(), t->ph(), 1};
                 vkCmdCopyImage(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, feedback_->image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
                 Transition(cmd, *feedback_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
@@ -1534,7 +1680,7 @@ void VulkanGsRenderer::Flush() {
             z.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             z.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = {{0, 0}, {t->width, t->height}};
+            ri.renderArea = {{0, 0}, {t->pw(), t->ph()}};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &colour;
@@ -1560,7 +1706,10 @@ void VulkanGsRenderer::Flush() {
                 d.sets[1] = clut_set_;
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, d.sets, 0, nullptr);
             }
-            const VkViewport vp{0, 0, float(t->width), float(t->height), 0, 1};
+            if (destination_set)
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 2, 1, &destination_set, 0,
+                                        nullptr);
+            const VkViewport vp{0, 0, float(t->pw()), float(t->ph()), 0, 1};
             if (std::memcmp(&vp, &d.viewport, sizeof vp) != 0) {
                 d.viewport = vp;
                 vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -1568,7 +1717,9 @@ void VulkanGsRenderer::Flush() {
             const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
             const std::int32_t x1 = std::min(std::int32_t(t->width) - 1, state_.scissor_x1);
             const std::int32_t y1 = std::min(std::int32_t(t->height) - 1, state_.scissor_y1);
-            const VkRect2D sc{{x0, y0}, {std::uint32_t(std::max(0, x1 - x0 + 1)), std::uint32_t(std::max(0, y1 - y0 + 1))}};
+            const std::int32_t k = std::int32_t(t->scale);
+            const VkRect2D sc{{x0 * k, y0 * k},
+                              {std::uint32_t(std::max(0, x1 - x0 + 1) * k), std::uint32_t(std::max(0, y1 - y0 + 1) * k)}};
             if (std::memcmp(&sc, &d.scissor, sizeof sc) != 0) {
                 d.scissor = sc;
                 vkCmdSetScissor(cmd, 0, 1, &sc);
@@ -1631,7 +1782,7 @@ bool VulkanGsRenderer::ReadDepth(std::uint32_t zbp, std::uint32_t width, std::ui
     auto found = depths_.find(Key{zbp, width, height});
     if (found == depths_.end()) return false;
     Image& d = found->second;
-    const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
+    const VkDeviceSize bytes = VkDeviceSize(d.pw()) * d.ph() * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
@@ -1641,16 +1792,17 @@ bool VulkanGsRenderer::ReadDepth(std::uint32_t zbp, std::uint32_t width, std::ui
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
-        copy.imageExtent = {width, height, 1};
+        copy.imageExtent = {d.pw(), d.ph(), 1};
         vkCmdCopyImageToBuffer(cmd, d.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
     }, "a depth read-back");
-    // Z / 2^32 back to the GS's Z.
+    // Z / 2^32 back to the GS's Z, a GS pixel each (one of each square).
     const float* in = static_cast<const float*>(mapped);
     z->resize(std::size_t(width) * height);
-    for (std::size_t i = 0; i < z->size(); ++i) {
-        const double v = double(in[i]) * 4294967296.0 + 0.5;
-        (*z)[i] = v <= 0.0 ? 0u : v >= 4294967295.0 ? 0xFFFFFFFFu : std::uint32_t(v);
-    }
+    for (std::uint32_t y = 0; y < height; ++y)
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const double v = double(in[std::size_t(y * d.scale) * d.pw() + x * d.scale]) * 4294967296.0 + 0.5;
+            (*z)[std::size_t(y) * width + x] = v <= 0.0 ? 0u : v >= 4294967295.0 ? 0xFFFFFFFFu : std::uint32_t(v);
+        }
     vkUnmapMemory(g_.device, memory);
     vkDestroyBuffer(g_.device, buffer, nullptr);
     vkFreeMemory(g_.device, memory, nullptr);
@@ -1695,7 +1847,7 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
     auto found = targets_.find(Key{fbp, fbw, psm});
     if (found == targets_.end()) return false;
     Image& t = found->second;
-    const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
+    const VkDeviceSize bytes = VkDeviceSize(t.pw()) * t.ph() * 4;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
@@ -1705,11 +1857,16 @@ bool VulkanGsRenderer::ReadTarget(std::uint32_t fbp, std::uint32_t fbw, std::uin
                    VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {t.width, t.height, 1};
+        copy.imageExtent = {t.pw(), t.ph(), 1};
         vkCmdCopyImageToBuffer(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
     }, "a target read-back");
     pixels->assign(std::size_t(t.width) * t.height, 0);
-    std::memcpy(pixels->data(), mapped, bytes);
+    {
+        const std::uint32_t* from = static_cast<const std::uint32_t*>(mapped);
+        for (std::uint32_t y = 0; y < t.height; ++y)
+            for (std::uint32_t x = 0; x < t.width; ++x)
+                (*pixels)[std::size_t(y) * t.width + x] = from[std::size_t(y * t.scale) * t.pw() + x * t.scale];
+    }
     *width = t.width;
     *height = t.height;
     vkUnmapMemory(g_.device, memory);
@@ -1752,6 +1909,7 @@ VulkanGsRenderer::~VulkanGsRenderer() {
     if (layout_) vkDestroyPipelineLayout(g_.device, layout_, nullptr);
     if (vert_) vkDestroyShaderModule(g_.device, vert_, nullptr);
     if (frag_) vkDestroyShaderModule(g_.device, frag_, nullptr);
+    if (frag_blend_) vkDestroyShaderModule(g_.device, frag_blend_, nullptr);
     if (swizzle_pipeline_) vkDestroyPipeline(g_.device, swizzle_pipeline_, nullptr);
     if (swizzle_layout_) vkDestroyPipelineLayout(g_.device, swizzle_layout_, nullptr);
     if (swizzle_pool_) vkDestroyDescriptorPool(g_.device, swizzle_pool_, nullptr);

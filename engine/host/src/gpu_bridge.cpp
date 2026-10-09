@@ -1296,6 +1296,45 @@ void WriteBmp(const std::string& path, const std::vector<u32>& rgba, u32 stride,
 
 /* The displayed buffer to the window from the GPU's target (the software
    picture where the GPU has none), on the thread the GS runs on. */
+/* The internal resolution the "resolution" setting asks for (PC SETTINGS):
+   original 1, 2x 2, display as many times the PS2's 448 lines as the window
+   has (at most 4). */
+u32 WantedScale(const ps2gpu::Display* display) {
+    const std::string wanted = Setting("resolution", "original");
+    if (wanted == "2x") return 2;
+    if (wanted == "display") {
+        const u32 lines = display ? display->PixelHeight() : 0;
+        return std::min(4u, std::max(1u, lines / 448u));
+    }
+    return 1;
+}
+
+/* A new internal resolution: what the GPU drew goes to its local memory
+   first, the renderer drops its targets and depth buffers, and every image
+   comes back from memory at the new size as it is next used. */
+void Rescale(Bridge& b, u32 scale) {
+    for (auto& [key, o] : b.owned)
+        if (o.gpu_newer) WriteBack(b, o);
+    b.renderer->SetScale(scale);
+    for (auto& [key, o] : b.owned) {
+        o.stale = true;
+        o.stale_beyond = false;
+        o.why = 0;
+        o.stale_row0 = 0;
+        o.stale_row1 = ~0u;
+        o.stale_pages.set();
+        o.gpu_newer = false;
+        o.dirty_begin = ~0u;
+        o.dirty_end = 0;
+        o.dirty_pages.reset();
+        o.rect_dirty = false;
+        o.checked = 0;
+    }
+    ++b.newer_epoch;
+    ++g_mutations;
+    std::fprintf(stderr, "[gpu] internal resolution: %ux\n", unsigned(scale));
+}
+
 void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
     u32 fbp = 0, fbw = 0, psm = 0;
     if (g_bridge && gs::TheGs().Displayed(&fbp, &fbw, &psm)) {
@@ -1305,8 +1344,11 @@ void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
         u32 w = 0, h = 0;
         if (found != g_bridge->owned.end() && !found->second.stale &&
             g_bridge->renderer->DisplayTarget(fbp, fbw, psm, &image, &layout, &w, &h)) {
-            if (due_ns) display.PresentImageAt(image, layout, std::min(w, 640u), std::min(h, 448u), due_ns);
-            else display.PresentImage(image, layout, std::min(w, 640u), std::min(h, 448u));
+            // The target's own pixels, as many as the picture's 640x448 at the
+            // internal resolution.
+            const u32 k = g_bridge->renderer->Scale();
+            if (due_ns) display.PresentImageAt(image, layout, std::min(w, 640u * k), std::min(h, 448u * k), due_ns);
+            else display.PresentImage(image, layout, std::min(w, 640u * k), std::min(h, 448u * k));
             return;
         }
     }
@@ -1376,6 +1418,9 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
         // displayed target (no read-back); the EE goes on meanwhile.
         SetGsFrameHandler([](u64 frame) {
             GpuShadowFrame(frame, std::string());
+            // The internal resolution, between frames (the GS thread's).
+            const u32 scale = WantedScale(WindowDisplay());
+            if (scale != g_bridge->renderer->Scale()) Rescale(*g_bridge, scale);
             if (ps2gpu::Display* display = WindowDisplay()) {
                 const bool pace = !VirtualClock() && SettingOn("frame_pacing", true);    // (PC SETTINGS)
                 PresentGpuPicture(*display, pace ? FrameDue(frame) : 0);

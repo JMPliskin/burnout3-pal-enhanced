@@ -64,6 +64,9 @@ public:
     virtual void SetVsync(bool on) { (void)on; }
     virtual bool Vsync() const { return false; }
 
+    /* The window's height in the screen's pixels (0 when not known). */
+    virtual std::uint32_t PixelHeight() const { return 0; }
+
     /* Fullscreen (borderless, the desktop's resolution) or a window. */
     virtual void SetFullscreen(bool on) { (void)on; }
     virtual bool Fullscreen() const { return false; }

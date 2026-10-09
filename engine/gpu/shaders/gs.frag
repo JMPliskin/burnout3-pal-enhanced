@@ -4,7 +4,14 @@
 // fixed-function blender's; the GS's factor - source alpha or FIX over 128 -
 // goes out as the second output (dual-source blending), since the alpha
 // written is the source alpha as it is. Compiled a second time with
-// SINGLE_OUTPUT for devices without dual-source blending.
+// SINGLE_OUTPUT for devices without dual-source blending, and a third with
+// SHADER_BLEND: the GS's blend done here, from a copy of the target - for a
+// factor the blender cannot have (FIX over 0x80: more than 1.0, which a
+// fixed-point target clamps to 1).
+#ifdef SHADER_BLEND
+#define SINGLE_OUTPUT
+layout(set = 2, binding = 0) uniform sampler2D destination;
+#endif
 
 layout(location = 0) in vec4 shade;
 layout(location = 1) noperspective in vec3 coordinate;
@@ -35,23 +42,36 @@ layout(push_constant) uniform Params {
     uint ta0, ta1, aem; // TEXA
     uint logic;         // FBMSK masking part of a channel: 1 the AND pass, 2 the OR pass, 0 neither
     uint keep;          // ...the bits FBMSK keeps, RGBA bytes as the target holds them
+    uint scale;         // a target drawn larger (the internal resolution): its pixels to a GS texel
+    uint blend_ops;     // SHADER_BLEND: ALPHA's A, B, C, D, two bits each
 } p;
 
-// A texel coordinate wrapped as CLAMP says, as the software GS's Wrap.
-int Wrap(int i, int size, uint mode, uint lo, uint hi) {
-    if (mode == 0u) return i & (size - 1);
+// A texel coordinate wrapped as CLAMP says, as the software GS's Wrap. A
+// target drawn larger (Fine) is addressed in its own pixels: its size and a
+// region's bounds scaled; REGION_REPEAT's masks do not scale (Texel takes
+// those in GS texels).
+int Wrap(int i, int size, uint mode, uint lo, uint hi, int k) {
+    if (mode == 0u) return k == 1 ? (i & (size - 1)) : ((i % size) + size) % size;
     if (mode == 1u) return clamp(i, 0, size - 1);
-    if (mode == 2u) return clamp(i, int(lo), int(hi));
+    if (mode == 2u) return clamp(i, int(lo) * k, int(hi) * k + k - 1);
     return (i & int(lo)) | int(hi);
 }
+
+// Whether the texture is a target drawn larger, addressed in its own pixels.
+bool Fine() { return p.scale > 1u && p.wms != 3u && p.wmt != 3u; }
 
 ivec2 TextureSize() {
     return p.tw != 0u ? ivec2(int(p.tw), int(p.th)) : textureSize(texture_image, 0);
 }
 
 vec4 Texel(int u, int v) {
-    ivec2 size = TextureSize();
-    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu), Wrap(v, size.y, p.wmt, p.minv, p.maxv)) & 2047;
+    const int k = Fine() ? int(p.scale) : 1;
+    ivec2 size = TextureSize() * k;
+    ivec2 at = ivec2(Wrap(u, size.x, p.wms, p.minu, p.maxu, k), Wrap(v, size.y, p.wmt, p.minv, p.maxv, k));
+    if (k == 1) at &= 2047;
+    // A target drawn larger with REGION_REPEAT: the GS texel, and the middle
+    // of its square.
+    if (k == 1 && p.scale > 1u) at = at * int(p.scale) + int(p.scale / 2u);
     // A target may be smaller than TEX0 says: what lies beyond is not drawn here.
     at = min(at, textureSize(texture_image, 0) - 1);
     vec4 t = floor(texelFetch(texture_image, at, 0) * 255.0 + 0.5);
@@ -74,6 +94,7 @@ vec4 Texel(int u, int v) {
 // The texel at (u, v) in texels: the nearest, or the four around (u - 0.5,
 // v - 0.5) mixed and rounded per channel.
 vec4 Sample(vec2 uv) {
+    if (Fine()) uv *= float(p.scale);               // in the target's own pixels
     if (p.bilinear == 0u) return Texel(int(floor(uv.x)), int(floor(uv.y)));
     vec2 xy = uv - 0.5;
     ivec2 i0 = ivec2(floor(xy));
@@ -140,6 +161,16 @@ void main() {
     if (p.pabe == 1u && c.a < 128.0) discard;
     if (p.pabe == 2u && c.a >= 128.0) discard;
 
+#ifdef SHADER_BLEND
+    // Cv = ((A - B) * C >> 7) + D, clamped (COLCLAMP), as the software GS.
+    vec4 dst = round(texelFetch(destination, ivec2(gl_FragCoord.xy), 0) * 255.0);
+    uint ops = p.blend_ops;
+    vec3 op_a = (ops & 3u) == 0u ? c.rgb : (ops & 3u) == 1u ? dst.rgb : vec3(0.0);
+    vec3 op_b = ((ops >> 2) & 3u) == 0u ? c.rgb : ((ops >> 2) & 3u) == 1u ? dst.rgb : vec3(0.0);
+    float op_c = ((ops >> 4) & 3u) == 0u ? c.a : ((ops >> 4) & 3u) == 1u ? dst.a : float(p.fix);
+    vec3 op_d = ((ops >> 6) & 3u) == 0u ? c.rgb : ((ops >> 6) & 3u) == 1u ? dst.rgb : vec3(0.0);
+    c.rgb = clamp(floor((op_a - op_b) * op_c / 128.0) + op_d, 0.0, 255.0);
+#endif
     colour = c / 255.0;
     // A partly masked channel: the target ANDed with what FBMSK keeps, then
     // ORed with the rest of the source's bits (the pipelines' logic ops).

@@ -19,6 +19,7 @@ layout(push_constant) uniform Params {
     uint to_memory;     // 1: linear -> memory; 0: memory -> linear
     uint depth;         // the linear side is depth (float)
     uint row0;          // the image's row that linear row 0 holds
+    uint scale;         // the image's pixels to a GS pixel, each way (the internal resolution)
 } p;
 
 const uint PSMCT32 = 0x00u, PSMCT24 = 0x01u, PSMCT16 = 0x02u, PSMCT16S = 0x0Au;
@@ -88,7 +89,10 @@ void main() {
     if (x >= p.cols || y >= p.rows) return;
     const uint a = Address(x, y + p.row0);
     const uint word = a >> 2;
-    const uint li = y * p.stride + x;
+    // The image's pixels for GS pixel (x, y): a square of scale x scale,
+    // its first taken to memory, all of it filled from memory.
+    const uint k = max(p.scale, 1u);
+    const uint li = (y * k) * p.stride + x * k;
     const bool z24 = p.psm == PSMCT24 || p.psm == PSMZ24;
     if (p.to_memory == 1u) {
         uint v = lin[li];
@@ -113,6 +117,8 @@ void main() {
         } else {
             v = z24 ? (w & 0xFFFFFFu) : w;
         }
-        lin[li] = p.depth == 1u ? floatBitsToUint(float(v) * (1.0 / 4294967296.0)) : v;
+        const uint value = p.depth == 1u ? floatBitsToUint(float(v) * (1.0 / 4294967296.0)) : v;
+        for (uint dy = 0u; dy < k; ++dy)
+            for (uint dx = 0u; dx < k; ++dx) lin[li + dy * p.stride + dx] = value;
     }
 }

@@ -46,6 +46,11 @@ public:
     void SetFullscreen(bool on) override;
     bool Fullscreen() const override;
     void SetVsync(bool on) override;
+    std::uint32_t PixelHeight() const override {
+        int w = 0, h = 0;
+        if (!window_ || !SDL_GetWindowSizeInPixels(window_, &w, &h)) return 0;
+        return std::uint32_t(h > 0 ? h : 0);
+    }
     bool Vsync() const override { return vsync_; }
     Pacing TakePacing() override;
     bool Focused() const override;

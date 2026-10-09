@@ -140,6 +140,13 @@ struct GsClutLoad {
 class GsRenderer {
 public:
     virtual ~GsRenderer() = default;
+    /* The internal resolution: targets and depth buffers drawn `scale` times
+       as large each way (1-4); textures, memory and everything read back
+       stay in GS pixels. Changing it drops every target and depth buffer:
+       what the GPU drew must be in local memory first; they come back from
+       it. */
+    virtual std::uint32_t Scale() const { return 1; }
+    virtual void SetScale(std::uint32_t scale) { (void)scale; }
     /* A texture, RGBA in memory (alpha as the GS has it, 0x80 is 1.0), rows
        top-down. Replaces what the key named. */
     virtual void UploadTexture(std::uint64_t key, const std::uint32_t* pixels, std::uint32_t width,

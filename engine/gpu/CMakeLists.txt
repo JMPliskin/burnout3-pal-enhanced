@@ -73,6 +73,14 @@ add_custom_command(OUTPUT ${out}
     DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag glslang-standalone
     COMMENT "glslang gs.frag (single output)")
 list(APPEND PS2GPU_SHADER_HEADERS ${out})
+# ...and blending in the shader, from a copy of the target (a factor over 1).
+set(out ${PS2GPU_SHADER_DIR}/gs_frag_blend.h)
+add_custom_command(OUTPUT ${out}
+    COMMAND glslang-standalone -V --target-env vulkan1.3 -DSHADER_BLEND --vn spirv_gs_frag_blend
+            -o ${out} ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/shaders/gs.frag glslang-standalone
+    COMMENT "glslang gs.frag (blending in the shader)")
+list(APPEND PS2GPU_SHADER_HEADERS ${out})
 add_custom_target(ps2gpu_shaders DEPENDS ${PS2GPU_SHADER_HEADERS})
 
 add_library(ps2gpu STATIC
