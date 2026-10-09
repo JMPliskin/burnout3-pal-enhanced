@@ -171,12 +171,27 @@ bool PartlyMasked(std::uint32_t kept) {
    a fixed-point target clamps to 1 (Burnout 3's glow: (Cs - Cd) * 0xFF/128,
    then Cs * 0xFF/128 - at half its strength). The shader blends instead,
    from a copy of the target. */
+bool Is16Bit(std::uint32_t psm) { return psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A; }
+
 bool ShaderBlend(const GsDrawState& s) {
-    if (!s.blend || s.a == s.b) return false;
+    if (!s.blend) return false;
+    // Into a 16-bit target: the blend's result cut to five bits a channel,
+    // as the GS stores it (the blender would keep eight: the next blend over
+    // it would read more than the GS has - Burnout 3's picture copied into
+    // its 16-bit display buffer, blended over the last, came out 9 brighter
+    // in the dark).
+    if (Is16Bit(s.psm)) return true;
+    if (s.a == s.b) return false;
     // The destination's alpha as the factor (C = Ad): over 128 on the GS,
-    // over 255 as the blender reads a byte (DST_ALPHA) - at half its strength
-    // (Burnout 3's sky: its gradient blended by the alpha laid down first).
-    return (s.c == BlendAlpha::Fix && s.fix > 0x80) || s.c == BlendAlpha::Dest;
+    // over 255 as the blender reads a byte (DST_ALPHA) - at half its strength.
+    // In the shader for a small target alone (Burnout 3's sky: its 64x32
+    // gradient blended by the alpha laid down first): the race's scene
+    // blends by Ad too, thousands of overlapping primitives, each needing
+    // a fresh copy of the picture - 60 frames a second at 3x became 47.
+    // There the frame's alpha is small (under 16) while the scene is drawn:
+    // half strength of almost nothing.
+    if (s.c == BlendAlpha::Dest) return s.fbw <= 2;
+    return s.c == BlendAlpha::Fix && s.fix > 0x80;
 }
 constexpr std::uint32_t kShaderBlend = 1u << 15;
 
@@ -2123,6 +2138,7 @@ void VulkanGsRenderer::Flush() {
     params.blend_ops = std::uint32_t(state_.a) | std::uint32_t(state_.b) << 2 | std::uint32_t(state_.c) << 4 |
                        std::uint32_t(state_.d) << 6;
     if (state_.textured && t->scale > 1) params.blend_ops |= (t->scale & 0xFFu) << 8;
+    if (Is16Bit(state_.psm)) params.blend_ops |= 1u << 16;    // gs.frag: colour cut to five bits a channel
     const std::uint32_t count = std::uint32_t(pending_.size());
     static int complaints = 0;
     if ((!pipeline || !set) && complaints < 5) {

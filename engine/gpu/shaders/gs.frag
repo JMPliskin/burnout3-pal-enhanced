@@ -44,7 +44,8 @@ layout(push_constant) uniform Params {
     uint logic;         // FBMSK masking part of a channel: 1 the AND pass, 2 the OR pass, 0 neither
     uint keep;          // ...the bits FBMSK keeps, RGBA bytes as the target holds them
     uint scale;         // a target drawn larger (the internal resolution): its pixels to a GS texel
-    uint blend_ops;     // bits 0-7, SHADER_BLEND: ALPHA's A, B, C, D, two bits each; 8-15: Snap's scale
+    uint blend_ops;     // bits 0-7, SHADER_BLEND: ALPHA's A, B, C, D, two bits each; 8-15: Snap's scale;
+                        // 16: a 16-bit target (five bits a channel stored)
 } p;
 
 // A texel coordinate wrapped as CLAMP says, as the software GS's Wrap. A
@@ -235,6 +236,8 @@ void main() {
     vec3 op_d = ((ops >> 6) & 3u) == 0u ? c.rgb : ((ops >> 6) & 3u) == 1u ? dst.rgb : vec3(0.0);
     c.rgb = clamp(floor((op_a - op_b) * op_c / 128.0) + op_d, 0.0, 255.0);
 #endif
+    // A 16-bit target keeps the top five bits of each colour byte.
+    if (((p.blend_ops >> 16) & 1u) != 0u) c.rgb = floor(c.rgb / 8.0) * 8.0;
     colour = c / 255.0;
     // A partly masked channel: the target ANDed with what FBMSK keeps, then
     // ORed with the rest of the source's bits (the pipelines' logic ops).
