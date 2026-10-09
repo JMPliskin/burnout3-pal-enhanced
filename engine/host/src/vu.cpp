@@ -14,9 +14,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <unordered_map>
+#include <xmmintrin.h>
 #include <unordered_set>
 #include <vector>
 
@@ -655,6 +657,97 @@ int Vu::Bench(const std::string& path, int passes, bool fast) {
     vu.fast = fast;
     vu.on_kick = [](u64, u64) {};
     vu.on_kick_block = [](const u32*, u32) {};
+    // PS2HOST_VU_FIND=x,y,z,w (hex words): the run that leaves that quadword
+    // in data memory, the pair that first stores it (the interpreter, run
+    // again with a growing limit) and the registers before and after.
+    if (const char* find = std::getenv("PS2HOST_VU_FIND")) {
+        u32 want[4] = {};
+        if (std::sscanf(find, "%x,%x,%x,%x", &want[0], &want[1], &want[2], &want[3]) != 4) return 64;
+        vu.use_compiled = false;
+        auto load = [&](const Run& r) {
+            std::memcpy(vu.micro.data(), r.micro.data(), 16384);
+            vu.MicroWritten();
+            std::memcpy(vu.data.data(), r.data.data(), 16384);
+            std::memcpy(vu.regs.vf, r.s.vf, sizeof r.s.vf);
+            std::memcpy(vu.regs.vc, r.s.vc, sizeof r.s.vc);
+            std::memcpy(vu.regs.vacc, r.s.vacc, sizeof r.s.vacc);
+            vu.mac = r.s.flags[0];
+            vu.status = r.s.flags[1];
+            vu.clip = r.s.flags[2];
+            vu.p = r.s.flags[3];
+            vu.top = r.s.flags[4];
+            vu.itop = r.s.flags[5];
+        };
+        auto holds = [&]() -> int {
+            for (u32 q = 0; q < 1024; ++q) {
+                u32 w[4];
+                std::memcpy(w, vu.data.data() + q * 16, 16);
+                if ((w[0] & 0xFF) == want[0] && (w[1] & 0xFF) == want[1] && (w[2] & 0xFF) == want[2] && (w[3] & 0xFF) == want[3]) return int(q);    // (PACKED RGBAQ: the low bytes)
+                if (want[1] == 0xFFFFFFFFu && (w[0] == want[0] || w[1] == want[0] || w[2] == want[0] || w[3] == want[0])) return int(q);    // x,FFFFFFFF,0,0: one word anywhere
+            }
+            return -1;
+        };
+        auto dump = [&](const char* when) {
+            std::printf("  %s (pc %04X):\n", when, vu.resume * 1);
+            for (int i = 0; i < 32; ++i) {
+                float f[4];
+                std::memcpy(f, vu.regs.vf[i], 16);
+                std::printf("    vf%02d %12g %12g %12g %12g   [%08X %08X %08X %08X]\n", i, f[0], f[1], f[2], f[3],
+                            vu.regs.vf[i][0], vu.regs.vf[i][1], vu.regs.vf[i][2], vu.regs.vf[i][3]);
+            }
+            std::printf("    vi:");
+            for (int i = 0; i < 16; ++i) std::printf(" %X", vu.regs.vc[i] & 0xFFFF);
+            float q, acc[4];
+            std::memcpy(&q, &vu.regs.vc[22], 4);
+            std::memcpy(acc, vu.regs.vacc, 16);
+            std::printf("\n    Q %g  I %08X  ACC %g %g %g %g\n", q, vu.regs.vc[21], acc[0], acc[1], acc[2], acc[3]);
+        };
+        // PS2HOST_VU_STEPS=run,first,last: that run's registers after each pair count.
+        if (const char* steps = std::getenv("PS2HOST_VU_STEPS")) {
+            unsigned run = 0; unsigned long long first = 0, last = 0;
+            std::sscanf(steps, "%u,%llu,%llu", &run, &first, &last);
+            for (unsigned long long k = first; k <= last && run < runs.size(); ++k) {
+                load(runs[run]);
+                vu.Run(runs[run].s.pc, k);
+                float acc[4];
+                std::memcpy(acc, vu.regs.vacc, 16);
+                std::printf("%llu pc %04X ACC %g %g %g %g", k, vu.resume * 1, acc[0], acc[1], acc[2], acc[3]);
+                for (int r : {18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}) {
+                    float f[4];
+                    std::memcpy(f, vu.regs.vf[r], 16);
+                    std::printf(" | vf%d %g %g %g %g", r, f[0], f[1], f[2], f[3]);
+                }
+                std::printf("\n");
+            }
+            return 0;
+        }
+        for (std::size_t n = 0; n < runs.size(); ++n) {
+            load(runs[n]);
+            if (holds() >= 0) continue;                 // there before it ran
+            const u64 total = vu.Run(runs[n].s.pc);
+            const int q = holds();
+            if (q < 0) continue;
+            std::printf("run %zu (pc %04X, %llu pairs) stores it at quadword %d\n", n, runs[n].s.pc,
+                        (unsigned long long)total, q);
+            u64 lo = 0, hi = total;                     // after hi pairs it is there; after lo not
+            while (hi - lo > 1) {
+                const u64 mid = (lo + hi) / 2;
+                load(runs[n]);
+                vu.Run(runs[n].s.pc, mid);
+                (holds() >= 0 ? hi : lo) = mid;
+            }
+            load(runs[n]);
+            vu.Run(runs[n].s.pc, lo);
+            std::printf("  the storing pair: after %llu pairs\n", (unsigned long long)lo);
+            dump("before the storing pair");
+            load(runs[n]);
+            vu.Run(runs[n].s.pc, hi);
+            dump("after it");
+            return 0;
+        }
+        std::printf("no run stores it\n");
+        return 1;
+    }
     double best = 0;
     u64 pairs = 0, hash = 0;
     for (int pass = 0; pass < passes; ++pass) {
@@ -707,8 +800,23 @@ int Vu::Bench(const std::string& path, int passes, bool fast) {
     return 0;
 }
 
+namespace {
+/* The VUs' arithmetic as the console's: rounded toward zero, denormals flushed
+   (inputs and results) - the host's SSE control word, for a run. Burnout 3's
+   particles reduce an angle by adding 2^23 and taking it away again: rounded
+   to nearest it came out in [0, 1], not [-0.5, 0.5], and the sine polynomial
+   after it gave corners twelve times too long - huge smoke puffs lit with
+   wrapped colours (the race's white-outs and stretched textures). */
+struct VuRounding {
+    unsigned saved = _mm_getcsr();
+    VuRounding() { _mm_setcsr((saved & ~0x6000u) | 0x6000u | 0x8000u | 0x0040u); }
+    ~VuRounding() { _mm_setcsr(saved); }
+};
+}  // namespace
+
 Vu::u64 Vu::Run(u32 pc, u64 limit) {
     Timed timed(data_mask_ == 0x3FF ? Section::Vu1 : Section::Vu0);
+    VuRounding rounding;
     const int unit = data_mask_ == 0x3FF ? 1 : 0;
     pc &= u32(micro.size() - 1) & ~7u;
     ++starts_[pc];
