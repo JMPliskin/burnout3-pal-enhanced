@@ -260,6 +260,7 @@ private:
     u64 bitbltbuf_ = 0, trxpos_ = 0, trxreg_ = 0, trxdir_ = 3;
     float q_ = 1;
     u32 rgba_source_ = 0;                       // where the last RGBAQ came from (trace)
+    u32 xyz_source_ = 0;                        // ...and the last vertex (trace)
     Vertex queue_[3];
     u32 queued_ = 0;
     u32 strip_ = 0;                             // vertices since the primitive started

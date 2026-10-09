@@ -169,6 +169,7 @@ void Gs::WriteRegister(u32 address, u64 value) {
         case 0x03: uv_ = value; break;
         case 0x04: case 0x05: case 0x0C: case 0x0D: {
             // A vertex: position from the register, the rest latched.
+            if (trace) xyz_source_ = dma_source_ ? dma_source_ : g_dma_source;
             const Context& c = Ctx();
             Vertex v;
             const bool f = address == 0x04 || address == 0x0C;
