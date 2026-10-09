@@ -38,6 +38,8 @@ void F_001313C0(lifted::Context& c);
 void F_0019A950(lifted::Context& c);
 // RenderWare's wait for its packet buffers to flip (see AddIdleLoop below).
 void F_001F2408(lifted::Context& c);
+// The frame's post effects: glow and speed blur (see PostEffects).
+void F_002FA9A0(lifted::Context& c);
 void F_001322B0(lifted::Context& c);
 // The frontend: its string lookup, the main menu's input, a message box.
 void F_00271A00(lifted::Context& c);
@@ -129,6 +131,16 @@ void SkipMovie(lifted::Context& c) {
    CPU busy. While one returns 0 the vertical blanks come faster
    (SetFastForward): the loading screen, a still picture and a spinner, goes
    by sooner. PS2HOST_LOAD_SPEED says how much faster (1: as the console). */
+/* The frame's post effects (0x002FA9A0, from the race's and the frontend's
+   3D drawing): the frame copied to a half-size buffer, its bright parts
+   (glow) and a radial speed blur gathered there over frames, the buffer laid
+   over the whole frame (0x002F9F50). At 320x224 that layer softens the
+   picture at any internal resolution. BLUR OFF leaves the frame as drawn. */
+void PostEffects(lifted::Context& c) {
+    if (ps2host::Setting("blur", "original") == "off") return;
+    F_002FA9A0(c);
+}
+
 /* A function that may wait in an idle loop: in real time the wait sleeps
    (ps2host::InterruptWait). */
 template <void (*Wait)(lifted::Context&)>
@@ -241,12 +253,15 @@ int Resolution() {
     return 0;
 }
 void SetResolution(int which) { ps2host::SetSetting("resolution", kResolutions[which]); }
+int Blur() { return ps2host::Setting("blur", "original") == "off" ? 1 : 0; }
+void SetBlur(int off) { ps2host::SetSetting("blur", off ? "off" : "original"); }
 const Option kOptions[] = {
     {"FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {"VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
     {"FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacing, SetFramePacing, {"OFF", "ON"}, 2},
     {"RESOLUTION", "DRAWN AS THE PS2 DID, TWICE AS SHARP, OR AS SHARP AS THE SCREEN", Resolution, SetResolution,
      {"ORIGINAL", "2X", "DISPLAY"}, 3},
+    {"BLUR", "THE SPEED BLUR AND GLOW, OR A CLEAR PICTURE", Blur, SetBlur, {"ORIGINAL", "OFF"}, 2},
 };
 constexpr u32 kOptionCount = sizeof kOptions / sizeof kOptions[0];
 constexpr u32 kSettingsRows = kOptionCount + 1;     // and BACK
@@ -528,6 +543,7 @@ void RegisterGameOverrides() {
     // menus, a core spun while it waited for its next picture's blank.
     ps2host::AddIdleLoop(0x001F24E0u);
     ps2host::Override(0x001F2408u, WaitsForInterrupt<F_001F2408>, "RenderWare's packet wait: asleep in real time");
+    ps2host::Override(0x002FA9A0u, PostEffects, "the frame's speed blur and glow: BLUR (PC SETTINGS)");
     ps2host::Override(0x001156C0u, KernelStore, "kernel-mode store");
     ps2host::Override(0x0010D3E8u, TtyWrite, "TTY write (printf)");
     ps2host::Override(0x001313C0u, SkipMovie, "a movie screen's update: Start skips the movie");
