@@ -130,20 +130,21 @@ struct SwizzleParams {
     std::uint32_t keep_colour = 0;  // from memory: the square's colour kept where memory differs in alpha alone
 };
 
+constexpr std::uint32_t kDepthRows = 512;   // a depth buffer's rows (DrawTriangles; the bridge's)
 constexpr VkDeviceSize kLocalMemory = 4u << 20;
 constexpr VkDeviceSize kLinear = VkDeviceSize(2048) * 1024 * 4;    // the largest image, a value a pixel (at scale 1)
 constexpr std::uint32_t kMaxScale = 4;
 
-/* FBMSK as the bits of the target's RGBA bytes it keeps. A 16-bit format's
-   five bits a channel are the top five of the byte (the rest stay 0 either
-   way, so count as kept), its alpha bit the byte's top bit; a 24-bit format
-   keeps the alpha it does not store. */
+/* FBMSK as the bits of the target's RGBA bytes it keeps. FBMSK is in RGBA32
+   bit positions whatever the format (the GS masks the colour before it is
+   made 16-bit, as the software GS and PCSX2 do): a 16-bit format stores the
+   top five bits of each colour byte and alpha's top bit (0x80F8F8F8), the
+   rest stay 0 either way, so count as kept; a 24-bit format keeps the alpha
+   it does not store. (Read as a 16-bit pixel's bits, Burnout 3's FBMSK
+   0x3FFF wrote alpha's top two bits alone, not its byte: its depth into the
+   picture's alpha - the haze, the sun's halo - came out wrong.) */
 std::uint32_t KeptBits(std::uint32_t fbmsk, std::uint32_t psm) {
-    if (psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A) {
-        const std::uint32_t r = ((fbmsk & 31) << 3) | 7, g = (((fbmsk >> 5) & 31) << 3) | 7;
-        const std::uint32_t b = (((fbmsk >> 10) & 31) << 3) | 7, a = (fbmsk & 0x8000) ? 0xFF : 0x7F;
-        return r | g << 8 | b << 16 | a << 24;
-    }
+    if (psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A) return fbmsk | ~0x80F8F8F8u;
     if (psm == 0x01 || psm == 0x31) return fbmsk | 0xFF000000u;
     return fbmsk;
 }
@@ -171,7 +172,11 @@ bool PartlyMasked(std::uint32_t kept) {
    then Cs * 0xFF/128 - at half its strength). The shader blends instead,
    from a copy of the target. */
 bool ShaderBlend(const GsDrawState& s) {
-    return s.blend && s.c == BlendAlpha::Fix && s.fix > 0x80 && s.a != s.b;
+    if (!s.blend || s.a == s.b) return false;
+    // The destination's alpha as the factor (C = Ad): over 128 on the GS,
+    // over 255 as the blender reads a byte (DST_ALPHA) - at half its strength
+    // (Burnout 3's sky: its gradient blended by the alpha laid down first).
+    return (s.c == BlendAlpha::Fix && s.fix > 0x80) || s.c == BlendAlpha::Dest;
 }
 constexpr std::uint32_t kShaderBlend = 1u << 15;
 
@@ -2011,7 +2016,10 @@ void VulkanGsRenderer::Flush() {
     std::memcpy(vertex_data, pending_.data(), bytes);
     Image* t = TargetFor(state_);
     // A target's own depth buffer is keyed past any ZBP (which has 9 bits).
-    Image* depth = DepthFor(state_.depth ? state_.zbp : 0x10000u + state_.fbp, t->width, t->height);
+    // A depth buffer is kDepthRows tall whatever draws with it (a 16-bit
+    // target is twice as tall: the same memory), so it is one image.
+    Image* depth = DepthFor(state_.depth ? state_.zbp : 0x10000u + state_.fbp, t->width,
+                            state_.depth ? std::min(t->height, kDepthRows) : t->height);
     const VkPipeline pipeline = PipelineFor(PipelineKey(state_));
     Texture* texture = &blank_;
     if (state_.textured) {
@@ -2177,7 +2185,7 @@ void VulkanGsRenderer::Flush() {
             z.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             z.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = {{0, 0}, {t->pw(), t->ph()}};
+            ri.renderArea = {{0, 0}, {t->pw(), std::min(t->ph(), depth->ph())}};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &colour;
@@ -2213,7 +2221,7 @@ void VulkanGsRenderer::Flush() {
             }
             const std::int32_t x0 = std::max(0, state_.scissor_x0), y0 = std::max(0, state_.scissor_y0);
             const std::int32_t x1 = std::min(std::int32_t(t->width) - 1, state_.scissor_x1);
-            const std::int32_t y1 = std::min(std::int32_t(t->height) - 1, state_.scissor_y1);
+            const std::int32_t y1 = std::min(std::int32_t(std::min(t->height, depth->height)) - 1, state_.scissor_y1);
             const std::int32_t k = std::int32_t(t->scale);
             const VkRect2D sc{{x0 * k, y0 * k},
                               {std::uint32_t(std::max(0, x1 - x0 + 1) * k), std::uint32_t(std::max(0, y1 - y0 + 1) * k)}};

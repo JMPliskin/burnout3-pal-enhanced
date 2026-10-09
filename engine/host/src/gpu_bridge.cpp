@@ -356,8 +356,13 @@ void WriteBack(Bridge& b, Owned& o) {
     const u32 last = std::min(o.y1, (o.dirty_end - o.begin) / row_blocks * page_rows);
     // Blocks the CPU wrote go over first: the image covers them only in part.
     Coherent(b, o.dirty_begin, o.dirty_end, true);
+    if (gs::TheGs().trace)   // in a capture's trace: an image written back to memory, which rows
+        std::fprintf(gs::TheGs().trace_out, "[gpu] write-back %s %X/%u/%02X rows %u-%u cols %u\n", o.depth ? "Z" : "C",
+                     unsigned(o.fbp), unsigned(o.fbw), unsigned(o.psm), unsigned(first), unsigned(last),
+                     unsigned(o.x1));
     const bool done = o.depth ? b.renderer->DepthToMemory(o.fbp, o.width, o.height, o.fbw, o.psm, o.x1, last, first)
                               : b.renderer->TargetToMemory(o.fbp, o.fbw, o.psm, o.x1, last, first);
+    if (!done && gs::TheGs().trace) std::fprintf(gs::TheGs().trace_out, "[gpu]   (nothing to write back)\n");
     if (done) {
         ++b.write_backs;
         std::fill(b.blocks.begin() + std::min(o.dirty_begin, 16384u),
@@ -979,7 +984,11 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.psm = Bits(c.frame, 24, 6);
     state.fbmsk = u32(c.frame >> 32);
     state.width = std::min(2048u, state.fbw * 64);
-    state.height = 512;
+    // The rows a page holds twice over in a 16-bit format: a 16-bit view of a
+    // 448-row picture is 896 rows (Burnout 3 writes its depth into the
+    // picture's alpha through one - at 512 rows, the lower half went unwritten,
+    // its haze and the sun's halo with it).
+    state.height = Is16(state.psm) ? 1024 : 512;
     state.scissor_x0 = int(Bits(c.scissor, 0, 11));
     state.scissor_x1 = int(Bits(c.scissor, 16, 11));
     state.scissor_y0 = int(Bits(c.scissor, 32, 11));
@@ -1207,7 +1216,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     Owned* depth = nullptr;
     if (state.depth) {
         if (s.primary) {
-            depth = &Use(s, state.zbp, state.fbw, zpsm, true, state.width, state.height, rows);
+            depth = &Use(s, state.zbp, state.fbw, zpsm, true, state.width, 512, rows);   // (the renderer's kDepthRows)
         } else if (s.depth_seeded.insert(state.zbp).second) {
             // Each depth buffer starts the frame as local memory has it, so the
             // GPU tests against what the software GS drew.

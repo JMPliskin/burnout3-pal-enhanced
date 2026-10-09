@@ -97,7 +97,23 @@ int GsReplay(const std::string& file, const std::string& out) {
             words.resize(bytes / 4);
             std::memcpy(words.data(), data.data() + at, words.size() * 4);
             at += bytes;
-            g.Words(path, words.data(), u32(words.size()));
+            // PS2HOST_REPLAY_STOP_PRIM=n: the replay ends as primitive n is drawn
+            // (memory then, to compare two renderers mid-frame).
+            static const long long stop = std::getenv("PS2HOST_REPLAY_STOP_PRIM")
+                                              ? std::atoll(std::getenv("PS2HOST_REPLAY_STOP_PRIM")) : -1;
+            if (stop < 0) {
+                g.Words(path, words.data(), u32(words.size()));
+            } else {
+                bool stopped = false;
+                for (std::size_t w = 0; w < words.size() && !stopped; w += 4) {
+                    g.Words(path, words.data() + w, u32(std::min<std::size_t>(4, words.size() - w)));
+                    stopped = (long long)g.primitives() >= stop;
+                }
+                if (stopped) {
+                    at = data.size();
+                    break;
+                }
+            }
         } else if (kind == 'V') {
             g.Finish();
             if (trace) std::fprintf(trace, "[gs] ---- vertical blank %d\n", pictures);
@@ -115,6 +131,7 @@ int GsReplay(const std::string& file, const std::string& out) {
         }
     }
     g.Finish();
+    if (gpu && g.on_memory) g.on_memory(0, 16384, false);     // what the GPU drew, into local memory first
     if (std::FILE* m = std::fopen((out + "/gsmem.bin").c_str(), "wb")) {      // local memory at the end
         std::fwrite(g.memory.data(), 1, kMemory, m);
         std::fclose(m);
