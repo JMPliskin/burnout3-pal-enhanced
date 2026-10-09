@@ -53,6 +53,8 @@ int Scancode(int key) {
         case VK_HOME: return SDL_SCANCODE_HOME;
         case VK_END: return SDL_SCANCODE_END;
         case VK_INSERT: return SDL_SCANCODE_INSERT;
+        case VK_DELETE: return SDL_SCANCODE_DELETE;
+        case VK_NUMPAD8: return SDL_SCANCODE_KP_8;
         case VK_NUMPAD4: return SDL_SCANCODE_KP_4;
         case VK_NUMPAD5: return SDL_SCANCODE_KP_5;
         case VK_NUMPAD6: return SDL_SCANCODE_KP_6;

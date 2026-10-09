@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <map>
@@ -89,7 +90,7 @@ void SetViewWindow(lifted::Context& c) {
 // grid over the 4:3 picture its middle lies in (the race's POS and LAP are
 // the same object, top left and top right). The same in every run.
 
-enum class Anchor { kCentre, kLeft, kRight };
+enum class Anchor { kCentre, kLeft, kRight, kStretch };
 
 struct ElementId {
     u32 context = 0, object = 0;
@@ -114,10 +115,28 @@ struct ElementId {
 
 /* The port's own anchors (the HUD editor's settings take precedence). */
 const std::pair<const char*, Anchor> kDefaultAnchors[] = {
-    {"", Anchor::kCentre},
+    // The race: position (its panel and number) and the boost bar on the
+    // left, the speed (panel and number) on the right; the lap centred.
+    {"hud.1A0790.3CD920.TL", Anchor::kLeft},
+    {"hud.1A0790.381AB0.TL", Anchor::kLeft},
+    {"hud.1A0790.1A6290.BL", Anchor::kLeft},
+    {"hud.1A0790.1A6290.BC", Anchor::kLeft},
+    {"hud.1D75C0.1A8180.BL", Anchor::kLeft},
+    {"hud.1A0790.3CD920.BR", Anchor::kRight},
+    {"hud.1A0790.381030.BR", Anchor::kRight},
+    // The frontend.
+    {"hud.30D6E0.31B130.TL", Anchor::kLeft},
+    {"hud.30D6E0.3D7B40.BR", Anchor::kRight},
 };
 
-const char* AnchorName(Anchor a) { return a == Anchor::kLeft ? "left" : a == Anchor::kRight ? "right" : "centre"; }
+const char* AnchorName(Anchor a) {
+    switch (a) {
+        case Anchor::kLeft: return "left";
+        case Anchor::kRight: return "right";
+        case Anchor::kStretch: return "stretch";
+        default: return "centre";
+    }
+}
 
 /* An element's anchor: its setting, else the port's default, else centred;
    remembered until the editor changes one. */
@@ -134,6 +153,7 @@ Anchor AnchorOf(const ElementId& id) {
     if (set == "left") anchor = Anchor::kLeft;
     else if (set == "right") anchor = Anchor::kRight;
     else if (set == "centre") anchor = Anchor::kCentre;
+    else if (set == "stretch") anchor = Anchor::kStretch;
     g_anchors[key] = anchor;
     return anchor;
 }
@@ -142,8 +162,10 @@ Anchor AnchorOf(const ElementId& id) {
 float Squeeze() { return std::min(1.0f, (4.0f / 3.0f) / ps2host::PictureAspect()); }
 
 /* x (about `centre`, `half` its distance to the picture's edges) brought in
-   by k towards the middle, or the edge it is anchored to. */
+   by k towards the middle, or the edge it is anchored to; stretched, as the
+   game drew it - across the wider picture. */
 float Place(float x, float centre, float half, float k, Anchor anchor) {
+    if (anchor == Anchor::kStretch) return x;
     const float a = anchor == Anchor::kLeft ? centre - half : anchor == Anchor::kRight ? centre + half : centre;
     return a + (x - a) * k;
 }
@@ -172,7 +194,7 @@ void Caller(ElementId* id) {
 // F10 in a wider picture: a panel over the picture lists the elements on
 // screen and their anchors; Page Up and Page Down choose one (it blinks),
 // Home or numpad 4 anchors it left, Insert or numpad 5 in the middle, End or
-// numpad 6 right - saved at once.
+// numpad 6 right, Delete or numpad 8 stretches it across the picture - saved at once.
 
 struct Editor {
     bool on = false;
@@ -224,7 +246,7 @@ void ShowStatus() {
         return;
     }
     std::vector<std::string> lines = {"HUD EDITOR  (F10 closes)",
-                                      "PgUp/PgDn choose   Home left   Insert centre   End right", ""};
+                                      "PgUp/PgDn choose   Home left   Insert centre   End right   Delete stretch", ""};
     std::size_t index = 0, count = 0;
     for (const auto& [id, when] : g_editor.seen) {
         ++count;
@@ -254,7 +276,7 @@ bool Press(int slot, int vk, int vk2 = 0) {
 /* The editor's keys, read as the 2D is drawn. */
 void EditorInput() {
     constexpr int kF10 = 0x79, kPageUp = 0x21, kPageDown = 0x22, kHome = 0x24, kEnd = 0x23, kInsert = 0x2D;
-    constexpr int kPad4 = 0x64, kPad5 = 0x65, kPad6 = 0x66;
+    constexpr int kPad4 = 0x64, kPad5 = 0x65, kPad6 = 0x66, kDelete = 0x2E, kPad8 = 0x68;
     if (Press(0, kF10)) {
         g_editor.on = !g_editor.on && Squeeze() < 1.0f;
         g_editor.seen.clear();
@@ -286,6 +308,7 @@ void EditorInput() {
     if (Press(3, kHome, kPad4)) setting = true, set = Anchor::kLeft;
     if (Press(4, kInsert, kPad5)) setting = true, set = Anchor::kCentre;
     if (Press(5, kEnd, kPad6)) setting = true, set = Anchor::kRight;
+    if (Press(6, kDelete, kPad8)) setting = true, set = Anchor::kStretch;
     if (setting && g_editor.chosen.known()) {
         const std::string key = g_editor.chosen.Key();
         ps2host::SetSetting(key, AnchorName(set));
