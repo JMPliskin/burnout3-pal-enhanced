@@ -811,8 +811,45 @@ void VulkanDisplay::SetVsync(bool on) {
     stale_ = true;                              // the swapchain again, with the other mode
 }
 
+/* The display mode fullscreen takes: the desktop's resolution at a refresh
+   that the game's ~60 frames a second divide evenly (120 Hz, else 60 Hz),
+   not above the desktop's - null for the desktop's own (borderless), when it
+   is such a rate already or the display offers none. On a 144 Hz display a
+   frame took two refreshes, then three (14 and 21 ms): a judder no pacing
+   undoes. */
+const SDL_DisplayMode* EvenMode(SDL_Window* window) {
+    const SDL_DisplayID id = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode* desktop = id ? SDL_GetDesktopDisplayMode(id) : nullptr;
+    if (!desktop) return nullptr;
+    auto even = [](float hz) {
+        const int n = int(hz / 60.0f + 0.5f);
+        return n >= 1 && std::fabs(hz - 60.0f * float(n)) < 0.6f * float(n);
+    };
+    if (even(desktop->refresh_rate)) return nullptr;
+    int count = 0;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(id, &count);
+    static SDL_DisplayMode chosen;
+    const SDL_DisplayMode* best = nullptr;
+    for (int i = 0; modes && i < count; ++i) {
+        const SDL_DisplayMode* m = modes[i];
+        if (m->w != desktop->w || m->h != desktop->h || !even(m->refresh_rate)) continue;
+        if (m->refresh_rate > desktop->refresh_rate + 0.5f) continue;
+        if (!best || m->refresh_rate > best->refresh_rate) best = m;
+    }
+    if (best) chosen = *best;
+    SDL_free(modes);
+    return best ? &chosen : nullptr;
+}
+
 void VulkanDisplay::SetFullscreen(bool on) {
     if (!window_) return;
+    if (on) {
+        const SDL_DisplayMode* mode = EvenMode(window_);
+        SDL_SetWindowFullscreenMode(window_, mode);
+        if (mode)
+            std::fprintf(stderr, "[display] fullscreen at %dx%d, %.2f Hz\n", mode->w, mode->h,
+                         double(mode->refresh_rate));
+    }
     SDL_SetWindowFullscreen(window_, on);
     SDL_ShowCursor();
     if (on) SDL_HideCursor();
