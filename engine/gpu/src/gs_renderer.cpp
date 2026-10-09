@@ -127,6 +127,7 @@ struct DecodeParams {
 struct SwizzleParams {
     std::uint32_t bp, bw, psm, cols, rows, stride, to_memory, depth, row0;
     std::uint32_t scale = 1;    // the image's pixels to a GS pixel: one taken to memory, a square filled from it
+    std::uint32_t keep_colour = 0;  // from memory: the square's colour kept where memory differs in alpha alone
 };
 
 constexpr VkDeviceSize kLocalMemory = 4u << 20;
@@ -264,6 +265,7 @@ public:
     }
     void TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
                               std::uint32_t height, std::uint32_t first_row, std::uint32_t rows) override;
+    void ReloadKeepsColour(bool keep) override { keep_colour_ = keep; }
     void DepthRowsFromMemory(std::uint32_t zbp, std::uint32_t width, std::uint32_t height, std::uint32_t fbw,
                              std::uint32_t zpsm, std::uint32_t first_row, std::uint32_t rows) override;
     bool DisplayTarget(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint64_t* image, int* layout,
@@ -400,6 +402,7 @@ private:
     VkShaderModule vert_ = VK_NULL_HANDLE, frag_ = VK_NULL_HANDLE, frag_blend_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    bool keep_colour_ = false;      /* ReloadKeepsColour */
     VkSampler samplers_[8] = {};    /* bilinear << 2 | clamp_s << 1 | clamp_t */
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     std::map<std::uint32_t, VkPipeline> pipelines_;
@@ -1154,10 +1157,13 @@ void VulkanGsRenderer::TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, st
     state.psm = psm;
     state.width = width;
     state.height = height;
+    const bool existed = targets_.count(Key{fbp, fbw, psm}) != 0;
     Image* t = TargetFor(state);
+    SwizzleParams params{fbp * 32, fbw, psm, t->width, t->height, t->pw(), 0, 0, 0, t->scale};
+    params.keep_colour = existed && keep_colour_ && t->scale > 1;
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        SwizzleImage(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, t->height, t->pw(), 0, 0, 0, t->scale}, *t);
+        SwizzleImage(cmd, params, *t);
         MemoryBarrier(cmd);
     });
 }
@@ -1196,10 +1202,11 @@ void VulkanGsRenderer::TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw
     Image* t = TargetFor(state);
     if (first_row >= t->height) return;
     rows = std::min(rows, t->height - first_row);
+    SwizzleParams params{fbp * 32, fbw, psm, t->width, rows, t->pw(), 0, 0, first_row, t->scale};
+    params.keep_colour = keep_colour_ && t->scale > 1;
     g_.Record([&](VkCommandBuffer cmd) {
         MemoryBarrier(cmd);
-        SwizzleImage(cmd, SwizzleParams{fbp * 32, fbw, psm, t->width, rows, t->pw(), 0, 0, first_row, t->scale},
-                     *t);
+        SwizzleImage(cmd, params, *t);
         MemoryBarrier(cmd);
     });
 }

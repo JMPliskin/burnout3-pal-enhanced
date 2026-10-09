@@ -228,6 +228,14 @@ public:
        been drawn is handed to the GPU first, and the target's image (its
        64-bit handle), its layout (a VkImageLayout) and size are given; false
        if there is none or it has not been drawn. */
+    /* For the TargetFromMemory / TargetRowsFromMemory calls that follow: an
+       image drawn larger (the internal resolution) keeps its own colour
+       where memory differs from it in alpha alone - another view's write
+       into its alpha (Burnout 3's depth into the frame's alpha, through a
+       16-bit view) leaves the picture as fine as it was drawn, rather than
+       as memory holds it (a GS pixel a square). Where the colour differs,
+       memory's, as ever. */
+    virtual void ReloadKeepsColour(bool keep) { (void)keep; }
     /* TargetFromMemory / DepthFromMemory for rows [first_row, first_row +
        rows) alone (the rest of the image as it is). */
     virtual void TargetRowsFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,

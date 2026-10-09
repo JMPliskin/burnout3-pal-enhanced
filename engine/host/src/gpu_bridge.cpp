@@ -136,6 +136,7 @@ struct Owned {
     bool stale = true;              // local memory changed since the image was loaded
     bool stale_beyond = false;      // ...in rows past `end`: stale when it grows into them
     int why = 0;                    // what made it stale: 0 new, 1 memory written, 2 a draw over it, 3 another's write-back
+    bool by16 = false;              // ...only ever a 16-bit view's drawing (Burnout 3's depth into the frame's alpha)
     // The rows a reload brings back (stale ones), [stale_row0, stale_row1):
     // a reload was the whole image, and the race's blur passes, drawn into
     // the first rows of its depth buffer's memory, had its 640x448 reloaded
@@ -311,7 +312,7 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
 
 /* `o` stale for `why`, in the rows over blocks [b0, b1) (all of it, past its
    blocks or by default). */
-void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u, const Pages* pages = nullptr) {
+void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u, const Pages* pages = nullptr, bool by16 = false) {
     ++g_mutations;
     if (pages) {
         o.stale_pages |= *pages;
@@ -326,6 +327,7 @@ void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u, const Pages* pages =
         r0 = (std::max(b0, o.begin) - o.begin) / row_blocks * page_rows;
         r1 = (b1 - o.begin + row_blocks - 1) / row_blocks * page_rows;
     }
+    o.by16 = (o.stale ? o.by16 : true) && by16;
     if (!o.stale) {
         o.stale = true;
         o.why = why;
@@ -473,7 +475,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         if (&other != &o && other.gpu_newer && other.dirty_begin < o.end && o.begin < other.dirty_end) {
             const u32 b0 = other.dirty_begin, b1 = other.dirty_end;
             WriteBack(b, other);
-            MarkStale(o, 3, b0, b1);
+            MarkStale(o, 3, b0, b1, nullptr, Is16(other.psm));
         }
     o.checked = b.newer_epoch;
     if (o.stale) {
@@ -485,6 +487,13 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         ++b.reloads;
         Coherent(b, o.begin, o.full_end, true);
         const u32 r0 = std::min(o.stale_row0, o.height), r1 = std::min(o.stale_row1, o.height);
+        if (gs::TheGs().trace)   // in a capture's trace: an image brought back from memory, and why (Owned::why)
+            std::fprintf(gs::TheGs().trace_out, "[gpu] reload %s %X/%u/%02X why %d rows %u-%u\n", depth ? "Z" : "C",
+                         unsigned(o.fbp), unsigned(o.fbw), unsigned(o.psm), o.why, unsigned(r0), unsigned(r1));
+        // A 32-bit image stale only from a 16-bit view's drawing over it (the
+        // race's depth into the frame's alpha): its own colour kept where only
+        // alpha changed (ReloadKeepsColour) - not a picture as memory holds it.
+        b.renderer->ReloadKeepsColour(o.by16 && !Is16(o.psm));
         // Depth buffers come back whole: the renderer keeps one a target
         // size over the same memory, and a part of one reloaded left the
         // race's garage a few pixels off the software GS.
@@ -495,6 +504,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
             if (depth) b.renderer->DepthRowsFromMemory(o.fbp, o.width, o.height, o.fbw, o.psm, r0, r1 - r0);
             else b.renderer->TargetRowsFromMemory(o.fbp, o.fbw, o.psm, o.width, o.height, r0, r1 - r0);
         }
+        b.renderer->ReloadKeepsColour(false);
         o.stale_row0 = 0;
         o.stale_row1 = ~0u;
         o.stale_pages.reset();
@@ -559,7 +569,7 @@ void Drew(Bridge& b, Owned& o, u32 x0, u32 x1, u32 y1, u32 y0) {
     for (auto& [key, other] : b.owned) {
         if (&other == &o || de <= other.begin || other.full_end <= db) continue;
         if (db < other.end) {
-            MarkStale(other, 2, db, de, &pages);
+            MarkStale(other, 2, db, de, &pages, Is16(o.psm));
         } else {
             other.stale_beyond = true;
         }
@@ -1341,6 +1351,7 @@ void Rescale(Bridge& b, u32 scale) {
         o.stale = true;
         o.stale_beyond = false;
         o.why = 0;
+        o.by16 = false;
         o.stale_row0 = 0;
         o.stale_row1 = ~0u;
         o.stale_pages.set();

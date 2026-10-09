@@ -32,6 +32,7 @@ layout(push_constant) uniform Params {
     uint depth;         // the linear side is depth (float)
     uint row0;          // the image's row that linear row 0 holds
     uint scale;         // the image's pixels to a GS pixel, each way (the internal resolution)
+    uint keep_colour;   // memory -> image, 32-bit: the square's colour kept where memory differs in alpha alone
 } p;
 
 #include "gs_address.glsl"
@@ -93,8 +94,17 @@ void main() {
         }
         const uint value = p.depth == 1u ? floatBitsToUint(float(v) * (1.0 / 4294967296.0)) : v;
 #ifdef IMAGE
+        // Memory differing from the square's middle (what went to memory) in
+        // alpha alone: each pixel keeps its colour, takes memory's alpha.
+        const bool keep = p.keep_colour == 1u && k > 1u && !Is16() && !z24 &&
+                          ((packUnorm4x8(imageLoad(target, at + ivec2(k / 2u))) ^ value) & 0xFFFFFFu) == 0u;
         for (uint dy = 0u; dy < k; ++dy)
-            for (uint dx = 0u; dx < k; ++dx) imageStore(target, at + ivec2(dx, dy), unpackUnorm4x8(value));
+            for (uint dx = 0u; dx < k; ++dx) {
+                const ivec2 xy = at + ivec2(dx, dy);
+                vec4 c = unpackUnorm4x8(value);
+                if (keep) c = vec4(imageLoad(target, xy).rgb, c.a);
+                imageStore(target, xy, c);
+            }
 #else
         for (uint dy = 0u; dy < k; ++dy)
             for (uint dx = 0u; dx < k; ++dx) lin[li + dy * p.stride + dx] = value;
