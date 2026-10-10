@@ -64,6 +64,24 @@ as measured; fullscreen goes to 120 Hz (EvenMode), so 60 pictures a second
 each show for two refreshes. In a window the desktop's 144 Hz can't show
 60 evenly - a window shows a picture for two refreshes, then three.
 
+Then (8471128, 429353d, 409a126), each found as a picture shown late:
+
+* the blanks' timer and the present thread woke late with every core busy
+  (a blank 13 ms late): the highest priority, high-resolution waitable
+  timers; Windows 11 dropping the timer resolution for a hidden window
+  (a 200 us sleep took 15 ms): the process asks to keep it;
+* the present thread waited for a swapchain image at the picture's time:
+  acquired ahead now;
+* FrameDue: a 6 ms floor, and two seconds' history (heavy moments come
+  together);
+* image memory sub-allocated from 64 MB blocks, the texture cache 4,096:
+  a new stretch of track no longer goes to the kernel for each texture.
+
+Now, at 3x: the race 0-1 frames late in 2,800 (99% 17.1 ms, 99.9% 18.7-19.2),
+the menus 0 late in 4,400 (two runs). The one left: the race's frame ~20840,
+the GS thread's own work there (texture uploads and their decoding, ~25 ms
+in one frame).
+
 ## The plan, in order of what drops frames first
 
 1. **No CPU wait for the GPU in a frame.** Find every download in the race
