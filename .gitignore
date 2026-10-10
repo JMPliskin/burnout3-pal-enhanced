@@ -5,6 +5,8 @@
 extracted/
 asm/
 build/
+# Release packages (games/<name>/port/tools/package.py writes them under build/).
+*.zip
 # The user's console BIOS dumps (PCSX2 references): never committed.
 bios/
 

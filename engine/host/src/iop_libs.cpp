@@ -915,13 +915,11 @@ const Map& Table() {
 
 std::map<std::pair<std::string, u32>, std::string> LoadNames() {
     std::map<std::pair<std::string, u32>, std::string> names;
-    // engine/data/iop_exports.csv, found from this source file's location at
-    // build time (PS2_ENGINE_DATA) or next to the executable.
-#ifdef PS2_ENGINE_DATA
-    std::ifstream in(std::string(PS2_ENGINE_DATA) + "/iop_exports.csv");
-#else
-    std::ifstream in("iop_exports.csv");
-#endif
+    // engine/data/iop_exports.csv, built in (engine/host/CMakeLists.txt).
+    static const char kExports[] =
+#include "iop_exports.inc"
+        ;
+    std::istringstream in(kExports);
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#' || line.rfind("library,", 0) == 0) continue;

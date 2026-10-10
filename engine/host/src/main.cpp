@@ -160,6 +160,9 @@ int main(int argc, char** argv) {
 #ifdef PS2HOST_GAME_TITLE
     ps2host::SetGameTitle(PS2HOST_GAME_TITLE);      // the window's (game.json's "title")
 #endif
+#ifdef PS2HOST_GAME_VERSION
+    std::fprintf(stderr, "[port] %s, version %s\n", PS2HOST_GAME_TITLE, PS2HOST_GAME_VERSION);
+#endif
     ps2host::RegisterFunctions(kGuestFunctions, kGuestFunctionCount);
     RegisterGameOverrides();
     const int code = ps2host::Main(argc, argv);

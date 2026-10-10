@@ -48,8 +48,21 @@ add_library(ps2host STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/gs_memory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/gpu_bridge.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/profile.cpp)
-# The IOP interpreter names library functions from engine/data/iop_exports.csv.
-target_compile_definitions(ps2host PRIVATE PS2_ENGINE_DATA="${PS2_ENGINE_DIR}/data")
+# The IOP interpreter names library functions from engine/data/iop_exports.csv,
+# built in (iop_exports.inc: a line of it a string), so that the executable
+# reads nothing from where it was built.
+file(STRINGS ${PS2_ENGINE_DIR}/data/iop_exports.csv iop_export_lines)
+set(iop_exports_inc "// From engine/data/iop_exports.csv (engine/host/CMakeLists.txt): generated.\n")
+foreach(line IN LISTS iop_export_lines)
+    string(REPLACE "\\" "\\\\" line "${line}")
+    string(REPLACE "\"" "\\\"" line "${line}")
+    string(APPEND iop_exports_inc "\"${line}\\n\"\n")
+endforeach()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/iop_exports.inc.new "${iop_exports_inc}")
+configure_file(${CMAKE_CURRENT_BINARY_DIR}/generated/iop_exports.inc.new
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/iop_exports.inc COPYONLY)     # (touched only when it changes)
+target_include_directories(ps2host PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${PS2_ENGINE_DIR}/data/iop_exports.csv)
 target_include_directories(ps2host PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ps2host PUBLIC ps2rt)
 
@@ -124,8 +137,13 @@ function(ps2_add_port target)
         if(no_title)
             set(game_title ${game_name})
         endif()
+        string(JSON game_version ERROR_VARIABLE no_version GET ${game_json} version)
+        if(no_version)
+            set(game_version "0.0.0")
+        endif()
         target_compile_definitions(${target} PRIVATE PS2HOST_GAME_NAME="${game_name}"
                                                      PS2HOST_GAME_TITLE="${game_title}"
+                                                     PS2HOST_GAME_VERSION="${game_version}"
                                                      PS2HOST_GAME_EXECUTABLE="${game_executable}")
         target_link_libraries(${target} PRIVATE comdlg32)
         set(icon ${game_dir}/build/port/icon.ico)
@@ -133,8 +151,35 @@ function(ps2_add_port target)
             set(icon ${game_dir}/port/icon.ico)
         endif()
         if(WIN32 AND EXISTS ${icon} AND CMAKE_RC_COMPILER)
+            # The icon, and the version Explorer shows (game.json's "version",
+            # its numbers for the fixed fields: 0.1.0-alpha is 0,1,0,0).
+            string(REGEX MATCHALL "[0-9]+" version_numbers "${game_version}")
+            list(APPEND version_numbers 0 0 0 0)
+            list(SUBLIST version_numbers 0 4 version_numbers)
+            string(REPLACE ";" "," version_fixed "${version_numbers}")
             file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc
-                 CONTENT "1 ICON \"${icon}\"\n")
+                 CONTENT "1 ICON \"${icon}\"
+1 VERSIONINFO
+FILEVERSION ${version_fixed}
+PRODUCTVERSION ${version_fixed}
+BEGIN
+  BLOCK \"StringFileInfo\"
+  BEGIN
+    BLOCK \"040904B0\"
+    BEGIN
+      VALUE \"FileDescription\", \"${game_title} - PC port\"
+      VALUE \"ProductName\", \"${game_title} - PC port\"
+      VALUE \"FileVersion\", \"${game_version}\"
+      VALUE \"ProductVersion\", \"${game_version}\"
+      VALUE \"OriginalFilename\", \"${target}.exe\"
+    END
+  END
+  BLOCK \"VarFileInfo\"
+  BEGIN
+    VALUE \"Translation\", 0x409, 1200
+  END
+END
+")
             target_sources(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc)
             set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc PROPERTIES
                                         OBJECT_DEPENDS ${icon})
@@ -150,6 +195,8 @@ function(ps2_add_port target)
         # keeps them in the objects (no PDB contention in parallel builds),
         # /DEBUG gathers them; /OPT keeps what it does without symbols.
         target_compile_options(${target} PRIVATE /Z7)
-        target_link_options(${target} PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+        # The symbols' file named by its name alone in the executable, not the
+        # path it was built at (a release carries no one's folders).
+        target_link_options(${target} PRIVATE /DEBUG /OPT:REF /OPT:ICF "/PDBALTPATH:%_PDB%")
     endif()
 endfunction()
