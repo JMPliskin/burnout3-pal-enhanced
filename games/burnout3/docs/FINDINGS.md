@@ -2058,6 +2058,17 @@ locations, the car carousel) take the wheel (Up, Down), the right button
 selector move and the code making it: the way to a menu the mouse does not
 know yet.
 
+## Volume sweeps quiet the idle voices
+
+Burnout 3's sound driver leaves voices running and quiets the ones it is not
+using with a volume sweep rather than a key-off: VOLL and VOLR written every
+frame as 0xA020-0xA02C (bit 15 a sweep, bit 13 decreasing, linear, rate
+0x20 and up - from full volume to nothing in about 10 ms). In a race some
+twenty voices are swept so at once. Played at full volume (the host's first
+SPU2 did that for any sweep), a race's mix clipped half of its samples - the
+crackle heard in races; swept as the hardware does (spu2.cpp's Level), they
+are silent, and the race's sound is clean but for a few loud moments.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
