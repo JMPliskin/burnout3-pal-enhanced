@@ -44,6 +44,7 @@ struct Device {
     int filling = 0;                            // the buffer being filled
     DWORD filled = 0;                           // frames in it
     unsigned long long dropped = 0;
+    bool mute = false;                          // PS2HOST_AUDIO_MUTE: silence played
     std::FILE* wav = nullptr;
     unsigned long long wav_frames = 0;
 
@@ -98,11 +99,24 @@ bool OpenAudio() {
     format.nBlockAlign = 4;
     format.nAvgBytesPerSec = 48000 * 4;
     const MMRESULT opened = waveOutOpen(&d.out, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL);
-    // PS2HOST_AUDIO_MUTE=1: played, unheard - the device measured (PS2HOST_AUDIO_LOG) in silence.
-    if (opened == MMSYSERR_NOERROR && std::getenv("PS2HOST_AUDIO_MUTE")) waveOutSetVolume(d.out, 0);
     if (opened != MMSYSERR_NOERROR) {
         d.out = nullptr;
         return false;
+    }
+    // PS2HOST_AUDIO_MUTE=1: played, unheard - the device measured
+    // (PS2HOST_AUDIO_LOG) in silence: silence written, not the volume set (a
+    // program's wave volume is the system's mixer's, which keeps it).
+    d.mute = std::getenv("PS2HOST_AUDIO_MUTE") != nullptr;
+    DWORD volume = 0;
+    if (waveOutGetVolume(d.out, &volume) == MMSYSERR_NOERROR) {
+        // PS2HOST_AUDIO_RESET_VOLUME=1: this program's volume in the mixer
+        // back to full (an earlier build's mute set it to nothing, kept).
+        if (std::getenv("PS2HOST_AUDIO_RESET_VOLUME")) {
+            waveOutSetVolume(d.out, 0xFFFFFFFFu);
+            waveOutGetVolume(d.out, &volume);
+        }
+        std::fprintf(stderr, "[audio] playing; this program's volume in the system's mixer %u%%\n",
+                     unsigned((volume & 0xFFFF) * 100 / 0xFFFF));
     }
     for (int i = 0; i < kBuffers; ++i) {
         d.data[i].assign(kFrames * 2, 0);
@@ -189,7 +203,8 @@ void AudioFrames(const short* frames, unsigned count) {
             return;
         }
         const DWORD take = std::min<DWORD>(count, kFrames - d.filled);
-        std::memcpy(d.data[d.filling].data() + d.filled * 2, frames, take * 4);
+        if (d.mute) std::memset(d.data[d.filling].data() + d.filled * 2, 0, take * 4);
+        else std::memcpy(d.data[d.filling].data() + d.filled * 2, frames, take * 4);
         d.filled += take;
         frames += take * 2;
         count -= take;
