@@ -1070,13 +1070,13 @@ void VulkanDisplay::MouseAt(float x, float y) {
 }
 
 /* The window's pointer: the game's, at a size that goes with the picture's
-   (its art's height a thirteenth of the picture's), while the game wants it;
+   (its art's height a twentieth of the picture's), while the game wants it;
    otherwise the system's - hidden in fullscreen. */
 void VulkanDisplay::UpdateCursor() {
     if (!window_) return;
     const bool want = cursor_wanted_.load();
-    std::uint32_t size = std::uint32_t(float(shown_h_.load()) / 13.0f + 0.5f);
-    size = std::clamp<std::uint32_t>(size, 24, 192);
+    std::uint32_t size = std::uint32_t(float(shown_h_.load()) / 20.0f + 0.5f);
+    size = std::clamp<std::uint32_t>(size, 20, 128);
     if (want) {
         std::lock_guard<std::mutex> hold(mouse_lock_);
         if (!cursor_art_.empty() && (!cursor_ || cursor_size_ != size)) {
@@ -1119,6 +1119,9 @@ void VulkanDisplay::UpdateCursor() {
                     if (cursor_) SDL_DestroyCursor(cursor_);
                     cursor_ = made;
                     cursor_size_ = size;
+                    std::fprintf(stderr, "[display] the game's pointer at %ux%u\n", w, h);
+                } else {
+                    std::fprintf(stderr, "[display] the game's pointer: %s\n", SDL_GetError());
                 }
             }
         }
