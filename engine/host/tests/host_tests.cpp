@@ -1157,6 +1157,17 @@ void SpuDecodesAdpcmAndPlaysAVoice() {
           "SPU2: a voice sounds at its volume");
     Check(spu.GetSwitch(0x1700) & 1, "SPU2: ENDX after the loop's end");
     Check(spu.GetParam(0x0500) == 0x7FFF, "SPU2: ENVX after the attack");
+    // A sweep: VOLL 0xA020 (linear, decreasing, rate 0x20 - a step of 64 a
+    // sample) fades the voice from where it was to nothing in about 512
+    // samples; VOLR stays. Burnout 3 quiets the voices it leaves running so:
+    // played at full volume instead, a race's twenty of them clipped.
+    spu.SetParam(0x0000, 0xA020);
+    spu.Advance(3000, none);                        // 48 samples on
+    const int fading = heard[90];
+    spu.Advance(15000, none);                       // 576 more
+    Check(fading > 2500 && fading < heard[91], "SPU2: a decreasing sweep lowers the volume from where it was");
+    Check(heard[2 * 575] == 0 && heard[2 * 575 + 1] > 3500, "SPU2: the sweep reaches silence, the other side plays on");
+    Check(spu.GetParam(0x0600) == 0, "SPU2: VOLXL, the current volume, is the sweep's");
 
     // The reverb: one loud sample sent only to it (VMIXEL/VMIXER, not the dry
     // mix) comes out later, and keeps coming out after the voice has ended.

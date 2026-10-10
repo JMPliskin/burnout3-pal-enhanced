@@ -19,7 +19,9 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -95,7 +97,10 @@ bool OpenAudio() {
     format.wBitsPerSample = 16;
     format.nBlockAlign = 4;
     format.nAvgBytesPerSec = 48000 * 4;
-    if (waveOutOpen(&d.out, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+    const MMRESULT opened = waveOutOpen(&d.out, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL);
+    // PS2HOST_AUDIO_MUTE=1: played, unheard - the device measured (PS2HOST_AUDIO_LOG) in silence.
+    if (opened == MMSYSERR_NOERROR && std::getenv("PS2HOST_AUDIO_MUTE")) waveOutSetVolume(d.out, 0);
+    if (opened != MMSYSERR_NOERROR) {
         d.out = nullptr;
         return false;
     }
@@ -116,8 +121,62 @@ bool OpenWavDump(const std::string& path) {
     return true;
 }
 
+/* PS2HOST_AUDIO_LOG=1: every two seconds, how the sound came - the longest
+   wait between the SPU2's batches of samples and how many waited past 10, 20
+   and 40 ms - and what the device made of it: buffers it ran out of (none
+   queued when the next was given), samples dropped (every buffer queued),
+   the fewest it had queued. */
+struct AudioLog {
+    bool on = std::getenv("PS2HOST_AUDIO_LOG") != nullptr;
+    std::chrono::steady_clock::time_point last{}, since{};
+    double longest_ms = 0;
+    unsigned over10 = 0, over20 = 0, over40 = 0, batches = 0;
+    unsigned ran_out = 0;
+    unsigned long long dropped_before = 0;
+    int fewest_queued = 99;
+};
+AudioLog& Log() {
+    static AudioLog log;
+    return log;
+}
+
+int Queued(Device& d) {
+    int n = 0;
+    for (const WAVEHDR& h : d.headers)
+        if ((h.dwFlags & WHDR_PREPARED) && !(h.dwFlags & WHDR_DONE)) ++n;
+    return n;
+}
+
+void NoteBatch(Device& d) {
+    AudioLog& l = Log();
+    const auto now = std::chrono::steady_clock::now();
+    if (l.last.time_since_epoch().count()) {
+        const double ms = std::chrono::duration<double, std::milli>(now - l.last).count();
+        l.longest_ms = std::max(l.longest_ms, ms);
+        l.over10 += ms > 10;
+        l.over20 += ms > 20;
+        l.over40 += ms > 40;
+    } else {
+        l.since = now;
+    }
+    l.last = now;
+    ++l.batches;
+    if (d.out) l.fewest_queued = std::min(l.fewest_queued, Queued(d));
+    if (now - l.since >= std::chrono::seconds(2)) {
+        std::fprintf(stderr, "[audio] %u batches, longest wait %.1f ms (%u past 10 ms, %u past 20, %u past 40); "
+                             "device: ran out %u times, %llu samples dropped, fewest queued %d\n",
+                     l.batches, l.longest_ms, l.over10, l.over20, l.over40, l.ran_out,
+                     d.dropped - l.dropped_before, l.fewest_queued);
+        l = AudioLog{};
+        l.last = now;
+        l.since = now;
+        l.dropped_before = d.dropped;
+    }
+}
+
 void AudioFrames(const short* frames, unsigned count) {
     Device& d = D();
+    if (Log().on) NoteBatch(d);
     if (d.wav) {
         std::fwrite(frames, 4, count, d.wav);
         d.wav_frames += count;
@@ -135,6 +194,7 @@ void AudioFrames(const short* frames, unsigned count) {
         frames += take * 2;
         count -= take;
         if (d.filled == kFrames) {
+            if (Log().on && Queued(d) == 0) ++Log().ran_out;       // the device had nothing to play
             if (h.dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(d.out, &h, sizeof h);
             h.dwFlags = 0;
             waveOutPrepareHeader(d.out, &h, sizeof h);

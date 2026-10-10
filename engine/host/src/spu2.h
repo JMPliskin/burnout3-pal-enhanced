@@ -79,9 +79,23 @@ public:
 
 private:
     enum class Phase : u8 { Off, Attack, Decay, Sustain, Release };
+    /* A volume as it is now (a voice's left or right, a core's main): set to
+       a register's fixed value (bit 15 clear: 15 bits, signed), or moved a
+       sample at a time by its sweep (bit 15 set: bit 14 exponential, 13
+       decreasing, 12 the phase inverted, 0-6 the rate, as an envelope's)
+       from where it was - the game fades a voice it leaves running so. */
+    struct Level {
+        u32 reg = 0;
+        s32 now = 0;                    // -0x7FFF to 0x7FFF
+        u32 counter = 0;
+        explicit Level(u32 value = 0) { Set(value); }
+        void Set(u32 value);
+        void Step();
+    };
     struct Voice {
         u32 pitch = 0, ssa = 0, lsax = 0, nax = 0;
         u32 adsr1 = 0, adsr2 = 0, voll = 0, volr = 0;
+        Level left, right;              // VOLL, VOLR as they are now
         bool playing = false;           // sounding (a stopped voice still runs on)
         u32 counter = 0;                // 4.12 fixed point: samples into the block
         s32 samples[28] = {};           // the current block, decoded
@@ -102,6 +116,7 @@ private:
         u32 endx = 0, irqa = 0, attr = 0, esa = 0, eea = 0, tsa = 0;
         u32 switches[16] = {};          // by switch number - 0x13
         u32 mvoll = 0x3FFF, mvolr = 0x3FFF;
+        Level main_left{0x3FFF}, main_right{0x3FFF};     // MVOLL, MVOLR as they are now
         bool irq_enabled = false;
         // Reverb: the registers (libsd's order: dAPF1, dAPF2, vIIR, vCOMB1-4,
         // vWALL, vAPF1, vAPF2, then the 20 buffer offsets in 8-byte units,

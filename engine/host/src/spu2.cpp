@@ -6,7 +6,10 @@
 #include "spu2.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace ps2host {
 namespace iop {
@@ -22,8 +25,9 @@ constexpr Spu2::u32 kVmixel = 0x19 - 0x13, kVmixer = 0x1B - 0x13;   // into the 
 
 Spu2::s32 Clamp16(Spu2::s32 v) { return std::min(32767, std::max(-32768, v)); }
 
-// A volume register: bit 15 clear is a fixed 15-bit signed volume; set, a sweep,
-// played at its maximum for now.
+// A volume register's fixed value (bit 15 clear: 15 bits, signed). A sweep's
+// (bit 15 set) is where it has brought the volume: Spu2::Level. Reverb's EVOL
+// has no sweep.
 Spu2::s32 Volume(Spu2::u32 v) {
     if (v & 0x8000) return 0x7FFF;
     return Spu2::s32(Spu2::s16(Spu2::u16(v << 1)));
@@ -35,6 +39,41 @@ struct Rate {
 };
 
 }  // namespace
+
+void Spu2::Level::Set(u32 value) {
+    reg = value & 0xFFFF;
+    if (!(reg & 0x8000)) now = Volume(reg);         // fixed; a sweep goes on from where it is
+    counter = 0;
+}
+
+/* A sample of a sweep, by the envelope's rules (Envelope): the rate's shift
+   and step, slower near the top going up exponentially, in proportion going
+   down; the phase bit makes the volume negative. Rate 0x7F holds it. */
+void Spu2::Level::Step() {
+    if (!(reg & 0x8000)) return;
+    const u32 rate = reg & 0x7F;
+    if (rate == 0x7F) return;
+    const bool exponential = (reg & 0x4000) != 0, decreasing = (reg & 0x2000) != 0, negative = (reg & 0x1000) != 0;
+    s32 magnitude = now < 0 ? -now : now;
+    const u32 shift = rate >> 2;
+    s32 step = decreasing ? -8 + s32(rate & 3) : 7 - s32(rate & 3);
+    if (shift < 11) step <<= 11 - shift;
+    u32 increment = shift > 11 ? (shift - 11 >= 16 ? 0 : 0x8000u >> (shift - 11)) : 0x8000u;
+    if (exponential) {
+        if (decreasing) {
+            step = s32((std::int64_t(step) * magnitude) >> 15);
+        } else if (magnitude >= 0x6000) {
+            if (shift < 10) step >>= 2;
+            else if (shift >= 11) increment >>= 2;
+            else { step >>= 1; increment >>= 1; }
+        }
+    }
+    counter += increment;
+    if (counter < 0x8000) return;
+    counter = 0;
+    magnitude = std::min(0x7FFF, std::max(0, magnitude + step));
+    now = negative ? -magnitude : magnitude;
+}
 
 void Spu2::DecodeBlock(const u8* block, s32 out[28], s32* older, s32* old) {
     static const s32 kF0[5] = {0, 60, 115, 98, 122}, kF1[5] = {0, 0, -52, -55, -60};
@@ -56,13 +95,13 @@ void Spu2::SetParam(u32 entry, u32 value) {
     Core& c = cores_[CoreOf(entry)];
     Voice& v = c.voices[VoiceOf(entry)];
     switch (entry >> 8) {
-        case 0x00: v.voll = value; break;
-        case 0x01: v.volr = value; break;
+        case 0x00: v.voll = value; v.left.Set(value); break;
+        case 0x01: v.volr = value; v.right.Set(value); break;
         case 0x02: v.pitch = value & 0x3FFF; break;
         case 0x03: v.adsr1 = value; break;
         case 0x04: v.adsr2 = value; break;
-        case 0x09: c.mvoll = value; break;             // SD_P_MVOLL
-        case 0x0A: c.mvolr = value; break;             // SD_P_MVOLR
+        case 0x09: c.mvoll = value; c.main_left.Set(value); break;     // SD_P_MVOLL
+        case 0x0A: c.mvolr = value; c.main_right.Set(value); break;    // SD_P_MVOLR
         case 0x0B: c.evoll = value; break;             // SD_P_EVOLL: the reverb's output
         case 0x0C: c.evolr = value; break;             // SD_P_EVOLR
         default: break;                         // external input: not yet
@@ -79,8 +118,8 @@ Spu2::u32 Spu2::GetParam(u32 entry) const {
         case 0x03: return v.adsr1;
         case 0x04: return v.adsr2;
         case 0x05: return u32(v.level);             // ENVX
-        case 0x06: return u32(Volume(v.voll) & 0xFFFF);  // VOLXL, VOLXR: the current volume
-        case 0x07: return u32(Volume(v.volr) & 0xFFFF);
+        case 0x06: return u32(v.left.now) & 0xFFFF;    // VOLXL, VOLXR: the current volume
+        case 0x07: return u32(v.right.now) & 0xFFFF;
         case 0x09: return c.mvoll;
         case 0x0A: return c.mvolr;
         case 0x0B: return c.evoll;
@@ -491,6 +530,30 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
     u32 count = u32(owed_);
     owed_ -= count;
     count = std::min<u32>(count, u32(kRate));
+    // PS2HOST_SPU_LOG=1: once a second, the voices sounding and how their
+    // volumes are set (fixed, or a sweep), and the cores' main volumes.
+    static const bool log = std::getenv("PS2HOST_SPU_LOG") != nullptr;
+    if (log && u64(clock_) / 48000 != u64(clock_ - samples) / 48000) {
+        for (u32 core = 0; core < 2; ++core) {
+            const Core& c = cores_[core];
+            u32 sounding = 0, sweeping = 0;
+            std::string sweeps;
+            for (u32 i = 0; i < 24; ++i) {
+                const Voice& v = c.voices[i];
+                if (v.phase == Phase::Off || !v.pitch) continue;
+                ++sounding;
+                if ((v.voll | v.volr) & 0x8000) {
+                    ++sweeping;
+                    char one[48];
+                    std::snprintf(one, sizeof one, " %u:%04X/%04X", unsigned(i), unsigned(v.voll), unsigned(v.volr));
+                    sweeps += one;
+                }
+            }
+            std::fprintf(stderr, "[spu2] core %u: %u voices sounding, %u sweeping%s; main %04X/%04X, effect %04X/%04X\n",
+                         unsigned(core), unsigned(sounding), unsigned(sweeping), sweeps.c_str(), unsigned(c.mvoll),
+                         unsigned(c.mvolr), unsigned(c.evoll), unsigned(c.evolr));
+        }
+    }
     mixed_.assign(std::size_t(count) * 2, 0);
     for (u32 n = 0; n < count; ++n) {
         s32 left = 0, right = 0;
@@ -499,13 +562,15 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
             s32 core_left = 0, core_right = 0, wet_left = 0, wet_right = 0;
             for (u32 i = 0; i < 24; ++i) {
                 Voice& v = c.voices[i];
+                v.left.Step();
+                v.right.Step();
                 if (!v.pitch) continue;
                 if (v.phase != Phase::Off) {
                     const u32 index = v.counter >> 12;
                     const s32 current = v.samples[index];
                     const s32 sample = v.previous + ((current - v.previous) * s32(v.counter & 0xFFF) >> 12);
                     const s32 shaped = (sample * v.level) >> 15;
-                    const s32 sent_left = (shaped * Volume(v.voll)) >> 15, sent_right = (shaped * Volume(v.volr)) >> 15;
+                    const s32 sent_left = (shaped * v.left.now) >> 15, sent_right = (shaped * v.right.now) >> 15;
                     if (c.switches[kVmixl] & (1u << i)) core_left += sent_left;
                     if (c.switches[kVmixr] & (1u << i)) core_right += sent_right;
                     if (c.switches[kVmixel] & (1u << i)) wet_left += sent_left;
@@ -529,14 +594,17 @@ void Spu2::Advance(u64 now_us, const std::function<void(u32 core)>& irq) {
             // The reverb (SD_CORE_EFFECT_ENABLE, attr bit 2): a step every
             // other sample, on the pair's first input; its output held for
             // the pair.
-            if (c.attr & 4) {
+            static const bool no_reverb = std::getenv("PS2HOST_SPU_NO_REVERB") != nullptr;   // to hear without it
+            if ((c.attr & 4) && !no_reverb) {
                 if ((u64(clock_) + n) & 1) Reverb(c, Clamp16(c.reverb_in_left), Clamp16(c.reverb_in_right));
                 else { c.reverb_in_left = wet_left; c.reverb_in_right = wet_right; }
                 core_left += (c.reverb_out_left * Volume(c.evoll)) >> 15;
                 core_right += (c.reverb_out_right * Volume(c.evolr)) >> 15;
             }
-            left += (core_left * Volume(c.mvoll)) >> 15;
-            right += (core_right * Volume(c.mvolr)) >> 15;
+            c.main_left.Step();
+            c.main_right.Step();
+            left += (core_left * c.main_left.now) >> 15;
+            right += (core_right * c.main_right.now) >> 15;
         }
         mixed_[2 * n] = s16(Clamp16(left));
         mixed_[2 * n + 1] = s16(Clamp16(right));
