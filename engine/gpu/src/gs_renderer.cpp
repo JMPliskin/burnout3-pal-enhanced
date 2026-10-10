@@ -184,13 +184,15 @@ bool ShaderBlend(const GsDrawState& s) {
     if (s.a == s.b) return false;
     // The destination's alpha as the factor (C = Ad): over 128 on the GS,
     // over 255 as the blender reads a byte (DST_ALPHA) - at half its strength.
-    // In the shader for a small target alone (Burnout 3's sky: its 64x32
-    // gradient blended by the alpha laid down first): the race's scene
-    // blends by Ad too, thousands of overlapping primitives, each needing
-    // a fresh copy of the picture - 60 frames a second at 3x became 47.
-    // There the frame's alpha is small (under 16) while the scene is drawn:
-    // half strength of almost nothing.
-    if (s.c == BlendAlpha::Dest) return s.fbw <= 2;
+    // In the shader for a small target (Burnout 3's sky: its 64x32 gradient
+    // blended by the alpha laid down first) and for sprites (its full-screen
+    // passes - Cs * Ad + Cd over the picture, after a crash: strips side by
+    // side, one copy of the picture for all), not for the race's scene: it
+    // blends by Ad too, thousands of overlapping triangles, each needing a
+    // fresh copy of the picture - 60 frames a second at 3x became 47. There
+    // the frame's alpha is small (under 16) while the scene is drawn: half
+    // strength of almost nothing.
+    if (s.c == BlendAlpha::Dest) return s.fbw <= 2 || s.sprite_prim;
     return s.c == BlendAlpha::Fix && s.fix > 0x80;
 }
 constexpr std::uint32_t kShaderBlend = 1u << 15;
@@ -260,7 +262,7 @@ bool SameBatch(const GsDrawState& x, const GsDrawState& y) {
            PipelineKey(x) == PipelineKey(y) && (!x.blend || (x.fix == y.fix && x.pabe == y.pabe)) && x.depth == y.depth &&
            (!x.depth || (x.zbp == y.zbp && x.ztst == y.ztst && x.depth_write == y.depth_write)) &&
            x.fog == y.fog && (!x.fog || x.fogcol == y.fogcol) && x.date == y.date && (!x.date || x.datm == y.datm) &&
-           x.sprite == y.sprite;
+           x.sprite == y.sprite && x.sprite_prim == y.sprite_prim;
 }
 
 class VulkanGsRenderer final : public GsRenderer {

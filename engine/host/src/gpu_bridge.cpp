@@ -996,6 +996,7 @@ void OnDraw(const gs::Gs::DrawCall& call) {
     state.gouraud = (call.prim >> 3) & 1;
     state.textured = (call.prim >> 4) & 1;
     state.sprite = type == 6 && s.renderer->Scale() > 1;     // (at 1x it would only split batches)
+    state.sprite_prim = type == 6;
     const bool fst = (call.prim >> 8) & 1;
     const u32 tw = 1u << std::min(Bits(c.tex0, 26, 4), 10u), th = 1u << std::min(Bits(c.tex0, 30, 4), 10u);
     // The primitive as triangles, and the pixels it can reach.

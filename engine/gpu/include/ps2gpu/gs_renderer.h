@@ -68,6 +68,9 @@ struct GsDrawState {
        samples - at its pixel's centre - not between (a 2D blit's strips met
        at seams of texels from beyond them). */
     bool sprite = false;
+    /* A sprite (PRIM 6) at any internal resolution: what blends by the
+       destination's alpha in the shader (ShaderBlend). */
+    bool sprite_prim = false;
 
     /* Texturing (PRIM.TME): a texture uploaded under this key. */
     bool textured = false;
