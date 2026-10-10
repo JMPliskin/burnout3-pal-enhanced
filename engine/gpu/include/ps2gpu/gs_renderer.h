@@ -29,6 +29,12 @@
 
 namespace ps2gpu {
 
+/* Told each time the CPU waited for the GPU (a command buffer's slot to come
+   back): why, and from when to when (steady clock, nanoseconds) - for the
+   host's profiler (PS2HOST_PROFILE). On the waiting thread. */
+using GpuWaitObserver = void (*)(const char* why, std::uint64_t from_ns, std::uint64_t to_ns);
+void SetGpuWaitObserver(GpuWaitObserver observer);
+
 /* A Vulkan instance and device with one graphics queue (Vulkan 1.3: dynamic
    rendering). Opaque; created headless. */
 class Gpu {
@@ -195,6 +201,11 @@ public:
     virtual void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) = 0;
     /* The GPU's copy of blocks, into `bytes` (runs what is recorded, waits). */
     virtual void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) = 0;
+    /* Words of the GPU's copy patched under masks - `count` of (word index,
+       value, mask), the mask's bits set taken from the value - in turn with
+       what is recorded, nothing waiting: part of a block written over what
+       the GPU drew there, without bringing it back. */
+    virtual void MemoryPatch(const std::uint32_t* words, std::size_t count) { (void)words, (void)count; }
     /* A target's rows [first_row, rows), `cols` wide, into GPU memory at FBP
        as its PSM lays them out (CT32, CT24, CT16, CT16S); false if there is
        none. */

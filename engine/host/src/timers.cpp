@@ -31,12 +31,23 @@ namespace ps2host {
 namespace {
 std::atomic<bool> g_virtual_clock{false};
 std::atomic<u64> g_clock_ns{0};
+std::atomic<u64> g_real_offset_ns{0};   // real time after virtual (LeaveVirtualClock): the clock goes on from there
+
+u64 SteadyNs() {
+    using namespace std::chrono;
+    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
 }  // namespace
 
 u64 ClockNs() {
     if (g_virtual_clock) return g_clock_ns;
-    using namespace std::chrono;
-    return u64(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+    return SteadyNs() - g_real_offset_ns.load(std::memory_order_relaxed);
+}
+
+void LeaveVirtualClock() {
+    if (!g_virtual_clock) return;
+    g_real_offset_ns = SteadyNs() - g_clock_ns.load();
+    g_virtual_clock = false;
 }
 
 void SetVirtualClock(bool on) {

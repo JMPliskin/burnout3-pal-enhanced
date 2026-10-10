@@ -163,6 +163,9 @@ public:
        model's CLUT then keeps its old entries for those (on_memory is not
        called, and nothing reads them but that renderer). */
     std::function<bool(u64 tex0, u64 texa)> on_clut_load;
+    /* A transfer into local memory that Touch announced is done: its last
+       pixel written (the GPU bridge patches what it holds newer then). */
+    std::function<void()> on_transfer_done;
     /* The texture the primitive being drawn samples, decoded as the software
        rasteriser reads it (CLUT, TEXA): RGBA in memory, rows top-down. */
     void DecodeTexture(std::vector<u32>* pixels, u32* width, u32* height) const;
@@ -251,6 +254,12 @@ private:
     void TransferBlock(const u8* data, u32 qwords);     // IMAGE data, quadwords of it
     /* Tells on_memory of a rectangle of a buffer about to be read or written. */
     void Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) const;
+public:
+    /* The transfer Touch last looked at (PS2HOST_GPU_WRITE_LOG: what made the
+       GPU's memory come back for a write). */
+    struct TouchSeen { u32 bp, bw, psm, x, y, w, h; bool write; };
+    mutable TouchSeen last_transfer{};
+private:
     void LocalToLocal();
 
     Context ctx_[2];

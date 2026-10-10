@@ -34,6 +34,7 @@
 #endif
 
 #include "ps2host/gs.h"
+#include "ps2host/timeline.h"
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
 
@@ -203,9 +204,12 @@ struct Feed {
             struct Busy {
                 std::chrono::steady_clock::time_point began;
                 ~Busy() {
-                    g_gs_busy_us.fetch_add(u64(std::chrono::duration_cast<std::chrono::microseconds>(
-                                               std::chrono::steady_clock::now() - began).count()),
+                    const auto now = std::chrono::steady_clock::now();
+                    g_gs_busy_us.fetch_add(u64(std::chrono::duration_cast<std::chrono::microseconds>(now - began).count()),
                                            std::memory_order_relaxed);
+                    if (timeline::On())
+                        timeline::Span("busy", u64(std::chrono::duration_cast<std::chrono::nanoseconds>(began.time_since_epoch()).count()),
+                                       u64(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count()));
                 }
             } busy{began};
             try {
@@ -273,6 +277,7 @@ void StartGsThread() {
     if (g_feed) return;
     g_feed = &TheFeed();
     g_feed->thread = std::thread([] {
+        timeline::NameThread("GS");
         FastThread();
         if (SampleGsThread()) StartSampler();
         g_feed->Run();
@@ -338,6 +343,13 @@ void SetGsFrameHandler(std::function<void(u64)> handler) { g_frame_handler = std
 
 u64 FrameEndedNs(u64 frame) { return g_frame_ended[frame & 255].load(std::memory_order_relaxed); }
 
+/* The steady clock, as the vertical blank's timer and the display keep time
+   (ClockNs goes on from a virtual clock's time after --real-time-from). */
+u64 SteadyNowNs() {
+    return u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 u64 FrameDue(u64 frame) {
     // The delay each frame came with, the longest of the last 30 the one
     // every frame keeps to (and half a millisecond more), so frames go out
@@ -346,10 +358,11 @@ u64 FrameDue(u64 frame) {
     static u64 delays[30] = {};
     static int next = 0;
     const u64 ended = FrameEndedNs(frame);
-    const u64 now = ClockNs();
+    const u64 now = SteadyNowNs();
     if (!ended || now < ended) return now;
     delays[next] = now - ended;
     next = (next + 1) % 30;
+    if (timeline::On()) timeline::Instant("frame's delay (us)", timeline::Now(), (now - ended) / 1000);
     u64 keep = 0;
     for (u64 d : delays) keep = std::max(keep, d);
     keep = std::min<u64>(keep + 500'000, 25'000'000);
@@ -365,7 +378,7 @@ bool GsFrame(u64 frame) {
         // apart however late the EE took each (a long loop runs on to its
         // next loop head first).
         const u64 blank = VirtualClock() ? 0 : LastVblankNs();
-        g_frame_ended[frame & 255].store(blank ? blank : ClockNs(), std::memory_order_relaxed);
+        g_frame_ended[frame & 255].store(blank ? blank : SteadyNowNs(), std::memory_order_relaxed);
         if (g_hitch) {
             g_way[frame & 255].ee.store(ClockNs(), std::memory_order_relaxed);
             g_way[frame & 255].idle.store(IdleNanoseconds(), std::memory_order_relaxed);

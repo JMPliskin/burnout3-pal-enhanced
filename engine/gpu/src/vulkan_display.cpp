@@ -139,7 +139,12 @@ public:
         cursor_size_ = 0;                   // made again at the window's size
     }
     void ShowGameCursor(bool on) override { cursor_wanted_.store(on); }
+    void SetPresentObserver(PresentObserver observer) override {
+        std::lock_guard<std::mutex> hold(paced_lock_);
+        observer_ = std::move(observer);
+    }
 private:
+    PresentObserver observer_;              // SetPresentObserver (under paced_lock_)
     // The mouse (TakeMouse), from the window's events; the picture's place in
     // the window, in pixels, as the last present put it.
     std::mutex mouse_lock_;
@@ -783,6 +788,7 @@ bool VulkanDisplay::PresentImageAt(std::uint64_t image, int layout, std::uint32_
         if (slot < 0) {
             slot = ready_.front();
             ready_.pop_front();
+            if (observer_) observer_(paced_[slot].due_ns, 0, true);     // its turn lost
         }
     }
     PacedPicture& p = paced_[slot];
@@ -862,6 +868,14 @@ void VulkanDisplay::PresentLoop() {
             if (BeginPresent(&index, &ok)) {
                 FinishPresent(index, paced_[slot].image, paced_[slot].width, paced_[slot].height);
                 Submit(index);
+                PresentObserver observer;
+                {
+                    std::lock_guard<std::mutex> hold_paced(paced_lock_);
+                    observer = observer_;
+                }
+                if (observer)
+                    observer(paced_[slot].due_ns, std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                                   Clock::now().time_since_epoch()).count()), false);
             }
         }
         {

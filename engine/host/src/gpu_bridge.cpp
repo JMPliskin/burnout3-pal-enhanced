@@ -61,6 +61,7 @@
 #include "ps2host/gs.h"
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
+#include "ps2host/timeline.h"
 #include "ps2host/settings.h"
 
 #if PS2HOST_VULKAN
@@ -236,6 +237,15 @@ struct Bridge {
     // 1 the GS model reading, 2 the GS model writing.
     int cause = 1;
     u64 downloads_by[3] = {};
+    // A transfer's blocks it writes in part where the GPU holds them newer:
+    // its pixels there patched into the GPU's memory once it is done
+    // (ApplyPatch), not the blocks brought back first (the CPU would wait for
+    // every draw before them).
+    struct Patch {
+        gs::Gs::TouchSeen transfer{};
+        std::vector<u32> blocks;            // sorted
+    } patch;
+    u64 patched_words = 0, patches = 0;
     std::map<u32, u64> texture_downloads;   // by the texture's TEX0 PSM << 16 | TBW
     u64 write_backs = 0, reloads = 0, decodes = 0;
     u64 unchanged = 0;              // textures invalidated whose texels proved the same
@@ -302,7 +312,24 @@ void Coherent(Bridge& b, u32 begin, u32 end, bool to_gpu) {
             b.renderer->MemoryWrite(i, j, bytes + std::size_t(i) * 256);
             b.uploads += j - i;
         } else {
+            // The CPU waits for the GPU here: on the profiler's timeline, by why.
+            static const char* const kWhy[3] = {"GPU to CPU: a texture", "GPU to CPU: a read", "GPU to CPU: a write"};
+            const u64 from = timeline::On() ? timeline::Now() : 0;
             b.renderer->MemoryRead(i, j, bytes + std::size_t(i) * 256);
+            if (from) timeline::Span(kWhy[b.cause], from, timeline::Now());
+            static const bool log_writes = std::getenv("PS2HOST_GPU_WRITE_LOG") != nullptr;
+            if (log_writes && b.cause == 2) {
+                const auto& t = gs::TheGs().last_transfer;
+                std::fprintf(stderr, "[gpu] blocks %X-%X back to the CPU for a write: bp %X bw %u psm %02X at %u,%u %ux%u\n",
+                             unsigned(i), unsigned(j), unsigned(t.bp), unsigned(t.bw), unsigned(t.psm), unsigned(t.x),
+                             unsigned(t.y), unsigned(t.w), unsigned(t.h));
+                for (const auto& [key, o] : b.owned)
+                    if (o.begin <= i && i < o.full_end)
+                        std::fprintf(stderr, "[gpu]   over image %s %X/%u/%02X %ux%u blocks %X-%X (to %X), dirty %X-%X\n",
+                                     o.depth ? "Z" : "C", unsigned(o.fbp), unsigned(o.fbw), unsigned(o.psm),
+                                     unsigned(o.width), unsigned(o.height), unsigned(o.begin), unsigned(o.end),
+                                     unsigned(o.full_end), unsigned(o.dirty_begin), unsigned(o.dirty_end));
+            }
             b.downloads += j - i;
             b.downloads_by[b.cause] += j - i;
         }
@@ -339,11 +366,22 @@ void MarkStale(Owned& o, int why, u32 b0 = 0, u32 b1 = ~0u, const Pages* pages =
     }
 }
 
+/* A step of the bridge's on the profiler's timeline (PS2HOST_PROFILE), by name. */
+struct TimelineStep {
+    const char* name;
+    u64 from;
+    explicit TimelineStep(const char* what) : name(what), from(timeline::On() ? timeline::Now() : 0) {}
+    ~TimelineStep() {
+        if (from) timeline::Span(name, from, timeline::Now());
+    }
+};
+
 /* What the GPU drew into an image, swizzled into the GPU's local memory - on
    the GPU, nothing waiting. */
 void WriteBack(Bridge& b, Owned& o) {
     ++g_mutations;
     Timed timed(Section::GpuSync);
+    const TimelineStep step("sync: a write-back");
     o.gpu_newer = false;
     o.dirty_pages.reset();
     o.rect_dirty = false;
@@ -374,12 +412,16 @@ void WriteBack(Bridge& b, Owned& o) {
 
 /* Before the CPU reads or writes local memory [begin, end): what the GPU drew
    there comes back to it; written, the GPU images there must reload. */
+void ApplyPatch(Bridge& b);
+
 void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullptr) {
     ++g_mutations;
+    ApplyPatch(b);
     for (auto& [key, o] : b.owned)
         if (&o != except && o.gpu_newer && o.dirty_begin < end && begin < o.dirty_end) WriteBack(b, o);
     {
         Timed timed(Section::GpuSync);
+        const TimelineStep step("sync: memory for the CPU");
         Coherent(b, begin, end, false);
     }
     if (write) std::fill(b.blocks.begin() + begin, b.blocks.begin() + std::min(end, 16384u), Bridge::kCpuNewer);
@@ -405,6 +447,7 @@ void Sync(Bridge& b, u32 begin, u32 end, bool write, const Owned* except = nullp
    cost a wait each (1,400 of ~6 ms in a minute of racing, 4 KB each). */
 void SyncWrite(Bridge& b, u32 begin, u32 end, const u8* cover) {
     ++g_mutations;
+    ApplyPatch(b);                          // one before it, if it never finished
     u32 first = end, last = begin;          // the blocks written
     for (u32 i = begin; i < end; ++i)
         if (cover[i - begin]) {
@@ -416,21 +459,13 @@ void SyncWrite(Bridge& b, u32 begin, u32 end, const u8* cover) {
     // GPU, nothing waiting): written back later, it would land over these.
     for (auto& [key, o] : b.owned)
         if (o.gpu_newer && o.dirty_begin < last && first < o.dirty_end) WriteBack(b, o);
-    {
-        Timed timed(Section::GpuSync);
-        for (u32 i = first; i < last;) {
-            if (cover[i - begin] != 1 || b.blocks[i] != Bridge::kGpuNewer) {
-                ++i;
-                continue;
-            }
-            u32 j = i;
-            while (j < last && cover[j - begin] == 1 && b.blocks[j] == Bridge::kGpuNewer) ++j;
-            Coherent(b, i, j, false);
-            i = j;
-        }
-    }
+    // Blocks written in part where the GPU's are newer: the transfer's pixels
+    // patched into the GPU's when it is done, the blocks still the GPU's.
+    b.patch.transfer = gs::TheGs().last_transfer;
     for (u32 i = first; i < last; ++i)
-        if (cover[i - begin]) b.blocks[i] = Bridge::kCpuNewer;
+        if (cover[i - begin] == 1 && b.blocks[i] == Bridge::kGpuNewer) b.patch.blocks.push_back(i);
+    for (u32 i = first; i < last; ++i)
+        if (cover[i - begin] && !(cover[i - begin] == 1 && b.blocks[i] == Bridge::kGpuNewer)) b.blocks[i] = Bridge::kCpuNewer;
     for (auto& [key, o] : b.owned) {
         if (last <= o.begin || o.full_end <= first) continue;
         if (first < o.end) MarkStale(o, 1, first, last);
@@ -439,6 +474,48 @@ void SyncWrite(Bridge& b, u32 begin, u32 end, const u8* cover) {
     for (u32 page = first >> 5; page <= ((last - 1) >> 5) && page < 512; ++page)
         for (Cached* t : b.texture_pages[page])
             if (t->begin < last && first < t->end) t->valid = false;
+}
+
+/* The pending patch (Bridge::Patch): each pixel of the transfer's rectangle
+   that lies in a block it waits for, its bytes in its word (the CPU's copy
+   has them, the transfer written) under the pixel's mask - 32, 24 or 16
+   bits, a byte, a nibble - into the GPU's memory. */
+void ApplyPatch(Bridge& b) {
+    if (b.patch.blocks.empty()) return;
+    const gs::Gs::TouchSeen t = b.patch.transfer;
+    std::vector<u32> blocks;
+    blocks.swap(b.patch.blocks);
+    std::sort(blocks.begin(), blocks.end());
+    blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+    u32 bytes = 0, base_mask = 0;
+    switch (t.psm) {
+        case 0x00: case 0x30: bytes = 4; base_mask = 0xFFFFFFFFu; break;          // CT32, Z32
+        case 0x01: case 0x31: bytes = 3; base_mask = 0x00FFFFFFu; break;          // CT24, Z24
+        case 0x02: case 0x0A: case 0x32: case 0x3A: bytes = 2; base_mask = 0xFFFFu; break;
+        case 0x13: bytes = 1; base_mask = 0xFFu; break;                           // T8
+        case 0x14: bytes = 0; base_mask = 0xFu; break;                            // T4
+        default: return;                    // (Touch sends no others here)
+    }
+    const u8* memory = gs::TheGs().memory.data();
+    std::map<u32, u32> masks;               // word -> its mask
+    for (u32 y = t.y; y < t.y + t.h; ++y)
+        for (u32 x = t.x; x < t.x + t.w; ++x) {
+            u32 nibble = 0;
+            const u32 address = gs::Memory::Address(t.bp, t.bw, x % 2048, y % 2048, t.psm, &nibble);
+            if (!std::binary_search(blocks.begin(), blocks.end(), address / 256)) continue;
+            const u32 shift = bytes ? (address % 4) * 8 : (address % 4) * 8 + 4 * nibble;
+            masks[address / 4] |= base_mask << shift;
+        }
+    std::vector<u32> words;
+    words.reserve(masks.size() * 3);
+    for (const auto& [word, mask] : masks) {
+        u32 value;
+        std::memcpy(&value, memory + std::size_t(word) * 4, 4);
+        words.insert(words.end(), {word, value, mask});
+    }
+    b.renderer->MemoryPatch(words.data(), masks.size());
+    b.patched_words += masks.size();
+    ++b.patches;
 }
 
 /* A target or depth buffer about to be drawn into or sampled: up to date with
@@ -489,6 +566,7 @@ Owned& Use(Bridge& b, u32 fbp, u32 fbw, u32 psm, bool depth, u32 width, u32 heig
         // another drew over while newer than memory in rows of its own.
         if (o.gpu_newer) WriteBack(b, o);
         Timed timed(Section::GpuSync);
+        const TimelineStep step("sync: an image reloaded");
         ++b.reloads;
         Coherent(b, o.begin, o.full_end, true);
         const u32 r0 = std::min(o.stale_row0, o.height), r1 = std::min(o.stale_row1, o.height);
@@ -709,6 +787,7 @@ bool LoadClut(Bridge& b, u64 tex0, u64 texa) {
         return false;
     }
     Timed timed(Section::GpuSync);
+    const TimelineStep step("sync: a CLUT load");
     for (auto& [key, o] : b.owned)
         if (o.gpu_newer && o.dirty_begin < cbp + 8 && cbp < o.dirty_end) WriteBack(b, o);
     Coherent(b, cbp, cbp + 8, true);
@@ -835,12 +914,14 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
     // decoded there without a look at the CPU's copy.
     if (!t.valid && (GpuHolds(b, t.begin, t.end) || (clut_rows & ~b.clut_cpu))) {
         Timed timed(Section::GpuSync);
+        const TimelineStep step("sync: a texture decoded on the GPU");
         gpu_decode();
         t.valid = true;
         t.decoded = false;              // the CPU's copy was not read: no hash to compare
     }
     if (!t.valid) {
         Timed timed(Section::GpuSync);
+        const TimelineStep step("sync: a texture from the CPU");
         b.cause = 0;
         const u64 before = b.downloads;
         Sync(b, t.begin, t.end, false);
@@ -1419,6 +1500,10 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
     if (!bridge.renderer) return false;
     g_bridge = &bridge;
     bridge.primary = mode == GpuMode::Primary;
+    // The CPU's waits for the GPU, on the profiler's timeline, by why.
+    ps2gpu::SetGpuWaitObserver([](const char* why, std::uint64_t from_ns, std::uint64_t to_ns) {
+        timeline::Span(why, from_ns, to_ns);
+    });
     if (const char* dump = std::getenv("PS2HOST_GPU_DUMP_FRAME")) bridge.dump_frame = std::atoll(dump);
     if (const char* dir = std::getenv("PS2HOST_GPU_DUMP_DIR")) bridge.dump_passes = dir;
     bridge.targets_as_textures = mode == GpuMode::ShadowRtt;
@@ -1435,6 +1520,7 @@ bool StartGpuRenderer(std::string* error, GpuMode mode, bool show) {
             SyncWrite(*g_bridge, begin, end, cover);
         };
         g.on_clut_load = [](u64 tex0, u64 texa) { return LoadClut(*g_bridge, tex0, texa); };
+        g.on_transfer_done = [] { ApplyPatch(*g_bridge); };
     }
     if (show || bridge.primary) {
         // The window shows the GPU's picture: the displayed buffer read back

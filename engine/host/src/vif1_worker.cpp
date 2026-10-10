@@ -38,6 +38,7 @@
 #include <thread>
 
 #include "ps2host/profile.h"
+#include "ps2host/timeline.h"
 #include "ps2host/run.h"
 
 namespace ps2host {
@@ -80,8 +81,11 @@ struct Worker {
             } catch (...) {
                 failed = std::current_exception();
             }
-            busy_us += u64(std::chrono::duration_cast<std::chrono::microseconds>(
-                               std::chrono::steady_clock::now() - began).count());
+            const auto ended = std::chrono::steady_clock::now();
+            busy_us += u64(std::chrono::duration_cast<std::chrono::microseconds>(ended - began).count());
+            if (timeline::On())
+                timeline::Span("busy", u64(std::chrono::duration_cast<std::chrono::nanoseconds>(began.time_since_epoch()).count()),
+                               u64(std::chrono::duration_cast<std::chrono::nanoseconds>(ended.time_since_epoch()).count()));
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 --pending;
@@ -134,7 +138,10 @@ void Rethrow(Worker& w) {
 void StartVif1Worker() {
     if (g_worker) return;
     g_worker = &TheWorker();
-    g_worker->thread = std::thread([] { g_worker->Run(); });
+    g_worker->thread = std::thread([] {
+        timeline::NameThread("VIF1 worker");
+        g_worker->Run();
+    });
     std::atexit(StopWorker);
 }
 

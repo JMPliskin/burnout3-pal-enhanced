@@ -185,6 +185,18 @@ void SetVif1Worker(bool on);
    screen counting frames while it loads (a game's hook turns it on and
    off). */
 void SetFastForward(unsigned factor);
+/* --fast-until N[:F]: in real time, the blanks F times as fast (8 unless
+   said) until frame N - a scripted run's way to what is to be measured -
+   then at their rate. Faster than the EE keeps up with, the game falls
+   behind its frame count and the run's presses miss. */
+void SetFastUntil(u64 frame, unsigned factor);
+/* --real-time-from N: a --virtual-time run goes on in real time from frame
+   N (the clock carrying on from where it was, the blanks' timer and VIF1's
+   worker started): a scripted run's exact way to what is to be measured,
+   measured as it is played. */
+void SetRealTimeFrom(u64 frame);
+/* The clock out of virtual time, carrying on from where it was. */
+void LeaveVirtualClock();
 /* The factor SetFastForward set (1: none). */
 unsigned FastForward();
 /* Real time: when the last vertical blank was due (ClockNs), on the timer's

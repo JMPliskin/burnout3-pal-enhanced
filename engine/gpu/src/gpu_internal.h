@@ -25,6 +25,7 @@ inline std::uint64_t g_submits = 0;
    time, and the display presents from a thread of its own. */
 inline std::mutex g_queue_lock;
 inline double g_wait_seconds = 0;
+inline GpuWaitObserver g_wait_observer = nullptr;      // SetGpuWaitObserver
 /* The GPU's time on the command buffers handed over, in all (timestamps at
    each one's start and end; GpuBusyNanoseconds). */
 inline std::atomic<std::uint64_t> g_gpu_ns{0};
@@ -166,8 +167,12 @@ inline bool VulkanGpu::Retire(int slot, const char* why) {
     if (!in_flight_[slot]) return true;
     const auto start = std::chrono::steady_clock::now();
     const bool ok = vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX) == VK_SUCCESS;
-    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const auto end = std::chrono::steady_clock::now();
+    const double waited = std::chrono::duration<double>(end - start).count();
     g_wait_seconds += waited;
+    if (g_wait_observer && waited > 0.0001)
+        g_wait_observer(why, std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count()),
+                        std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count()));
     CountWait(why, waited);
     in_flight_[slot] = false;
     if (stamped_[slot]) {

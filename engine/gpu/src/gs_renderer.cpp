@@ -34,6 +34,7 @@
 #include "swizzle_depth_comp.h"
 #include "depth_load_frag.h"
 #include "decode_comp.h"
+#include "patch_comp.h"
 
 namespace ps2gpu {
 
@@ -308,6 +309,7 @@ public:
     void SetScale(std::uint32_t scale) override;
     void MemoryWrite(std::uint32_t begin, std::uint32_t end, const std::uint8_t* bytes) override;
     void MemoryRead(std::uint32_t begin, std::uint32_t end, std::uint8_t* bytes) override;
+    void MemoryPatch(const std::uint32_t* words, std::size_t count) override;
     bool TargetToMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t cols,
                         std::uint32_t rows, std::uint32_t first_row) override;
     void TargetFromMemory(std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm, std::uint32_t width,
@@ -532,6 +534,10 @@ private:
     VkDescriptorSetLayout image_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool storage_pool_ = VK_NULL_HANDLE;
     VkPipelineLayout swizzle_image_layout_ = VK_NULL_HANDLE;
+    // MemoryPatch's: memory's set (the swizzle's), eight words in the push constants.
+    VkShaderModule patch_ = VK_NULL_HANDLE;
+    VkPipelineLayout patch_layout_ = VK_NULL_HANDLE;
+    VkPipeline patch_pipeline_ = VK_NULL_HANDLE;
     VkPipeline swizzle_image_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSet StorageSet(Image& image);
     void SwizzleImage(VkCommandBuffer cmd, const SwizzleParams& params, Image& image);
@@ -916,6 +922,26 @@ bool VulkanGsRenderer::InitMemory(std::string* error) {
         if (error) *error = "the depth buffer shaders did not load";
         return false;
     }
+    {
+        VkShaderModuleCreateInfo pi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        pi.codeSize = sizeof spirv_patch_comp;
+        pi.pCode = spirv_patch_comp;
+        vkCreateShaderModule(g_.device, &pi, nullptr, &patch_);
+        VkPushConstantRange words{VK_SHADER_STAGE_COMPUTE_BIT, 0, 128};
+        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pl.setLayoutCount = 1;
+        pl.pSetLayouts = &swizzle_set_layout_;
+        pl.pushConstantRangeCount = 1;
+        pl.pPushConstantRanges = &words;
+        vkCreatePipelineLayout(g_.device, &pl, nullptr, &patch_layout_);
+        VkComputePipelineCreateInfo pp = cpi;
+        pp.stage.module = patch_;
+        pp.layout = patch_layout_;
+        if (!patch_ || vkCreateComputePipelines(g_.device, VK_NULL_HANDLE, 1, &pp, nullptr, &patch_pipeline_) != VK_SUCCESS) {
+            if (error) *error = "the memory patch shader did not load";
+            return false;
+        }
+    }
     ci.codeSize = sizeof spirv_decode_comp;
     ci.pCode = spirv_decode_comp;
     vkCreateShaderModule(g_.device, &ci, nullptr, &decode_);
@@ -1136,6 +1162,29 @@ void VulkanGsRenderer::MemoryWrite(std::uint32_t begin, std::uint32_t end, const
         MemoryBarrier(cmd);
         const VkBufferCopy copy{offset, VkDeviceSize(begin) * 256, size};
         vkCmdCopyBuffer(cmd, buffer, gsmem_, 1, &copy);
+        g_.Mark(cmd, kProfMemory);
+        MemoryBarrier(cmd);
+    });
+}
+
+void VulkanGsRenderer::MemoryPatch(const std::uint32_t* words, std::size_t count) {
+    if (!count || !patch_pipeline_) return;
+    Flush();
+    g_.Record([&](VkCommandBuffer cmd) {
+        MemoryBarrier(cmd);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, patch_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, patch_layout_, 0, 1, &swizzle_set_, 0, nullptr);
+        for (std::size_t i = 0; i < count; i += 8) {
+            std::uint32_t push[32] = {};
+            for (std::size_t k = 0; k < 8 && i + k < count; ++k) {
+                push[4 * k + 0] = words[3 * (i + k) + 0];
+                push[4 * k + 1] = words[3 * (i + k) + 1];
+                push[4 * k + 2] = words[3 * (i + k) + 2];
+            }
+            vkCmdPushConstants(cmd, patch_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+            ++g_dispatches;
+            vkCmdDispatch(cmd, 1, 1, 1);
+        }
         g_.Mark(cmd, kProfMemory);
         MemoryBarrier(cmd);
     });

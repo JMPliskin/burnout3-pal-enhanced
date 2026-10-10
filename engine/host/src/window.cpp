@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ps2host/gs.h"
+#include "ps2host/timeline.h"
 #include "ps2host/run.h"
 #include "ps2host/settings.h"
 
@@ -157,6 +158,15 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
         Note("window", "window: Vulkan on " + g_display->Describe());
         if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
         ApplyCursorArt();
+        g_display->SetPresentObserver([](std::uint64_t due_ns, std::uint64_t shown_ns, bool dropped) {
+            thread_local bool named = false;
+            if (!named) {
+                timeline::NameThread("present");
+                named = true;
+            }
+            if (dropped) timeline::Dropped(due_ns);
+            else timeline::Presented(due_ns, shown_ns);
+        });
         if (SettingOn("vsync")) g_display->SetVsync(true);
         g_display->SetAspect(SettingAspect());
         return true;

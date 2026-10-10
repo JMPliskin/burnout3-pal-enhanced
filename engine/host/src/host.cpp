@@ -28,6 +28,7 @@
 #include "ps2host/profile.h"
 #include "ps2host/run.h"
 #include "ps2host/settings.h"
+#include "ps2host/timeline.h"
 
 namespace ps2host {
 
@@ -536,8 +537,9 @@ int Run(const Options& options) {
         Vu::Snapshots(options.vu_snapshot, u64(options.vu_snapshot_from), options.vu_snapshot_count);
     // A scripted run (--virtual-time) draws the same pictures every time: not
     // with the settings a player keeps beside the executable - the defaults,
-    // unless it brings a memory card (and so settings) of its own.
-    if (!options.virtual_time || !options.memcard.empty()) {
+    // unless it brings a memory card (and so settings) of its own, or goes on
+    // in real time (--real-time-from: measured as played).
+    if (!options.virtual_time || !options.memcard.empty() || options.real_time_from) {
         // The PC settings: beside the memory card (its directory's parent),
         // or the executable, so they go where the player's saves go.
         std::filesystem::path where;
@@ -593,6 +595,7 @@ int Run(const Options& options) {
     InstallIopServers();
     if (!options.gs_inline) StartGsThread();
     lifted::Context c = NewContext();
+    timeline::NameThread("EE");
     Watchdog watchdog(options.timeout_seconds);
     std::string outcome;
     int code = 2;
@@ -632,6 +635,7 @@ int Run(const Options& options) {
     } catch (const Unimplemented& missing) {
         if (outcome.empty()) outcome = "stopped: " + missing.what;
     }
+    timeline::Finish();
     Report(options, outcome);
     return code;
 }
@@ -690,6 +694,15 @@ int Main(int argc, char** argv) {
                 const u64 to = dash == std::string::npos ? from + 5 : std::stoull(when.substr(dash + 1));
                 options.presses.push_back({spec.substr(0, at), from, to});
             }
+        }
+        else if (arg == "--real-time-from" && i + 1 < argc) {
+            options.real_time_from = std::stoull(argv[++i]);
+            SetRealTimeFrom(options.real_time_from);
+        }
+        else if (arg == "--fast-until" && i + 1 < argc) {
+            const std::string spec = argv[++i];
+            const std::size_t colon = spec.find(':');
+            SetFastUntil(std::stoull(spec.substr(0, colon)), colon == std::string::npos ? 8u : unsigned(std::stoul(spec.substr(colon + 1))));
         }
         else if (arg == "--mouse" && i + 1 < argc) {
             if (!ScriptMouse(argv[++i])) std::fprintf(stderr, "--mouse %s: FRAME:X,Y[,L|R|U|D]\n", argv[i]);

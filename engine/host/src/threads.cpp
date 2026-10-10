@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "ps2host/host.h"
+#include "ps2host/timeline.h"
 #include "ps2host/iop_vm.h"
 #include "ps2host/memory.h"
 #include "ps2host/run.h"
@@ -261,10 +262,14 @@ s64 NanosToNextAlarm() {
     return next > now ? s64(next - now) : 0;
 }
 
+void StartRealTime();
+u64 g_real_time_from = 0;               // SetRealTimeFrom
+
 // One frame's interrupts, delivered to the handlers registered for them.
 bool DeliverFrame() {
     Scheduler& s = S();
     ++s.frames;
+    if (s.virtual_time && g_real_time_from && s.frames >= g_real_time_from) StartRealTime();
     {
         Timed timed(Section::Iop);
         iop::Run();                         // the IOP's timers and sound interrupts
@@ -293,6 +298,13 @@ void SpendBudget(lifted::Context& c) {
 
 std::atomic<u64> g_lost_vblanks{0};
 std::atomic<u64> g_idle_ns{0};      // real time: the EE asleep, every thread waiting (--frame-times)
+
+// The EE's wait, on the profiler's timeline (timeline.h).
+void IdleSpan(std::chrono::steady_clock::time_point from) {
+    if (!timeline::On()) return;
+    const u64 from_ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(from.time_since_epoch()).count());
+    timeline::Span("idle", from_ns, timeline::Now());
+}
 bool g_vif1_worker_wanted = true;   // --vif1-sync turns it off
 
 // A vertical blank that comes while the last is still undelivered is owed,
@@ -353,6 +365,8 @@ bool TakeVblank(Scheduler& s) {
 // interrupt waits to be taken, the budget is spent again every half
 // millisecond.
 std::atomic<unsigned> g_fast_forward{1};    // SetFastForward
+std::atomic<u64> g_fast_until{0};           // SetFastUntil: blanks faster before this frame...
+std::atomic<unsigned> g_fast_until_factor{8};   // ...this many times
 std::atomic<int> g_interrupt_waits{0};      // InterruptWait
 // Counted up as the timer marks a blank or a timer due (or looks at the EE's
 // loop heads): what an idle loop's wait sleeps on (WaitOnAddress), woken at
@@ -401,14 +415,18 @@ void VblankTimer() {
         if (clock::now() >= next) {
             g_last_vblank_ns.store(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next.time_since_epoch()).count()),
                                    std::memory_order_relaxed);
-            const unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
+            unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
+            if (S().frames < g_fast_until.load(std::memory_order_relaxed)) factor = std::max(factor, g_fast_until_factor.load(std::memory_order_relaxed));
             next += factor > 1 ? period / factor : period;
             if (clock::now() >= next + period) next = clock::now() + period;   // a stall: start again from now
             if (g_hitch_blanks && !s.vblank_due.load())
                 g_blank_due_ns.store(ClockNs(), std::memory_order_relaxed);
             if (s.vblank_due.exchange(true)) {
                 if (s.vblank_owed.load() < kOwedVblanks) s.vblank_owed.fetch_add(1);
-                else g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
+                else {
+                    g_lost_vblanks.fetch_add(1, std::memory_order_relaxed);
+                    timeline::BlankLost();
+                }
             }
         }
         if (timer >= 0 && (!retrying || clock::now() >= timer_at)) s.timer_due = true;
@@ -464,6 +482,7 @@ void LoopHead(lifted::Context& c, u32 address) {
         g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now() - idle_from).count()),
                             std::memory_order_relaxed);
+        IdleSpan(idle_from);
     }
     if (s.virtual_time && !s.delivery_requested) {
         // A slice ran: its time passes; what that time brings is delivered. In
@@ -611,21 +630,47 @@ void ForEachContext(void (*visit)(lifted::Context&)) {
     visit(S().interrupt_context);
 }
 
+namespace {
+
+/* The run's real time (RunThreads, or StartRealTime): the blanks' timer,
+   VIF1's worker. */
+void StartRealTimeThreads() {
+    timeBeginPeriod(1);             // sleeps to the millisecond, not Windows' 15.6 ms
+    FastThread();
+    if (!TimerThread().joinable()) {
+        TimerThread() = std::thread([] {
+            timeline::NameThread("vertical blank timer");
+            VblankTimer();
+        });
+        std::atexit(StopTimer);
+    }
+    if (g_vif1_worker_wanted) StartVif1Worker();
+}
+
+/* --real-time-from: a virtual-time run in real time from here (a frame's
+   delivery: VIF1 and the GS between frames), the clock going on from where
+   it was. */
+void StartRealTime() {
+    Scheduler& s = S();
+    LeaveVirtualClock();
+    s.virtual_time = false;
+    s.realtime = s.loop_budget == INT64_MAX;
+    s.vblank_due = false;
+    s.timer_due = false;
+    for (auto& [id, t] : s.threads) t->context.budget = s.loop_budget;
+    if (s.realtime) StartRealTimeThreads();
+    std::fprintf(stderr, "[host] real time from frame %llu\n", (unsigned long long)s.frames);
+}
+
+}  // namespace
+
 void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
     Scheduler& s = S();
     s.loop_budget = loop_budget;
     lifted::loop_head_hook = LoopHead;
     s.virtual_time = VirtualClock();
     s.realtime = loop_budget == INT64_MAX && !s.virtual_time;
-    if (s.realtime) {
-        timeBeginPeriod(1);             // sleeps to the millisecond, not Windows' 15.6 ms
-        FastThread();
-        if (!TimerThread().joinable()) {
-            TimerThread() = std::thread(VblankTimer);
-            std::atexit(StopTimer);
-        }
-        if (g_vif1_worker_wanted) StartVif1Worker();
-    }
+    if (s.realtime) StartRealTimeThreads();
     s.next_vblank_ns = ClockNs() + kFrameNs;
     s.host_fiber = ConvertThreadToFiber(nullptr);
     auto main = std::make_unique<Thread>();
@@ -681,6 +726,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
                 g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - idle_from).count()),
                                     std::memory_order_relaxed);
+                IdleSpan(idle_from);
                 if (s.timer_due.exchange(false)) {
                     DeliverTimers();
                     DeliverAlarms();
@@ -963,6 +1009,13 @@ bool ThreadSyscall(lifted::Context& c, s32 number, u64& result) {
 u64 LostVblanks() { return g_lost_vblanks.load(std::memory_order_relaxed); }
 u64 IdleNanoseconds() { return g_idle_ns.load(std::memory_order_relaxed); }
 void SetVif1Worker(bool on) { g_vif1_worker_wanted = on; }
+void SetRealTimeFrom(u64 frame) { g_real_time_from = frame; }
+
+void SetFastUntil(u64 frame, unsigned factor) {
+    g_fast_until = frame;
+    g_fast_until_factor = factor ? factor : 1;
+}
+
 void SetFastForward(unsigned factor) {
     factor = factor ? factor : 1;
     const unsigned before = g_fast_forward.exchange(factor);

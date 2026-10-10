@@ -247,7 +247,10 @@ void Gs::WriteRegister(u32 address, u64 value) {
                     Touch(Bits(bitbltbuf_, 0, 14), Bits(bitbltbuf_, 16, 6), Bits(bitbltbuf_, 24, 6),
                           Bits(trxpos_, 0, 11), Bits(trxpos_, 16, 11), w, h, false);
             }
-            if (trxdir_ == 2) LocalToLocal();
+            if (trxdir_ == 2) {
+                LocalToLocal();
+                if (on_transfer_done) on_transfer_done();
+            }
             break;
         case 0x54: Transfer(value, 0); break;          // HWREG: 64 bits
         default: break;
@@ -310,7 +313,13 @@ void Gs::TransferBlock(const u8* data, u32 qwords) {
             memory.WriteRun(dbp, dbw, x, y, psm, pixels + i, run);
             i += run;
             trx_x_ += run;
-            if (trx_x_ == w) { trx_x_ = 0; if (++trx_y_ == h) trx_active_ = false; }
+            if (trx_x_ == w) {
+                trx_x_ = 0;
+                if (++trx_y_ == h) {
+                    trx_active_ = false;
+                    if (on_transfer_done) on_transfer_done();
+                }
+            }
         }
     }
 }
@@ -395,6 +404,7 @@ void Gs::SetPrivileged(u32 address, u64 value) {
 
 void Gs::Touch(u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h, bool write) const {
     if (!on_memory) return;
+    last_transfer = TouchSeen{bp, bw, psm, x, y, w, h, write};
     (void)x;
     // Whole rows of pages: buffers are laid out a page (8 KB, 32 blocks) at a
     // time, rows of FBW pages, 32 to 128 pixels tall by format.

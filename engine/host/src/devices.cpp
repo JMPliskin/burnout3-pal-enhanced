@@ -36,6 +36,7 @@
 #include <string>
 
 #include "ps2host/dma.h"
+#include "ps2host/timeline.h"
 #ifdef PS2HOST_VULKAN
 #include "ps2gpu/display.h"
 #endif
@@ -518,6 +519,7 @@ void RequestCapture() { g_capture_request = true; }
 
 void FrameDone(u64 frame) {
     FrameTimes(frame);
+    timeline::Frame(frame);
     SampleFrame(frame);
     Vu::SnapshotFrame(frame);
     // Time passes: unmasked, PATH3 sends what it still holds (in turn with

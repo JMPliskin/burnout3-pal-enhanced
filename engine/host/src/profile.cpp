@@ -1,6 +1,7 @@
 /* Timed sections for the report (profile.h). */
 
 #include "ps2host/profile.h"
+#include "ps2host/timeline.h"
 #include "ps2host/run.h"
 
 #include <algorithm>
@@ -54,6 +55,7 @@ std::uint64_t g_ended[int(Section::Count)] = {};
 
 struct ThreadTicks {
     std::uint64_t ticks[int(Section::Count)] = {};
+    std::uint64_t began_ns[16] = {};        // the timeline's (PS2HOST_PROFILE): when each open section began
     Section stack[16];
     int depth = 0;
     std::uint64_t since = 0;
@@ -83,11 +85,16 @@ double Elapsed(Clock::time_point from, Clock::time_point to) {
 
 }  // namespace
 
+const char* const kSectionNames[] = {"GS drawing", "GS image transfers", "VU1", "VU0",
+                                     "GPU bookkeeping", "GPU drawing", "GPU and memory in step",
+                                     "DMA and VIF", "IOP", "SPU2", "waiting for the GS thread"};
+
 Timed::Timed(Section section) : section_(section) {
     ThreadTicks& t = t_ticks;
     const std::uint64_t now = Ticks();
     if (t.depth > 0) t.ticks[int(t.stack[t.depth - 1])] += now - t.since;
     if (t.depth < 16) t.stack[t.depth] = section;
+    if (t.depth < 16 && timeline::On()) t.began_ns[t.depth] = timeline::Now();
     ++t.depth;
     t.since = now;
 }
@@ -97,13 +104,14 @@ Timed::~Timed() {
     const std::uint64_t now = Ticks();
     t.ticks[int(section_)] += now - t.since;
     --t.depth;
+    if (t.depth < 16 && t.began_ns[t.depth] && timeline::On())
+        timeline::Span(kSectionNames[int(section_)], t.began_ns[t.depth], timeline::Now());
+    if (t.depth < 16) t.began_ns[t.depth] = 0;
     t.since = now;
 }
 
 std::string ProfileSummary() {
-    static const char* const kNames[] = {"GS drawing", "GS image transfers", "VU1", "VU0",
-                                         "GPU bookkeeping", "GPU drawing", "GPU and memory in step",
-                                         "DMA and VIF", "IOP", "SPU2", "waiting for the GS thread"};
+    const char* const* kNames = kSectionNames;
     const double total = Elapsed(g_start, Clock::now());
     const double seconds_per_tick = total / double(std::max<std::uint64_t>(1, Ticks() - g_start_ticks));
     std::string out = "time:";

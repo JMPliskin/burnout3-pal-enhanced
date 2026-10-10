@@ -117,6 +117,7 @@ struct Options {
     bool gpu_shadow_rtt = false;   /* ...sampling GPU targets as textures */
     bool gpu_show = false;         /* ...and the window shows the GPU's picture */
     bool virtual_time = false;     /* the scheduler keeps time: runs repeat exactly (run.h) */
+    unsigned long long real_time_from = 0;  /* --real-time-from N: real time from frame N */
     unsigned long long until_frame = 0;    /* stop when this frame is done (0: never) */
     unsigned frame_times = 0;              /* every N frames, the wall-clock frame rate (0: never) */
     bool gs_inline = false;                /* the GS on the EE's thread rather than its own */

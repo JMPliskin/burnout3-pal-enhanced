@@ -12,6 +12,7 @@
 #define PS2GPU_DISPLAY_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -129,6 +130,11 @@ public:
         (void)rgba, (void)width, (void)height, (void)hot_x, (void)hot_y;
     }
     virtual void ShowGameCursor(bool on) { (void)on; }
+
+    /* Told each picture PresentImageAt was given: shown (when it was due, when
+       it was), or dropped unshown (shown_ns 0) - on the presenting thread. */
+    using PresentObserver = std::function<void(std::uint64_t due_ns, std::uint64_t shown_ns, bool dropped)>;
+    virtual void SetPresentObserver(PresentObserver observer) { (void)observer; }
 
     /* The GPU and driver, for the report. */
     virtual std::string Describe() const = 0;

@@ -12,6 +12,8 @@
 
 namespace ps2gpu {
 
+void SetGpuWaitObserver(GpuWaitObserver observer) { g_wait_observer = observer; }
+
 bool VulkanGpu::Init(std::string* error) {
     auto fail = [&](const char* what, VkResult r) {
         char text[160];
