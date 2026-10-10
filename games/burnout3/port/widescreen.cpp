@@ -133,8 +133,11 @@ const std::pair<const char*, Anchor> kDefaultAnchors[] = {
     {"hud.30D6E0.1D66A0.BR", Anchor::kRight},
     {"hud.30D6E0.31B130.TC", Anchor::kStretch},
     {"hud.30D6E0.31B130.TL", Anchor::kLeft},
+    {"hud.30D6E0.380250.BL", Anchor::kLeft},
     {"hud.30D6E0.382950.BL", Anchor::kLeft},
     {"hud.30D6E0.382950.BR", Anchor::kRight},
+    {"hud.30D6E0.3B2EE0.MC", Anchor::kStretch},
+    {"hud.30D6E0.3B2EE0.MR", Anchor::kStretch},
     {"hud.30D6E0.3D7B40.BC", Anchor::kStretch},
     {"hud.30D6E0.3D7B40.BR", Anchor::kRight},
 };
