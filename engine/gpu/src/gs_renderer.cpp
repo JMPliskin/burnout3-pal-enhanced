@@ -68,6 +68,10 @@ constexpr std::uint32_t kFragmentOffset = 16;
 struct Image {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    // Where in `memory` (ImageMemory: a piece of a block, of a size class -
+    // class 0 its own allocation), and of which memory type.
+    VkDeviceSize offset = 0;
+    std::uint32_t piece_class = 0, memory_type = 0;
     VkImageView view = VK_NULL_HANDLE;
     std::uint32_t width = 0, height = 0;    // in GS pixels
     std::uint32_t scale = 1;                // the image's pixels to a GS pixel, each way (targets, depth)
@@ -338,6 +342,15 @@ private:
     bool MakeImage(Image& image, std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
                    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM, std::uint32_t scale = 1);
     void DestroyImage(Image& image);
+    /* Device-local memory for images: pieces of 64 MB blocks, a power of two
+       (64 KB to 16 MB) each, kept for reuse once freed - the textures that
+       come and go a frame (a full cache, a new area of a track) made no
+       allocation of the driver's each (vkAllocateMemory goes to the system's
+       kernel). Larger, an allocation of its own. */
+    bool ImageMemory(const VkMemoryRequirements& req, std::uint32_t type, Image& image);
+    void FreeImageMemory(VkDeviceMemory memory, VkDeviceSize offset, std::uint32_t piece_class, std::uint32_t type);
+    std::map<std::uint64_t, std::vector<std::pair<VkDeviceMemory, VkDeviceSize>>> image_pieces_;   // (type, class) -> free
+    std::vector<VkDeviceMemory> image_blocks_;
     void Fill(Texture& texture, const std::uint32_t* pixels);
     VkPipeline PipelineFor(std::uint32_t key);
     /* The destination alpha test's setup pass: stencil 1 where the target's
@@ -687,11 +700,8 @@ bool VulkanGsRenderer::MakeImage(Image& t, std::uint32_t width, std::uint32_t he
     if (vkCreateImage(g_.device, &ici, nullptr, &t.image) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g_.device, t.image, &req);
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size;
-    mai.memoryTypeIndex = g_.FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(g_.device, &mai, nullptr, &t.memory) != VK_SUCCESS) return false;
-    vkBindImageMemory(g_.device, t.image, t.memory, 0);
+    if (!ImageMemory(req, g_.FindMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT), t)) return false;
+    vkBindImageMemory(g_.device, t.image, t.memory, t.offset);
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = t.image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -709,8 +719,48 @@ void VulkanGsRenderer::DestroyImage(Image& t) {
     if (t.view) vkDestroyImageView(g_.device, t.view, nullptr);
     if (t.depth_view) vkDestroyImageView(g_.device, t.depth_view, nullptr);
     if (t.image) vkDestroyImage(g_.device, t.image, nullptr);
-    if (t.memory) vkFreeMemory(g_.device, t.memory, nullptr);
+    if (t.memory) FreeImageMemory(t.memory, t.offset, t.piece_class, t.memory_type);
     t = Image{};
+}
+
+bool VulkanGsRenderer::ImageMemory(const VkMemoryRequirements& req, std::uint32_t type, Image& t) {
+    constexpr VkDeviceSize kBlock = VkDeviceSize(64) << 20, kLargest = VkDeviceSize(16) << 20;
+    std::uint32_t piece_class = 16;                 // 64 KB
+    while ((VkDeviceSize(1) << piece_class) < std::max(req.size, req.alignment)) ++piece_class;
+    t.memory_type = type;
+    if ((VkDeviceSize(1) << piece_class) > kLargest) {
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = type;
+        t.piece_class = 0;
+        t.offset = 0;
+        return vkAllocateMemory(g_.device, &mai, nullptr, &t.memory) == VK_SUCCESS;
+    }
+    auto& free = image_pieces_[std::uint64_t(type) << 32 | piece_class];
+    if (free.empty()) {
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = kBlock;
+        mai.memoryTypeIndex = type;
+        VkDeviceMemory block = VK_NULL_HANDLE;
+        if (vkAllocateMemory(g_.device, &mai, nullptr, &block) != VK_SUCCESS) return false;
+        image_blocks_.push_back(block);
+        const VkDeviceSize piece = VkDeviceSize(1) << piece_class;
+        for (VkDeviceSize at = kBlock; at >= piece; at -= piece) free.emplace_back(block, at - piece);
+    }
+    t.memory = free.back().first;
+    t.offset = free.back().second;
+    t.piece_class = piece_class;
+    free.pop_back();
+    return true;
+}
+
+void VulkanGsRenderer::FreeImageMemory(VkDeviceMemory memory, VkDeviceSize offset, std::uint32_t piece_class,
+                                       std::uint32_t type) {
+    if (!piece_class) {
+        vkFreeMemory(g_.device, memory, nullptr);
+        return;
+    }
+    image_pieces_[std::uint64_t(type) << 32 | piece_class].emplace_back(memory, offset);
 }
 
 bool VulkanGsRenderer::Init(std::string* error) {
@@ -1756,12 +1806,14 @@ void VulkanGsRenderer::ReleaseTexture(std::uint64_t key) {
     }
     VkDevice device = g_.device;
     VkDescriptorPool pool = pool_;
-    g_.AfterSubmit([device, pool, texture]() mutable {
+    g_.AfterSubmit([this, device, pool, texture]() mutable {
         for (VkDescriptorSet& set : texture.sets)
             if (set) vkFreeDescriptorSets(device, pool, 1, &set);
         if (texture.image.view) vkDestroyImageView(device, texture.image.view, nullptr);
         if (texture.image.image) vkDestroyImage(device, texture.image.image, nullptr);
-        if (texture.image.memory) vkFreeMemory(device, texture.image.memory, nullptr);
+        if (texture.image.memory)
+            FreeImageMemory(texture.image.memory, texture.image.offset, texture.image.piece_class,
+                            texture.image.memory_type);
     });
 }
 
@@ -2505,6 +2557,9 @@ VulkanGsRenderer::~VulkanGsRenderer() {
         for (Texture& texture : list) DestroyImage(texture.image);
     DestroyImage(blank_.image);
     for (auto& [size, copy] : feedbacks_) DestroyImage(copy);
+    for (VkDeviceMemory block : image_blocks_) vkFreeMemory(g_.device, block, nullptr);     // (ImageMemory's)
+    image_blocks_.clear();
+    image_pieces_.clear();
     for (const Staged& staged : staging_free_) {
         vkUnmapMemory(g_.device, staged.memory);
         vkDestroyBuffer(g_.device, staged.buffer, nullptr);

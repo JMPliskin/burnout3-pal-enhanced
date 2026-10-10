@@ -946,8 +946,9 @@ u64 CachedTexture(Bridge& b, const gs::Context& c, u64 texa, u32 tw, u32 th) {
         t.decoded = true;
     }
     const u64 renderer_key = t.renderer_key;
-    // Keep the cache bounded: the least recently used go.
-    while (b.textures.size() > 2048) {
+    // Keep the cache bounded: the least recently used go (4,096: a race keeps
+    // over 2,048 about, and each one evicted came back decoded again).
+    while (b.textures.size() > 4096) {
         const u64 old = b.texture_lru.back();
         b.texture_lru.pop_back();
         auto found = b.textures.find(old);
