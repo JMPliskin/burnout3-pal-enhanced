@@ -4,7 +4,10 @@
  */
 
 #include <cstdio>
+#include <fcntl.h>
 #include <filesystem>
+#include <io.h>
+#include <sys/stat.h>
 #include <string>
 #include <vector>
 
@@ -49,6 +52,8 @@ bool HasAvx2() {
 #endif
 }
 
+std::string g_log;     // the log a run started without arguments writes
+
 #ifdef PS2HOST_GAME_EXECUTABLE
 /* Whether `path` is an image of the game's disc: the executable it boots is
    the one the port was translated from (game.json's). */
@@ -79,8 +84,8 @@ std::string PickDisc() {
 /* Started without arguments - from Explorer, a shortcut - the port plays its
    game from the player's own disc image: the one chosen before (kept in the
    PC settings, beside the executable), or asked for and checked to be the
-   game's disc; the memory card a directory beside it too. On the GPU, with no
-   time limit (the default is for test runs).
+   game's disc; the memory card a directory beside it too. In a window, with
+   sound, on the GPU, with no time limit (the default is for test runs).
    An empty list: the player gave none. */
 std::vector<std::string> PlayArguments(const char* self) {
 #ifdef PS2HOST_GAME_EXECUTABLE
@@ -98,8 +103,25 @@ std::vector<std::string> PlayArguments(const char* self) {
         if (disc.empty()) return {};
     }
     if (disc != ps2host::Setting("disc")) ps2host::SetSetting("disc", disc);
-    return {self, "--disc", disc, "--memcard", (here / "memcard").string(), "--gpu",
-            "--timeout", "315360000"};     // ten years
+    // No terminal to read: what the run says goes to a log beside it. Opened
+    // once, shared (fopen's would lock the file to one stream), and given to
+    // both: their lines in the order they were written.
+    g_log = std::filesystem::path(exe).stem().string() + ".log";
+    const std::string log = (here / g_log).string();
+    std::FILE* stream = nullptr;
+    freopen_s(&stream, "NUL", "w", stdout);    // streams with descriptors, in a windowed program
+    freopen_s(&stream, "NUL", "w", stderr);
+    const int file = _open(log.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT, _S_IREAD | _S_IWRITE);
+    if (file >= 0) {
+        _dup2(file, _fileno(stdout));
+        _dup2(file, _fileno(stderr));
+        _close(file);
+    }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a run ended by force loses nothing
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    std::fprintf(stderr, "[port] disc %s\n", disc.c_str());
+    return {self, "--disc", disc, "--memcard", (here / "memcard").string(), "--window", "--gpu",
+            "--audio", "--timeout", "315360000"};     // ten years
 #else
     return {self};
 #endif
@@ -107,7 +129,20 @@ std::vector<std::string> PlayArguments(const char* self) {
 
 }  // namespace
 
+/* A port built as a windowed program has no console of its own. Started from
+   a terminal its output goes to that one; redirected (a file, a pipe: the
+   tools' runs), where it was sent. */
+void AttachTerminal() {
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) return;
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    std::FILE* stream = nullptr;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+}
+
 int main(int argc, char** argv) {
+    AttachTerminal();
     std::vector<std::string> play;
     std::vector<char*> play_argv;
     if (argc == 1) {
@@ -125,6 +160,12 @@ int main(int argc, char** argv) {
     ps2host::RegisterFunctions(kGuestFunctions, kGuestFunctionCount);
     RegisterGameOverrides();
     const int code = ps2host::Main(argc, argv);
+    if (!play.empty() && code != 0) {         // closing the window ends a run with 0
+        std::fflush(nullptr);
+        const std::string text = "The game stopped because of an error. What happened is in " +
+                                 g_log + ", beside the game.";
+        MessageBoxA(nullptr, text.c_str(), "PS2 port", MB_OK | MB_ICONERROR);
+    }
     // What must be finished is (the report written, the settings and the
     // memory card saved as they changed, the WAV's header here); the rest -
     // the window, the GPU device, the threads - goes with the process.

@@ -118,6 +118,11 @@ function(ps2_add_port target)
         target_compile_definitions(${target} PRIVATE PS2HOST_GAME_NAME="${game_name}"
                                                      PS2HOST_GAME_EXECUTABLE="${game_executable}")
         target_link_libraries(${target} PRIVATE comdlg32)
+        if(MSVC)
+            # A windowed program: started from Explorer, no console beside the
+            # game (main.cpp attaches to a terminal's when there is one).
+            target_link_options(${target} PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+        endif()
     endif()
     if(MSVC)
         # Symbols in the optimised build too, for --sample (profile.cpp): /Z7

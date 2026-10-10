@@ -81,7 +81,10 @@ all - from Explorer, or a shortcut - a port built with `ps2_add_port(... GAME
 <dir>)` plays: it asks for the player's own disc image the first time (a file
 dialog, checked to be the disc game.json's executable comes from), remembers
 it in `pc_settings.ini` beside the executable, and runs on the GPU with a
-memory card in `memcard/` there and no time limit. A `--virtual-time` run
+memory card in `memcard/` there, in a window with sound and no time limit.
+It is a windowed program, so no console opens beside it: started from a
+terminal it writes to that one, and started with no arguments to a log named
+after it (`burnout3.log`), which an error message points to. A `--virtual-time` run
 without `--memcard` leaves the player's settings alone and uses the defaults,
 so its pictures stay as recorded.
 
