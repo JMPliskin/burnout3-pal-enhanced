@@ -23,6 +23,9 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Lifted code is a mechanical translation, regenerated in minutes by
-# engine/tools/lift.py --emit; committing it would add megabytes per run.
-games/*/src/lifted/
+# A game's own code in C++ - lifted (a mechanical translation), derived and
+# reconstructed - is the game's, and regenerated from the player's disc by the
+# tools (lift.py --emit, derive.py --emit): never committed.
+games/*/src/
+games/*/include/*/
+!games/*/include/ps2/
