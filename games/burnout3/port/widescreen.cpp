@@ -117,17 +117,25 @@ struct ElementId {
 
 /* The port's own anchors (the HUD editor's settings take precedence). */
 const std::pair<const char*, Anchor> kDefaultAnchors[] = {
-    // The race: position (its panel and number) and the boost bar on the
-    // left, the speed (panel and number) on the right; the lap centred.
-    {"hud.1A0790.3CD920.TL", Anchor::kLeft},
-    {"hud.1A0790.381AB0.TL", Anchor::kLeft},
-    {"hud.1A0790.1A6290.BL", Anchor::kLeft},
+    // The race (chosen in play with the HUD editor): position, the boost
+    // bar and their panels on the left, the speed on the right.
     {"hud.1A0790.1A6290.BC", Anchor::kLeft},
-    {"hud.1D75C0.1A8180.BL", Anchor::kLeft},
-    {"hud.1A0790.3CD920.BR", Anchor::kRight},
+    {"hud.1A0790.1A6290.BL", Anchor::kLeft},
     {"hud.1A0790.381030.BR", Anchor::kRight},
+    {"hud.1A0790.381AB0.TL", Anchor::kLeft},
+    {"hud.1A0790.3CD920.BR", Anchor::kRight},
+    {"hud.1A0790.3CD920.TL", Anchor::kLeft},
+    {"hud.1D75C0.1A7B00.BC", Anchor::kLeft},
+    {"hud.1D75C0.1A7B00.BL", Anchor::kLeft},
+    {"hud.1D75C0.1A8180.BL", Anchor::kLeft},
     // The frontend.
+    {"hud.30D6E0.1D66A0.BL", Anchor::kLeft},
+    {"hud.30D6E0.1D66A0.BR", Anchor::kRight},
+    {"hud.30D6E0.31B130.TC", Anchor::kStretch},
     {"hud.30D6E0.31B130.TL", Anchor::kLeft},
+    {"hud.30D6E0.382950.BL", Anchor::kLeft},
+    {"hud.30D6E0.382950.BR", Anchor::kRight},
+    {"hud.30D6E0.3D7B40.BC", Anchor::kStretch},
     {"hud.30D6E0.3D7B40.BR", Anchor::kRight},
 };
 
