@@ -489,6 +489,11 @@ void MainMenuInput(lifted::Context& c) {
                 o.set((o.now() + 1) % o.count);
                 ShowOption(entry);
                 RefreshList(c);
+                // The highlight's brackets are placed when the selection moves
+                // (0x0031FF80, the list's +0xA4 against +0xA8): the row taken as
+                // unselected, it is selected again - the brackets around its new
+                // words, not the old ones' width.
+                generated::Write32(0x01E89544u + 0xA4u, ~0u);
             } else {
                 ShowSettings(c, false);
             }
