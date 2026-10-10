@@ -20,6 +20,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 SUPER = 8
 SIZES = (256, 128, 64, 48, 32, 24, 16)
 LEAN = 0.26          # italic: x moves this much right per unit up
+PAD = 0.02           # the border left around the drawing, of the square's side
 
 # The letters on a grid 7 wide, 10 high (y down), chamfered corners.
 B_OUTER = [(0, 0), (5.6, 0), (7, 1.3), (7, 3.9), (6.1, 5), (7, 6.1), (7, 8.7), (5.6, 10), (0, 10)]
@@ -101,7 +102,14 @@ def draw(size):
     # A thin light edge along the letters' tops and left sides.
     lit = ImageChops.subtract(body, ImageChops.offset(body, max(1, int(0.12 * scale)), max(1, int(0.12 * scale))))
     art = Image.alpha_composite(art, solid(s, (255, 170, 150), lit.point(lambda v: int(v * 0.8))))
-    return art.resize((size, size), Image.LANCZOS)
+    # Fitted to what was drawn (outline and shadow too), a thin border left,
+    # centred: the letters as large as the square allows.
+    drawn = art.crop(art.getbbox())
+    fit = s * (1 - 2 * PAD) / max(drawn.width, drawn.height)
+    drawn = drawn.resize((max(1, round(drawn.width * fit)), max(1, round(drawn.height * fit))), Image.LANCZOS)
+    square = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    square.alpha_composite(drawn, ((s - drawn.width) // 2, (s - drawn.height) // 2))
+    return square.resize((size, size), Image.LANCZOS)
 
 
 def write_ico(images, path):
