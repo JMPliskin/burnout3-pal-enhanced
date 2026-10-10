@@ -35,6 +35,33 @@ class TestTidy(unittest.TestCase):
         self.assertEqual(structure.tidy(line), line)
 
 
+class TestFoldAddresses(unittest.TestCase):
+    def test_memory_address_is_folded(self):
+        self.assertEqual(structure.fold_addresses(["    t1 = ReadS32((u32)0x4A0000ull + 0xFFFFB0A0u);"]),
+                         ["    t1 = ReadS32(0x0049B0A0u);"])
+        self.assertEqual(structure.fold_addresses(["    Write32((u32)0x520000ull + 0xFFFFBAA8u, (u32)v1);"]),
+                         ["    Write32(0x0051BAA8u, (u32)v1);"])
+
+    def test_sign_extended_address_is_folded(self):
+        self.assertEqual(structure.fold_addresses(["    a0 = Sx32((0x4C0000ull) + 0xFFFF9AD0u);"]),
+                         ["    a0 = 0x004B9AD0ull;"])
+        # Past 0x7FFFFFFF it is sign-extended, as Sx32 would.
+        self.assertEqual(structure.fold_addresses(["    a0 = Sx32((0x80000000ull) + 0x10u);"]),
+                         ["    a0 = 0xFFFFFFFF80000010ull;"])
+
+    def test_known_string_is_named(self):
+        self.assertEqual(structure.fold_addresses(["    a0 = Sx32((0x4C0000ull) + 0xFFFF9AD0u);"],
+                                                  {0x4B9AD0: "dbcman : SendData2"}),
+                         ['    a0 = 0x004B9AD0ull;  /* "dbcman : SendData2" */'])
+
+    def test_a_sum_inside_a_larger_expression_is_kept(self):
+        # Only a whole argument folds: here the sum is one operand of more.
+        line = "    v0 = ReadS32((u32)0x4A0000ull + 0xFFFFB0A0u + a1);"
+        self.assertEqual(structure.fold_addresses([line]), [line])
+        line = "    v0 = a1 * (u32)0x4A0000ull + 0x10u;"
+        self.assertEqual(structure.fold_addresses([line]), [line])
+
+
 class TestDoWhile(unittest.TestCase):
     LOOP = ["    for (;;) {",
             "        Tick(c, 0x00100000u);",

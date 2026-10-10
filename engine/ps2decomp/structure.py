@@ -814,6 +814,47 @@ def fold_constants(lines, strings=None):
     return out
 
 
+# A split address once its base register is folded away (liveness.fold puts
+# `lui`'s constant in place of the register): the whole address of a memory
+# access, or the whole argument of a sign extension. Only there - as a whole
+# argument, nothing around it binds tighter than the sum.
+_SPLIT_ADDRESS = re.compile(r"((?:Read|Write)(?:U|S)?(?:8|16|32|64)\()\(u32\)(0x[0-9A-F]+)ull \+ (0x[0-9A-F]+)u(?=[),])")
+_SPLIT_SIGN_EXTENDED = re.compile(r"\bSx32\(\((0x[0-9A-F]+)ull\) \+ (0x[0-9A-F]+)u\)")
+_ASSIGNED_CONSTANT = re.compile(r"^\s*[a-z][a-z0-9]* = (0x[0-9A-F]+)ull;$")
+
+
+def _string_note(value, strings):
+    text = strings.get(value & 0xFFFFFFFF)
+    if text is None:
+        return ""
+    shown = text if len(text) <= 48 else text[:45] + "..."
+    return '  /* "%s" */' % shown.encode("unicode_escape").decode("ascii").replace("*/", "*\\/")
+
+
+def fold_addresses(lines, strings=None):
+    """`ReadS32((u32)0x4A0000ull + 0xFFFFB0A0u)` is `ReadS32(0x0049B0A0u)`, and
+    `Sx32((0x4C0000ull) + 0xFFFF9AD0u)` the constant it sign-extends: a 32-bit
+    address MIPS builds in two steps, whose first step folding put in place of
+    its register. A plain assignment of an address of a known string says so."""
+    strings = strings or {}
+    out = []
+    for line in lines:
+        line = _SPLIT_ADDRESS.sub(
+            lambda m: "%s0x%08Xu" % (m.group(1), (int(m.group(2), 16) + int(m.group(3), 16)) & 0xFFFFFFFF), line)
+
+        def extended(m):
+            value = (int(m.group(1), 16) + int(m.group(2), 16)) & 0xFFFFFFFF
+            if value & 0x80000000:
+                value |= 0xFFFFFFFF00000000
+            return "0x%08Xull" % value
+        line = _SPLIT_SIGN_EXTENDED.sub(extended, line)
+        assigned = _ASSIGNED_CONSTANT.match(line)
+        if assigned and "/*" not in line:
+            line += _string_note(int(assigned.group(1), 16), strings)
+        out.append(line)
+    return out
+
+
 def _localize(text, gprs, fprs, scalars):
     text = re.sub(r"c\.r\[(\d+)\]", lambda m: _gpr(int(m.group(1)), gprs), text)
     text = re.sub(r"c\.f\[(\d+)\]", lambda m: _fpr(int(m.group(1)), fprs), text)
@@ -987,7 +1028,8 @@ def structure_function(image: bytes, base: int, start: int, end: int,
     # The context is lifted::Context; everything else reads without the prefixes.
     lines.append("    auto in = [&] { %s };" % " ".join("%s = %s;" % (n, s) for n, s in synced))
     lines.append("    (void)out; (void)in; (void)leave;")
-    body = drop_empty_else(hoist_delay_slots(fold_links(fold_constants(out_lines, strings))))
+    body = drop_empty_else(hoist_delay_slots(fold_links(fold_addresses(fold_constants(out_lines, strings),
+                                                                       strings))))
     lines += loop_guards(loops_to_do_while(invert_empty_then(body)))
     lines.append("}")
     return "\n".join(lines) + "\n"
