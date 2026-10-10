@@ -185,17 +185,6 @@ def build(game, generated: str) -> str:
     target = os.path.basename(os.path.normpath(game.directory))
     executable = os.path.join(binary, target + ".exe")
     print("built %s" % executable)
-    # The game's icon, made from the disc by its own script with the port just
-    # built (port/tools/make_icon.py, to build/port/icon.ico), and the port
-    # built again to carry it.
-    make_icon = game.path(os.path.join("port", "tools", "make_icon.py"))
-    icon = game.path(os.path.join(game.build, "port", "icon.ico"))
-    elf = game.path(os.path.join(game.extracted, game.executable))
-    if os.path.exists(make_icon) and not os.path.exists(icon) and os.path.exists(elf):
-        print("making the icon from the disc (%s)" % os.path.relpath(make_icon, game.directory))
-        subprocess.run([sys.executable, make_icon], check=False)
-        if os.path.exists(icon):
-            return build(game, generated)
     return executable
 
 

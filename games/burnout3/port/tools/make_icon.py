@@ -1,14 +1,15 @@
-"""The port's icon, from the player's own disc: the title screen's BURNOUT 3
-TAKEDOWN logo, as the game draws it.
+"""A player's own icon for their build, from their disc: the title screen's
+BURNOUT 3 TAKEDOWN logo, as the game draws it. EA's artwork: for the player's
+build alone, never committed or shared - the port's own icon is original
+(port/icon.ico, from make_icon_art.py).
 
 The built port runs to the title screen (a scripted run, as the regressions
 are), the frame's GS memory is dumped and its trace read: the logo is a
 512 x 256 8-bit texture drawn across the middle of the screen. Decoded with
 its CLUT (engine/tools/gsmem.py), it becomes the icon: the whole logo at the
 large sizes, its red 3 alone at the small ones, where the words would not
-read. Written to build/port/icon.ico - made from the disc, it is never part
-of the repository - for the port's executable to carry (engine/host's
-ps2_add_port embeds it; port.py makes it when it is missing).
+read. Written to build/port/icon.ico, which ps2_add_port embeds instead of
+the port's own at the next build; delete it to have the port's own back.
 
     python games/burnout3/port/tools/make_icon.py
 """

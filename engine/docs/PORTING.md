@@ -88,11 +88,13 @@ terminal it writes to that one, and started with no arguments to a log named
 after it (`burnout3.log`), which an error message points to.
 
 The window's title is game.json's `title`. The executable's icon (the
-window's and the taskbar's too) is made from the player's disc: a game whose
-port has `port/tools/make_icon.py` gets `build/port/icon.ico` from it when
-`port.py` builds and there is none - Burnout 3's runs the port to the title
-screen and takes the logo's texture from GS memory (`gsmem.py texture`) - and
-`ps2_add_port` embeds it. Made from the disc, it is never committed. A `--virtual-time` run
+window's and the taskbar's too) is the port's own, `port/icon.ico` - original
+art, safe to publish with the port (Burnout 3's from
+`port/tools/make_icon_art.py`). A player can give their own build the game's
+logo instead: `port/tools/make_icon.py` makes `build/port/icon.ico` from their
+disc (the port run to the title screen, the logo's texture taken from GS
+memory with `gsmem.py texture`), which `ps2_add_port` takes over the port's
+own. Made from the disc, that one is never committed or shared. A `--virtual-time` run
 without `--memcard` leaves the player's settings alone and uses the defaults,
 so its pictures stay as recorded.
 
