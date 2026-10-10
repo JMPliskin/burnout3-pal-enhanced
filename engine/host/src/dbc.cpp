@@ -15,6 +15,11 @@
  *               +0x24 the socket (-1: none)
  *   0x80001302  sceDbcDeleteSocket: +0 the socket
  *   0x80001303  sceDbcGetDepNumber: +0 the socket; answer +4 (0: present)
+ *   0x8000131B  sceDbcSendData2: +0 the socket, +4 a header, +8 the length,
+ *               +0xC the data: a command's length (word), its data's length
+ *               (word), the data, the command. Command 3 with two bytes of
+ *               data sets a DualShock 2's motors (Burnout 3's 0x00217070):
+ *               the small motor in bit 0, the large one's 0-255 above it.
  *
  * The device writes its state into the socket's blocks, the newer one
  * marked by the larger counter at +0x7C. A block:
@@ -34,6 +39,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -162,6 +168,23 @@ std::vector<u8> Server(u32 procedure, const std::vector<u8>& request) {
             Put(answer, 4, found != d.sockets.end() && Present(found->second.port) ? 0 : u32(-1));
             return answer;
         }
+        case 0x8000131Bu: {
+            const u32 command_bytes = At(request, 0xC), data_bytes = At(request, 0x10);
+            if (data_bytes == 2 && command_bytes == 1 && request.size() > 0x16 && request[0x16] == 3) {
+                const u32 value = u32(request[0x14]) | u32(request[0x15]) << 8;
+                const u8 small = (value & 1) ? 255 : 0, large = u8(std::min(255u, value >> 1));
+                if (std::getenv("PS2HOST_RUMBLE_LOG"))
+                    std::fprintf(stderr, "[pad] motors: large %u small %u (0x%04X)\n", unsigned(large),
+                                 unsigned(small), unsigned(value));
+                HostRumble(large, small);
+            } else {
+                char text[128];
+                std::snprintf(text, sizeof text, "DBC: SendData2 command length %u, data length %u (ignored)",
+                              unsigned(command_bytes), unsigned(data_bytes));
+                Note("dbc senddata2 " + std::to_string(command_bytes) + "/" + std::to_string(data_bytes), text);
+            }
+            return answer;
+        }
         case 0x8000131Au: {
             // sceDbcReceiveData: +0 socket, +4 command, +8 room. Answer: +0x20C
             // the result (< 0: failed), +8 the length, +0xC the data - whose
@@ -228,7 +251,13 @@ void DbcFrame() {
     }
 }
 
-void InstallDbc() { RegisterRpcServer(0x80001300u, Server); }
+void InstallDbc() {
+    RegisterRpcServer(0x80001300u, Server);
+    // libdbc binds a client of its own to each send (SendData2, SendData3):
+    // their servers' ids are the procedures', and dbcman answers them alike.
+    RegisterRpcServer(0x8000131Bu, Server);
+    RegisterRpcServer(0x8000131Cu, Server);
+}
 
 u16 PadButtonsHeld() { return g_held; }
 

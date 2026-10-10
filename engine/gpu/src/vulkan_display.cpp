@@ -113,6 +113,14 @@ private:
 
     SDL_Window* window_ = nullptr;
     SDL_Gamepad* gamepad_ = nullptr;        // the first controller plugged in
+    std::atomic<std::uint32_t> rumble_{0};  // SetRumble: large << 16 | small
+    std::uint32_t rumble_sent_ = 0;
+    std::uint64_t rumble_renewed_ = 0;      // when SDL was last told (ms): its rumble lasts a while
+public:
+    void SetRumble(std::uint16_t large, std::uint16_t small) override {
+        rumble_.store(std::uint32_t(large) << 16 | small);
+    }
+private:
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice gpu_ = VK_NULL_HANDLE;
@@ -942,6 +950,17 @@ bool VulkanDisplay::Pump() {
         std::lock_guard<std::mutex> hold(title_lock_);
         if (title_changed_ && window_) SDL_SetWindowTitle(window_, title_.c_str());
         title_changed_ = false;
+    }
+    // The motors as the game last set them: renewed before SDL's duration
+    // runs out, stopped when set to zero.
+    if (gamepad_) {
+        const std::uint32_t r = rumble_.load();
+        const std::uint64_t now = SDL_GetTicks();
+        if (r != rumble_sent_ || (r && now - rumble_renewed_ > 200)) {
+            SDL_RumbleGamepad(gamepad_, std::uint16_t(r >> 16), std::uint16_t(r), r ? 400 : 0);
+            rumble_sent_ = r;
+            rumble_renewed_ = now;
+        }
     }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {

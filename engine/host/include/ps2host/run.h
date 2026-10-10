@@ -288,6 +288,9 @@ struct HostPadState {
     u8 l2 = 0, r2 = 0;
 };
 bool HostPad(HostPadState* state);
+/* The window's controller's motors, as a DualShock 2's: the large one 0-255,
+   the small one 0-255 (a DualShock 2's is on or off: 0 or 255). */
+void HostRumble(u8 large, u8 small);
 /* Controllers (dbc.cpp): each frame, the devices write their state. */
 void DbcFrame();
 /* The DualShock 2's buttons as the game last read them (bit n: input n held,

@@ -178,6 +178,14 @@ bool HostKeyDown(int key) {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
+void HostRumble(u8 large, u8 small) {
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->SetRumble(u16(large * 257), u16(small * 257));
+#else
+    (void)large, (void)small;
+#endif
+}
+
 bool HostPad(HostPadState* state) {
 #ifdef PS2HOST_VULKAN
     ps2gpu::Display::PadState pad;

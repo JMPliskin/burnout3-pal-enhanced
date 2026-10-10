@@ -103,6 +103,10 @@ public:
         std::uint8_t l2 = 0, r2 = 0;    // the triggers' travel, 0-255
     };
     virtual bool Pad(PadState* state) const { (void)state; return false; }
+    /* The controller's motors, 0-65535 each (the low-frequency, large one;
+       the high-frequency, small one), until set again - 0, 0 stops them.
+       Taken up by the window's own thread (Pump). */
+    virtual void SetRumble(std::uint16_t large, std::uint16_t small) { (void)large, (void)small; }
 
     /* The GPU and driver, for the report. */
     virtual std::string Describe() const = 0;
