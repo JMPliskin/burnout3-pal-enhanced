@@ -31,6 +31,10 @@ The progress report gives two numbers. Report both, and never blur them:
 changing what "verified" means, and `engine/docs/ARCHITECTURE.md` before changing
 the engine.
 
+Running the result as a PC port - bring-up, accuracy, performance, PC
+features, working autonomously - is skill `ps2-port`; what may be published
+and how a release is made is skill `ps2-release`.
+
 ## Non-negotiable rules
 
 - **Only verified code counts.** Never report a derived-but-untested or
