@@ -65,6 +65,7 @@ Options for finding out why boot stops, passed after `run --`:
 | `--sample-vif1` | `--sample` on VIF1's worker (real time: VIF1, VU1 and what they feed the GS) |
 | `--vif1-sync` | in real time, VIF1 and VU1 on the EE's thread as under `--virtual-time` (vif1_worker.cpp) |
 | `--press BUTTON@FRAME` | hold a pad button for 6 frames from that frame (cross, circle, start, up, ...); `BUTTON@FROM-TO` holds it from one frame to another (`cross@17650-19400`: accelerate through a race); repeatable |
+| `--mouse FRAME:X,Y[,L\|R\|U\|D]` | the mouse at (X, Y) of the picture (0 to 1 across it) from that frame, its left or right button clicked or the wheel turned up or down then; repeatable. With any, the window's mouse is not read - a scripted run's menus driven by the mouse |
 | `--memcard DIR` | a memory card in slot 1, kept as a directory: the game's saves are files there (`ps2host/mc2.h` answers libmc2's handlers; the port binds them). Without it the slot is empty |
 | `--vu-record FILE`, `--vu-interpret` | record the VU microprograms a run starts, for compiling ahead of time; run them interpreted (see below) |
 | `--vu-fast` | compiled VU1 programs leave out the MAC and STATUS flags no instruction of theirs can read ("Fast mode" below): exact but for those flags, ~15% less VU1 time; exact is the default |

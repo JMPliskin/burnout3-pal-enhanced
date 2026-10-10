@@ -135,17 +135,28 @@ float SettingAspect() {
 }  // namespace
 
 std::string g_title;                // the window's title as opened (SetWindowStatus adds to it)
+void ApplyCursorArt();               // the game's pointer to a window opened after it was set
+
+std::string& GameTitleText() {
+    static std::string title;
+    return title;
+}
+
+void SetGameTitle(const std::string& title) { GameTitleText() = title; }
+const std::string& GameTitle() { return GameTitleText(); }
 
 bool OpenWindow(const wchar_t* title, int width, int height) {
 #ifdef PS2HOST_VULKAN
     std::string narrow;
     for (const wchar_t* p = title; *p; ++p) narrow += char(*p < 128 ? *p : '?');
+    if (!GameTitle().empty()) narrow = GameTitle();
     g_title = narrow;
     std::string error;
     g_display = ps2gpu::CreateVulkanDisplay(narrow.c_str(), width, height, &error);
     if (g_display) {
         Note("window", "window: Vulkan on " + g_display->Describe());
         if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
+        ApplyCursorArt();
         if (SettingOn("vsync")) g_display->SetVsync(true);
         g_display->SetAspect(SettingAspect());
         return true;
@@ -183,6 +194,57 @@ void HostRumble(u8 large, u8 small) {
     if (g_display) g_display->SetRumble(u16(large * 257), u16(small * 257));
 #else
     (void)large, (void)small;
+#endif
+}
+
+bool TakeHostMouse(HostMouseState* state) {
+    if (ScriptedMouse(state)) return true;      // --mouse
+#ifdef PS2HOST_VULKAN
+    ps2gpu::Display::MouseState m;
+    if (g_display && g_display->TakeMouse(&m)) {
+        state->over = m.over;
+        state->x = m.x;
+        state->y = m.y;
+        state->held = m.held;
+        state->pressed = m.pressed;
+        state->wheel = m.wheel;
+        state->moved = m.moved;
+        return true;
+    }
+#endif
+    (void)state;
+    return false;
+}
+
+// The game's pointer (SetHostCursor), kept for a window opened after it is set.
+struct CursorArt {
+    std::vector<u32> rgba;
+    u32 width = 0, height = 0, hot_x = 0, hot_y = 0;
+};
+CursorArt& TheCursorArt() {
+    static CursorArt art;
+    return art;
+}
+
+void ApplyCursorArt() {
+#ifdef PS2HOST_VULKAN
+    const CursorArt& a = TheCursorArt();
+    if (g_display && !a.rgba.empty())
+        g_display->SetCursorArt(std::vector<std::uint32_t>(a.rgba.begin(), a.rgba.end()), a.width, a.height,
+                                a.hot_x, a.hot_y);
+#endif
+}
+
+void SetHostCursor(const u32* rgba, u32 width, u32 height, u32 hot_x, u32 hot_y) {
+    TheCursorArt() = CursorArt{std::vector<u32>(rgba, rgba + std::size_t(width) * height), width, height, hot_x, hot_y};
+    ApplyCursorArt();
+}
+
+void ShowHostCursor(bool on) {
+#ifdef PS2HOST_VULKAN
+    if (g_display) g_display->ShowGameCursor(on);
+#else
+    (void)on;
 #endif
 }
 

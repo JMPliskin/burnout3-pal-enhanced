@@ -2013,6 +2013,51 @@ Then the GS thread, which the worker fed faster than it could draw:
 The race now runs at 60 for most of a lap; its busiest stretches, at the
 start, at ~52, the worker and the GS thread both near 80% busy.
 
+## The mouse in the menus
+
+The port drives the frontend's menus with the mouse (port/mouse.cpp). What
+it rests on:
+
+* **Words are objects with their place.** The frontend's text and icons are
+  retained objects from its pool (0x001D7580 hands one out, 0x001D7560
+  takes it back), drawn each frame by their method (+0x3C: 0x001D66A0 a
+  legend's words, 0x00382950 a button icon, 0x00371BE0 a message box's
+  words). Each keeps where it is drawn: x, y, width, height as floats at +0
+  to +0xC, the top left of the words in the frontend's 640 x 480 (the
+  picture's 448 lines are its 480); +0x24 is the string. The method is the
+  "object" of the widescreen anchors (`hud.30D6E0.<object>.<cell>`), so the
+  port places a hit box exactly as the picture places the element.
+* **Selectors.** A menu's highlight is a selector: the index, then the
+  count, two u16s. Up and Down are 0x00319360 and 0x00319330 on it (every
+  screen's input calls them; they refuse to go past either end).
+* **Lists** (0x003210D0 sets one up - 0x00321470 is the main menu's
+  geometry for it): the selector's address at +0xC, the entries at +0x10 (a
+  string and a disabled byte at +4, 8 bytes each), the rows' word objects at
+  +0x14 + 4 * row; +0xB0 and +0xB4 the words' size and the highlighted
+  size, +0xB8 the first row's top, rows 2 more than the size apart, +0xBC x.
+  0x00320EB0 draws a row (again when the highlight moves); 0x0031FF80
+  slides the rows in - only while they move, not each frame.
+* **Message boxes**, two kinds: the frontend's (0x0032B2C0 its input each
+  frame it shows, the type at +0x94, button objects at +0x20 + 4 * i) and
+  the driver details screens' (0x00449150, type at +0x90, button objects at
+  +0x38 + 4 * i). Both: +0x0A set while showing, the selector at +0xC, the
+  buttons' strings at +0x10 and +0x18.
+* **The legend** along the bottom (0x01E89800, set by 0x0031ECD0): +0x0A set
+  while the frontend shows (clear in a race: the port's sign that a menu is
+  up); a button's words at +0x1C + 4 * slot and its icon at +0x48 + 4 *
+  slot, the slot the button's - 0 Triangle (Back), 1 Cross (Select,
+  Confirm), 9 Circle (Driver Details on Crash Nav, Color on car select); the
+  D-pad's Change is the pair at +0x94, +0x98.
+
+The mouse moves a highlight as the player would - Up or Down a press at a
+time until the selector shows the row under the pointer - so each screen's
+own input moves it, with its sounds and past rows it skips; a click presses
+Cross once it is there. Screens built otherwise (the keyboard, the map's
+locations, the car carousel) take the wheel (Up, Down), the right button
+(Back) and the legend's buttons. `PS2HOST_MOUSE_PROBE=1` prints every
+selector move and the code making it: the way to a menu the mouse does not
+know yet.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all

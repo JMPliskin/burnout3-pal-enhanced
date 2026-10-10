@@ -108,6 +108,28 @@ public:
        Taken up by the window's own thread (Pump). */
     virtual void SetRumble(std::uint16_t large, std::uint16_t small) { (void)large, (void)small; }
 
+    /* The mouse over the window, in the picture's terms: x and y from 0 to 1
+       across the game's picture as it is shown (inside its letterbox; outside
+       it they go past 0 or 1). `held` the buttons down (bit 0 left, 1 middle,
+       2 right), `pressed` those that went down since the last call, `wheel`
+       the notches turned since (up positive), `moved` whether it moved. */
+    struct MouseState {
+        bool over = false;              // the pointer is in the window
+        float x = 0.0f, y = 0.0f;
+        std::uint32_t held = 0, pressed = 0;
+        float wheel = 0.0f;
+        bool moved = false;
+    };
+    virtual bool TakeMouse(MouseState* state) { (void)state; return false; }
+    /* The game's own mouse pointer: RGBA pixels (rows top-down), the point
+       that clicks at (hot_x, hot_y); scaled with the window. Shown while
+       ShowGameCursor(true) - otherwise the system's (hidden in fullscreen). */
+    virtual void SetCursorArt(std::vector<std::uint32_t> rgba, std::uint32_t width, std::uint32_t height,
+                              std::uint32_t hot_x, std::uint32_t hot_y) {
+        (void)rgba, (void)width, (void)height, (void)hot_x, (void)hot_y;
+    }
+    virtual void ShowGameCursor(bool on) { (void)on; }
+
     /* The GPU and driver, for the report. */
     virtual std::string Describe() const = 0;
 

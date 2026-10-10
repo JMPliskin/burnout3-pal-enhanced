@@ -157,6 +157,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "This build needs a processor with AVX2 (Intel Haswell, AMD Excavator or later).\n");
         return 70;
     }
+#ifdef PS2HOST_GAME_TITLE
+    ps2host::SetGameTitle(PS2HOST_GAME_TITLE);      // the window's (game.json's "title")
+#endif
     ps2host::RegisterFunctions(kGuestFunctions, kGuestFunctionCount);
     RegisterGameOverrides();
     const int code = ps2host::Main(argc, argv);
@@ -164,7 +167,8 @@ int main(int argc, char** argv) {
         std::fflush(nullptr);
         const std::string text = "The game stopped because of an error. What happened is in " +
                                  g_log + ", beside the game.";
-        MessageBoxA(nullptr, text.c_str(), "PS2 port", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, text.c_str(), ps2host::GameTitle().empty() ? "PS2 port" : ps2host::GameTitle().c_str(),
+                    MB_OK | MB_ICONERROR);
     }
     // What must be finished is (the report written, the settings and the
     // memory card saved as they changed, the WAV's header here); the rest -

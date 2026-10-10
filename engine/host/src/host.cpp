@@ -550,7 +550,7 @@ int Run(const Options& options) {
         }
         LoadSettings((where / "pc_settings.ini").string());
     }
-    if (options.window) OpenWindow(L"PS2 port", 1280, 896);
+    if (options.window) OpenWindow(L"PS2 port", 1280, 896);      // or the game's title (SetGameTitle)
     iop::SetTrace(options.iop_trace);
     gs::TheGs().trace = options.gs_trace;
     SetGsTraceFrame(options.gs_trace_frame);
@@ -690,6 +690,9 @@ int Main(int argc, char** argv) {
                 const u64 to = dash == std::string::npos ? from + 5 : std::stoull(when.substr(dash + 1));
                 options.presses.push_back({spec.substr(0, at), from, to});
             }
+        }
+        else if (arg == "--mouse" && i + 1 < argc) {
+            if (!ScriptMouse(argv[++i])) std::fprintf(stderr, "--mouse %s: FRAME:X,Y[,L|R|U|D]\n", argv[i]);
         }
         else if (arg == "--frames" && i + 1 < argc) options.frames_dir = argv[++i];
         else if (arg == "--frames-every" && i + 1 < argc) options.frames_every = std::stoi(argv[++i]);

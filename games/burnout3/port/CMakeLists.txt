@@ -14,4 +14,5 @@ ps2_add_port(burnout3
     TRANSLATED ${CMAKE_CURRENT_LIST_DIR}/../src/lifted
     SOURCES ${CMAKE_CURRENT_LIST_DIR}/overrides.cpp
             ${CMAKE_CURRENT_LIST_DIR}/iop_servers.cpp
-            ${CMAKE_CURRENT_LIST_DIR}/widescreen.cpp)
+            ${CMAKE_CURRENT_LIST_DIR}/widescreen.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/mouse.cpp)

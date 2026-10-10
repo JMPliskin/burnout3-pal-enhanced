@@ -245,6 +245,10 @@ void SetGsDumpFrame(long long frame);
 void FrameDone(u64 frame);
 /* The window (window.cpp): opened with --window, presented each frame. */
 bool OpenWindow(const wchar_t* title, int width, int height);
+/* The game's name, for the window's title (instead of the host's own, "PS2
+   port"): set before the window opens. */
+void SetGameTitle(const std::string& title);
+const std::string& GameTitle();
 bool WindowOpen();
 bool WindowClosed();
 void PresentFrame();
@@ -288,6 +292,24 @@ struct HostPadState {
     u8 l2 = 0, r2 = 0;
 };
 bool HostPad(HostPadState* state);
+/* The mouse over the window (window.cpp), in the picture's terms: x and y
+   from 0 to 1 across the game's picture as shown (past them outside it);
+   `held` the buttons down (bit 0 left, 1 middle, 2 right), and since the last
+   call `pressed` those that went down, `wheel` the notches turned (up
+   positive), `moved` whether it moved. False without a window that has one. */
+struct HostMouseState {
+    bool over = false;
+    float x = 0.0f, y = 0.0f;
+    u32 held = 0, pressed = 0;
+    float wheel = 0.0f;
+    bool moved = false;
+};
+bool TakeHostMouse(HostMouseState* state);
+/* The game's own pointer (RGBA pixels, rows top-down, clicking at hot_x,
+   hot_y), scaled with the window; shown while ShowHostCursor(true), the
+   system's otherwise (hidden in fullscreen). */
+void SetHostCursor(const u32* rgba, u32 width, u32 height, u32 hot_x, u32 hot_y);
+void ShowHostCursor(bool on);
 /* The window's controller's motors, as a DualShock 2's: the large one 0-255,
    the small one 0-255 (a DualShock 2's is on or off: 0 or 255). */
 void HostRumble(u8 large, u8 small);
@@ -297,8 +319,17 @@ void DbcFrame();
    libpad's order - 3 is Start): the keyboard, the game controller and
    --press together. For hooks that act on a button as the game would. */
 u16 PadButtonsHeld();
+/* A game's own input, as DualShock 2 buttons held (bit n: input n), asked for
+   each time the pad is read (once a frame, on the EE's thread, at the
+   vertical blank): what the mouse means, say. */
+void SetPadHook(u16 (*hook)());
 /* --press: hold `button` (cross, start, up, ...) for 6 frames from `frame`. */
 bool ScriptPress(const std::string& button, u64 from, u64 to);
+/* --mouse FRAME:X,Y[,L|R|U|D]: the mouse at (X, Y) of the picture (0 to 1)
+   from that frame - and its left or right button clicked, or the wheel
+   turned up or down, then. With any, the window's own mouse is not read. */
+bool ScriptMouse(const std::string& spec);
+bool ScriptedMouse(HostMouseState* state);
 /* Real time: vertical blanks that came while the last was still undelivered (threads.cpp). */
 u64 LostVblanks();
 /* Real time: how long the EE has slept with every thread waiting - its

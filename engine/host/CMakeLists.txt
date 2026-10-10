@@ -115,7 +115,12 @@ function(ps2_add_port target)
         file(READ ${game_dir}/game.json game_json)
         string(JSON game_name GET ${game_json} name)
         string(JSON game_executable GET ${game_json} executable)
+        string(JSON game_title ERROR_VARIABLE no_title GET ${game_json} title)
+        if(no_title)
+            set(game_title ${game_name})
+        endif()
         target_compile_definitions(${target} PRIVATE PS2HOST_GAME_NAME="${game_name}"
+                                                     PS2HOST_GAME_TITLE="${game_title}"
                                                      PS2HOST_GAME_EXECUTABLE="${game_executable}")
         target_link_libraries(${target} PRIVATE comdlg32)
         if(MSVC)

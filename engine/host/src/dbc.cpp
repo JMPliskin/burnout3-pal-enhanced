@@ -105,6 +105,7 @@ std::vector<Press>& Script() {
 }
 u64 g_frame = 0;
 u16 g_held = 0;                     // PadButtonsHeld
+u16 (*g_pad_hook)() = nullptr;      // SetPadHook
 
 void PadData(u8* data) {
     u16 buttons = 0xFFFF;                                   // active low: nothing pressed
@@ -115,6 +116,7 @@ void PadData(u8* data) {
     HostPadState pad;
     const bool controller = HostPad(&pad);
     buttons &= u16(~pad.buttons);
+    if (g_pad_hook) buttons &= u16(~g_pad_hook());
     g_held = u16(~buttons);
     data[0] = u8(buttons);
     data[1] = u8(buttons >> 8);
@@ -260,5 +262,51 @@ void InstallDbc() {
 }
 
 u16 PadButtonsHeld() { return g_held; }
+
+void SetPadHook(u16 (*hook)()) { g_pad_hook = hook; }
+
+namespace {
+struct MouseStep {
+    u64 frame;
+    float x, y;
+    char action;            // 'L', 'R', 'U', 'D' or 0
+};
+std::vector<MouseStep>& MouseScript() {
+    static std::vector<MouseStep> steps;
+    return steps;
+}
+}  // namespace
+
+bool ScriptMouse(const std::string& spec) {
+    MouseStep step{};
+    char action[2] = {};
+    const int n = std::sscanf(spec.c_str(), "%llu:%f,%f,%1[LRUD]", reinterpret_cast<unsigned long long*>(&step.frame),
+                              &step.x, &step.y, action);
+    if (n < 3) return false;
+    step.action = action[0];
+    MouseScript().push_back(step);
+    std::sort(MouseScript().begin(), MouseScript().end(),
+              [](const MouseStep& a, const MouseStep& b) { return a.frame < b.frame; });
+    return true;
+}
+
+bool ScriptedMouse(HostMouseState* state) {
+    if (MouseScript().empty()) return false;
+    *state = HostMouseState{};
+    for (const MouseStep& s : MouseScript()) {
+        if (s.frame > g_frame) break;
+        state->over = true;
+        state->x = s.x;
+        state->y = s.y;
+        if (s.frame == g_frame) {
+            state->moved = true;
+            if (s.action == 'L') state->pressed |= 1;
+            if (s.action == 'R') state->pressed |= 4;
+            if (s.action == 'U') state->wheel += 1.0f;
+            if (s.action == 'D') state->wheel -= 1.0f;
+        }
+    }
+    return true;
+}
 
 }  // namespace ps2host

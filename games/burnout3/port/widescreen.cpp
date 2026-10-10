@@ -608,12 +608,33 @@ void Sprites2D(lifted::Context& c) {
    clock): not run while the HUD editor holds the race still. Its picture
    is drawn apart (0x00134A20), so the race stands, drawn - the HUD's
    placing seen as it changes. */
+unsigned long long g_race_world_calls = 0;
+
 void RaceWorld(lifted::Context& c) {
+    ++g_race_world_calls;
     if (g_editor.on && g_editor.paused) return;
     F_0019A550(c);
 }
 
 }  // namespace
+
+/* Where a frontend element's x is in the picture (640 wide, as the 4:3 one):
+   brought in towards the middle in a wider one, or to the edge it is
+   anchored to - the element by its object (the function drawing it, a
+   frontend object's +0x3C) on a frontend screen (0x0030D6E0) and the cell
+   its middle (cx, cy, in the 640 x 448 picture) is in, as Flush2D and
+   Sprites2D place it. For the mouse (mouse.cpp). */
+float FrontendPlace(u32 object, float x, float cx, float cy) {
+    ElementId id;
+    id.context = 0x0030D6E0u;
+    id.object = object;
+    CellOf(cx, cy, id.cell);
+    return Place(x, 320.0f, 320.0f, Squeeze(), AnchorOf(id));
+}
+
+/* How many times the race's world has been updated (the mouse: no pointer in
+   a race). */
+unsigned long long RaceWorldCalls() { return g_race_world_calls; }
 
 void RegisterWidescreen() {
     ps2host::Override(0x0019A550u, RaceWorld, "the race's world each frame: held still by the HUD editor (P)");

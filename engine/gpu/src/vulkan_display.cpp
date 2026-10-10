@@ -120,7 +120,42 @@ public:
     void SetRumble(std::uint16_t large, std::uint16_t small) override {
         rumble_.store(std::uint32_t(large) << 16 | small);
     }
+    bool TakeMouse(MouseState* state) override {
+        std::lock_guard<std::mutex> hold(mouse_lock_);
+        *state = mouse_;
+        mouse_.pressed = 0;
+        mouse_.wheel = 0.0f;
+        mouse_.moved = false;
+        return true;
+    }
+    void SetCursorArt(std::vector<std::uint32_t> rgba, std::uint32_t width, std::uint32_t height,
+                      std::uint32_t hot_x, std::uint32_t hot_y) override {
+        std::lock_guard<std::mutex> hold(mouse_lock_);
+        cursor_art_ = std::move(rgba);
+        cursor_width_ = width;
+        cursor_height_ = height;
+        cursor_hot_x_ = hot_x;
+        cursor_hot_y_ = hot_y;
+        cursor_size_ = 0;                   // made again at the window's size
+    }
+    void ShowGameCursor(bool on) override { cursor_wanted_.store(on); }
 private:
+    // The mouse (TakeMouse), from the window's events; the picture's place in
+    // the window, in pixels, as the last present put it.
+    std::mutex mouse_lock_;
+    MouseState mouse_;
+    float mouse_px_ = 0.0f, mouse_py_ = 0.0f;   // the pointer, in the window's pixels
+    std::atomic<std::int32_t> shown_x0_{0}, shown_y0_{0}, shown_w_{1}, shown_h_{1};
+    void MouseAt(float x, float y);
+    // The game's pointer: its art, and the cursor made from it at a size.
+    std::vector<std::uint32_t> cursor_art_;
+    std::uint32_t cursor_width_ = 0, cursor_height_ = 0, cursor_hot_x_ = 0, cursor_hot_y_ = 0;
+    std::uint32_t cursor_size_ = 0;
+    SDL_Cursor* cursor_ = nullptr;
+    std::atomic<bool> cursor_wanted_{false};
+    int cursor_showing_ = -1;               // what the window shows: -1 not yet set, 0 the system's, 1 the game's
+    bool fullscreen_cursor_stale_ = false;
+    void UpdateCursor();
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice gpu_ = VK_NULL_HANDLE;
@@ -600,6 +635,10 @@ bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint
         else dh = std::int32_t(float(w) / aspect + 0.5f);
     }
     const std::int32_t x0 = (w - dw) / 2, y0 = (h - dh) / 2;
+    shown_x0_.store(x0);
+    shown_y0_.store(y0);
+    shown_w_.store(std::max(dw, 1));
+    shown_h_.store(std::max(dh, 1));
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.srcOffsets[1] = {std::int32_t(width), std::int32_t(height), 1};
@@ -936,8 +975,9 @@ void VulkanDisplay::SetFullscreen(bool on) {
                          double(mode->refresh_rate));
     }
     SDL_SetWindowFullscreen(window_, on);
-    SDL_ShowCursor();
-    if (on) SDL_HideCursor();
+    fullscreen_cursor_stale_ = true;        // the system's pointer: hidden in fullscreen (UpdateCursor)
+    cursor_showing_ = -1;
+    UpdateCursor();
     stale_ = true;
 }
 
@@ -975,6 +1015,32 @@ bool VulkanDisplay::Pump() {
             SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_LEFT_STICK) &&
             SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_RIGHT_STICK))
             capture_ = true;
+        if (e.type == SDL_EVENT_MOUSE_MOTION) MouseAt(e.motion.x, e.motion.y);
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+            MouseAt(e.button.x, e.button.y);
+            const int bit = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_MIDDLE ? 1
+                          : e.button.button == SDL_BUTTON_RIGHT ? 2 : -1;
+            std::lock_guard<std::mutex> hold(mouse_lock_);
+            if (bit >= 0 && e.button.down) {
+                mouse_.held |= 1u << bit;
+                mouse_.pressed |= 1u << bit;
+            } else if (bit >= 0) {
+                mouse_.held &= ~(1u << bit);
+            }
+        }
+        if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+            std::lock_guard<std::mutex> hold(mouse_lock_);
+            mouse_.wheel += e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y;
+        }
+        if (e.type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
+            std::lock_guard<std::mutex> hold(mouse_lock_);
+            mouse_.over = false;
+            mouse_.held = 0;
+        }
+        if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+            std::lock_guard<std::mutex> hold(mouse_lock_);
+            mouse_.held = 0;
+        }
         if (e.type == SDL_EVENT_GAMEPAD_ADDED && !gamepad_) {
             gamepad_ = SDL_OpenGamepad(e.gdevice.which);
             if (gamepad_) std::fprintf(stderr, "[window] controller: %s\n", SDL_GetGamepadName(gamepad_));
@@ -985,7 +1051,90 @@ bool VulkanDisplay::Pump() {
             gamepad_ = nullptr;
         }
     }
+    UpdateCursor();
     return !closed_;
+}
+
+/* The pointer at (x, y), in the window's own units (points): in pixels, then
+   across the picture as shown. */
+void VulkanDisplay::MouseAt(float x, float y) {
+    const float density = window_ ? SDL_GetWindowPixelDensity(window_) : 1.0f;
+    const float px = x * (density > 0.0f ? density : 1.0f), py = y * (density > 0.0f ? density : 1.0f);
+    std::lock_guard<std::mutex> hold(mouse_lock_);
+    if (px != mouse_px_ || py != mouse_py_ || !mouse_.over) mouse_.moved = true;
+    mouse_px_ = px;
+    mouse_py_ = py;
+    mouse_.over = true;
+    mouse_.x = (px - float(shown_x0_.load())) / float(shown_w_.load());
+    mouse_.y = (py - float(shown_y0_.load())) / float(shown_h_.load());
+}
+
+/* The window's pointer: the game's, at a size that goes with the picture's
+   (its art's height a thirteenth of the picture's), while the game wants it;
+   otherwise the system's - hidden in fullscreen. */
+void VulkanDisplay::UpdateCursor() {
+    if (!window_) return;
+    const bool want = cursor_wanted_.load();
+    std::uint32_t size = std::uint32_t(float(shown_h_.load()) / 13.0f + 0.5f);
+    size = std::clamp<std::uint32_t>(size, 24, 192);
+    if (want) {
+        std::lock_guard<std::mutex> hold(mouse_lock_);
+        if (!cursor_art_.empty() && (!cursor_ || cursor_size_ != size)) {
+            // The art resampled to `size` (bilinear, by premultiplied colour).
+            const std::uint32_t w = size, h = std::uint32_t(float(size) * float(cursor_height_) /
+                                                            float(cursor_width_) + 0.5f);
+            SDL_Surface* surface = SDL_CreateSurface(int(w), int(h), SDL_PIXELFORMAT_RGBA32);
+            if (surface) {
+                for (std::uint32_t y = 0; y < h; ++y) {
+                    auto* row = reinterpret_cast<std::uint8_t*>(surface->pixels) + std::size_t(y) * surface->pitch;
+                    for (std::uint32_t x = 0; x < w; ++x) {
+                        const float sx = (float(x) + 0.5f) * float(cursor_width_) / float(w) - 0.5f;
+                        const float sy = (float(y) + 0.5f) * float(cursor_height_) / float(h) - 0.5f;
+                        const int x0 = int(std::floor(sx)), y0 = int(std::floor(sy));
+                        const float fx = sx - float(x0), fy = sy - float(y0);
+                        float sum[4] = {};
+                        for (int k = 0; k < 4; ++k) {
+                            const int ix = std::clamp(x0 + (k & 1), 0, int(cursor_width_) - 1);
+                            const int iy = std::clamp(y0 + (k >> 1), 0, int(cursor_height_) - 1);
+                            const float weight = ((k & 1) ? fx : 1.0f - fx) * ((k >> 1) ? fy : 1.0f - fy);
+                            const std::uint32_t p = cursor_art_[std::size_t(iy) * cursor_width_ + ix];
+                            const float a = float(p >> 24) / 255.0f;
+                            sum[0] += weight * float(p & 0xFF) * a;
+                            sum[1] += weight * float((p >> 8) & 0xFF) * a;
+                            sum[2] += weight * float((p >> 16) & 0xFF) * a;
+                            sum[3] += weight * a;
+                        }
+                        const float a = sum[3];
+                        row[4 * x + 0] = std::uint8_t(a > 0.0f ? std::min(255.0f, sum[0] / a + 0.5f) : 0.0f);
+                        row[4 * x + 1] = std::uint8_t(a > 0.0f ? std::min(255.0f, sum[1] / a + 0.5f) : 0.0f);
+                        row[4 * x + 2] = std::uint8_t(a > 0.0f ? std::min(255.0f, sum[2] / a + 0.5f) : 0.0f);
+                        row[4 * x + 3] = std::uint8_t(std::min(255.0f, a * 255.0f + 0.5f));
+                    }
+                }
+                SDL_Cursor* made = SDL_CreateColorCursor(surface, int(float(cursor_hot_x_) * float(w) / float(cursor_width_)),
+                                                         int(float(cursor_hot_y_) * float(h) / float(cursor_height_)));
+                SDL_DestroySurface(surface);
+                if (made) {
+                    if (cursor_showing_ == 1) SDL_SetCursor(made);
+                    if (cursor_) SDL_DestroyCursor(cursor_);
+                    cursor_ = made;
+                    cursor_size_ = size;
+                }
+            }
+        }
+    }
+    const int showing = want && cursor_ ? 1 : 0;
+    if (showing == cursor_showing_ && !(showing == 0 && fullscreen_cursor_stale_)) return;
+    cursor_showing_ = showing;
+    fullscreen_cursor_stale_ = false;
+    if (showing) {
+        SDL_SetCursor(cursor_);
+        SDL_ShowCursor();
+    } else {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        if (Fullscreen()) SDL_HideCursor();
+        else SDL_ShowCursor();
+    }
 }
 
 bool VulkanDisplay::Pad(PadState* state) const {
