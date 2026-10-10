@@ -8,6 +8,7 @@
 #include "ps2rt/vu_math.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <xmmintrin.h>
 
@@ -200,11 +201,15 @@ void RunFmac(Context& c, const FmacOp& f) {
 /* The VU's float arithmetic rounds toward zero and flushes denormals: the
    host's SSE control word set so for an instruction, as ps2host's Vu::Run sets
    it for a microprogram (VuRounding) - macro mode is the same VU0, called from
-   EE code, which runs with the host's default (to nearest). */
+   EE code, which runs with the host's default (to nearest).
+   PS2RT_EE_ROUND_NEAREST=1 leaves it to nearest, as emu.py's interpreter
+   (eefpu.cpp: what verification compares against). */
+const bool kMacroNearest = std::getenv("PS2RT_EE_ROUND_NEAREST") != nullptr;
+
 struct MacroRounding {
     unsigned saved = _mm_getcsr();
-    MacroRounding() { _mm_setcsr((saved & ~0x6000u) | 0x6000u | 0x8000u | 0x0040u); }
-    ~MacroRounding() { _mm_setcsr(saved); }
+    MacroRounding() { if (!kMacroNearest) _mm_setcsr((saved & ~0x6000u) | 0x6000u | 0x8000u | 0x0040u); }
+    ~MacroRounding() { if (!kMacroNearest) _mm_setcsr(saved); }
 };
 
 void Cop2(Context& c, u32 word) {

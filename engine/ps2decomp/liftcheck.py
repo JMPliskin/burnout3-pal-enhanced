@@ -15,6 +15,12 @@ import os
 import re
 import subprocess
 
+# The runtime rounds floats as the console does (toward zero, denormals
+# flushed: eefpu.cpp, vu0.cpp); the interpreter it is compared against rounds
+# to nearest. Verification checks the translation, not the FPU model: the
+# compiled code runs in the interpreter's mode. Set before any harness loads.
+os.environ["PS2RT_EE_ROUND_NEAREST"] = "1"
+
 from . import cppcheck, layout, vu0
 from .emu import SYSCALL_RESULTS, EmulationError, ExecutionLimit, RETURN_SENTINEL
 
