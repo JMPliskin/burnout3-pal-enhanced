@@ -4,13 +4,19 @@
  */
 
 #include <cstdio>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <commdlg.h>
 
+#include "ps2host/disc.h"
 #include "ps2host/host.h"
 #include "ps2host/run.h"
+#include "ps2host/settings.h"
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
@@ -43,9 +49,75 @@ bool HasAvx2() {
 #endif
 }
 
+#ifdef PS2HOST_GAME_EXECUTABLE
+/* Whether `path` is an image of the game's disc: the executable it boots is
+   the one the port was translated from (game.json's). */
+bool IsGameDisc(const std::string& path) {
+    ps2host::Disc disc;
+    if (!disc.Open(path)) return false;
+    std::string boot = disc.BootPath();
+    const std::size_t semicolon = boot.find(';');
+    if (semicolon != std::string::npos) boot.resize(semicolon);
+    while (!boot.empty() && (boot[0] == '\\' || boot[0] == '/')) boot.erase(0, 1);
+    return _stricmp(boot.c_str(), PS2HOST_GAME_EXECUTABLE) == 0;
+}
+
+/* The player's disc image, from a file dialog; "" if they cancel. */
+std::string PickDisc() {
+    char file[MAX_PATH] = {};
+    OPENFILENAMEA dialog = {};
+    dialog.lStructSize = sizeof dialog;
+    dialog.lpstrFilter = "Disc images (*.iso)\0*.iso\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrTitle = "Choose your " PS2HOST_GAME_NAME " disc image";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+    return GetOpenFileNameA(&dialog) ? std::string(file) : std::string();
+}
+#endif
+
+/* Started without arguments - from Explorer, a shortcut - the port plays its
+   game from the player's own disc image: the one chosen before (kept in the
+   PC settings, beside the executable), or asked for and checked to be the
+   game's disc; the memory card a directory beside it too. On the GPU, with no
+   time limit (the default is for test runs).
+   An empty list: the player gave none. */
+std::vector<std::string> PlayArguments(const char* self) {
+#ifdef PS2HOST_GAME_EXECUTABLE
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::filesystem::path here = std::filesystem::path(exe).parent_path();
+    ps2host::LoadSettings((here / "pc_settings.ini").string());     // where --memcard puts them
+    std::string disc = ps2host::Setting("disc");
+    while (!IsGameDisc(disc)) {
+        if (!disc.empty() && GetFileAttributesA(disc.c_str()) != INVALID_FILE_ATTRIBUTES)
+            MessageBoxA(nullptr, ("This is not an image of the " PS2HOST_GAME_NAME " disc "
+                                  "(" PS2HOST_GAME_EXECUTABLE "):\n\n" + disc).c_str(),
+                        PS2HOST_GAME_NAME, MB_OK | MB_ICONWARNING);
+        disc = PickDisc();
+        if (disc.empty()) return {};
+    }
+    if (disc != ps2host::Setting("disc")) ps2host::SetSetting("disc", disc);
+    return {self, "--disc", disc, "--memcard", (here / "memcard").string(), "--gpu",
+            "--timeout", "315360000"};     // ten years
+#else
+    return {self};
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::vector<std::string> play;
+    std::vector<char*> play_argv;
+    if (argc == 1) {
+        play = PlayArguments(argv[0]);
+        if (play.empty()) return 0;
+        for (std::string& arg : play) play_argv.push_back(arg.data());
+        play_argv.push_back(nullptr);
+        argc = int(play.size());
+        argv = play_argv.data();
+    }
     if (!HasAvx2()) {
         std::fprintf(stderr, "This build needs a processor with AVX2 (Intel Haswell, AMD Excavator or later).\n");
         return 70;

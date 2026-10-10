@@ -9,6 +9,7 @@ set(PS2_GENERATED_DIR "" CACHE PATH "dispatch.cpp, from engine/tools/port.py")
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../../engine/host ${CMAKE_BINARY_DIR}/ps2host)
 
 ps2_add_port(burnout3
+    GAME ${CMAKE_CURRENT_LIST_DIR}/..
     GENERATED ${PS2_GENERATED_DIR}
     TRANSLATED ${CMAKE_CURRENT_LIST_DIR}/../src/lifted
     SOURCES ${CMAKE_CURRENT_LIST_DIR}/overrides.cpp

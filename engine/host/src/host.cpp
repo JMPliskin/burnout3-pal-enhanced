@@ -357,10 +357,7 @@ void Dispatch(lifted::Context& c, u32 address) {
 namespace {
 
 // ELF32 little-endian, the PS2's executable format: load every PT_LOAD segment.
-u32 LoadElf(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) throw Unimplemented{"cannot open the executable " + path};
-    std::vector<u8> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+u32 LoadElf(const std::string& path, std::vector<u8> data) {
     auto u16at = [&](std::size_t at) { u16 v; std::memcpy(&v, &data.at(at + 1) - 1, 2); return v; };
     auto u32at = [&](std::size_t at) { u32 v; std::memcpy(&v, &data.at(at + 3) - 3, 4); return v; };
     if (data.size() < 52 || std::memcmp(data.data(), "\x7F" "ELF", 4) != 0)
@@ -385,6 +382,22 @@ u32 LoadElf(const std::string& path) {
         }
     }
     return entry;
+}
+
+u32 LoadElf(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw Unimplemented{"cannot open the executable " + path};
+    return LoadElf(path, std::vector<u8>((std::istreambuf_iterator<char>(file)),
+                                         std::istreambuf_iterator<char>()));
+}
+
+// No executable named: the one the disc boots (SYSTEM.CNF), read from it.
+u32 LoadBootElf() {
+    const std::string boot = GuestDisc().BootPath();
+    std::vector<u8> data;
+    if (boot.empty() || !GuestDisc().ReadFile(boot, &data))
+        throw Unimplemented{"the disc image has no executable to boot (SYSTEM.CNF)"};
+    return LoadElf(boot, std::move(data));
 }
 
 void Report(const Options& options, const std::string& outcome) {
@@ -521,7 +534,10 @@ int Run(const Options& options) {
     SetCheckGuesses(options.check_guesses);
     if (!options.vu_snapshot.empty())
         Vu::Snapshots(options.vu_snapshot, u64(options.vu_snapshot_from), options.vu_snapshot_count);
-    {
+    // A scripted run (--virtual-time) draws the same pictures every time: not
+    // with the settings a player keeps beside the executable - the defaults,
+    // unless it brings a memory card (and so settings) of its own.
+    if (!options.virtual_time || !options.memcard.empty()) {
         // The PC settings: beside the memory card (its directory's parent),
         // or the executable, so they go where the player's saves go.
         std::filesystem::path where;
@@ -583,7 +599,7 @@ int Run(const Options& options) {
     try {
         if (!options.disc_path.empty() && !GuestDisc().Open(options.disc_path))
             throw Unimplemented{"cannot open the disc image " + options.disc_path};
-        const u32 entry = LoadElf(options.elf_path);
+        const u32 entry = options.elf_path.empty() ? LoadBootElf() : LoadElf(options.elf_path);
         // The kernel enters a program with a stack at the top of RAM; the program's
         // own start-up code then asks for its real one (SetupThread).
         c.r[29] = kRdramSize - 0x10;
@@ -707,8 +723,8 @@ int Main(int argc, char** argv) {
         if (options.sample) std::printf("%s", SampleReport().c_str());
         return status;
     }
-    if (options.elf_path.empty()) {
-        std::fprintf(stderr, "usage: %s <executable from the game disc> [--trace] [--notes] [--watch addr] [--peek addr] "
+    if (options.elf_path.empty() && options.disc_path.empty()) {
+        std::fprintf(stderr, "usage: %s <executable from the game disc> | --disc <image> [--trace] [--notes] [--watch addr] [--peek addr] "
                              "[--budget N] [--limit N] [--timeout seconds]\n", argv[0]);
         return 64;
     }

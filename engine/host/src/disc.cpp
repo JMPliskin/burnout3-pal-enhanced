@@ -95,6 +95,39 @@ bool Disc::Find(const std::string& path, File* out) {
     return true;
 }
 
+bool Disc::ReadFile(const std::string& path, std::vector<u8>* out) {
+    File file;
+    if (!Find(path, &file)) return false;
+    out->assign(size_t(file.size + kSectorSize - 1) / kSectorSize * kSectorSize, 0);
+    if (!Read(file.lsn, u32(out->size() / kSectorSize), out->data())) return false;
+    out->resize(file.size);
+    return true;
+}
+
+std::string Disc::BootPath() {
+    std::vector<u8> cnf;
+    if (!ReadFile("SYSTEM.CNF", &cnf)) return "";
+    const std::string text(cnf.begin(), cnf.end());
+    for (std::size_t at = 0; at < text.size();) {
+        std::size_t end = text.find_first_of("\r\n", at);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = text.substr(at, end - at);
+        at = end + 1;
+        // BOOT2 = cdrom0:\SLUS_210.50;1
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        std::string key = line.substr(0, equals);
+        key.erase(key.find_last_not_of(" \t") + 1);
+        if (Upper(key) != "BOOT2") continue;
+        std::string value = line.substr(equals + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(value.find_last_not_of(" \t") + 1);
+        const std::size_t colon = value.find(':');
+        return colon == std::string::npos ? value : value.substr(colon + 1);
+    }
+    return "";
+}
+
 Disc& GuestDisc() {
     static Disc disc;
     return disc;

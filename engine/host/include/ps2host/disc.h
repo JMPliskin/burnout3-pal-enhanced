@@ -38,6 +38,11 @@ public:
     /* Look a path up - "\\DATA\\CARS.BIN;1" as the SDK writes it; separators may
        be either slash, the version suffix is optional, case does not matter. */
     bool Find(const std::string& path, File* out);
+    /* A whole file's bytes (a path as Find takes it); false if it is not there. */
+    bool ReadFile(const std::string& path, std::vector<u8>* out);
+    /* The executable the console boots: SYSTEM.CNF's BOOT2 line, as a path on
+       the disc ("\\SLUS_210.50;1"); "" when the image has none (not a PS2 disc). */
+    std::string BootPath();
 
 private:
     std::FILE* file_ = nullptr;

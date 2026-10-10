@@ -75,6 +75,16 @@ Options for finding out why boot stops, passed after `run --`:
 
 The guest's own debug output (`kputs`) appears as `[guest]` lines.
 
+With `--disc` and no executable, the port boots the one the disc names
+(SYSTEM.CNF's `BOOT2`), read from the image. Started with no arguments at
+all - from Explorer, or a shortcut - a port built with `ps2_add_port(... GAME
+<dir>)` plays: it asks for the player's own disc image the first time (a file
+dialog, checked to be the disc game.json's executable comes from), remembers
+it in `pc_settings.ini` beside the executable, and runs on the GPU with a
+memory card in `memcard/` there and no time limit. A `--virtual-time` run
+without `--memcard` leaves the player's settings alone and uses the defaults,
+so its pictures stay as recorded.
+
 `port.py` generates `build/port/generated/dispatch.cpp` (every translated
 function by address, with names from `config/names.csv`), builds `port/` with
 the CMake and Ninja that ship with Visual Studio, and runs the result on the

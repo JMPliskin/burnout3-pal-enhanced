@@ -93,9 +93,13 @@ target_include_directories(ps2host_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 # ps2_add_port(<target>
 #     GENERATED <dir with dispatch.cpp from engine/tools/port.py>
 #     TRANSLATED <dir with the game's translated sources (src/lifted)>
-#     SOURCES <the game's own sources: overrides, enhancements>)
+#     SOURCES <the game's own sources: overrides, enhancements>
+#     GAME <the game's directory, with game.json>)
+# With GAME, the port started without arguments (from Explorer, say) plays the
+# game from the player's own disc image: asked for the first time (and checked
+# to be the disc game.json's executable comes from), remembered after.
 function(ps2_add_port target)
-    cmake_parse_arguments(PORT "" "GENERATED;TRANSLATED" "SOURCES" ${ARGN})
+    cmake_parse_arguments(PORT "" "GENERATED;TRANSLATED;GAME" "SOURCES" ${ARGN})
     file(GLOB translated ${PORT_TRANSLATED}/*.cpp)
     # dispatch.cpp, and discovered.cpp: code found copied at run time, translated.
     file(GLOB generated ${PORT_GENERATED}/*.cpp)
@@ -105,6 +109,16 @@ function(ps2_add_port target)
         ${translated}
         ${PORT_SOURCES})
     target_link_libraries(${target} PRIVATE ps2host)
+    if(PORT_GAME)
+        get_filename_component(game_dir ${PORT_GAME} ABSOLUTE)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${game_dir}/game.json)
+        file(READ ${game_dir}/game.json game_json)
+        string(JSON game_name GET ${game_json} name)
+        string(JSON game_executable GET ${game_json} executable)
+        target_compile_definitions(${target} PRIVATE PS2HOST_GAME_NAME="${game_name}"
+                                                     PS2HOST_GAME_EXECUTABLE="${game_executable}")
+        target_link_libraries(${target} PRIVATE comdlg32)
+    endif()
     if(MSVC)
         # Symbols in the optimised build too, for --sample (profile.cpp): /Z7
         # keeps them in the objects (no PDB contention in parallel builds),
