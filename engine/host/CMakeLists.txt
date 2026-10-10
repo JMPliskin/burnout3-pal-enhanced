@@ -97,7 +97,11 @@ target_include_directories(ps2host_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 #     GAME <the game's directory, with game.json>)
 # With GAME, the port started without arguments (from Explorer, say) plays the
 # game from the player's own disc image: asked for the first time (and checked
-# to be the disc game.json's executable comes from), remembered after.
+# to be the disc game.json's executable comes from), remembered after. And the
+# executable carries the game's icon when there is one, build/port/icon.ico
+# (made from the disc by the game's port/tools/make_icon.py; port.py runs it):
+# the window's and the taskbar's too. The game's project needs the RC
+# language for it.
 function(ps2_add_port target)
     cmake_parse_arguments(PORT "" "GENERATED;TRANSLATED;GAME" "SOURCES" ${ARGN})
     file(GLOB translated ${PORT_TRANSLATED}/*.cpp)
@@ -123,6 +127,14 @@ function(ps2_add_port target)
                                                      PS2HOST_GAME_TITLE="${game_title}"
                                                      PS2HOST_GAME_EXECUTABLE="${game_executable}")
         target_link_libraries(${target} PRIVATE comdlg32)
+        set(icon ${game_dir}/build/port/icon.ico)
+        if(WIN32 AND EXISTS ${icon} AND CMAKE_RC_COMPILER)
+            file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc
+                 CONTENT "1 ICON \"${icon}\"\n")
+            target_sources(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc)
+            set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/${target}_icon.rc PROPERTIES
+                                        OBJECT_DEPENDS ${icon})
+        endif()
         if(MSVC)
             # A windowed program: started from Explorer, no console beside the
             # game (main.cpp attaches to a terminal's when there is one).

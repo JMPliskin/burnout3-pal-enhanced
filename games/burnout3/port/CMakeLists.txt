@@ -2,7 +2,7 @@
 # the dispatch table and drives this file.
 
 cmake_minimum_required(VERSION 3.20)
-project(burnout3_port LANGUAGES CXX)
+project(burnout3_port LANGUAGES CXX RC)     # RC: the icon
 
 set(PS2_GENERATED_DIR "" CACHE PATH "dispatch.cpp, from engine/tools/port.py")
 
