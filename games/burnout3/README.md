@@ -82,9 +82,11 @@ python engine/tools/port.py --game games/burnout3 build
 game.json      files, VU microcode region, memory layout for the tests
 tools/vdb.py   reader for the ValueDB tuning database (DATA/VDB.XML)
 tools/vdbhash.py  the recovered ValueDB name hash
-include/, src/ hand-written reconstructions: string routines, bit utilities,
-               the ValueDB hash, kernel syscall stubs
-src/generated/ derived and verified functions, emitted by the engine
+src/           the game's code in C++, made on your machine from your disc image
+               and never committed: generated/ (derived functions, from
+               derive.py --emit), lifted/ (lift.py --emit), and hand-written
+               reconstructions (string routines, bit utilities, the ValueDB hash)
+include/ps2/   the PS2 kernel's interface
 config/        function status table, syscall table
 tests/         differential tests of the hand-written reconstructions
 docs/          FINDINGS (what the binary revealed), PLAN, PROGRESS

@@ -1,5 +1,34 @@
 # PS2 decompilation by functional reconstruction
 
+**Burnout 3: Takedown, native on Windows.** The first game this toolchain
+was built on now runs as a native PC port: 60 frames a second at up to 4x the
+PS2's resolution, widescreen with an editable HUD, a mouse in the menus,
+controller rumble, PC settings in the game's own menu.
+
+> **Unofficial and fan-made.** Not affiliated with, endorsed or sponsored by
+> Electronic Arts or Criterion Games. You need your own copy of the game: a
+> disc image made from your own Burnout 3: Takedown disc (NTSC-U, SLUS-21050).
+> No game content is in this repository or in the release.
+
+## Playing the PC port
+
+Download `Burnout3-PC-<version>-windows-x64.zip` from
+[Releases](../../releases), unzip it somewhere you can write to, run
+`burnout3.exe` and choose your disc image. It needs Windows 10 or 11 (64-bit),
+a processor with AVX2 and a Vulkan 1.3 graphics driver. The README in the zip
+has the controls, the PC settings and the known issues
+([games/burnout3/port/release/README.txt](games/burnout3/port/release/README.txt)).
+
+This is an **alpha**: please report problems with the `burnout3.log` written
+beside the executable.
+
+To build it yourself, see [engine/docs/PORTING.md](engine/docs/PORTING.md):
+the pipeline below regenerates the game's code from your disc image, then
+`python engine/tools/port.py --game games/burnout3 build`, and
+`python games/burnout3/port/tools/package.py` makes the release zip.
+
+## The toolchain
+
 A toolchain for decompiling PlayStation 2 games into readable C++ when the
 original compiler is unavailable. Byte-matching is not possible without that
 compiler, so this checks **behaviour** instead. An R5900 interpreter runs the
@@ -89,12 +118,25 @@ python -m unittest discover -s games/burnout3/tests   # skips without extracted 
 
 ## Legal
 
-This repository contains **no game code, assets or binaries**. It contains
-original tooling and reverse-engineered documentation. Running it requires a disc
-image you already own. That image, and anything extracted or derived from it, is
-excluded from version control.
+This repository contains **no game assets, no disc images or BIOS files, and
+none of the game's code.** The game's code in C++ - lifted, derived or
+reconstructed - is generated on your own machine from your own disc image by
+the tools here, and is never committed (`.gitignore`). What the repository
+holds is original: the toolchain, the port's engine, the PC features and their
+art (the icon and the mouse pointer are drawn by scripts here), documentation
+of how the game works (addresses, function names, findings), and checksums of
+test pictures.
+
+The Windows release contains the game's program translated to C++ and
+compiled, with no game assets: it reads everything it plays from the player's
+own disc image, and refuses an image that is not the game's disc.
 
 Reverse engineering for interoperability and preservation is protected in many
 jurisdictions. This project follows the conventions of the wider game
-preservation community: it redistributes no copyrighted material and does not
-try to substitute for the commercial product.
+preservation community: it redistributes no game assets and does not try to
+substitute for the commercial product. "Burnout" is a trademark of Electronic
+Arts Inc.
+
+The project's own code is under the MIT licence ([LICENSE](LICENSE)). The port
+is built with SDL 3, volk, glslang and the Vulkan headers, under their own
+licences (the release's THIRD-PARTY-NOTICES.txt).
