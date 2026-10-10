@@ -35,6 +35,18 @@ class TestTidy(unittest.TestCase):
         self.assertEqual(structure.tidy(line), line)
 
 
+class TestFoldConstants(unittest.TestCase):
+    def test_two_steps_are_one_constant_named_by_its_string(self):
+        self.assertEqual(structure.fold_constants(["    v0 = 0x4B0000ull;", "    v0 = Sx32(v0 + 0x1518u);"],
+                                                  {0x4B1518: "exception"}),
+                         ["    v0 = 0x4B0000ull;", '    v0 = 0x004B1518ull;  /* "exception" */'])
+
+    def test_lui_alone_is_not_a_string(self):
+        # A string beginning where lui's half points is no reason to name it.
+        self.assertEqual(structure.fold_constants(["    v0 = 0x4C0000ull;"], {0x4C0000: "Slip Speed"}),
+                         ["    v0 = 0x4C0000ull;"])
+
+
 class TestFoldAddresses(unittest.TestCase):
     def test_memory_address_is_folded(self):
         self.assertEqual(structure.fold_addresses(["    t1 = ReadS32((u32)0x4A0000ull + 0xFFFFB0A0u);"]),
@@ -53,6 +65,10 @@ class TestFoldAddresses(unittest.TestCase):
         self.assertEqual(structure.fold_addresses(["    a0 = Sx32((0x4C0000ull) + 0xFFFF9AD0u);"],
                                                   {0x4B9AD0: "dbcman : SendData2"}),
                          ['    a0 = 0x004B9AD0ull;  /* "dbcman : SendData2" */'])
+        # The upper half alone (lui's, an offset still to come) is no string's
+        # address, even where one begins.
+        self.assertEqual(structure.fold_addresses(["    v0 = 0x4C0000ull;"], {0x4C0000: "Slip Speed"}),
+                         ["    v0 = 0x4C0000ull;"])
 
     def test_a_sum_inside_a_larger_expression_is_kept(self):
         # Only a whole argument folds: here the sum is one operand of more.

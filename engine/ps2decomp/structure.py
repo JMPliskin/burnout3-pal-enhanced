@@ -799,10 +799,10 @@ def fold_constants(lines, strings=None):
         if match:
             pad, target, literal = match.groups()
             known[target] = int(literal, 16)
-            text = strings.get(known[target] & 0xFFFFFFFF)
-            if text is not None:
-                shown = text if len(text) <= 48 else text[:45] + "..."
-                line += '  /* "%s" */' % shown.encode("unicode_escape").decode("ascii").replace("*/", "*\\/")
+            # Not lui's value alone (its low half zero): the upper half of an
+            # address still to be added to, wherever a string begins.
+            if known[target] & 0xFFFF:
+                line += _string_note(known[target], strings)
             out.append(line)
             continue
         assigned = re.match(r"^\s*([a-z][a-z0-9]*) = ", line)
@@ -848,8 +848,10 @@ def fold_addresses(lines, strings=None):
                 value |= 0xFFFFFFFF00000000
             return "0x%08Xull" % value
         line = _SPLIT_SIGN_EXTENDED.sub(extended, line)
+        # Not a value lui made alone (its low half zero): that is the upper
+        # half of an address still to be added to, wherever a string begins.
         assigned = _ASSIGNED_CONSTANT.match(line)
-        if assigned and "/*" not in line:
+        if assigned and "/*" not in line and int(assigned.group(1), 16) & 0xFFFF:
             line += _string_note(int(assigned.group(1), 16), strings)
         out.append(line)
     return out
