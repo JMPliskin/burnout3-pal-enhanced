@@ -880,6 +880,14 @@ void VulkanDisplay::PresentLoop() {
             if (stop_) return;
             slot = ready_.front();
         }
+        // The swapchain's next image, and the last present's command buffer
+        // done, ahead of the picture's time: what may wait (the compositor
+        // holding the images, a 144 Hz desktop's) waits now, not when it is
+        // due - then only the copy and the present are left.
+        std::unique_lock<std::mutex> presenting(present_lock_);
+        std::uint32_t index = 0;
+        bool ok = true;
+        const bool began = BeginPresent(&index, &ok);
         // In order, each when it is due.
         const Clock::time_point due = std::min(Clock::time_point{std::chrono::nanoseconds(paced_[slot].due_ns)},
                                                Clock::now() + std::chrono::milliseconds(50));
@@ -887,16 +895,22 @@ void VulkanDisplay::PresentLoop() {
         while (Clock::now() < due) std::this_thread::yield();
         {
             std::lock_guard<std::mutex> hold(paced_lock_);
-            if (stop_) return;
-            if (ready_.empty() || ready_.front() != slot) continue;     // dropped meanwhile
+            if (stop_) {
+                if (began) vkEndCommandBuffer(cmd_);
+                return;
+            }
+            // The oldest waiting now (a newer one may have taken its turn
+            // meanwhile): into the image already taken.
+            if (ready_.empty()) {
+                if (began) vkEndCommandBuffer(cmd_);
+                continue;
+            }
+            slot = ready_.front();
             ready_.pop_front();
             taken_ = slot;
         }
         {
-            std::lock_guard<std::mutex> hold(present_lock_);
-            std::uint32_t index = 0;
-            bool ok = true;
-            if (BeginPresent(&index, &ok)) {
+            if (began) {
                 FinishPresent(index, paced_[slot].image, paced_[slot].width, paced_[slot].height);
                 Submit(index);
                 PresentObserver observer;
@@ -909,6 +923,7 @@ void VulkanDisplay::PresentLoop() {
                                                                    Clock::now().time_since_epoch()).count()), false);
             }
         }
+        presenting.unlock();
         {
             std::lock_guard<std::mutex> hold(paced_lock_);
             taken_ = -1;

@@ -187,7 +187,7 @@ struct Feed {
             u64 h = head.load(std::memory_order_acquire);
             if (t == h) {
                 // Briefly busy, then asleep until there is more.
-                for (int spins = 0; spins < 2000 && t == h; ++spins) {
+                for (int spins = 0; spins < 200 && t == h; ++spins) {
                     Pause();
                     h = head.load(std::memory_order_acquire);
                 }
@@ -351,17 +351,18 @@ u64 SteadyNowNs() {
 }
 
 u64 FrameDue(u64 frame) {
-    // The delay each frame came with, the longest of the last 30 the one
+    // The delay each frame came with, the longest of the last 120 (two
+    // seconds: a race's heavy moments come together) the one
     // every frame keeps to (and half a millisecond more), so frames go out
     // a frame's period apart however much each took on its way; never more
     // than a period and a half behind - a frame later than that goes at once.
-    static u64 delays[30] = {};
+    static u64 delays[120] = {};
     static int next = 0;
     const u64 ended = FrameEndedNs(frame);
     const u64 now = SteadyNowNs();
     if (!ended || now < ended) return now;
     delays[next] = now - ended;
-    next = (next + 1) % 30;
+    next = (next + 1) % 120;
     if (timeline::On()) timeline::Instant("frame's delay (us)", timeline::Now(), (now - ended) / 1000);
     u64 keep = 0;
     for (u64 d : delays) keep = std::max(keep, d);

@@ -658,6 +658,14 @@ namespace {
    VIF1's worker. */
 void StartRealTimeThreads() {
     timeBeginPeriod(1);             // sleeps to the millisecond, not Windows' 15.6 ms
+    // ...even with the window hidden behind others: Windows 11 drops a
+    // process's timer resolution then (a 200 us sleep took 15 ms, a blank
+    // seen 14 ms late), unless told not to; and the process not throttled.
+    PROCESS_POWER_THROTTLING_STATE process{};
+    process.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    process.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    process.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &process, sizeof process);
     FastThread();
     if (!TimerThread().joinable()) {
         TimerThread() = std::thread([] {
@@ -747,7 +755,7 @@ void RunThreads(const lifted::Context& initial, u32 entry, s64 loop_budget) {
                         iop::Run(50'000);           // a short slice: the blank may come meanwhile
                     }
                     if (IopReplyPending()) break;
-                    std::this_thread::sleep_for(std::chrono::microseconds(200));
+                    SleepUntil(std::chrono::steady_clock::now() + std::chrono::microseconds(200));    // (precise: SleepUntil)
                 }
                 g_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - idle_from).count()),

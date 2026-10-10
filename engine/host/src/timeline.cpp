@@ -128,6 +128,7 @@ void BlankLost() {
 void Presented(u64 due_ns, u64 shown_ns) {
     if (!On()) return;
     Span("present", shown_ns > 2'000'000 ? shown_ns - 2'000'000 : shown_ns, shown_ns);   // marked as the 2 ms before it
+    if (shown_ns > due_ns + 1'000'000) Instant("shown after its time (us)", shown_ns, (shown_ns - due_ns) / 1000);
     std::lock_guard<std::mutex> hold(g_frames_mutex);
     g_pictures.push_back({due_ns, shown_ns, false});
 }
