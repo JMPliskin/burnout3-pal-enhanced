@@ -378,10 +378,28 @@ void TimerTick() {
 }
 std::atomic<u64> g_last_vblank_ns{0};       // LastVblankNs
 
+/* Asleep until `when`, to a tenth of a millisecond or so: a high-resolution
+   waitable timer (Windows 10 1803 on), not Sleep's millisecond steps that can
+   overshoot by more; sleep_until where there is none. */
+void SleepUntil(std::chrono::steady_clock::time_point when) {
+    thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                       TIMER_ALL_ACCESS);
+    const auto left = when - std::chrono::steady_clock::now();
+    if (left <= std::chrono::steady_clock::duration::zero()) return;
+    if (!timer) {
+        std::this_thread::sleep_until(when);
+        return;
+    }
+    LARGE_INTEGER due;
+    due.QuadPart = -std::max<long long>(1, std::chrono::duration_cast<std::chrono::nanoseconds>(left).count() / 100);
+    if (SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) WaitForSingleObject(timer, INFINITE);
+    else std::this_thread::sleep_until(when);
+}
+
 void VblankTimer() {
     using clock = std::chrono::steady_clock;
     const auto period = std::chrono::microseconds(16683);      // NTSC, 59.94 Hz
-    const auto margin = std::chrono::microseconds(1500);
+    const auto margin = std::chrono::microseconds(700);    // the precise sleep's (SleepUntil), then a spin
     auto next = clock::now() + period;
     while (!StopRequested() && !g_timer_stop) {
         // Sleep to the next vertical blank, or to an EE timer's interrupt if that
@@ -410,9 +428,13 @@ void VblankTimer() {
             TimerTick();
             continue;
         }
-        if (wake - clock::now() > margin) std::this_thread::sleep_until(wake - margin);
+        if (wake - clock::now() > margin) SleepUntil(wake - margin);
         while (clock::now() < wake && !StopRequested() && !g_timer_stop) std::this_thread::yield();
         if (clock::now() >= next) {
+            const auto late = clock::now() - next;
+            if (late > std::chrono::milliseconds(1) && timeline::On())
+                timeline::Instant("blank late (us)", timeline::Now(),
+                                  u64(std::chrono::duration_cast<std::chrono::microseconds>(late).count()));
             g_last_vblank_ns.store(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next.time_since_epoch()).count()),
                                    std::memory_order_relaxed);
             unsigned factor = g_fast_forward.load(std::memory_order_relaxed);
@@ -640,6 +662,10 @@ void StartRealTimeThreads() {
     if (!TimerThread().joinable()) {
         TimerThread() = std::thread([] {
             timeline::NameThread("vertical blank timer");
+            // Asleep almost always, it must wake on time with every core busy
+            // (a blank 13 ms late was a frame shown late): the highest priority.
+            FastThread();
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
             VblankTimer();
         });
         std::atexit(StopTimer);

@@ -159,8 +159,10 @@ bool OpenWindow(const wchar_t* title, int width, int height) {
         if (SettingOn("fullscreen")) g_display->SetFullscreen(true);
         ApplyCursorArt();
         g_display->SetPresentObserver([](std::uint64_t due_ns, std::uint64_t shown_ns, bool dropped) {
+            // Shown on the display's own thread (its lane named so); dropped
+            // on the thread handing it a newer one.
             thread_local bool named = false;
-            if (!named) {
+            if (!dropped && !named) {
                 timeline::NameThread("present");
                 named = true;
             }

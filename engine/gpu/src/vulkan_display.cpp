@@ -18,6 +18,11 @@
 #include "gpu_internal.h"
 
 #include <algorithm>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -838,8 +843,35 @@ bool VulkanDisplay::PresentImageAt(std::uint64_t image, int layout, std::uint32_
     return !closed_;
 }
 
+namespace {
+/* Asleep until `when` to a tenth of a millisecond (a high-resolution
+   waitable timer), sleep_until where there is none. */
+void SleepUntil(std::chrono::steady_clock::time_point when) {
+#ifdef _WIN32
+    thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                       TIMER_ALL_ACCESS);
+    const auto left = when - std::chrono::steady_clock::now();
+    if (left <= std::chrono::steady_clock::duration::zero()) return;
+    if (timer) {
+        LARGE_INTEGER due;
+        due.QuadPart = -std::max<long long>(1, std::chrono::duration_cast<std::chrono::nanoseconds>(left).count() / 100);
+        if (SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+#endif
+    std::this_thread::sleep_until(when);
+}
+}  // namespace
+
 void VulkanDisplay::PresentLoop() {
     using Clock = std::chrono::steady_clock;
+#ifdef _WIN32
+    // Each picture shown at its time with every core busy: the highest priority
+    // (asleep almost always).
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
     for (;;) {
         int slot;
         {
@@ -851,8 +883,7 @@ void VulkanDisplay::PresentLoop() {
         // In order, each when it is due.
         const Clock::time_point due = std::min(Clock::time_point{std::chrono::nanoseconds(paced_[slot].due_ns)},
                                                Clock::now() + std::chrono::milliseconds(50));
-        if (Clock::now() + std::chrono::milliseconds(2) < due)
-            std::this_thread::sleep_until(due - std::chrono::milliseconds(1));
+        if (Clock::now() + std::chrono::microseconds(1500) < due) SleepUntil(due - std::chrono::microseconds(700));
         while (Clock::now() < due) std::this_thread::yield();
         {
             std::lock_guard<std::mutex> hold(paced_lock_);

@@ -365,7 +365,10 @@ u64 FrameDue(u64 frame) {
     if (timeline::On()) timeline::Instant("frame's delay (us)", timeline::Now(), (now - ended) / 1000);
     u64 keep = 0;
     for (u64 d : delays) keep = std::max(keep, d);
-    keep = std::min<u64>(keep + 500'000, 25'000'000);
+    // At least 6 ms: a frame that alone takes longer on its way (a heavy
+    // frame's VU1 work, 12 ms past its blank) still goes out on time, for
+    // under a third of a frame's delay where all is quick.
+    keep = std::min<u64>(std::max<u64>(keep + 500'000, 6'000'000), 25'000'000);
     return std::max(now, ended + keep);
 }
 
