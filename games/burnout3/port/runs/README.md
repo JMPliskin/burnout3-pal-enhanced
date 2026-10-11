@@ -54,6 +54,12 @@ an image's own drawing showed as the race's crash replay going wrong, found
 by `framediff.py` against the software run and `--gs-dump-frame` from both
 builds.
 
+The GPU runs come out the same every time. The software GS's longer runs do
+not quite: `race` differs on two or three frames from 17,800 on, and
+`race_training` now and then at 9,000, changing from one run to the next -
+on engine v0.2.0 as on v0.4.0. A difference there alone is not a regression;
+one in a GPU run, or at other frames, is.
+
 ## Memory card
 
 `memcard_save.args` boots with an empty memory card (`{memcard}`: regress.py
