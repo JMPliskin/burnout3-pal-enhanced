@@ -15,6 +15,9 @@ Criterion Games. "Burnout" is a trademark of Electronic Arts Inc.
 
 This is an ALPHA: expect bugs.
 
+Made with AI: this port is built by Claude Code (Anthropic's Claude),
+directed, playtested and reviewed by its author.
+
 
 What you need
 -------------
@@ -58,6 +61,13 @@ Keyboard:
 Mouse, in the menus: point at an item to highlight it, click to choose it,
 right-click to go back, wheel to move up and down. The buttons along the
 bottom of the screen can be clicked too.
+
+Other keys:
+  Alt+Enter   fullscreen or a window
+  Tab         a texture pack off and on (see "Texture packs")
+  F10         the HUD editor in widescreen: PgUp/PgDn choose an element,
+              Home left, Insert centre, End right, Delete stretch; P pauses
+  F12         a capture of the frame, for a bug report (captures\ folder)
 
 
 PC settings

@@ -20,7 +20,72 @@ The README in the zip has the controls, the PC settings and the known issues
 ([games/burnout3/port/release/README.txt](games/burnout3/port/release/README.txt)).
 
 This is an **alpha**: please report problems in Issues, with the
-`burnout3.log` written beside the executable.
+`burnout3.log` written beside the executable. For a picture that looks
+wrong, press **F12** at that moment and attach the folder it writes to
+`captures/` beside the executable (it replays the frame exactly).
+
+## What it does
+
+- **The whole game, natively**: the PS2 program translated to C++ and
+  compiled for x64 - menus, races, crash mode, the career, saves - with its
+  sound and music, reading everything from your own disc image.
+- **A GPU renderer (Vulkan)**: the PS2's graphics drawn on your graphics
+  card, at the PS2's resolution, twice it, or as sharp as your screen (up to
+  4x).
+- **Widescreen**: 4:3, 16:9 or the window's own shape, with the HUD kept in
+  place - and a HUD editor (**F10**) to anchor each HUD element left, right,
+  centred or stretched.
+- **PC settings** in the game's own main menu (where ONLINE used to be):
+  fullscreen, vertical sync, frame pacing, resolution, the speed blur, the
+  aspect ratio. Saved in `pc_settings.ini`; QUIT GAME in the main menu.
+- **Smooth frames**: frame pacing, and 120 Hz in fullscreen on a 144 Hz
+  screen so that 60 frames a second show evenly.
+- **Controls**: any controller SDL knows (Xbox, PlayStation, ...) as a
+  DualShock 2, with **rumble**; the keyboard; the **mouse in the menus**
+  (point, click, right-click to go back, wheel).
+- **Texture packs**: PCSX2 texture packs for the game work as they are
+  (below); **Tab** turns one off and on.
+- **Saves** on a memory card folder beside the executable; the disc image
+  chosen once and remembered; Alt+Enter for fullscreen.
+- **Bug reports**: a log of every run, and F12 captures of a frame.
+
+## Texture packs
+
+A texture pack made for PCSX2 (for Burnout 3: Takedown, SLUS-21050) works
+here too:
+
+1. Put the pack's files - the `.dds` or `.png` files PCSX2 keeps in
+   `textures/SLUS-21050/replacements/` - in the **`texture pack`** folder
+   beside `burnout3.exe`. Folders inside it are fine; only the files' names
+   count (they name the texture each replaces, as PCSX2 names them).
+2. Start the game. Its log says how many textures it found.
+3. Press **Tab** to turn the pack off and on while you play (the choice is
+   kept in `pc_settings.ini`).
+
+A texture is replaced the first time it is drawn, a moment after it first
+appears (its file is read in the background). Texture packs are made by
+their authors from the game's textures: none is included or linked here.
+
+## AI usage
+
+**This port was made with AI.** It is built and maintained by
+[Claude Code](https://claude.com/claude-code) (Anthropic's Claude), directed,
+playtested and reviewed by the repository's author. The engine's tools
+translate the game's program automatically; the rest - the runtime, the GPU
+renderer, the PC features, the fixes, the tests and these documents - was
+written by Claude, working from the game itself, PCSX2 as a reference and
+its own test runs. Commits carry a `Co-Authored-By: Claude` line. The
+workflow it follows is in the engine's skills (`engine/.claude/skills`).
+
+## To do
+
+- More playtesting: whole careers, every event type, every track.
+- Higher frame-rate settings (beyond the game's 60 frames a second).
+- Modern controls: button remapping, PS5 (DualSense) adaptive triggers and
+  haptics, steering wheels with force feedback.
+- Graphical mods and options (beyond texture packs).
+- Better performance on slower machines.
+- Linux, macOS and Android ports.
 
 ## Building it
 
@@ -90,5 +155,5 @@ substitute for the commercial product. "Burnout" is a trademark of Electronic
 Arts Inc.
 
 The project's own code is under the MIT licence ([LICENSE](LICENSE)). The port
-is built with SDL 3, volk, glslang and the Vulkan headers, under their own
-licences (the release's THIRD-PARTY-NOTICES.txt).
+is built with SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec and
+stb_image, under their own licences (the release's THIRD-PARTY-NOTICES.txt).
