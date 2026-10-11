@@ -29,3 +29,8 @@ Thumbs.db
 games/*/src/
 games/*/include/*/
 !games/*/include/ps2/
+
+# Texture packs (PCSX2 replacements: third-party art made from the game's textures): never committed.
+replacements/
+texture pack/
+texture_pack/

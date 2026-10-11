@@ -70,11 +70,21 @@ resolution (original, twice as sharp, or as sharp as your screen - up to
 QUIT GAME is in the main menu too.
 
 
+Texture packs
+-------------
+
+Texture packs made for PCSX2 work here too: put the pack's files in the
+"texture pack" folder beside burnout3.exe (folders inside it are fine) and
+start the game. Tab turns the pack off and on while you play. A texture is
+replaced the first time it is drawn, a moment after it appears.
+
+
 Files beside burnout3.exe
 -------------------------
 
   pc_settings.ini   your settings, and where your disc image is
   memcard\          your memory card: the game's saves
+  texture pack\     a PCSX2 texture pack, if you have one
   burnout3.log      what the last run did (useful in a bug report)
 
 To choose a different disc image, delete the "disc=" line from
@@ -94,5 +104,5 @@ Known issues
 Licences
 --------
 
-The port uses SDL 3, volk, glslang and the Vulkan headers: their licences
-are in THIRD-PARTY-NOTICES.txt.
+The port uses SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec and
+stb_image: their licences are in THIRD-PARTY-NOTICES.txt.

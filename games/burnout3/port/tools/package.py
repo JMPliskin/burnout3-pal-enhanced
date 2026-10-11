@@ -35,6 +35,32 @@ LICENCES = [
     ("glslang", "glslang-src", ["LICENSE.txt"]),
     ("Vulkan-Headers", "vulkan_headers-src", ["LICENSE.md", "LICENSE.txt"]),
 ]
+# Single headers built in for texture packs (engine/host/CMakeLists.txt): the
+# licence in each, from where it starts to where its comment ends.
+HEADERS = os.path.join(BUILD, "port", "cmake", "ps2host", "third_party")
+HEADER_LICENCES = [
+    ("xxHash", "xxhash.h", "xxHash - Extremely Fast Hash algorithm"),
+    ("bcdec", "bcdec.h", "This software is available under 2 licenses"),
+    ("stb_image", "stb_image.h", "This software is available under 2 licenses"),
+]
+TEXTURE_PACK_README = """Put a PCSX2 texture pack for Burnout 3: Takedown (SLUS-21050) in this
+folder: the pack's files (.dds or .png, named as PCSX2 names them), in
+folders of their own if the pack has them. The game finds them when it
+starts. Tab turns the pack off and on while you play.
+"""
+
+
+def header_licence(name, start):
+    path = os.path.join(HEADERS, name)
+    if not os.path.exists(path):
+        fail("no %s in %s: build first" % (name, HEADERS))
+    text = open(path, encoding="utf-8", errors="replace").read()
+    at = text.find(start)
+    end = text.find("*/", at)
+    if at < 0 or end < 0:
+        fail("no licence found in %s" % path)
+    lines = [line.rstrip() for line in text[at:end].splitlines()]
+    return "\n".join(line[3:] if line.startswith(" * ") else line.lstrip(" *") for line in lines).strip()
 
 
 def fail(why):
@@ -76,6 +102,8 @@ def main():
             fail("no licence for %s in %s" % (name, os.path.join(DEPS, folder)))
         with open(path, encoding="utf-8", errors="replace") as f:
             notices += ["-" * 72, name, "-" * 72, f.read().strip(), ""]
+    for name, header, start in HEADER_LICENCES:
+        notices += ["-" * 72, name, "-" * 72, header_licence(header, start), ""]
     with open(os.path.join(GAME, "port", "release", "README.txt"), encoding="utf-8") as f:
         readme = f.read().replace("{version}", version)
     name = "Burnout3-PC-%s" % version
@@ -86,6 +114,7 @@ def main():
         z.write(EXE, "%s/burnout3.exe" % name)
         z.writestr("%s/README.txt" % name, readme.replace("\n", "\r\n"))
         z.writestr("%s/THIRD-PARTY-NOTICES.txt" % name, "\r\n".join(notices))
+        z.writestr("%s/texture pack/README.txt" % name, TEXTURE_PACK_README.replace("\n", "\r\n"))
     print("package: %s (%.1f MB; imports %s)" % (out, os.path.getsize(out) / 1e6, ", ".join(dlls)))
 
 
