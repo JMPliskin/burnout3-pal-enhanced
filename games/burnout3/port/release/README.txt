@@ -131,8 +131,10 @@ Known issues
 * Only the NTSC-U release (SLUS-21050) runs.
 * Online play is not available.
 * A heavy moment in a race can still show a picture a frame late.
-* Some menus (the name keyboard, the map, the car selection) take the
-  mouse's wheel, right button and bottom-bar buttons, but not pointing yet.
+* The World Tour map takes the mouse's wheel, right button and
+  bottom-bar buttons, but not pointing yet.
+* The DualSense's trigger effects are new and lightly tested; tell us
+  how they feel (USB and Bluetooth).
 
 
 Licences

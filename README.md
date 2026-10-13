@@ -87,8 +87,8 @@ workflow it follows is in the engine's skills (`engine/.claude/skills`).
 
 - More playtesting: whole careers, every event type, every track.
 - Higher frame-rate settings (beyond the game's 60 frames a second).
-- Modern controls: button remapping, PS5 (DualSense) adaptive triggers and
-  haptics, steering wheels with force feedback.
+- More controls: button remapping, DualSense haptics, steering wheels with
+  force feedback.
 - Graphical mods and options (beyond texture packs).
 - Better performance on slower machines.
 - Linux, macOS and Android ports.
