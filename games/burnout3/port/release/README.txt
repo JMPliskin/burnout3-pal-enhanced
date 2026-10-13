@@ -60,7 +60,8 @@ Keyboard:
 
 Mouse, in the menus: point at an item to highlight it, click to choose it,
 right-click to go back, wheel to move up and down. The buttons along the
-bottom of the screen can be clicked too.
+bottom of the screen can be clicked too, and so can the keys of the name
+keyboard.
 
 The button icons follow what you play with: the controller's buttons, the
 keys while you use the keyboard, the mouse's buttons once you use the mouse.

@@ -2048,13 +2048,24 @@ it rests on:
   slot, the slot the button's - 0 Triangle (Back), 1 Cross (Select,
   Confirm), 9 Circle (Driver Details on Crash Nav, Color on car select); the
   D-pad's Change is the pair at +0x94, +0x98.
+* **The name keyboard** (0x01E899C0, opened and closed by 0x00350F80, +0x0A
+  set while it shows): 5 rows of 15 cells, the highlight's row at +0x10
+  (1-4; row 0 is the name) and column at +0x14 (1-14; column 0 the shoulder
+  buttons' icons); Up, Down, Left, Right are 0x00350900, 0x00350830,
+  0x00350B60, 0x003509C0, and 0x0034EEB0(keyboard, (row, column), lit)
+  draws a cell. Each cell's state is a 0x90-byte record in the object, but
+  not its place: the grid is one object (+0x4C, at 52, 207 - or 199 - in
+  the frontend's 640 x 480), its keys measured from the highlight (mouse.cpp).
+  Wide keys: column 1 (Shift and the rest), Backspace (row 3, 9-11), Space
+  (row 4, 2-7), Done (row 4, 8-11); row 2's column 11 is empty.
 
 The mouse moves a highlight as the player would - Up or Down a press at a
 time until the selector shows the row under the pointer - so each screen's
 own input moves it, with its sounds and past rows it skips; a click presses
-Cross once it is there. Screens built otherwise (the keyboard, the map's
-locations, the car carousel) take the wheel (Up, Down), the right button
-(Back) and the legend's buttons. `PS2HOST_MOUSE_PROBE=1` prints every
+Cross once it is there; the name keyboard's keys the same way, Up or Down
+to the key's row, then Left or Right to it. Screens built otherwise (the
+map's locations, the car carousel) take the wheel (Up, Down), the right
+button (Back) and the legend's buttons. `PS2HOST_MOUSE_PROBE=1` prints every
 selector move and the code making it: the way to a menu the mouse does not
 know yet.
 

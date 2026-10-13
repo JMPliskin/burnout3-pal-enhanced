@@ -51,7 +51,8 @@ void UpdatePrompts(bool mouse_used);
 namespace {
 
 // DualShock 2 inputs (libpad's order).
-constexpr u16 kUp = 1u << 4, kDown = 1u << 6, kTriangle = 1u << 12, kCross = 1u << 14;
+constexpr u16 kUp = 1u << 4, kRight = 1u << 5, kDown = 1u << 6, kLeft = 1u << 7, kTriangle = 1u << 12,
+              kCross = 1u << 14;
 
 constexpr u32 kMaxRows = 32;
 
@@ -192,6 +193,71 @@ int ButtonAt(float x, float y) {
     return -1;
 }
 
+// ------------------------------------------------------------ the name keyboard
+
+/* The on-screen keyboard names are typed with (0x01E899C0, opened and
+   closed by 0x00350F80; +0x0A set while it shows): a grid of 5 rows of 15
+   cells, the highlighted one at +0x10 (row, 1-4: row 0 is the name) and
+   +0x14 (column, 1-14: column 0 is the shoulder buttons' icons); Up, Down,
+   Left and Right are 0x00350900, 0x00350830, 0x00350B60, 0x003509C0. The
+   grid is drawn by its object at +0x4C, from that object's place. Some keys
+   are wider: Shift, Caps Lock, Symbols and Accents (column 1), Backspace
+   (row 3, columns 9-11), Space (row 4, 2-7), Done (row 4, 8-11) - the
+   highlight on one of their cells is on the key. Row 2's column 11 has no
+   key. Where the keys are (measured from the highlight, in the frontend's
+   640 x 480, from the grid object's top left): rows 33.3 apart from 39.4
+   down, 27.9 high; column 1 from 31 to 107, columns 2-11 33 apart from
+   111, 12-14 from 446, each 29 wide. */
+constexpr u32 kKeyboard = 0x01E899C0u;
+
+bool KeyboardUp() { return generated::ReadU8(kKeyboard + 0xA) != 0; }
+
+/* The key a cell is on: its first cell's column. */
+int KeyColumn(int row, int column) {
+    if (row == 3 && column >= 9 && column <= 11) return 9;
+    if (row == 4 && column >= 2 && column <= 7) return 2;
+    if (row == 4 && column >= 8 && column <= 11) return 8;
+    return column;
+}
+
+/* A key's left and right, from the grid's left; false where there is none. */
+bool KeySpan(int row, int column, float* x0, float* x1) {
+    auto left = [](int c) { return c == 1 ? 31.0f : c <= 11 ? 111.0f + 33.0f * float(c - 2) : 446.0f + 33.0f * float(c - 12); };
+    auto right = [](int c) { return c == 1 ? 107.0f : (c <= 11 ? 111.0f + 33.0f * float(c - 2) : 446.0f + 33.0f * float(c - 12)) + 29.0f; };
+    if (row == 2 && column == 11) return false;
+    if (KeyColumn(row, column) != column) return false;        // inside a wide key
+    int last = column;
+    while (last < 11 && KeyColumn(row, last + 1) == column) ++last;
+    *x0 = left(column);
+    *x1 = right(last);
+    return true;
+}
+
+/* The key under (x, y) in the picture: its row and first column; false none. */
+bool KeyAt(float x, float y, int* row_out, int* column_out) {
+    const u32 grid = generated::ReadU32(kKeyboard + 0x4C);
+    if (!grid) return false;
+    const float gx = F(grid), gy = F(grid + 4);
+    const u32 drawn_by = generated::ReadU32(grid + 0x3C);
+    constexpr float kRows = 448.0f / 480.0f;
+    for (int row = 1; row <= 4; ++row) {
+        const float y0 = (gy + 39.4f + 33.3f * float(row - 1)) * kRows, y1 = y0 + 27.9f * kRows;
+        if (y < y0 - 2.0f || y > y1 + 2.0f) continue;
+        for (int column = 1; column <= 14; ++column) {
+            float k0, k1;
+            if (!KeySpan(row, column, &k0, &k1)) continue;
+            const float cx = gx + (k0 + k1) * 0.5f, cy = (y0 + y1) * 0.5f;
+            const float x0 = FrontendPlace(drawn_by, gx + k0, cx, cy), x1 = FrontendPlace(drawn_by, gx + k1, cx, cy);
+            if (x >= x0 - 2.0f && x <= x1 + 2.0f) {
+                *row_out = row;
+                *column_out = column;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ------------------------------------------------------------ the pointer
 
 struct Pointer {
@@ -208,6 +274,8 @@ struct Pointer {
     int row = -1;
     bool confirm = false;
     int steps = 0;              // presses made towards it
+    // The name keyboard's key it is being brought to (row, first column).
+    int key_row = -1, key_column = -1;
 };
 
 Pointer g_pointer;
@@ -247,6 +315,7 @@ u16 MouseTick() {
     if ((ps2host::PadButtonsHeld() & ~p.holding) != 0) {
         p.used = 0;
         p.row = -1;
+        p.key_row = -1;
         p.confirm = false;
     }
     // The frontend shows (its legend is up), or a message box.
@@ -257,9 +326,12 @@ u16 MouseTick() {
         ps2host::ShowHostCursor(show);
         p.shown = show;
     }
+    const bool keyboard = !box && FrontendUp() && KeyboardUp();
+    if (!keyboard) p.key_row = -1;
     if (!menu || !mouse) {
         p.presses.clear();
         p.row = -1;
+        p.key_row = -1;
     } else if (inside) {
         // The pointer in the picture's terms, 640 x 448 as the 4:3 picture's
         // (a wider picture is the same 640, its 2D placed in it).
@@ -269,7 +341,16 @@ u16 MouseTick() {
         int over_row = -1;
         u32 slot = 0;
         const u16 legend = LegendAt(x, y, &slot);
-        if (box) {
+        int key_row = -1, key_column = -1;
+        if (keyboard) {
+            // The name keyboard has the input: the lists behind it wait.
+            if (KeyAt(x, y, &key_row, &key_column) && (m.moved || (m.pressed & 1))) {
+                if (p.key_row != key_row || p.key_column != key_column) p.steps = 0;
+                p.key_row = key_row;
+                p.key_column = key_column;
+                if (m.pressed & 1) p.confirm = true;
+            }
+        } else if (box) {
             over_row = ButtonAt(x, y);
             over_selector = g_box.at + 0xC;
         } else if (FrontendUp()) {
@@ -289,7 +370,7 @@ u16 MouseTick() {
         }
         if ((m.pressed & 1) && over_row >= 0) p.confirm = true;
         // A button of the legend: pressed.
-        if ((m.pressed & 1) && over_row < 0 && legend) Queue(legend);
+        if ((m.pressed & 1) && over_row < 0 && key_row < 0 && legend) Queue(legend);
         if (kLog && (m.pressed & 1) && over_row < 0)
             std::fprintf(stderr, "[mouse] legend: %s slot %u\n", legend ? "button" : "no button", unsigned(slot));
         if (m.pressed & 4) Queue(kTriangle);
@@ -299,8 +380,9 @@ u16 MouseTick() {
         while (wheel >= 1.0f) { Queue(kUp); wheel -= 1.0f; }
         while (wheel <= -1.0f) { Queue(kDown); wheel += 1.0f; }
         if (kLog && (m.moved || m.pressed))
-            std::fprintf(stderr, "[mouse] %.0f, %.0f: %s %d of 0x%08X%s\n", x, y, over_row >= 0 ? "over" : "not over",
-                         over_row, unsigned(over_selector), m.pressed ? " (clicked)" : "");
+            std::fprintf(stderr, "[mouse] %.0f, %.0f: %s %d of 0x%08X%s%s\n", x, y, over_row >= 0 ? "over" : "not over",
+                         over_row, unsigned(over_selector), m.pressed ? " (clicked)" : "",
+                         keyboard ? (key_row >= 0 ? "; the name keyboard: over a key" : "; the name keyboard") : "");
     }
     // The highlight brought to the row a press at a time; Cross there for a
     // click. A list that will not come there (in twice its rows' presses)
@@ -318,6 +400,25 @@ u16 MouseTick() {
             Queue(p.row > index ? kDown : kUp);
             if (kLog) std::fprintf(stderr, "[mouse] %s: row %d of 0x%08X, at %d\n", p.row > index ? "down" : "up",
                                    p.row, unsigned(p.selector), index);
+        }
+    }
+    // The name keyboard's highlight brought to the key the same way: its row
+    // with Up and Down, then its column with Left and Right (a cell of a wide
+    // key is the key); Cross there for a click.
+    if (p.key_row >= 0 && p.presses.empty() && p.hold_for == 0) {
+        const int row = int(generated::ReadU32(kKeyboard + 0x10));
+        const int column = KeyColumn(row, int(generated::ReadU32(kKeyboard + 0x14)));
+        if (row == p.key_row && column == p.key_column) {
+            if (p.confirm) Queue(kCross);
+            p.key_row = -1;
+            p.confirm = false;
+        } else if (p.steps++ > 24) {
+            p.key_row = -1;
+            p.confirm = false;
+        } else if (row != p.key_row) {
+            Queue(p.key_row > row ? kDown : kUp);
+        } else {
+            Queue(p.key_column > column ? kRight : kLeft);
         }
     }
     if (p.hold_for == 0 && !p.presses.empty()) {
