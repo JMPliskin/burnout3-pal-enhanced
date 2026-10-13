@@ -24,6 +24,9 @@
 #include "ps2host/run.h"
 #include "ps2host/settings.h"
 
+// controls.cpp: the race's hints naming the boost button, as the controls have it.
+void RaceHint(u32 at);
+
 // libmc2's handlers as the game has them, for when no card is given.
 void F_00244218(lifted::Context& c);
 void F_002445D0(lifted::Context& c);
@@ -292,6 +295,10 @@ int AntiAliasing() {
     return 0;
 }
 void SetAntiAliasing(int which) { ps2host::SetWindowAntiAliasing(kAntiAliasings[which]); }
+int ModernControls() { return ps2host::SettingOn("modern_controls", false) ? 1 : 0; }
+void SetModernControls(int on) { ps2host::SetSettingOn("modern_controls", on != 0); }
+int TriggerEffects() { return ps2host::SettingOn("trigger_effects", true) ? 1 : 0; }
+void SetTriggerEffects(int on) { ps2host::SetSettingOn("trigger_effects", on != 0); }
 const Option kOptions[] = {
     {Page::kVideo, "FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {Page::kVideo, "VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
@@ -304,6 +311,10 @@ const Option kOptions[] = {
     {Page::kVideo, "ANTIALIASING", "EDGES AS DRAWN, SMOOTHED (FXAA), OR SUPERSAMPLED (SSAA)",
      AntiAliasing, SetAntiAliasing, {"OFF", "FXAA", "SSAA 2X", "SSAA 4X"}, 4},
     {Page::kGraphics, "BLUR", "THE SPEED BLUR AND GLOW, OR A CLEAR PICTURE", Blur, SetBlur, {"ORIGINAL", "OFF"}, 2},
+    {Page::kControls, "MODERN CONTROLS", "RACING: R2 ACCELERATES, L2 BRAKES, X BOOSTS", ModernControls,
+     SetModernControls, {"OFF", "ON"}, 2},
+    {Page::kControls, "TRIGGER EFFECTS", "DUALSENSE: THE TRIGGERS PUSH BACK (MODERN CONTROLS)", TriggerEffects,
+     SetTriggerEffects, {"OFF", "ON"}, 2},
 };
 constexpr u32 kOptionCount = sizeof kOptions / sizeof kOptions[0];
 
@@ -389,6 +400,7 @@ void GetString(lifted::Context& c) {
         }
     }
     F_00271A00(c);
+    RaceHint(u32(c.r[2]));
 }
 
 /* Calls a guest function from a host one, its arguments in a0-t1, and gives
@@ -623,11 +635,13 @@ void MainMenu(lifted::Context& c) {
 void RegisterGameIopServers();     // iop_servers.cpp
 void RegisterWidescreen();         // widescreen.cpp
 void RegisterMouse();              // mouse.cpp
+void RegisterControls();           // controls.cpp
 
 void RegisterGameOverrides() {
     RegisterGameIopServers();
     RegisterWidescreen();
     RegisterMouse();
+    RegisterControls();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");

@@ -2013,6 +2013,21 @@ Then the GS thread, which the worker fed faster than it could draw:
 The race now runs at 60 for most of a lap; its busiest stretches, at the
 start, at ~52, the worker and the GS thread both near 80% busy.
 
+## The race's controls
+
+Found by holding each button through the first race (no option changes
+them; DRIVER DETAILS > SETTINGS > CONTROLLERS has vibration alone): Cross
+accelerates, Square brakes and reverses, R1 boosts (held in a crash: Impact
+Time, aftertouch), Triangle changes the camera, L1 looks back, L2 skips to
+the next EA Trax song; Circle and R2 do nothing seen. Cross is read for how
+far it is pressed, in a narrow band of the DualShock 2's pressure (`--press
+cross@17650-19400:P`): 30 coasts, 38 holds about 58 mph, 44 about 68, 50
+and up is full throttle. The race's HUD (0x001A0790) is drawn only while
+racing - not paused, not in the menus' and intro's backdrops, which run the
+race's world (0x0019A550) too. Its hints naming R1 ("PRESS R1 BUTTON TO
+BOOST", "...HOLD THE R1 BUTTON FOR AFTERTOUCH") are language-file strings.
+The port's modern controls (port/controls.cpp) rest on this.
+
 ## The mouse in the menus
 
 The port drives the frontend's menus with the mouse (port/mouse.cpp). What

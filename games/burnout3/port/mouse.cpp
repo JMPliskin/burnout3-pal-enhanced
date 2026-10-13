@@ -51,6 +51,8 @@ void F_003F0870(lifted::Context& c);
 float FrontendPlace(u32 object, float x, float cx, float cy);
 // prompts.cpp: the button prompts for the device used last.
 void UpdatePrompts(bool mouse_used);
+// controls.cpp: the modern controls, while racing.
+void ControlsTick();
 
 namespace {
 
@@ -347,6 +349,7 @@ u16 MouseTick() {
         }
     }
     UpdatePrompts(mouse_used);
+    ControlsTick();
     // The controller or the keyboard: the pointer goes, and what it was doing.
     if ((ps2host::PadButtonsHeld() & ~p.holding) != 0) {
         p.used = 0;
@@ -486,6 +489,10 @@ u16 MouseTick() {
 }
 
 }  // namespace
+
+/* Whether one of the frontend's screens, a message box or the name keyboard
+   shows (controls.cpp: menus keep the game's own controls). */
+bool MenuShowing() { return FrontendUp() || BoxUp() || KeyboardUp(); }
 
 /* PS2HOST_MOUSE_PROBE=1: every move of a frontend selector (0x00319360 Up,
    0x00319330 Down, which every screen's input calls) - the selector and the

@@ -54,6 +54,9 @@ void Show(Prompts prompts) {
 
 }  // namespace
 
+/* Whether the controller's prompts show (the controller used last). */
+bool ControllerPrompts() { return g_prompts == Prompts::kController; }
+
 /* Once a pad read (mouse.cpp's MouseTick): `mouse_used`, the mouse moved,
    clicked or turned since the last. */
 void UpdatePrompts(bool mouse_used) {

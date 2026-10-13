@@ -51,6 +51,14 @@ Controls
 A game controller (Xbox, PlayStation, most others SDL knows) works as a
 DualShock 2. Rumble is supported.
 
+Modern controls (PC SETTINGS, CONTROLS) - while racing only; the menus and
+the pause screen keep Cross and Triangle:
+  R2   accelerate (how far you pull)    Cross     boost, Impact Time
+  L2   brake, reverse (how far)         Square    look back
+  R1   boost                            Triangle  change camera
+  L1   next EA Trax song                Circle    as before
+With TRIGGER EFFECTS on, a DualSense's triggers push back while you race.
+
 Keyboard:
   Arrow keys        D-pad            Enter       Start
   X                 Cross            Backspace   Select
@@ -89,7 +97,9 @@ long gone) has three pages (Triangle goes back):
              averaged down - the cleanest, and the heaviest on the GPU;
              with the resolution at DISPLAY, SSAA 4X can be too much)
   GRAPHICS   the speed blur
-  CONTROLS   nothing yet
+  CONTROLS   modern controls (triggers to accelerate and brake, face
+             buttons for the rest - see "Controls") and, with them, a
+             DualSense's trigger effects
 
 QUIT GAME is in the main menu too.
 
