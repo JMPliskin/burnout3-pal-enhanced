@@ -45,6 +45,8 @@ void F_00449150(lifted::Context& c);
 
 // widescreen.cpp: a frontend element's x where the picture shows it.
 float FrontendPlace(u32 object, float x, float cx, float cy);
+// prompts.cpp: the button prompts for the device used last.
+void UpdatePrompts(bool mouse_used);
 
 namespace {
 
@@ -226,6 +228,21 @@ u16 MouseTick() {
     const bool mouse = ps2host::TakeHostMouse(&m);
     const bool inside = mouse && m.over && m.x >= 0.0f && m.x <= 1.0f && m.y >= 0.0f && m.y <= 1.0f;
     if (mouse && (m.moved || m.pressed || m.wheel != 0.0f)) p.used = p.tick;
+    // The prompts the mouse's once it is really used: a click, the wheel, or
+    // a move of 2% of the picture from where it was - not the move a window
+    // opening or taking the focus under the pointer reports.
+    static float anchor_x = 0.0f, anchor_y = 0.0f;
+    static bool anchored = false;
+    bool mouse_used = mouse && (m.pressed || m.wheel != 0.0f);
+    if (mouse && m.moved) {
+        if (!anchored || std::abs(m.x - anchor_x) + std::abs(m.y - anchor_y) > 0.02f) {
+            mouse_used = mouse_used || anchored;
+            anchor_x = m.x;
+            anchor_y = m.y;
+            anchored = true;
+        }
+    }
+    UpdatePrompts(mouse_used);
     // The controller or the keyboard: the pointer goes, and what it was doing.
     if ((ps2host::PadButtonsHeld() & ~p.holding) != 0) {
         p.used = 0;
