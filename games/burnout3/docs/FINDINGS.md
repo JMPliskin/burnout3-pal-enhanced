@@ -2058,6 +2058,12 @@ it rests on:
   the frontend's 640 x 480), its keys measured from the highlight (mouse.cpp).
   Wide keys: column 1 (Shift and the rest), Backspace (row 3, 9-11), Space
   (row 4, 2-7), Done (row 4, 8-11); row 2's column 11 is empty.
+* **The car select's column of cars** (0x01E8EC30: the chosen car's index
+  at +0x244 of +0x248, +0x238 set while it turns; Up and Down 0x0042C020,
+  0x0042C090), the screens' input 0x00318A80 (Crash Nav) and 0x003F03D0,
+  0x003F0870: 3D models, so the mouse finds them by place in the 4:3
+  picture (the chosen car x 35-175, y 170-262 of 640 x 448; the one before
+  above, the one after below), widened from the middle in a wider picture.
 
 The mouse moves a highlight as the player would - Up or Down a press at a
 time until the selector shows the row under the pointer - so each screen's

@@ -42,6 +42,10 @@ void F_001D7560(lifted::Context& c);
 // The message boxes' input each frame.
 void F_0032B2C0(lifted::Context& c);
 void F_00449150(lifted::Context& c);
+// The car selects' input each frame.
+void F_00318A80(lifted::Context& c);
+void F_003F03D0(lifted::Context& c);
+void F_003F0870(lifted::Context& c);
 
 // widescreen.cpp: a frontend element's x where the picture shows it.
 float FrontendPlace(u32 object, float x, float cx, float cy);
@@ -258,6 +262,38 @@ bool KeyAt(float x, float y, int* row_out, int* column_out) {
     return false;
 }
 
+// ------------------------------------------------------------ the car select
+
+/* The car select's column of cars on the left (0x01E8EC30: the car shown at
+   +0x244 of the +0x248, +0x238 set while it turns to the next; Up and Down
+   are 0x0042C020 and 0x0042C090), its screens' input 0x00318A80 (Crash Nav)
+   and 0x003F03D0, 0x003F0870 (the other modes'). 3D models, not the
+   frontend's objects: where they show in the 4:3 picture (640 x 448), the
+   chosen car in the middle, the one before above it, the one after below,
+   and the arrows past them. A wider picture's 3D is widened from the middle. */
+constexpr u32 kCars = 0x01E8EC30u;
+
+u64 g_cars_seen = 0;            // the tick a car select last took input in
+
+template <void (*Original)(lifted::Context&)>
+void CarsInput(lifted::Context& c) {
+    g_cars_seen = Tick();
+    Original(c);
+}
+
+bool CarsUp() { return g_cars_seen && g_cars_seen + 2 >= Tick(); }
+
+/* Which of the column (x, y) is on: -1 the car before, 0 the chosen car, 1
+   the car after; 2 none. */
+int CarAt(float x, float y) {
+    const float x0 = FrontendPlace(0, 35.0f, 105.0f, 216.0f), x1 = FrontendPlace(0, 175.0f, 105.0f, 216.0f);
+    if (x < x0 || x > x1) return 2;
+    if (y >= 170.0f && y < 262.0f) return 0;
+    if (y >= 80.0f && y < 170.0f) return -1;
+    if (y >= 262.0f && y < 350.0f) return 1;
+    return 2;
+}
+
 // ------------------------------------------------------------ the pointer
 
 struct Pointer {
@@ -369,8 +405,23 @@ u16 MouseTick() {
             p.row = over_row;
         }
         if ((m.pressed & 1) && over_row >= 0) p.confirm = true;
+        // The car select's column: the chosen car chosen (Cross, as Select),
+        // the one before or after (or the arrows) turned to - not while it turns.
+        bool over_car = false;
+        if (!box && CarsUp() && (m.pressed & 1)) {
+            const int car = CarAt(x, y);
+            const int index = int(generated::ReadU32(kCars + 0x244)), count = int(generated::ReadU32(kCars + 0x248));
+            over_car = car != 2;
+            if (generated::ReadU32(kCars + 0x238) == 0) {
+                if (car == 0) Queue(kCross);
+                else if (car == -1 && index > 0) Queue(kUp);
+                else if (car == 1 && index + 1 < count) Queue(kDown);
+            }
+            if (kLog && over_car)
+                std::fprintf(stderr, "[mouse] the car select: car %d (%d of %d)\n", car, index, count);
+        }
         // A button of the legend: pressed.
-        if ((m.pressed & 1) && over_row < 0 && key_row < 0 && legend) Queue(legend);
+        if ((m.pressed & 1) && over_row < 0 && key_row < 0 && !over_car && legend) Queue(legend);
         if (kLog && (m.pressed & 1) && over_row < 0)
             std::fprintf(stderr, "[mouse] legend: %s slot %u\n", legend ? "button" : "no button", unsigned(slot));
         if (m.pressed & 4) Queue(kTriangle);
@@ -462,4 +513,7 @@ void RegisterMouse() {
     ps2host::Override(0x0032B2C0u, BoxInput<F_0032B2C0, 0x20>, "a message box's input: its buttons, for the mouse");
     ps2host::Override(0x00449150u, BoxInput<F_00449150, 0x38>,
                       "a driver details message box's input: its buttons, for the mouse");
+    ps2host::Override(0x00318A80u, CarsInput<F_00318A80>, "a car select's input: its cars, for the mouse");
+    ps2host::Override(0x003F03D0u, CarsInput<F_003F03D0>, "a car select's input: its cars, for the mouse");
+    ps2host::Override(0x003F0870u, CarsInput<F_003F0870>, "a car select's input: its cars, for the mouse");
 }
