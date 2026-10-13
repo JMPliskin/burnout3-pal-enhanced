@@ -74,9 +74,18 @@ PC settings
 -----------
 
 In the main menu, PC SETTINGS (where ONLINE used to be - EA's servers are
-long gone) sets: fullscreen, vertical sync, frame pacing, the internal
-resolution (original, twice as sharp, or as sharp as your screen - up to
-4x), the speed blur, and the aspect ratio (4:3, 16:9 or your window's).
+long gone) has three pages (Triangle goes back):
+
+  VIDEO      fullscreen, vertical sync, frame pacing, the internal
+             resolution (original, twice as sharp, or as sharp as your
+             screen - up to 4x), the aspect ratio (4:3, 16:9 or your
+             window's), and anti-aliasing: off, FXAA (edges smoothed,
+             almost free), or SSAA 2X / 4X (drawn 2 or 4 times as sharp and
+             averaged down - the cleanest, and the heaviest on the GPU;
+             with the resolution at DISPLAY, SSAA 4X can be too much)
+  GRAPHICS   the speed blur
+  CONTROLS   nothing yet
+
 QUIT GAME is in the main menu too.
 
 
