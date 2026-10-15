@@ -137,6 +137,8 @@ Known issues
   bottom-bar buttons, but not pointing yet.
 * The DualSense's trigger effects are new and lightly tested; tell us
   how they feel (USB and Bluetooth).
+* Your own car's engine sound is new: races are louder than before, and
+  the loudest moments can crackle; tell us if you hear it.
 
 
 Licences
