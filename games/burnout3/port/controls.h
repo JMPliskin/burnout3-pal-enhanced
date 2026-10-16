@@ -69,9 +69,11 @@ int RacingBinding(Device device, int input);
    itself) - for the prompts, the game's own art then. */
 bool MenuBindingsAsGame(Device device);
 
-/* The race's hints naming the boost button, as the controls have it: the
-   hint's words for `text` (one of the game's), "" if it is not one. */
-std::string RaceHint(const std::string& text, bool controller);
+/* The game's words naming a button (the race's boost hints, the title's
+   PRESS START), as the controls have it: the words for `text` (one of the
+   game's) and which of them it is (`slot`, 0-3); "" if it is not one. */
+std::string ButtonText(const std::string& text, bool controller, int* slot);
+constexpr int kButtonTexts = 4;
 
 /* Changes to any binding since the last call (the prompts redrawn). */
 unsigned Generation();

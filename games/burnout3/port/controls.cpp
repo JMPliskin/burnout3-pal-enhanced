@@ -564,16 +564,30 @@ bool MenuBindingsAsGame(Device device) {
                                          : Same(Of(device, Context::kMenus), kKeyboardDefaults);
 }
 
-std::string RaceHint(const std::string& text, bool controller) {
-    static const struct { const char* game; const char* before; const char* after; } kHints[] = {
-        {"PRESS R1 BUTTON TO BOOST", "PRESS ", " TO BOOST"},
-        {"WHEN CRASHING HOLD THE R1 BUTTON FOR AFTERTOUCH", "WHEN CRASHING HOLD THE ", " FOR AFTERTOUCH"},
+std::string ButtonText(const std::string& text, bool controller, int* slot) {
+    // The language file's every string naming a button (all of them: the
+    // file has these four), and which binding it means.
+    static const struct {
+        const char* game;
+        const char* before;
+        const char* after;
+        Context context;
+        int input;
+        bool title;             // Mixed case ("Press START button"), the key's word too
+    } kTexts[] = {
+        {"PRESS R1 BUTTON TO BOOST", "PRESS ", " TO BOOST", Context::kRacing, kR1, false},
+        {"WHEN CRASHING HOLD THE R1 BUTTON FOR AFTERTOUCH", "WHEN CRASHING HOLD THE ", " FOR AFTERTOUCH",
+         Context::kRacing, kR1, false},
+        {"Press START button to continue", "Press ", " to continue", Context::kMenus, kStart, true},
+        {"PRESS START BUTTON TO START GAME", "PRESS ", " TO START GAME", Context::kMenus, kStart, false},
     };
-    for (const auto& hint : kHints) {
-        if (text != hint.game) continue;
+    for (int i = 0; i < int(sizeof kTexts / sizeof kTexts[0]); ++i) {
+        const auto& t = kTexts[i];
+        if (text != t.game) continue;
         const Device device = controller ? Device::kController : Device::kKeyboard;
-        const std::string name = BoundName(device, Context::kRacing, kR1) + (controller ? " BUTTON" : " KEY");
-        return hint.before + name + hint.after;
+        const char* word = controller ? (t.title ? " button" : " BUTTON") : (t.title ? " key" : " KEY");
+        *slot = i;
+        return t.before + BoundName(device, t.context, t.input) + word + t.after;
     }
     return "";
 }

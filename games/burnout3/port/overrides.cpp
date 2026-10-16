@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -353,7 +354,7 @@ struct MainMenuState {
     u32 game_helps[kEntries] = {};
     GuestText pc_settings, pc_settings_help, quit, quit_help, question, blank;
     GuestText row_names[kEntries], row_helps[kEntries];
-    GuestText hints[2];                     // the race's hints, as the controls have them
+    GuestText hints[controls::kButtonTexts];    // the game's words naming buttons, as bound
     Page page = Page::kMainMenu;            // what the list shows
     int bindings = 0;                       // kBindingsPages' page shown (Page::kBindings)
     std::vector<Item> items;                // the page's rows; the list shows six from `scroll`
@@ -370,7 +371,6 @@ void MakeTexts(lifted::Context& c) {
     g_pool.Begin(c);
     // The largest first, while the donors' room is in one piece.
     for (u32 i = 0; i < kEntries; ++i) g_main.row_helps[i].Make(kHelpChars);
-    for (GuestText& hint : g_main.hints) hint.Make(64);
     for (u32 i = 0; i < kEntries; ++i) g_main.row_names[i].Make(kRowChars);
     g_main.entries = g_pool.Take(8 * kEntries, 8);
     g_main.helps = g_pool.Take(4 * kEntries, 4);
@@ -385,6 +385,15 @@ void MakeTexts(lifted::Context& c) {
     g_main.question.Make(32);
     g_main.blank.Make(2);
     g_main.blank.Set(" ");               // (an empty string the list does not draw as empty)
+    // The game's words naming buttons, when the bound one's name is longer
+    // (ButtonWords): what room is left, none needed.
+    int hints = 0;
+    for (GuestText& hint : g_main.hints) {
+        hint.Make(56);
+        hints += hint.at ? 1 : 0;
+    }
+    if (hints < controls::kButtonTexts)
+        std::fprintf(stderr, "[pc settings] room for %d of %d longer button words\n", hints, controls::kButtonTexts);
     // Every text found room, or the list would be handed a null string.
     bool room = g_main.entries && g_main.helps && g_main.blank.at && g_main.question.at && g_main.quit.at &&
                 g_main.quit_help.at && g_main.pc_settings.at && g_main.pc_settings_help.at;
@@ -505,6 +514,39 @@ std::string Text16(u32 at, u32 most) {
     return text;
 }
 
+/* The game's words naming a button (the race's hints, the title's PRESS
+   START), looked up (v0 the string): as the controls have it. Words no
+   longer than the game's are written over them, in the language file (the
+   title's are asked for before the port's own words have room - the first
+   main menu); longer ones are the port's (g_main.hints). The game's words
+   are kept, by where they were, to go back to. */
+void ButtonWords(lifted::Context& c) {
+    static std::map<u32, std::string> originals;
+    const u32 at = u32(c.r[2]);
+    if (!at || (generated::ReadU16(at) != 'P' && generated::ReadU16(at) != 'W' && !originals.count(at))) return;
+    const auto kept = originals.find(at);
+    const std::string game = kept != originals.end() ? kept->second : Text16(at, 64);
+    int slot = 0;
+    const std::string words = controls::ButtonText(game, ControllerPrompts(), &slot);
+    if (words.empty()) return;
+    auto write = [&](const std::string& text) {
+        if (Text16(at, 64) == text) return;
+        u32 i = 0;
+        for (; i < text.size(); ++i) generated::Write16(at + 2 * i, u8(text[i]));
+        generated::Write16(at + 2 * i, 0);
+    };
+    if (words.size() <= game.size()) {
+        if (words != game) originals.emplace(at, game);
+        write(words);
+        return;
+    }
+    if (kept != originals.end()) write(game);
+    GuestText& t = g_main.hints[slot];
+    if (!g_main.made || !t.at) return;
+    t.Set(words);
+    c.r[2] = t.at;
+}
+
 void GetString(lifted::Context& c) {
     const u32 id = u32(c.r[5]), caller = u32(c.r[31]);
     // The main menu's ONLINE as PC SETTINGS: asked from 0x003183D0 (it
@@ -520,17 +562,7 @@ void GetString(lifted::Context& c) {
         }
     }
     F_00271A00(c);
-    // The race's hints naming the boost button: as the controls have it.
-    const u32 at = u32(c.r[2]);
-    if (g_main.made && at && (generated::ReadU16(at) == 'P' || generated::ReadU16(at) == 'W')) {
-        const std::string text = Text16(at, 64);
-        const std::string hint = controls::RaceHint(text, ControllerPrompts());
-        if (!hint.empty() && hint != text) {
-            GuestText& t = g_main.hints[text[0] == 'P' ? 0 : 1];
-            t.Set(hint);
-            if (t.at) c.r[2] = t.at;
-        }
-    }
+    ButtonWords(c);
 }
 
 /* Calls a guest function from a host one, its arguments in a0-t1, and gives
