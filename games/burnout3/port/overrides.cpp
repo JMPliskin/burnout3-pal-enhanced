@@ -435,7 +435,7 @@ std::pair<std::string, std::string> ItemText(int item) {
         const std::string wait = keyboard ? "PRESS A KEY" : controls::ControllerPresent() ? "PRESS A BUTTON" : "NO CONTROLLER";
         return {name + ": " + wait + " (" + std::to_string(std::max(1, g_main.seconds)) + ")",
                 keyboard ? "THE KEY TO USE. ESCAPE OR A RIGHT CLICK LEAVES IT AS IT WAS"
-                         : "THE BUTTON TO USE. ESCAPE OR A RIGHT CLICK LEAVES IT AS IT WAS"};
+                         : "THE BUTTON TO USE. WAITING, ESCAPE OR A RIGHT CLICK KEEPS THE OLD ONE"};
     }
     return {name + ": " + controls::BoundName(page.device, page.context, action.input), action.help};
 }
