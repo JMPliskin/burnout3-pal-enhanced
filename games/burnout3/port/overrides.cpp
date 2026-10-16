@@ -869,6 +869,10 @@ void RegisterMouse();              // mouse.cpp
 void RegisterControls();           // controls.cpp
 
 void RegisterGameOverrides() {
+    // VU1's fast mode: every scripted run draws every picture as the exact
+    // VU does (regress.py --vu-fast), for ~15% less of VIF1's worker - the
+    // busiest thread on a slow machine.
+    ps2host::SetVuFastDefault(true);
     RegisterGameIopServers();
     RegisterWidescreen();
     RegisterMouse();
