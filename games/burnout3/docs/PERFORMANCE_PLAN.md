@@ -113,3 +113,52 @@ in one frame).
 Each step: the benchmark before and after (the summary's late frames and
 percentiles), the regressions (car_select, race_training, race) as
 recorded.
+
+## Low-power machines (2026-10-16/17)
+
+Goal: smooth on low-end PCs - few cores, slow cores, weak GPUs.
+
+**How it is measured.** The same race benchmark, at the PS2's own
+resolution (what a weak machine runs), the process held to a few cores from
+its start with `PS2HOST_CORES` (a count, or a mask: on the i7-13620H used,
+logical cores 0-11 are six hyperthreaded pairs, so `PS2HOST_CORES=4` is two
+physical cores with hyperthreading - a low-end i3 - and `0x5` two physical
+cores without - a Celeron or Pentium Silver). A process held to fewer cores
+only after it started is not the same: the GPU driver's thread pools were
+sized for sixteen, and every result measured so was wrong. Optionally a
+"burner" takes a share of each core at a higher priority (a slower CPU;
+imprecise with hyperthreading). Per run: frames dropped, blanks lost, late
+presents, the interval's percentiles, and the process's CPU (cores used).
+
+**Where it stood.** Two physical cores: 163 frames dropped, 2,390 blanks
+lost, the game stopping for up to 4.8 seconds at a time.
+
+**What fixed it.**
+
+| change | two cores | sixteen |
+| --- | --- | --- |
+| before | 163 dropped, 2,390 lost, longest 4,774 ms, 1.52 cores | 0 late |
+| the vertical blank timer no longer spins on a timer interrupt it marked due and the EE has not taken yet (it ran at time-critical priority, holding a core the EE needed) | 0-2 dropped, 0-3 lost, 41-44 late, longest 67-113 ms, 1.40 cores | 0 late, 1.44 cores |
+| spinning to a deadline and the game threads above normal only with 4+ logical cores (with 2: 1,118 dropped) | (included above) | unchanged |
+| VU1 fast mode by default (exact pictures; the scripted race 102.8 -> 98.3 s, VU1 29.2% -> 25.6%) | | |
+| SPU2: a voice heard nowhere skips its interpolation (WAV byte-identical; SPU2 5.5% -> 5.3%) | | |
+
+Two physical cores with hyperthreading (`PS2HOST_CORES=4`): 0 dropped, 5
+late in 2,800 (11 without the spin). With a burner taking about half of
+every core as well: 0 dropped, 2-3 late.
+
+What is left on two cores: in heavy moments (crashes, debris) VU1, the GS
+thread and the EE together need more than two cores for a few frames - the
+41 late presents. Per frame on the fast CPU, at the PS2's resolution: VIF1's
+worker ~49% busy (89% of that VU1's compiled code, spread over many blocks),
+the GS thread ~44% (25% drawing, ~25% Vulkan recording and the driver), the
+EE ~37% (a third of it the SPU2). Measured and found not to matter: the GS
+thread's spin before it sleeps (1.46 vs 1.44 cores), the speed blur (2-3%
+of the GPU), the 1024 x 1024 depth texture decoded each frame (no change).
+
+The GPU at the PS2's resolution: about 5.5 ms a frame on an RTX 4070 laptop
+(draws 55%, swizzles 20%, decodes 15%): ~1,870 draws in ~216 render passes,
+~410 barriers, ~200 dispatches a frame - each texture decode goes through a
+staging buffer and a copy between full barriers. An integrated GPU will feel
+that first; the next lever there is fewer passes and barriers (decodes
+written straight into their images, batched).
