@@ -207,6 +207,9 @@ void Load() {
                 else if (device == Device::kKeyboard && KeyByName(value)) b.physical[i] = KeyByName(value);
                 else if (device == Device::kController && ButtonByName(value) >= 0)
                     b.physical[i] = ButtonByName(value);
+                else continue;
+                if (kLog) std::fprintf(stderr, "[controls] %s %s %s: %s (the settings')\n", DeviceKey(device),
+                                       ContextKey(context), kInputKeys[i], value.c_str());
             }
             Of(device, context) = b;
         }
@@ -548,6 +551,11 @@ bool ControllerPresent() { return g_controller_seen && g_controller_seen + 2 >= 
 int MenuBinding(Device device, int input) {
     Load();
     return Of(device, Context::kMenus).physical[input];
+}
+
+int RacingBinding(Device device, int input) {
+    Load();
+    return Of(device, Context::kRacing).physical[input];
 }
 
 bool MenuBindingsAsGame(Device device) {

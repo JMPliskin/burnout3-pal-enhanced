@@ -603,6 +603,7 @@ constexpr char kAtlasName[] = "6c432b9f02f261c7-1c2b765d5e998877-000019d3";     
 constexpr char kArmsName[] = "e2cabf8d5022260a-e76ee08bb6750c0f-00001154";      // 32 x 16: the D-pad's arms
 constexpr char kShoulderLName[] = "a0753932ac46bf20-758febaacdf3a257-00001593"; // 64 x 32: L1, L2
 constexpr char kShoulderRName[] = "6c0ca9b9090026ff-c9b41b58a3740b4-00001593";  // 64 x 32: R1, R2
+constexpr char kImpactName[] = "adbaa8e56489a4b-99f532662aa4f3aa-00001593";     // 64 x 32: the race's R1 (Impact Time)
 
 constexpr Box kCrossCell{2, 3, 13, 14}, kTriangleCell{16, 2, 27, 12}, kCircleCell{1, 16, 14, 29},
               kSquareCell{16, 17, 27, 28};
@@ -613,6 +614,7 @@ constexpr Box kSelectCell{30, 18, 47, 30}, kSelectDarkCell{49, 20, 62, 28};
 constexpr Box kStartWord{67, 21, 125, 37};
 constexpr Box kArmUp{2, 1, 14, 15}, kArmLeft{16, 2, 30, 14};     // drawn as the down and right arms
 constexpr Box kShoulderCells[] = {{1, 4, 31, 28}, {33, 4, 63, 28}};
+constexpr Box kImpactCell{5, 4, 59, 28};
 
 /* The Start word (the title's PRESS START): the binding's name. */
 std::string StartWord(const Look& look) {
@@ -679,6 +681,25 @@ Canvas Shoulders(const Look& look, int first, int second) {
     return c;
 }
 
+/* The race's own R1 key (a crash's IMPACT TIME), as its grey key: the
+   racing binding for boost. */
+Canvas ImpactKey(const Look& look) {
+    Canvas c(64, 32);
+    const Box& b = kImpactCell;
+    c.RoundedBox(b.x0, b.y0, b.x1, b.y1, 6.0f, kKeyEdge);
+    c.RoundedBox(b.x0 + 1.5f, b.y0 + 1.5f, b.x1 - 1.5f, b.y1 - 1.5f, 5.0f, kKeyFace);
+    const Box inside{b.x0 + 3.0f, b.y0 + 3.0f, b.x1 - 3.0f, b.y1 - 3.0f};
+    const int bound = controls::RacingBinding(look.device, kR1);
+    if (look.device == Device::kKeyboard) {
+        if (bound > 0) KeyCap(c, inside, bound, Tint::kKey, 2.6f);
+    } else if (bound >= 0) {
+        const bool face = bound == kCross || bound == kCircle || bound == kSquare || bound == kTriangle;
+        if (face) Button(c, inside.Square(0.85f), bound, look.style, Tint::kOwn, 2.0f);
+        else Button(c, inside, bound, look.style, Tint::kKey, 2.6f);
+    }
+    return c;
+}
+
 // ------------------------------------------------------------------ showing them
 
 enum class Prompts { kController, kKeyboard, kMouse };
@@ -736,7 +757,7 @@ std::string Signature(const Look& look) {
                       : look.style == Style::kXbox      ? "xbox"
                                                         : "playstation";
     for (int i = 0; i < 16; ++i) key += "," + std::to_string(controls::MenuBinding(look.device, i));
-    return key;
+    return key + ";" + std::to_string(controls::RacingBinding(look.device, kR1));
 }
 
 void Set(const char* name, std::shared_ptr<const pack::Image> image) {
@@ -751,6 +772,12 @@ void Show(Prompts prompts) {
     const std::string signature = Signature(look);
     if (signature == g_shown) return;
     g_shown = signature;
+    // The race's Impact Time key: the game's own for a DualShock's R1.
+    if (look.device == Device::kController && look.style == Style::kPlayStation &&
+        controls::RacingBinding(Device::kController, kR1) == kR1)
+        Set(kImpactName, nullptr);
+    else
+        Set(kImpactName, Image(signature + "/impact", "impact", ImpactKey, look));
     // A DualShock's buttons as the game's: its own art.
     if (look.device == Device::kController && look.style == Style::kPlayStation &&
         controls::MenuBindingsAsGame(Device::kController)) {

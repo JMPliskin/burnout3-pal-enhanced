@@ -412,8 +412,8 @@ std::pair<std::string, std::string> ItemText(int item) {
         case Item::kLayout: {
             const bool xbox = controls::PromptStyle() == controls::Style::kXbox;
             return {std::string("LAYOUT: ") + kLayouts[int(controls::RacingLayout())],
-                    xbox ? "CLASSIC: THE GAME'S OWN. MODERN: RT ACCELERATES, LT BRAKES, A BOOSTS"
-                         : "CLASSIC: THE GAME'S OWN. MODERN: R2 ACCELERATES, L2 BRAKES, X BOOSTS"};
+                    xbox ? "THE GAME'S OWN (CLASSIC), OR RT TO ACCELERATE AND LT TO BRAKE (MODERN)"
+                         : "THE GAME'S OWN (CLASSIC), OR R2 TO ACCELERATE AND L2 TO BRAKE (MODERN)"};
         }
         case Item::kReset: return {"RESET TO DEFAULTS", "EVERY KEY OR BUTTON ON THIS PAGE AS IT FIRST WAS"};
         case Item::kAction: break;

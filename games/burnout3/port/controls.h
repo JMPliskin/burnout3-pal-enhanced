@@ -63,6 +63,8 @@ bool ControllerPresent();
    prompts'): a virtual key (keyboard), or a controller button by its
    DualShock 2 place (0-15); -1 none. */
 int MenuBinding(Device device, int input);
+/* The same, racing (the race's own prompts: Impact Time's R1). */
+int RacingBinding(Device device, int input);
 /* Whether the controller's menus are as the game's own (each button
    itself) - for the prompts, the game's own art then. */
 bool MenuBindingsAsGame(Device device);
