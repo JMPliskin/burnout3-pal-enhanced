@@ -1,0 +1,16 @@
+{
+    "name":  "Burnout 3: Takedown (PAL)",
+    "title":  "Burnout 3: Takedown",
+    "version":  "0.4.0-alpha",
+    "iso":  "../../../ISOs/Burnout3_PAL.iso",
+    "executable":  "SLES_525.84",
+    "database":  "build/sles_525_84_clean.json",
+    "vu_regions": [["0x0046A280", "0x00484320"]],
+    "layout":  {
+                   "image_end":  "0x02000000",
+                   "scratch":  "0x01ED0000",
+                   "scratch_size":  "0x20000",
+                   "stack_top":  "0x01F00000",
+                   "stack_size":  "0x10000"
+               }
+}
