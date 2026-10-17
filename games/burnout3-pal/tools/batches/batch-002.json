@@ -1,0 +1,1085 @@
+{
+  "schema_version": 1,
+  "id": "batch-002",
+  "mode": "explicit",
+  "limits": {
+    "max_passes": 1,
+    "instruction_budget": 100000,
+    "function_timeout_seconds": 60,
+    "compile_timeout_seconds": 120,
+    "batch_timeout_seconds": 600
+  },
+  "provenance": {
+    "selection": "Automatic level-1, called entries only, audited conservative instruction whitelist; order level/size/address",
+    "inventory_sha256": "e70b360c49584fdb7da04b15a7e3be603f2542d056f05ab1e05c7691610bba93",
+    "input_hashes_verified": {
+      "games/burnout3-pal/game.json": "9c8aa62b3e7ecaaf29396597837ec45824dc6754c98b7eae6fa33e367bbff9a1",
+      "games/burnout3-pal/extracted/SLES_525.84": "913a3bcbcd735a435aac676ef1055737a86f9bbac26611344788c5e5ef953c6f",
+      "games/burnout3-pal/build/sles_525_84_clean.json": "f39d4ebb06cab46c18b38e3d8c9dcf82d7a9d563fb3a76b51b8adf49edfa9969",
+      "games/burnout3-pal/tools/classify_functions.py": "fa1a0ee80206f553e4d92d7eea545408298ba118cac90172662a55023f112798",
+      "engine/ps2decomp/r5900.py": "3aa6893005e1c86fe28aa4ed34ad7d9c03e4bc9ab079fd64e959f4a57844e11a",
+      "engine/ps2decomp/emu.py": "e8a5e15a877c1114a5128712d5dc4b247c278e98c2e5811ba697024fc6e70769",
+      "engine/ps2decomp/game.py": "0bd9ee6b08c5d41a01e1696e0aba5ec9edd81bd02f68e8c5d7907d5a6e026de1"
+    },
+    "previously_verified_excluded": [
+      "0x00121568",
+      "0x00134330",
+      "0x0013B6B0",
+      "0x0013B740",
+      "0x0019B6B0",
+      "0x001A87C0",
+      "0x00237310",
+      "0x0026C920",
+      "0x002C34C8",
+      "0x002C34D8",
+      "0x003E9140",
+      "0x003E97F0"
+    ],
+    "discarded_before_selection": [
+      {
+        "address": "0x003382A0",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x002D4DF0",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x00400470",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x004004C0",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x00485518",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x0024AF08",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      },
+      {
+        "address": "0x004213F0",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      },
+      {
+        "address": "0x002B6F30",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      },
+      {
+        "address": "0x002D4DB8",
+        "reason": "Entry recovered or pointer-only: boundary confirmation pending"
+      },
+      {
+        "address": "0x0011D630",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      },
+      {
+        "address": "0x0011D8C8",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      },
+      {
+        "address": "0x0011D4C0",
+        "reason": "HI/LO, 64-bit packing, likely or complex instruction deferred"
+      }
+    ],
+    "audit": [
+      {
+        "address": "0x00103CC0",
+        "size": 40,
+        "instructions": 10,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x00103CC8",
+            "mnemonic": "bne",
+            "target": "0x00103CE0",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x00103CCC",
+          "0x00103CE4"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x002372E8",
+        "size": 40,
+        "instructions": 10,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [],
+        "delay_slots": [
+          "0x0023730C"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x0040B940",
+        "size": 40,
+        "instructions": 10,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x0040B944",
+            "mnemonic": "bne",
+            "target": "0x0040B960",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x0040B948",
+          "0x0040B95C",
+          "0x0040B964"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x002C30F0",
+        "size": 52,
+        "instructions": 13,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x002C30F0",
+            "mnemonic": "bltz",
+            "target": "0x002C3118",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x002C3110",
+            "mnemonic": "beq",
+            "target": "0x002C311C",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x002C30F4",
+          "0x002C3114",
+          "0x002C3120"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x00400488",
+        "size": 52,
+        "instructions": 13,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [],
+        "delay_slots": [
+          "0x004004B8"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x002149B0",
+        "size": 60,
+        "instructions": 15,
+        "input_registers": [
+          "a0",
+          "a1"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x002149B8",
+            "mnemonic": "beq",
+            "target": "0x002149C4",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x002149C8",
+            "mnemonic": "bne",
+            "target": "0x002149D8",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x002149BC",
+          "0x002149CC",
+          "0x002149D4",
+          "0x002149E8"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x002CECD0",
+        "size": 64,
+        "instructions": 16,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x002CECF0",
+            "mnemonic": "beq",
+            "target": "0x002CED08",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x002CECF4",
+          "0x002CED00",
+          "0x002CED0C"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x0019E9D0",
+        "size": 68,
+        "instructions": 17,
+        "input_registers": [
+          "a0",
+          "a1"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x0019E9D4",
+            "mnemonic": "beq",
+            "target": "0x0019EA08",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x0019E9E0",
+            "mnemonic": "beq",
+            "target": "0x0019EA00",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x0019E9E8",
+            "mnemonic": "beq",
+            "target": "0x0019E9F8",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x0019E9D8",
+          "0x0019E9E4",
+          "0x0019E9EC",
+          "0x0019E9F4",
+          "0x0019E9FC",
+          "0x0019EA04",
+          "0x0019EA10"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x003EA890",
+        "size": 68,
+        "instructions": 17,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x003EA894",
+            "mnemonic": "beq",
+            "target": "0x003EA8C8",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x003EA8A0",
+            "mnemonic": "beq",
+            "target": "0x003EA8C0",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x003EA8A8",
+            "mnemonic": "beq",
+            "target": "0x003EA8B8",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x003EA898",
+          "0x003EA8A4",
+          "0x003EA8AC",
+          "0x003EA8B4",
+          "0x003EA8BC",
+          "0x003EA8C4",
+          "0x003EA8D0"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      },
+      {
+        "address": "0x003F6070",
+        "size": 68,
+        "instructions": 17,
+        "input_registers": [
+          "a0"
+        ],
+        "incoming_v0_v1_hi_lo_fpu": false,
+        "branches": [
+          {
+            "address": "0x003F6074",
+            "mnemonic": "beq",
+            "target": "0x003F60A8",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x003F6080",
+            "mnemonic": "beq",
+            "target": "0x003F60A0",
+            "coverage": "pending_dynamic_validation"
+          },
+          {
+            "address": "0x003F6088",
+            "mnemonic": "beq",
+            "target": "0x003F6098",
+            "coverage": "pending_dynamic_validation"
+          }
+        ],
+        "delay_slots": [
+          "0x003F6078",
+          "0x003F6084",
+          "0x003F608C",
+          "0x003F6094",
+          "0x003F609C",
+          "0x003F60A4",
+          "0x003F60B0"
+        ],
+        "signedness": "slt/bltz signed64; sll/srl/sra/addiu/addu/subu operate on 32-bit words; logical operations preserve register-width semantics",
+        "return_and_coverage": "pending_dynamic_validation; current DLL return ABI s32 only"
+      }
+    ],
+    "coverage_policy": "All dynamic coverage remains pending. Current schema has no branch or movz coverage fields; no unsupported fields added to function coverage. No return oracle.",
+    "execution_limit": "Current runner dynamically allows only canonical batch-001. Batch-002 is validate-only."
+  },
+  "functions": [
+    {
+      "address": "0x00103CC0",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002372E8",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x0040B940",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002C30F0",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x0000000000000005"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x00400488",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002149B0",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF",
+            "arg1": "0x0000000000000002"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000",
+            "arg1": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555",
+            "arg1": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321",
+            "arg1": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002CECD0",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x0019E9D0",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x0000000000000002"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF",
+            "arg1": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000",
+            "arg1": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555",
+            "arg1": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x1234567887654321",
+            "arg1": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x003EA890",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x0000000000000002"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x003F6070",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x8000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x0000000000000002"
+          },
+          "objects": []
+        }
+      ]
+    }
+  ]
+}

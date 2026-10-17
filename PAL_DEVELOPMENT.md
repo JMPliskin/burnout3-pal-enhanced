@@ -1,7 +1,7 @@
 # Burnout 3 PAL Enhanced: estado y continuidad
 
 Fecha de revisión: 2026-10-17. Rama comprobada: `pal-enhanced`.
-HEAD comprobado: `b0c12f6ddbd6d9ba323ada93f71a6829568ce8ea`.
+HEAD previo a esta actualizacion: `aacc07bc4aa78afb13d6b1256a27dd9035de82e2`. Los cambios generalizados se preparan para commit en esta sesion.
 Este documento describe evidencia local, no certifica el juego completo.
 
 ## Índice
@@ -89,13 +89,13 @@ Inventario comprobado: nivel 1: 34; nivel 2: 256; nivel 3: 475; nivel 4: 1661; n
 
 Batch-002: `0x00103CC0`, `0x002372E8`, `0x0040B940`, `0x002C30F0`, `0x00400488`, `0x002149B0`, `0x002CECD0`, `0x0019E9D0`, `0x003EA890`, `0x003F6070`.
 
-Tiene **80 casos SOLO validados estáticamente**. No se ejecutaron derivación, MIPS ni DLL para este lote. Cobertura pendiente; no hay oráculos manuales. Informe: `games/burnout3-pal/build/batches/batch-002/validate-0bb1ac734aad48f9932b714af66f7df1/results.json`, estado `validated_only`.
+Estado actualizado: **batch-002 passed, 10/10 funciones y 80/80 casos en 30.140 s**. MIPS, expresiones y DLL x64 /O2 coinciden; cero discrepancias/escrituras, ramas con ambas alternativas, movz cubierto en 0x0040B940 y movn no aplicable. Diez Jobs terminaron limpios. Evidencia local: `games/burnout3-pal/build/batches/batch-002/sequential-44981cbc76e742acb170306b07190f5f/supervisor.json`.
 
-Al revisar esta fecha, batch-002.json es un archivo nuevo sin commit; no asumir que está en HEAD.
+La nota de cobertura pendiente dentro del manifiesto describe su origen como propuesta inicialmente solo estatica; el informe anterior aporta evidencia dinamica posterior. No hay oraculos manuales. El total historico aumenta de 12 funciones/96 casos a **22 funciones/176 casos distintos por funcion y entrada**. Repeticiones no incrementan el total.
 
 ## 6. Ejecutor aislado y límites
 
-[run_batch.py](games/burnout3-pal/tools/run_batch.py) conserva `--validate-only`. La ejecución dinámica admite únicamente las cinco funciones canónicas de batch-001, secuencialmente y con validación obligatoria en cada hijo. Rechaza explore, memoria sintética, escrituras, llamadas y VU para este recorrido.
+[run_batch.py](games/burnout3-pal/tools/run_batch.py) admite direcciones del manifiesto mediante inspeccion MIPS, sin lista fija de batch-001. Perfil: registros u64, retorno s32, flujo aciclico, hasta 30 instrucciones y ocho casos explicitos. Audita registros definidos, ramas, delay slots y cuerpo/chunks; chunks se inspeccionan pero se rechazan. Excluye memoria, llamadas, VU/FPU, HI/LO, sistema e instrucciones fuera del perfil. Conserva validacion en cada trabajador y exige ambas alternativas de ramas y movn/movz; validate-only no acredita esa cobertura.
 
 Windows Jobs privados mediante ctypes: `CreateProcessW(CREATE_SUSPENDED)` → `AssignProcessToJobObject` → `ResumeThread`. `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, terminación del Job propio y `QueryInformationJobObject` para cero procesos activos. Sin atributos privados de subprocess, taskkill ni elevación. Registra APIs, errores Win32, PID, timeout y limpieza por separado.
 
@@ -106,6 +106,26 @@ Pruebas sintéticas locales de Jobs: salida normal 0.203 s; timeout individual d
 Referencias: `build/batches/batch-001/job-audit-720da6feb3d64430b90ffbe133b3a73a/` y `sequential-762ba4413eed49ae8ff539cd6276e91d/supervisor.json`.
 
 La ruta anterior taskkill falló dentro del sandbox; no confundir esa prueba fallida con la posterior validación de Jobs. Estados de fallo nunca son éxito. Rechazos, discrepancias, compilación y timeout individual permiten continuar; errores estructurales detienen el lote y conservan informes parciales.
+
+### Pipeline local MVP
+
+[run_pal_pipeline.py](games/burnout3-pal/tools/run_pal_pipeline.py) descubre manifiestos, exige seleccion explicita y ordena deterministamente. Delega en run_batch.py sin duplicar derivacion, compilacion o pruebas. Ofrece --list, --validate-only, --batches, --stop-on-error y --execute; este ultimo habilita expresamente ejecucion real.
+
+Prueba integral ejecutada SOLO para batch-001: **5/5 funciones y 40/40 casos, 14.625 s de lote delegado**, sin discrepancias/escrituras y cinco Jobs limpios. Recuperados supervisor y cinco informes individuales. Informe: `games/burnout3-pal/build/pipeline/run-584df73231014497abd8b0a1ef47397a/summary.json`. No suma casos nuevos al historico. No se ha ejecutado batch-002 mediante el pipeline.
+
+Informes exclusivos bajo build/pipeline con hashes y referencias. Paquetes de fallo locales: direccion, etapa, instrucciones, logs y C++ si existe; nunca ELF, ISO ni DLL. Esos paquetes pueden contener codigo derivado y no deben versionarse/publicarse. Las rutas de fallo del pipeline siguen pendientes de pruebas integrales. No hay timeout global adicional del pipeline; depende de los plazos del runner. La concurrencia sobre el mismo lote puede causar ambiguedad de informes y se rechaza.
+
+La seleccion y generacion automatica de casos no estan implementadas en el pipeline: reutiliza manifiestos solicitados. La seleccion inicial de batch-002 fue una preparacion estatica separada. Codex no se invoca automaticamente; depuracion manual mediante informes y autorizacion antes de corregir o repetir pruebas.
+
+Comandos del pipeline comprobados:
+
+```powershell
+py -3.12 games/burnout3-pal/tools/run_pal_pipeline.py --list
+py -3.12 games/burnout3-pal/tools/run_pal_pipeline.py --validate-only --batches batch-001 batch-002 --stop-on-error
+py -3.12 games/burnout3-pal/tools/run_pal_pipeline.py --execute --batches batch-001 --stop-on-error
+```
+
+Tambien comprobado directamente: `py -3.12 games/burnout3-pal/tools/run_batch.py --manifest games/burnout3-pal/tools/batches/batch-002.json`.
 
 ## 7. Commits comprobados
 
@@ -143,8 +163,8 @@ También comprobados: `clean_database.py` y `classify_functions.py`; no repetir 
 
 ## 9. Pendientes e incertidumbres
 
-- Revisar y versionar batch-002 cuando se autorice; ampliar runner explícitamente antes de ejecutarlo.
-- Añadir contratos de cobertura de ramas/movz al esquema; actualmente esas obligaciones se anotan como pendientes en procedencia, no se certifican por validate-only.
+- Implementar seleccion/casos automaticos trazables. Batch-002 ya paso ejecucion directa; el pipeline aun exige manifiestos explicitos.
+- Ampliar contratos declarativos de ramas/movz; el runner ya exige cobertura instrumentada, pero validate-only no la demuestra.
 - Implementar y probar timeout independiente de compilación.
 - Soportar lectura/escritura sintética en runner general sin perder reinicialización, trazas ni aislamiento. La regresión de memoria independiente sí funciona.
 - Investigar funciones recuperadas, HI/LO, llamadas, VU y estado global en pasos posteriores.

@@ -1,4 +1,4 @@
-"""Validate PAL batches; sequential isolated execution of the five canonical batch-001 functions.
+"""Validate PAL manifests and run statically admitted register-only workers.
 
 All manifest paths are resolved independently of the shell working directory.
 Only the validated child imports derive; no lift or port execution.
@@ -105,7 +105,7 @@ def validate(manifest):
     check(scratch%16==0 and scratch+size<=int(game.layout['stack_top'],0)-int(game.layout['stack_size'],0),'Scratch/stack conflict')
     check(all(not p.memsz or p.type!=1 or scratch>=p.vaddr+p.memsz or scratch+size<=p.vaddr for p in elf.segments),'Scratch/PT_LOAD conflict')
     check(isinstance(manifest['functions'],list) and manifest['functions'], 'Empty selection')
-    addresses=set(); total=0
+    addresses=set(); total=0; admissions=[]
     for entry in manifest['functions']:
         keys(entry, ('address','expected_case_count','memory_contract','coverage','cases'), ('address','expected_case_count','memory_contract','coverage','cases'))
         check(isinstance(entry['address'],str) and re.fullmatch(r'0x[0-9A-Fa-f]{8}',entry['address']), 'Invalid address')
@@ -127,28 +127,103 @@ def validate(manifest):
         if 'slt_relations' in coverage: check(coverage['slt_relations']==['less','equal','greater'],'Invalid slt contract')
         if 'movn_conditions' in coverage: check(coverage['movn_conditions']==[False,True],'Invalid movn contract')
         for case in entry['cases']: validate_memory(case,contract,size)
+        select_worker(manifest,entry['address'])
+        admissions.append(admit_function(f,section,image,game.vu_regions))
         total+=count
-    return game, {'status':'validated_only','dynamic_execution':False,'function_count':len(addresses),'case_count':total,'addresses':sorted(addresses),'limits':limits,'isolation_plan':{'unit':'one subprocess per function','fault_mapping':False,'timeouts':{'function':'effective whole-worker wall-clock deadline','batch':'effective shared deadline','compile':'configured and measured only; independent compile deadline not yet enforced'},'execution':'sequential canonical batch-001 workers; runtime validation still required'},'uncertainties':['Validation checks declarations and input bounds, not dynamic coverage or equivalence.']}
+    return game, {'status':'validated_only','dynamic_execution':False,'function_count':len(addresses),'case_count':total,'addresses':sorted(addresses),'admissions':admissions,'limits':limits,'isolation_plan':{'unit':'one subprocess per function','fault_mapping':False,'timeouts':{'function':'effective whole-worker wall-clock deadline','batch':'effective shared deadline','compile':'configured and measured only; independent compile deadline not yet enforced'},'execution':'sequential admitted register-profile workers; runtime validation still required'},'uncertainties':['Validation checks declarations and input bounds, not dynamic coverage or equivalence.']}
 
 
 
-ALLOWED = {0x0026C920,0x002C34C8,0x002C34D8,0x003E9140,0x00237310}
+REGISTER_OPS = {
+    'nop','jr','b','beq','bne','bltz','bgez','blez','bgtz',
+    'lui','addiu','andi','ori','xori','slti','sltiu',
+    'sll','srl','sra','sllv','srlv','srav',
+    'addu','daddu','subu','and','or','xor','nor','slt','sltu','movn','movz',
+}
+
+
+def admit_function(f, section, image, vu_regions):
+    """Conservative register-only acyclic profile; no guest execution.
+
+    Decode body AND chunks, but reject chunks after inspection: their ownership
+    and CFG joining are not supported by this profile. Track definite register
+    initialization per path including delay slots; never infer safety from level.
+    """
+    from ps2decomp.emu import is_supported
+    prefix='0x%08X: '%f['addr']
+    spans=[(f['addr'],f['end'])]+[tuple(c) for c in f.get('chunks',[])]
+    code={}
+    for low,high in spans:
+        check(section.addr<=low<high<=section.end_addr and low%4==high%4==0,prefix+'invalid range')
+        check(not any(low<h and high>l for l,h in vu_regions),prefix+'VU overlap')
+        for address in range(low,high,4):
+            i=DISASM.decode(struct.unpack_from('<I',image,address-section.addr)[0],address)
+            check(i.is_valid,prefix+'invalid decoding')
+            check(is_supported(i),prefix+'interpreter unsupported '+i.mnemonic)
+            check(not i.flags&(Flags.LOAD|Flags.STORE|Flags.TRAP) and not i.is_call,prefix+'memory/call/trap unsupported')
+            check(i.raw>>26 not in (0x11,0x12,0x31,0x39,0x36,0x3e),prefix+'FPU/VU unsupported')
+            check(i.mnemonic in REGISTER_OPS,prefix+'outside register profile (including HI/LO/system): '+i.mnemonic)
+            code[address]=i
+    check(not f.get('chunks'),prefix+'chunks inspected but not admitted')
+    check(1<=len(code)<=30 and f['size']==f['end']-f['addr'],prefix+'size outside profile')
+    check(f['has_return'] and not f['calls'] and not f['uses_vu'],prefix+'metadata return/calls/VU conflict')
+    slots={a+4 for a,i in code.items() if i.has_delay_slot}
+    for address,i in code.items():
+        if i.has_delay_slot:check(address+4 in code and not code[address+4].has_delay_slot,prefix+'invalid delay slot')
+        if i.is_return:check(i.rs==31,prefix+'invalid return')
+        elif i.is_branch or i.is_jump:
+            check(i.target in code and i.target not in slots and i.target>address,prefix+'external/backward/slot transfer')
+    inputs=set();return_sites=set();visited=set();work=[(f['addr'],frozenset({0,31}))]
+    def access(i,defined):
+        n=i.mnemonic
+        if n in ('nop','b'):reads=[];dest=None
+        elif n=='jr':reads=[i.rs];dest=None
+        elif n in ('beq','bne'):reads=[i.rs,i.rt];dest=None
+        elif n in ('bltz','bgez','blez','bgtz'):reads=[i.rs];dest=None
+        elif n=='lui':reads=[];dest=i.rt
+        elif n in ('addiu','andi','ori','xori','slti','sltiu'):reads=[i.rs];dest=i.rt
+        elif n in ('sll','srl','sra'):reads=[i.rt];dest=i.rd
+        elif n in ('movn','movz'):reads=[i.rs,i.rt,i.rd];dest=i.rd
+        else:reads=[i.rs,i.rt];dest=i.rd
+        for reg in reads:
+            if reg not in defined:
+                check(4<=reg<=11,prefix+'uninitialized/nonargument register %d'%reg)
+                inputs.add(reg)
+        check(dest is None or dest in {0,1,2,3,*range(4,12)},prefix+'writes preserved/stack/return register')
+        return frozenset(set(defined)|({dest} if dest is not None else set()))
+    while work:
+        address,defined=work.pop()
+        if (address,defined) in visited:continue
+        visited.add((address,defined));check(len(visited)<=10000,prefix+'CFG budget exceeded')
+        i=code[address];defined=access(i,defined)
+        if i.has_delay_slot:defined=access(code[address+4],defined)
+        if i.is_return:
+            check(2 in defined,prefix+'return v0 not definitely assigned');return_sites.add(address);continue
+        successors=[i.target] if i.mnemonic=='b' else [i.target,address+8] if i.is_branch else [address+4]
+        for target in successors:
+            check(target in code,prefix+'fallthrough outside function');work.append((target,defined))
+    check(return_sites,prefix+'no reachable return')
+    return {'address':f['addr'],'profile':'acyclic_registers_s32_return','instruction_count':len(code),
+            'input_registers':sorted(inputs),'input_arguments':['arg%d'%(r-4) for r in sorted(inputs)],
+            'implicit_inputs':['ra'],'incoming_v0_v1_hi_lo_fpu':False,
+            'branches':[a for a,i in code.items() if i.is_branch],
+            'returns':sorted(return_sites),'delay_slots':sorted(slots),
+            'conditional_moves':[a for a,i in code.items() if i.mnemonic in ('movn','movz')],
+            'coverage_status':'pending_dynamic_verification',
+            'limits':['Return ABI is s32; full-register and 64-bit-return equivalence not certified.',
+                      'Admission proves profile constraints only; derivation/emission may still reject.']}
 
 
 def select_worker(manifest, only):
-    check(isinstance(only,str) and only.startswith('0x'), 'Worker requires one address')
-    address=int(only,16)
-    check(address in ALLOWED, 'Only the five canonical batch-001 functions are supported')
-    check(manifest['mode']=='explicit' and manifest['id']=='batch-001','Only explicit batch-001 supported')
-    entries=[f for f in manifest['functions'] if int(f['address'],16)==address]
+    check(isinstance(only,str) and re.fullmatch(r'0x[0-9a-fA-F]{8}',only),'Worker requires one address')
+    entries=[f for f in manifest['functions'] if int(f['address'],16)==int(only,16)]
     check(len(entries)==1,'Missing or duplicate worker function')
     entry=entries[0]
-    canonical=json.loads((GAME/'tools/batches/batch-001.json').read_bytes())
-    original=next(f for f in canonical['functions'] if int(f['address'],16)==address)
-    check(entry==original and len(entry['cases'])==8,'Exact canonical cases and contracts required')
+    check(manifest['mode']=='explicit','Explore unsupported')
+    check(entry['expected_case_count']==8 and len(entry['cases'])==8,'Register worker currently requires exactly eight cases')
     check(not entry['memory_contract']['reads'] and not entry['memory_contract']['writes'] and
           all(not c['objects'] and all(isinstance(v,str) for v in c['arguments'].values()) for c in entry['cases']),
-          'Synthetic memory is unsupported')
+          'Only explicit u64 register cases without memory are supported')
     return entry
 
 
@@ -171,7 +246,7 @@ def worker(path, only, directory):
         # Always validate in the child before importing the derivation tool.
         manifest=json.loads(path.read_bytes());game,validation=validate(manifest)
         entry=select_worker(manifest,only)
-        check(directory.is_dir() and directory.parent.parent == GAME/'build/batches/batch-001', 'Invalid worker output directory')
+        check(directory.is_dir() and directory.parent.parent == GAME/'build/batches'/manifest['id'], 'Invalid worker output directory')
         sys.path.insert(0,str(ROOT/'engine/tools'))
         import derive
         from ps2decomp import cppcheck, testplan
@@ -182,10 +257,8 @@ def worker(path, only, directory):
                           (path,Path(__file__),GAME/'game.json',Path(game.database_path),Path(game.elf_path))}
         db=game.load_database();f=next(f for f in db['functions'] if f['addr']==int(entry['address'],16))
         elf=game.load_elf();section=elf.exec_sections[0];image=elf.section_data(section)
-        check(f['has_return'] and not f['uses_vu'] and not f['calls'] and not f.get('chunks'),'Invalid properties')
-        code=[DISASM.decode(struct.unpack_from('<I',image,a-section.addr)[0],a) for a in range(f['addr'],f['end'],4)]
-        from ps2decomp.emu import is_supported
-        check(all(i.is_valid and is_supported(i) and not i.flags&(Flags.LOAD|Flags.STORE|Flags.TRAP) and not i.is_call and i.mnemonic not in ('syscall','break') and i.raw>>26 not in (0x11,0x12,0x31,0x39,0x36,0x3e) for i in code),'Unsupported instructions')
+        admission=admit_function(f,section,image,game.vu_regions)
+        report['admission']=admission
         vectors=[tuple(bits(c['arguments'].get('arg%d'%i,'0x0000000000000000')) for i in range(8))+(0,)*8 for c in entry['cases']]
         m=Machine.from_elf(elf);sig=inspect.signature(derive.test_plan)
         def plan(*args,**kwargs):
@@ -207,8 +280,10 @@ def worker(path, only, directory):
         emitted=derive.emit(verified,str(directory/'generated'),db['meta']['source'],catalog=None)
         check(len(emitted)==1,'Emitter dropped function')
         source=directory/'generated/accessors.cpp';signatures=cppcheck.functions_in(source.read_text())
-        indices=[0,1] if f['addr'] in (0x26c920,0x2c34c8,0x2c34d8) else [0]
-        check(len(signatures)==1 and signatures[0][0]==f['addr'] and signatures[0][2:]==('s32',indices,', '.join('u64 arg%d'%i for i in indices)),'Unexpected signature')
+        indices=sorted(derive.derivation_args(d))
+        check(all(0<=i<8 for i in indices),'Derived non-GPR/implicit argument unsupported')
+        params=', '.join('u64 arg%d'%i for i in indices) or 'void'
+        check(len(signatures)==1 and signatures[0][0]==f['addr'] and signatures[0][2:]==('s32',indices,params),'Unexpected signature')
         check(not cppcheck.externs_in(source.read_text()),'Unexpected externs')
         partial('compile')
         stage=time.monotonic()
@@ -224,13 +299,14 @@ def worker(path, only, directory):
         compiled=cppcheck.CompiledFunctions(dll,m);evaluate=compiled.evaluator(f['addr'])
         m.map_faults=False;m.memory.page_source=None
         partial('verify')
-        coverage_relations=set();coverage_moves=set()
+        coverage_relations=set();coverage_moves=set();branch_coverage={};move_coverage={};all_slots=set()
         stage=time.monotonic()
         for case,vector in zip(entry['cases'],vectors):
-            results={};slots=set();relations=set();moves=set();original_step=m.step;original_execute=m._execute
+            results={};slots=set();relations=set();moves=set();case_branches={};case_moves={};original_step=m.step;original_execute=m._execute
             def step():
                 pc=m.pc;i=DISASM.decode(m.memory.read_int(pc,4,False),pc)
                 original_step()
+                if i.is_branch:case_branches.setdefault(pc,set()).add(m.pc==i.target)
                 if i.has_delay_slot:slots.add(pc+4)
             def execute(i):
                 def signed64(v):
@@ -239,7 +315,10 @@ def worker(path, only, directory):
                 if i.mnemonic=='slt':
                     x,y=signed64(m.get(i.rs)),signed64(m.get(i.rt))
                     relations.add('less' if x<y else 'equal' if x==y else 'greater')
-                if i.mnemonic=='movn':moves.add(bool(m.get(i.rt)))
+                if i.mnemonic in ('movn','movz'):
+                    condition=bool(m.get(i.rt)) if i.mnemonic=='movn' else not bool(m.get(i.rt))
+                    case_moves.setdefault(i.addr,set()).add(condition)
+                    if i.mnemonic=='movn':moves.add(condition)
                 original_execute(i)
             m.step=step;m._execute=execute
             try:
@@ -252,15 +331,22 @@ def worker(path, only, directory):
                         value,writes=evaluate(vector);check(not writes,'Native writes')
                     check(not m.memory._journal,'Unexpected writes');results[mode]=value;m.memory.rollback();m.memory.end_journal()
             finally:m.step=original_step;m._execute=original_execute
-            row={'id':case['id'],'arguments':case['arguments'],'results':results,'delay_slots':sorted(slots),'slt_relations':sorted(relations),'movn_conditions':sorted(moves),'writes':0}
+            row={'id':case['id'],'arguments':case['arguments'],'results':results,'delay_slots':sorted(slots),'slt_relations':sorted(relations),'movn_conditions':sorted(moves),'branches':{str(k):sorted(v) for k,v in case_branches.items()},'conditional_moves':{str(k):sorted(v) for k,v in case_moves.items()},'writes':0}
             report['cases'].append(row)
-            coverage_relations.update(relations);coverage_moves.update(moves)
+            coverage_relations.update(relations);coverage_moves.update(moves);all_slots.update(slots)
+            for pc,outcomes in case_branches.items():branch_coverage.setdefault(pc,set()).update(outcomes)
+            for pc,outcomes in case_moves.items():move_coverage.setdefault(pc,set()).update(outcomes)
             partial('verify')
             if len(set(results.values()))!=1:
                 report['status']='mismatch';return 1
-            check(f['end']-4 in slots,'Missing return delay slot')
+            check(any(pc+4 in slots for pc in admission['returns']),'Missing executed return delay slot')
         report['timings']['verify_seconds']=time.monotonic()-stage
-        report['coverage']={'slt_relations':sorted(coverage_relations),'movn_conditions':sorted(coverage_moves)}
+        report['coverage']={'slt_relations':sorted(coverage_relations),'movn_conditions':sorted(coverage_moves),
+                            'branches':{str(pc):sorted(branch_coverage.get(pc,set())) for pc in admission['branches']},
+                            'conditional_moves':{str(pc):sorted(move_coverage.get(pc,set())) for pc in admission['conditional_moves']}}
+        check(all(branch_coverage.get(pc)=={False,True} for pc in admission['branches']),'Incomplete branch coverage')
+        check(all(move_coverage.get(pc)=={False,True} for pc in admission['conditional_moves']),'Incomplete conditional move coverage')
+        check(all(pc+4 in all_slots for pc in admission['returns']),'Incomplete return delay coverage')
         if 'slt_relations' in entry['coverage']:
             check(coverage_relations=={'less','equal','greater'},'Incomplete slt coverage')
         if 'movn_conditions' in entry['coverage']:
@@ -390,9 +476,9 @@ def supervise(path, manifest, only):
     check(sys.version_info[:2]==(3,12),'Python 3.12 required')
     check(os.name=='nt','Supervisor requires Windows Job Objects')
     addresses=[int(only,16)] if only else sorted(int(f['address'],16) for f in manifest['functions'])
-    check(len(addresses)==len(set(addresses)) and (only or set(addresses)==ALLOWED),'Expected all five canonical functions, or one --only address')
+    check(addresses and len(addresses)==len(set(addresses)),'Empty or duplicate selection')
     for address in addresses:select_worker(manifest,'0x%08X'%address)
-    base=GAME/'build/batches/batch-001';base.mkdir(parents=True,exist_ok=True)
+    base=GAME/'build/batches'/manifest['id'];base.mkdir(parents=True,exist_ok=True)
     directory=base/('sequential-'+uuid.uuid4().hex);directory.mkdir(exist_ok=False)
     snapshot=directory/'manifest.json';write_report(snapshot,manifest)
     limits=manifest['limits'];start=time.monotonic();deadline=start+limits['batch_timeout_seconds']
@@ -456,7 +542,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest',required=True,type=Path)
     parser.add_argument('--validate-only',action='store_true')
-    parser.add_argument('--only',help='Optional single canonical address; default executes all five sequentially')
+    parser.add_argument('--only',help='Optional single admitted manifest address; default runs manifest sequentially')
     parser.add_argument('--worker-dir',type=Path,help=argparse.SUPPRESS)
     args=parser.parse_args()
     try:
