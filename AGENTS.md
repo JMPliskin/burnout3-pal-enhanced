@@ -1,5 +1,9 @@
 # Instrucciones de trabajo: Burnout 3 PAL Enhanced
 
+- Para tareas PAL, leer también `games/burnout3-pal/AGENTS.md` y la política
+  persistente `games/burnout3-pal/DEVELOPMENT_POLICY.md`: consultar NTSC-U y
+  motor antes de desarrollar soluciones nuevas, y reutilizar AutoTest.
+
 ## Contexto y comprobación inicial
 
 - Leer PAL_DEVELOPMENT.md para estado, evidencias y pendientes.
