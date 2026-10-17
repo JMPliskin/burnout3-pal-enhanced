@@ -29,6 +29,9 @@
 
 // prompts.cpp: whether the controller's prompts show (the controller used last).
 bool ControllerPrompts();
+// dev_menu.cpp: the game's development menu opened, and back from it.
+void OpenDevMenu(lifted::Context& c);
+bool DevMenuReturned();
 
 // libmc2's handlers as the game has them, for when no card is given.
 void F_00244218(lifted::Context& c);
@@ -338,7 +341,7 @@ constexpr int kBindingsPageCount = sizeof kBindingsPages / sizeof kBindingsPages
 
 /* A row of a page, and what choosing it does. */
 struct Item {
-    enum Kind { kPageLink, kOption, kBindingsLink, kAction, kLayout, kReset } kind;
+    enum Kind { kPageLink, kOption, kBindingsLink, kAction, kLayout, kReset, kDevMenu } kind;
     int index;                  // kPages', kOptions', kBindingsPages' or the page's actions' index
 };
 
@@ -426,6 +429,7 @@ std::pair<std::string, std::string> ItemText(int item) {
                          : "THE GAME'S OWN (CLASSIC), OR R2 TO ACCELERATE AND L2 TO BRAKE (MODERN)"};
         }
         case Item::kReset: return {"RESET TO DEFAULTS", "EVERY KEY OR BUTTON ON THIS PAGE AS IT FIRST WAS"};
+        case Item::kDevMenu: return {"DEVELOPER MENU", "THE GAME'S HIDDEN MENU: UNLOCK ALL, LOCK ALL, THE AWARDS"};
         case Item::kAction: break;
     }
     const BindingsPage& page = Bindings();
@@ -448,6 +452,7 @@ void BuildItems() {
     switch (g_main.page) {
         case Page::kPcSettings:
             for (u32 i = 0; i < kPageCount; ++i) items.push_back({Item::kPageLink, int(i)});
+            items.push_back({Item::kDevMenu, 0});
             break;
         case Page::kBindings: {
             const BindingsPage& page = Bindings();
@@ -774,6 +779,7 @@ void Choose(lifted::Context& c, int item) {
             Render(c);
             return;
         case Item::kReset: Ask(c, Asking::kReset, "Reset these controls?"); return;
+        case Item::kDevMenu: OpenDevMenu(c); return;
         case Item::kAction: {
             const BindingsPage& page = Bindings();
             controls::BeginCapture(page.device, page.context, controls::ActionAt(page.device, page.context, it.index).input);
@@ -795,6 +801,12 @@ void MainMenuInput(lifted::Context& c) {
     const u32 menu = u32(c.r[4]);
     const bool ours = g_main.made && menu == g_main.menu;
     const bool back = TrianglePressed();
+    // Back from the development menu: PC SETTINGS again, DEVELOPER MENU picked.
+    if (ours && DevMenuReturned()) {
+        ShowPage(c, Page::kPcSettings, int(kPageCount));
+        c.r[2] = 1;
+        return;
+    }
     const bool settings = g_main.page != Page::kMainMenu;
     if (ours && settings && g_main.capturing >= 0) {
         // A binding being made has the input: its row shows how it stands.
@@ -869,6 +881,7 @@ void RegisterWidescreen();         // widescreen.cpp
 void RegisterMouse();              // mouse.cpp
 void RegisterControls();           // controls.cpp
 void RegisterSixtyFps();           // sixty_fps.cpp
+void RegisterDevMenu();            // dev_menu.cpp
 
 void RegisterGameOverrides() {
     // VU1's fast mode: every scripted run draws every picture as the exact
@@ -884,6 +897,7 @@ void RegisterGameOverrides() {
     RegisterMouse();
     RegisterControls();
     RegisterSixtyFps();
+    RegisterDevMenu();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");
