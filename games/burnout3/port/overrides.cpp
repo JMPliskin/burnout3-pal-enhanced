@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "controls.h"
+#include "gpu_pipelines.h"
 #include "ps2host/host.h"
 #include "ps2host/mc2.h"
 #include "ps2host/run.h"
@@ -873,6 +874,10 @@ void RegisterGameOverrides() {
     // VU does (regress.py --vu-fast), for ~15% less of VIF1's worker - the
     // busiest thread on a slow machine.
     ps2host::SetVuFastDefault(true);
+    // The GPU pipelines the game draws with, made in the background from the
+    // start: none made in the middle of a player's first race (up to 0.7 s
+    // each on an integrated GPU's cold driver).
+    ps2host::SetGpuPipelineHints(kGpuPipelineHints, sizeof kGpuPipelineHints / sizeof kGpuPipelineHints[0]);
     RegisterGameIopServers();
     RegisterWidescreen();
     RegisterMouse();
