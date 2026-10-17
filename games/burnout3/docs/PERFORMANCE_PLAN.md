@@ -210,3 +210,46 @@ aliasing (~15-20 images reloaded through memory a frame, each a write-back
 and a reload), the renderer's Vulkan recording on a thread of its own (a
 third of the GS thread), gs.frag's cost per pixel for integrated GPUs above
 1x.
+
+### The pixel shader (2026-10-17, day)
+
+gs.frag did everything any draw might need for every pixel. On the Intel
+UHD at 2x (the race in real time, all cores):
+
+| | dropped | late | GPU busy |
+| --- | --- | --- | --- |
+| the whole shader | 493 | 383 | 86% (saturated) |
+| a trivial shader (wrong pictures: the bound) | 0 | 14 | 60% |
+| specialised per kind of draw | 76-88 | 241-275 | 83-84% |
+| ...and bilinear left out (wrong pictures) | 0 | 15 | 72% |
+| ...and the alpha test left out (wrong pictures) | 17 | 83 | 79% |
+| ...and fog left out (wrong pictures) | 79 | 210 | 84% |
+
+Each pipeline now leaves out what its kind of draw never does (texturing, a
+pack's replacement, mipmaps, bilinear, TEXA's expansion, a finer target,
+sprite snapping, fog, the alpha test, PABE, logic ops, 16-bit targets: a
+specialisation constant). Pictures are the same (the regressions as
+recorded). What is left at 2x is mostly the GS's exact bilinear filter
+(four texel reads and their wrapping per pixel), then the alpha test's
+discards; passing the image's size in rather than asking it of the image
+made no measurable difference (reverted).
+
+At the PS2's resolution, two physical cores and the Intel UHD, the same
+build either way (`PS2HOST_GPU_UBERSHADER=1` for the whole shader), two runs
+each: whole 36 and 17 late, GPU 55% and 54% busy; specialised 11 and 8 late,
+GPU 45% and 42%. The RTX 4070 at 3x: 0 late, as before.
+
+Pipelines: a kind's own is made by a worker thread while the whole shader's
+stands in, so none is made mid-frame; the start no longer waits for the
+last runs' list (after a shader change it took 12.8 s on the Intel UHD,
+the worker has them in the background). A cold driver takes 0.3-0.7 s a
+pipeline, so a player's first run would make them as the race meets them:
+the port gives the engine the 118 keys its scripted runs draw with
+(`port/gpu_pipelines.h`, `tools/make_pipeline_hints.py`), made during the
+boot - from an empty cache, one pipeline made on the GS thread (at start),
+the rest ready 0.6 s in.
+
+Where it stands: the integrated GPU at 2x went from unplayable (a sixth of
+the frames dropped) to about 3% dropped; the PS2's resolution remains the
+setting for it. Two cores and the integrated GPU at 1x: 0 dropped, 8-18 late
+in 2,800 (run to run).
