@@ -2,6 +2,13 @@
 
 --validate-only delegates only static validation to run_batch.py. --execute is
 required for real batches. All generated diagnostics remain in ignored build/.
+
+Select --batches IDs from tools/batches OR repeat --manifest PATH for local
+JSON files (paths relative to the caller's cwd). The two selections cannot be
+combined. Explicit files are never copied to regression; IDs and resolved files
+must be unique. Both modes sort by manifest ID and delegate validation/execution.
+IDs are ASCII path components, compared with casefold for Windows on every OS;
+reserved device names and components longer than 255 characters are rejected.
 """
 import argparse
 import hashlib
@@ -37,15 +44,57 @@ def checkpoint(path, data):
     temp.replace(path)
 
 
+def windows_id_key(name):
+    """Windows directory identity for our ASCII-only ID grammar, on any host.
+
+    Dots, spaces, separators, colons and Unicode are excluded by the grammar,
+    so casefold is sufficient; do not use host-dependent os.path.normcase.
+    """
+    require(isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9_-]+',name)
+            and len(name)<=255,'Invalid Windows manifest id: '+str(name))
+    key=name.casefold()
+    reserved={'con','prn','aux','nul'}|{'%s%d'%(prefix,n) for prefix in ('com','lpt') for n in range(1,10)}
+    require(key not in reserved,'Reserved Windows manifest id: '+name)
+    return key
+
+
+def register_manifest(found, keys, data, path):
+    require(isinstance(data,dict),'Manifest must be a JSON object: '+str(path))
+    name=data.get('id');key=windows_id_key(name)
+    require(key not in keys,'Conflicting Windows manifest ids: '+str(keys.get(key))+' / '+name)
+    keys[key]=name;found[name]=path
+
+
 def discover():
-    found = {}
+    found = {};keys={}
     for path in sorted(MANIFESTS.glob('*.json')):
         data = json.loads(path.read_bytes())
-        name = data.get('id')
-        require(isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9_-]+',name), 'Invalid manifest id: '+path.name)
-        require(name not in found, 'Duplicate manifest id: '+name)
-        found[name] = path
+        register_manifest(found,keys,data,path)
     return found
+
+
+def path_label(path):
+    """Portable within the repo; external absolute paths stay in ignored reports."""
+    path=path.resolve()
+    return path.relative_to(ROOT.resolve()).as_posix() if path.is_relative_to(ROOT.resolve()) else str(path)
+
+
+def select_manifests(batches, manifests):
+    require(not (batches and manifests),'--manifest and --batches cannot be combined')
+    require(batches or manifests,'Explicit --batches or --manifest selection required')
+    if not manifests:
+        found=discover()
+        require(len(batches)==len(set(batches)),'Duplicate batch selection')
+        require(all(name in found for name in batches),'Unknown batch id')
+        return {name:found[name] for name in sorted(batches)}
+    found={};paths=[];keys={}
+    for supplied in manifests:
+        path=Path(supplied).resolve(strict=True)
+        require(path.is_file() and path.suffix.lower()=='.json','Manifest must be a JSON file: '+str(path))
+        require(not any(path.samefile(other) for other in paths),'Duplicate manifest path: '+str(path))
+        data=json.loads(path.read_bytes())
+        register_manifest(found,keys,data,path);paths.append(path)
+    return dict(sorted(found.items()))
 
 
 def normalize(data):
@@ -122,43 +171,44 @@ def invoke(manifest, mode, directory):
     return result,report
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--list',action='store_true')
     parser.add_argument('--batches',nargs='+',help='Requested manifest ids; sorted deterministically, never all implicitly')
+    parser.add_argument('--manifest',action='append',type=Path,help='Explicit JSON path, repeatable; relative to cwd; incompatible with --batches')
     modes=parser.add_mutually_exclusive_group()
     modes.add_argument('--validate-only',action='store_true')
     modes.add_argument('--execute',action='store_true',help='Explicitly enable real execution through run_batch.py')
     parser.add_argument('--stop-on-error',action='store_true')
-    args=parser.parse_args()
+    args=parser.parse_args(argv)
     directory=None;report=None
     try:
         require(sys.version_info[:2]==(3,12),'Python 3.12 required')
-        found=discover()
         if args.list:
-            require(not args.batches and not args.execute and not args.validate_only,'--list cannot execute or validate batches')
+            require(not args.batches and not args.manifest and not args.execute and not args.validate_only,'--list cannot select, execute or validate batches')
+            found=discover()
             for name,path in sorted(found.items()):print(name,':',path.relative_to(ROOT))
             return 0
-        require(args.batches,'Explicit --batches selection required')
+        found=select_manifests(args.batches,args.manifest)
         require(args.validate_only or args.execute,'Choose --validate-only or explicitly enable --execute')
-        require(len(args.batches)==len(set(args.batches)),'Duplicate batch selection')
-        selected=sorted(args.batches)
-        require(all(name in found for name in selected),'Unknown batch id')
+        selected=list(found)
         base=GAME/'build/pipeline';base.mkdir(parents=True,exist_ok=True)
         directory=base/('run-'+uuid.uuid4().hex);directory.mkdir(exist_ok=False)
         inputs=[Path(__file__).resolve(),RUNNER,GAME/'game.json']+[found[n] for n in selected]
         report={'status':'running','mode':'execute' if args.execute else 'validate_only','selected_batches':selected,'batches':[],
-                'sha256':{str(p.relative_to(ROOT)):digest(p) for p in inputs},
+                'sha256':{path_label(p):digest(p) for p in inputs},
                 'limitations':['Current native return ABI is s32; arguments are u64.','Independent compilation timeout not implemented; runner worker/batch deadlines apply.','No additional pipeline-wide timeout; runner owns worker containment.','Failure diagnostics may contain generated game code; local build only.','Report discovery rejects concurrent same-batch output ambiguity.']}
         checkpoint(directory/'summary.json',report)
         for name in selected:
             batch_dir=directory/name;batch_dir.mkdir(exist_ok=False)
-            item={'id':name,'manifest':str(found[name].relative_to(ROOT)),'status':'running','functions':[]};report['batches'].append(item)
+            item={'id':name,'manifest':path_label(found[name]),'status':'running','functions':[]};report['batches'].append(item)
             try:
+                require(digest(found[name])==report['sha256'][path_label(found[name])],'Manifest changed before validation')
                 validation,_=invoke(found[name],'validate',batch_dir/'validation');item['validation']=validation
                 require(validation['status']=='validated_only','Runner static validation failed')
                 if not args.execute:item['status']='validated_only'
                 else:
+                    require(digest(found[name])==report['sha256'][path_label(found[name])],'Manifest changed after validation')
                     execution,global_report=invoke(found[name],'execute',batch_dir/'execution');item['execution']=execution
                     require(global_report is not None,'Missing execution report')
                     for index,row in enumerate(global_report.get('results',[])):
@@ -182,7 +232,7 @@ def main():
                         if source.is_file():shutil.copyfile(source,batch_dir/'failure-batch'/(stage+'-'+log))
             checkpoint(directory/'summary.json',report)
             if item['status']=='structural_error' or args.stop_on_error and item['status'] not in ('passed','validated_only'):break
-        for p in inputs:require(digest(p)==report['sha256'][str(p.relative_to(ROOT))],'Input changed during pipeline')
+        for p in inputs:require(digest(p)==report['sha256'][path_label(p)],'Input changed during pipeline')
         ok=len(report['batches'])==len(selected) and all(b['status'] in ('passed','validated_only') for b in report['batches'])
         report['status']=('passed' if args.execute else 'validated_only') if ok else 'failed'
         report['cases_executed']=sum(b.get('execution',{}).get('cases_executed',0) for b in report['batches'])
