@@ -162,3 +162,25 @@ The GPU at the PS2's resolution: about 5.5 ms a frame on an RTX 4070 laptop
 staging buffer and a copy between full barriers. An integrated GPU will feel
 that first; the next lever there is fewer passes and barriers (decodes
 written straight into their images, batched).
+
+### The integrated GPU (2026-10-17)
+
+The i7-13620H's own Intel UHD, chosen with `PS2HOST_GPU=intel`, is the
+low-end GPU measured. The race at the PS2's resolution:
+
+| | dropped | lost | late | texture decodes' share of the GPU |
+| --- | --- | --- | --- | --- |
+| before | 290 | 613 | 1,108 | 55-65% |
+| decodes into the image directly (no staging copy) | 293 | 532 | 1,098 | 55-65% |
+| decode.comp's layout tables read from a buffer | 1 | 0 | 4 | 3-6% |
+| the same, held to two physical cores (`PS2HOST_CORES=0x5`) | 0 | 0 | 2 | |
+
+decode.comp indexed constant arrays (up to 256 entries) per texel; Intel's
+driver copies such an array into each invocation's private memory, the
+NVIDIA driver serves it from its constant cache - so it showed only on the
+integrated GPU. swizzle.comp had already been rewritten to compute its
+layouts (bit permutations); the decode had not. Pictures are the same
+(regressions as recorded).
+
+A low-end PC - two cores and an integrated GPU - now plays the race with
+nothing dropped and two frames late in 2,800.
