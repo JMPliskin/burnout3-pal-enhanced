@@ -265,12 +265,17 @@ recorded ones) by a few percent of pixels - before this day's changes too.
 In the menus' background map, texels land a pixel over where a coordinate
 falls on a texel's edge (the two GPUs interpolate it to different last
 bits); most differences are one step of a 16-bit colour. Fixed the same
-day: a coordinate is sampled a thousandth of a texel on, so one on an edge
-takes the same texel on every GPU - the Intel UHD and the RTX 4070 98.92%
-the same (from 95.75%), both nearer the software GS (the race 64.88% ->
-66.03% of pixels exact); the GPU recordings re-recorded. (Mister
-Mosquito's GPU recordings will change with this engine too: re-record
-them, after a look, when the engine is next tagged.)
+day: a coordinate is sampled a hair on (1/16384 of a texel, chosen by
+measure in both games: a thousandth took Mister Mosquito's pictures further
+from the software GS), so one on an edge takes the same texel on every GPU -
+the Intel UHD and the RTX 4070 98.92% the same (from 95.75%), Burnout 3
+nearer the software GS (race_training 69.09% -> 70.31% of pixels exact),
+Mister Mosquito within 0.2 points of where it was; the GPU recordings
+re-recorded. Mister Mosquito against this engine (its submodule checked out
+at it for the test, then put back): every GPU picture as recorded with the
+nudge at 0 - nothing else of the day changes its pictures; with it, most of
+its GPU recordings change and are to be re-recorded when the engine is next
+tagged.
 
 **The day against the night, the same conditions.** Two physical cores
 with half of each taken by the burner (a Pentium Silver's worth) and the
