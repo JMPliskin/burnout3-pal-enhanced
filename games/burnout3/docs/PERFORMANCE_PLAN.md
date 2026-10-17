@@ -231,8 +231,8 @@ sprite snapping, fog, the alpha test, PABE, logic ops, 16-bit targets: a
 specialisation constant). Pictures are the same (the regressions as
 recorded). What is left at 2x is mostly the GS's exact bilinear filter
 (four texel reads and their wrapping per pixel), then the alpha test's
-discards; passing the image's size in rather than asking it of the image
-made no measurable difference (reverted).
+discards. (Passing the image's size in rather than asking it of the image
+measured as noise here; after the gather below it did not - see there.)
 
 At the PS2's resolution, two physical cores and the Intel UHD, the same
 build either way (`PS2HOST_GPU_UBERSHADER=1` for the whole shader), two runs
@@ -291,4 +291,31 @@ finer page tracking (0.3% of the rows). A direct conversion between images
 the swizzle's 15-23% of the Intel UHD's time - left for later. Splitting
 every draw in two (twice the draws, the same pixels) left the GPU's time as
 it was: the number of draws is not what is left at 1x.
+
+**The bilinear path, step by step** (the afternoon; the Intel UHD at 2x,
+two runs each, back to back):
+
+| | dropped | late |
+| --- | --- | --- |
+| the four texels in one gather (above) | 47, 47, 49 | 176-214 |
+| the gather's coordinate from the size already asked (one size query a pixel less) | 28, 34 | 167, 188 |
+| the bound image's size a push constant (TEXA packed into one word to make room) | 17, 22 | 91, 126 |
+| REPEAT over a 2x target by mask (two integer divisions a call less; the 2x race's 48 pictures identical) | 21, 12 | 104, 86 (noise) |
+
+What is left at 2x, by leaving each out (wrong pictures, for the measure
+only): the bilinear filter still the most (0 dropped without it), then a
+finer target's sampling and sprite snapping (6), then the alpha test (4).
+
+The day's end, the race in real time: two physical cores and the Intel UHD
+at the PS2's resolution 0 dropped, 14 late in 2,800 (7-18 over the day);
+the Intel UHD at 2x 12-22 dropped (493 in the morning); the RTX 4070 at 3x
+0 late, 99.9% 17.5 ms.
+
+**Processors without AVX2.** The port was AVX2 code from its first
+instruction: on Intel's Pentium and Celeron of before 2021 (Pentium Silver,
+Celeron N) it stopped before it could say why. Now the executable's entry
+checks the processor (code built without AVX) and starts
+`burnout3-sse4.exe` beside it (`port.py --sse4 build`; the release ships
+both). Its cost on two cores and the Intel UHD: 1.30 cores against 1.27,
+0 dropped and 8 late against 7; every GPU recording the same through it.
 
