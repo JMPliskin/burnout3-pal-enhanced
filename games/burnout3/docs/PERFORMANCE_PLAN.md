@@ -184,3 +184,29 @@ layouts (bit permutations); the decode had not. Pictures are the same
 
 A low-end PC - two cores and an integrated GPU - now plays the race with
 nothing dropped and two frames late in 2,800.
+
+### Later the same night
+
+* **A pipeline cache kept between runs** (gpu_pipeline_cache.bin and
+  gpu_pipelines.txt beside pc_settings.ini): the race's 30 pipelines were
+  built mid-game (0.4-9.9 ms each on the Intel UHD with its driver's own
+  cache warm); a second run makes them at start in 3 ms and none while
+  playing.
+* **Debug switches read once** (getenv per texture decode and per frame):
+  0.3% of the GS thread's samples.
+* Measured and left alone: doubling every memory barrier does not change
+  the integrated GPU's busy time (59-69% at the PS2's resolution) - its time
+  is drawing, not barriers, so narrowing them would buy nothing; the VU1
+  dispatch loop is a table lookup a block - VU1's time is the exact cycle
+  model itself.
+* The high-end setup (3x, all cores): 0 late in 2,800, 99.9% 17.6 ms (was
+  18.7-19.2), 1.43 cores.
+
+Where it stands (the race, real time): two physical cores and an integrated
+GPU at the PS2's resolution - 0 dropped, 2 late in 2,800; the integrated
+GPU at 2x is GPU-bound (24 dropped, GPU 89-92% busy): original resolution
+is the setting for it. Next levers, each a larger project: the GS memory
+aliasing (~15-20 images reloaded through memory a frame, each a write-back
+and a reload), the renderer's Vulkan recording on a thread of its own (a
+third of the GS thread), gs.frag's cost per pixel for integrated GPUs above
+1x.
