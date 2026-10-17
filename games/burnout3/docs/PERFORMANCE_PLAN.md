@@ -271,3 +271,24 @@ the same (from 95.75%), both nearer the software GS (the race 64.88% ->
 66.03% of pixels exact); the GPU recordings re-recorded. (Mister
 Mosquito's GPU recordings will change with this engine too: re-record
 them, after a look, when the engine is next tagged.)
+
+**The day against the night, the same conditions.** Two physical cores
+with half of each taken by the burner (a Pentium Silver's worth) and the
+Intel UHD at the PS2's resolution, the night's last build (engine f400c0b)
+and the day's, alternately, two runs each: the night's 1 and 1 dropped, 29
+and 39 late (99%: 25.4 and 26.0 ms); the day's 0 and 0 dropped, 15 and 7
+late (99%: 23.6 and 20.6 ms). (The night's 0 dropped and 4 late with the
+burner was a kinder run: the burner's share varies from run to run - only
+builds compared back to back say anything.) The menus (the car select) and
+the tutorial movie on two cores and the Intel UHD: 4 and 0 late, as before.
+
+What was looked at and left: the GS memory's write-backs and reloads in the
+race (~75 and ~80 a frame) are the glow passes' targets over the depth
+buffer's memory, drawn through overlapping views (D2/2 and D3/2, a page
+apart, and EE/5) - real aliasing: only 6% of the reloads would be spared by
+finer page tracking (0.3% of the rows). A direct conversion between images
+(one pass instead of a write-back and a reload) would save at most half of
+the swizzle's 15-23% of the Intel UHD's time - left for later. Splitting
+every draw in two (twice the draws, the same pixels) left the GPU's time as
+it was: the number of draws is not what is left at 1x.
+
