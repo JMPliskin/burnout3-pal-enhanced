@@ -253,3 +253,17 @@ Where it stands: the integrated GPU at 2x went from unplayable (a sixth of
 the frames dropped) to about 3% dropped; the PS2's resolution remains the
 setting for it. Two cores and the integrated GPU at 1x: 0 dropped, 8-18 late
 in 2,800 (run to run).
+
+**The bilinear filter's four reads in one** (later the same day): an RGBA8
+image a draw reads has a second view as 32-bit words; where the GS's four
+texels lie side by side (almost always), one gather gives them all. The
+Intel UHD at 2x: 76-88 dropped -> 47 and 47 (late 241-275 -> 197-214); at
+1x and on the RTX 4070 at 3x, as before. Pictures as recorded.
+
+Found on the way: the Intel UHD's pictures differ from the RTX 4070's (the
+recorded ones) by a few percent of pixels - before this day's changes too.
+In the menus' background map, texels land a pixel over where a coordinate
+falls on a texel's edge (the two GPUs interpolate it to different last
+bits); most differences are one step of a 16-bit colour. Not a speed
+matter: for later (the GS's coordinates are fixed point - a coordinate
+snapped to its 1/16 texel before the floor would make every GPU agree).
