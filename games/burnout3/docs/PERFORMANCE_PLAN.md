@@ -264,6 +264,10 @@ Found on the way: the Intel UHD's pictures differ from the RTX 4070's (the
 recorded ones) by a few percent of pixels - before this day's changes too.
 In the menus' background map, texels land a pixel over where a coordinate
 falls on a texel's edge (the two GPUs interpolate it to different last
-bits); most differences are one step of a 16-bit colour. Not a speed
-matter: for later (the GS's coordinates are fixed point - a coordinate
-snapped to its 1/16 texel before the floor would make every GPU agree).
+bits); most differences are one step of a 16-bit colour. Fixed the same
+day: a coordinate is sampled a thousandth of a texel on, so one on an edge
+takes the same texel on every GPU - the Intel UHD and the RTX 4070 98.92%
+the same (from 95.75%), both nearer the software GS (the race 64.88% ->
+66.03% of pixels exact); the GPU recordings re-recorded. (Mister
+Mosquito's GPU recordings will change with this engine too: re-record
+them, after a look, when the engine is next tagged.)
