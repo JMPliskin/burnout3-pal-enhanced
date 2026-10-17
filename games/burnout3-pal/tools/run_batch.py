@@ -363,7 +363,7 @@ def worker(path, only, directory):
 
 
 def run_windows_job(command, seconds, row):
-    """Launch suspended, assign to a private Job, then resume. No Popen internals.
+    """Create suspended inside a private Job, then resume. Windows 10+ required.
 
     The Job handle is non-inheritable. No breakaway flags or elevation are used.
     All Win32 definitions and calls are lazy: validation does not touch Win32.
@@ -386,11 +386,16 @@ def run_windows_job(command, seconds, row):
         _fields_=[('cb',W.DWORD),('lpReserved',W.LPWSTR),('lpDesktop',W.LPWSTR),('lpTitle',W.LPWSTR),('dwX',W.DWORD),('dwY',W.DWORD),('dwXSize',W.DWORD),('dwYSize',W.DWORD),('dwXCountChars',W.DWORD),('dwYCountChars',W.DWORD),('dwFillAttribute',W.DWORD),('dwFlags',W.DWORD),('wShowWindow',W.WORD),('cbReserved2',W.WORD),('lpReserved2',C.POINTER(W.BYTE)),('hStdInput',W.HANDLE),('hStdOutput',W.HANDLE),('hStdError',W.HANDLE)]
     class PROCESS(C.Structure):
         _fields_=[('hProcess',W.HANDLE),('hThread',W.HANDLE),('dwProcessId',W.DWORD),('dwThreadId',W.DWORD)]
+    class STARTUP_EX(C.Structure):
+        _fields_=[('StartupInfo',STARTUP),('lpAttributeList',C.c_void_p)]
     signatures={
         'CreateJobObjectW':([C.c_void_p,W.LPCWSTR],W.HANDLE),
         'SetInformationJobObject':([W.HANDLE,C.c_int,C.c_void_p,W.DWORD],W.BOOL),
         'CreateProcessW':([W.LPCWSTR,W.LPWSTR,C.c_void_p,C.c_void_p,W.BOOL,W.DWORD,C.c_void_p,W.LPCWSTR,C.POINTER(STARTUP),C.POINTER(PROCESS)],W.BOOL),
-        'AssignProcessToJobObject':([W.HANDLE,W.HANDLE],W.BOOL),
+        'InitializeProcThreadAttributeList':([C.c_void_p,W.DWORD,W.DWORD,C.POINTER(SIZE)],W.BOOL),
+        'UpdateProcThreadAttribute':([C.c_void_p,W.DWORD,ULONG_PTR,C.c_void_p,SIZE,C.c_void_p,C.c_void_p],W.BOOL),
+        'DeleteProcThreadAttributeList':([C.c_void_p],None),
+        'IsProcessInJob':([W.HANDLE,W.HANDLE,C.POINTER(W.BOOL)],W.BOOL),
         'ResumeThread':([W.HANDLE],W.DWORD),
         'WaitForSingleObject':([W.HANDLE,W.DWORD],W.DWORD),
         'TerminateJobObject':([W.HANDLE,W.UINT],W.BOOL),
@@ -411,17 +416,32 @@ def run_windows_job(command, seconds, row):
         if not result:raise OSError(error,'%s failed (sandbox/job restrictions possible); no fallback or elevation'%name)
         return result
     job=None;pi=PROCESS();assigned=False;started=time.monotonic()
+    attributes=None;attributes_initialized=False;job_handles=None
     row.update(timeout_detected=False,cleanup_succeeded=False)
     try:
         job=required('CreateJobObjectW',None,None)
         limits=EXTENDED();limits.BasicLimitInformation.LimitFlags=0x2000 # KILL_ON_JOB_CLOSE
         required('SetInformationJobObject',job,9,C.byref(limits),C.sizeof(limits))
-        si=STARTUP();si.cb=C.sizeof(si)
+        size=SIZE()
+        result,error=call('InitializeProcThreadAttributeList',None,1,0,C.byref(size))
+        if result or error!=122 or not size.value:
+            raise OSError(error,'Attribute size query failed; Windows 10+ JOB_LIST required')
+        attributes=C.create_string_buffer(size.value)
+        required('InitializeProcThreadAttributeList',attributes,1,0,C.byref(size))
+        attributes_initialized=True
+        job_handles=(W.HANDLE*1)(job)
+        required('UpdateProcThreadAttribute',attributes,0,0x0002000D,job_handles,C.sizeof(job_handles),None,None)
+        si=STARTUP_EX();si.StartupInfo.cb=C.sizeof(si)
+        si.lpAttributeList=C.cast(attributes,C.c_void_p)
         command_line=C.create_unicode_buffer(subprocess.list2cmdline(command))
-        # No inherited handles; primary thread cannot run before assignment.
-        required('CreateProcessW',command[0],command_line,None,None,False,0x4 | 0x08000000,None,str(ROOT),C.byref(si),C.byref(pi))
+        # JOB_LIST assigns during creation, including if this controller dies.
+        required('CreateProcessW',command[0],command_line,None,None,False,0x4 | 0x08000000 | 0x00080000,None,str(ROOT),C.cast(C.byref(si),C.POINTER(STARTUP)),C.byref(pi))
+        assigned=True
         row['pid']=pi.dwProcessId;row['thread_id']=pi.dwThreadId
-        required('AssignProcessToJobObject',job,pi.hProcess);assigned=True
+        member=W.BOOL()
+        required('IsProcessInJob',pi.hProcess,job,C.byref(member))
+        if not member.value:raise OSError('Created process is not in its private Job')
+        row['job_assigned_at_creation']=True
         count,error=call('ResumeThread',pi.hThread)
         if count==0xffffffff:raise OSError(error,'ResumeThread failed')
         remaining=max(0,seconds-(time.monotonic()-started))
@@ -433,6 +453,8 @@ def run_windows_job(command, seconds, row):
     except Exception as exc:
         row['status']='structural_error';row['error']=repr(exc)
     finally:
+        if attributes_initialized:
+            call('DeleteProcThreadAttributeList',attributes)
         # Terminate only the private Job, or our still-suspended unassigned process.
         cleanup_errors=[]
         try:
