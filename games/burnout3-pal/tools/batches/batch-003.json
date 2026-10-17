@@ -1,0 +1,1401 @@
+{
+    "schema_version":  1,
+    "id":  "batch-003",
+    "mode":  "explicit",
+    "limits":  {
+                   "max_passes":  1,
+                   "instruction_budget":  100000,
+                   "function_timeout_seconds":  60,
+                   "compile_timeout_seconds":  120,
+                   "batch_timeout_seconds":  600
+               },
+    "provenance":  {
+                       "generator":  "generate_batches.py",
+                       "generator_sha256":  "abf86b382c55084b98a62d5e5ea5a8a0964aec2959df2ae7731b2c4873777027",
+                       "runner_sha256":  "f9fc8276fbc7b8fde5d392c35c8c9842d0b425a071bc804e7b7c4f0b7b7db9d3",
+                       "inventory_sha256":  "e70b360c49584fdb7da04b15a7e3be603f2542d056f05ab1e05c7691610bba93",
+                       "input_sha256":  {
+                                            "games/burnout3-pal/extracted/SLES_525.84":  "913a3bcbcd735a435aac676ef1055737a86f9bbac26611344788c5e5ef953c6f",
+                                            "games/burnout3-pal/build/sles_525_84_clean.json":  "f39d4ebb06cab46c18b38e3d8c9dcf82d7a9d563fb3a76b51b8adf49edfa9969",
+                                            "games/burnout3-pal/game.json":  "9c8aa62b3e7ecaaf29396597837ec45824dc6754c98b7eae6fa33e367bbff9a1"
+                                        },
+                       "seed":  1,
+                       "requested_limit":  5,
+                       "verified_exclusions":  {
+                                                   "0x00103CC0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-00103CC0/worker.json",
+                                                                          "sha256":  "ad250ea4b28a6c0f0475caacaf496995b30ed1700f4c576ac927194cc1c521ec"
+                                                                      }
+                                                                  ],
+                                                   "0x00121568":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-6242bb1c171647e8ab70be69b9ca4368/results.json",
+                                                                          "sha256":  "721a63806bb435e852ace0dee45cc270fad815038ffae26724762d2cf58ec6c6"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-88cfdf0c16ef42489ce495067913a0b9/results.json",
+                                                                          "sha256":  "7d75f3dc41b2422fdde23ec7ab30df925f1773f479d4051f282235321074ef02"
+                                                                      }
+                                                                  ],
+                                                   "0x00134330":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-6242bb1c171647e8ab70be69b9ca4368/results.json",
+                                                                          "sha256":  "721a63806bb435e852ace0dee45cc270fad815038ffae26724762d2cf58ec6c6"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-88cfdf0c16ef42489ce495067913a0b9/results.json",
+                                                                          "sha256":  "7d75f3dc41b2422fdde23ec7ab30df925f1773f479d4051f282235321074ef02"
+                                                                      }
+                                                                  ],
+                                                   "0x0013B6B0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-smoke/run-254444450cd743aeb343d5dc1fd7cbe8/results.json",
+                                                                          "sha256":  "a6090c41be902b0409a377f7f42fbc490d506ae9cd52d2b0082359ca9c6658c4"
+                                                                      }
+                                                                  ],
+                                                   "0x0013B740":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-smoke/run-254444450cd743aeb343d5dc1fd7cbe8/results.json",
+                                                                          "sha256":  "a6090c41be902b0409a377f7f42fbc490d506ae9cd52d2b0082359ca9c6658c4"
+                                                                      }
+                                                                  ],
+                                                   "0x0019B6B0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-smoke/run-254444450cd743aeb343d5dc1fd7cbe8/results.json",
+                                                                          "sha256":  "a6090c41be902b0409a377f7f42fbc490d506ae9cd52d2b0082359ca9c6658c4"
+                                                                      }
+                                                                  ],
+                                                   "0x0019E9D0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-0019E9D0/worker.json",
+                                                                          "sha256":  "6c0235221414f14682c36648c2067690b2296c68d3992abd73ae659f47c5ad4f"
+                                                                      }
+                                                                  ],
+                                                   "0x001A87C0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-6242bb1c171647e8ab70be69b9ca4368/results.json",
+                                                                          "sha256":  "721a63806bb435e852ace0dee45cc270fad815038ffae26724762d2cf58ec6c6"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-memory/run-88cfdf0c16ef42489ce495067913a0b9/results.json",
+                                                                          "sha256":  "7d75f3dc41b2422fdde23ec7ab30df925f1773f479d4051f282235321074ef02"
+                                                                      }
+                                                                  ],
+                                                   "0x002149B0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-002149B0/worker.json",
+                                                                          "sha256":  "8741add309aaa7e55b07b3cd7e8bcca03322965c67e8b65aa971e47854e9e1f5"
+                                                                      }
+                                                                  ],
+                                                   "0x002372E8":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-002372E8/worker.json",
+                                                                          "sha256":  "0092f4694529a6ce97f0faaa9e9ca0bb710d1b791d3b28baa37144b07d44ff48"
+                                                                      }
+                                                                  ],
+                                                   "0x00237310":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-252827d1c5d74afe838aa377e43afedf/function-00237310/worker.json",
+                                                                          "sha256":  "fb718a296fc517aea4ca959f1c2b094c0d3ceebb61ea55fa3f932e23b096f712"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-68262d9fef354effa68124d558afe5e5/function-00237310/worker.json",
+                                                                          "sha256":  "7064e8ba7c46409c17b8e704bbab82bea52968d5717ca72cbf1b24f5b4584482"
+                                                                      }
+                                                                  ],
+                                                   "0x0026C920":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-252827d1c5d74afe838aa377e43afedf/function-0026C920/worker.json",
+                                                                          "sha256":  "118d629f863f2adb46505e8536b7c5faaefb7adb083d887c79ca12875dd0d937"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-68262d9fef354effa68124d558afe5e5/function-0026C920/worker.json",
+                                                                          "sha256":  "29dff11c726df83e42961646314566b48d42ae72e74492837efa294969bece30"
+                                                                      }
+                                                                  ],
+                                                   "0x002C30F0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-002C30F0/worker.json",
+                                                                          "sha256":  "d1c746c9561297b6ffc376fd6933c172ca9554a6573fd55d1a961fd6f135d19a"
+                                                                      }
+                                                                  ],
+                                                   "0x002C34C8":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-252827d1c5d74afe838aa377e43afedf/function-002C34C8/worker.json",
+                                                                          "sha256":  "668ae596d0ccdeff2932d3cfe7916f4939624f5a9f4746bbe835cd206278eec0"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-68262d9fef354effa68124d558afe5e5/function-002C34C8/worker.json",
+                                                                          "sha256":  "63a2d0abe7230a0e4a10099f9b8bc8f7257526a1d58665634e69c14e4abf7662"
+                                                                      }
+                                                                  ],
+                                                   "0x002C34D8":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-252827d1c5d74afe838aa377e43afedf/function-002C34D8/worker.json",
+                                                                          "sha256":  "b573a6c7ca55ea42829967ffada87a50caaf9bc2235b5ebf96e5e0e1028241f0"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-68262d9fef354effa68124d558afe5e5/function-002C34D8/worker.json",
+                                                                          "sha256":  "8eef0e7f9d574d09b3e4136a07a60e650fb054d9e8513dd76f8064e8cae77939"
+                                                                      }
+                                                                  ],
+                                                   "0x002CECD0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-002CECD0/worker.json",
+                                                                          "sha256":  "7d01c0bb7080d69a8814ff368a1f475be26dbd2593598ff0e7760f63168c8668"
+                                                                      }
+                                                                  ],
+                                                   "0x003E9140":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-252827d1c5d74afe838aa377e43afedf/function-003E9140/worker.json",
+                                                                          "sha256":  "1cc09e3b7e8cf4ff7a5acf51dc414fbf6dd5f3f8415437126d1ad1140a726336"
+                                                                      },
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-001/sequential-68262d9fef354effa68124d558afe5e5/function-003E9140/worker.json",
+                                                                          "sha256":  "6e987e23733804cf26924808554156e72a91a8bb21ac884a1128339fb4b5bbe8"
+                                                                      }
+                                                                  ],
+                                                   "0x003E97F0":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/cpp-smoke/run-254444450cd743aeb343d5dc1fd7cbe8/results.json",
+                                                                          "sha256":  "a6090c41be902b0409a377f7f42fbc490d506ae9cd52d2b0082359ca9c6658c4"
+                                                                      }
+                                                                  ],
+                                                   "0x003EA890":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-003EA890/worker.json",
+                                                                          "sha256":  "b454a44b82946cb7377b10a68598da031e0fb8f9ed1610f6f37fa6d53a9af680"
+                                                                      }
+                                                                  ],
+                                                   "0x003F6070":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-003F6070/worker.json",
+                                                                          "sha256":  "9f68ebf2c7493976cad95f1f6f45f6aac0ecceb1141521a2d7b5d24662dfe72b"
+                                                                      }
+                                                                  ],
+                                                   "0x00400488":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-00400488/worker.json",
+                                                                          "sha256":  "4e1f372b11768e50d34a8b781b7c9f7cb001d1dedae9cd35370aa5eac9c0c8fb"
+                                                                      }
+                                                                  ],
+                                                   "0x0040B940":  [
+                                                                      {
+                                                                          "report":  "games/burnout3-pal/build/batches/batch-002/sequential-15d328f0401e4e4887e89513573ad14d/function-0040B940/worker.json",
+                                                                          "sha256":  "863d75152386a3fb2c5615f701e4847e55135109f6908cd07037d4e2e499e215"
+                                                                      }
+                                                                  ]
+                                               },
+                       "source_manifests":  {
+                                                "batch-001":  {
+                                                                  "path":  "games/burnout3-pal/tools/batches/batch-001.json",
+                                                                  "sha256":  "e132929efac8aa09dc95e6d7580ddcdddb38f4bb7df315afce496906ea8c1977",
+                                                                  "verified_addresses":  [
+                                                                                             "0x00237310",
+                                                                                             "0x0026C920",
+                                                                                             "0x002C34C8",
+                                                                                             "0x002C34D8",
+                                                                                             "0x003E9140"
+                                                                                         ]
+                                                              },
+                                                "batch-002":  {
+                                                                  "path":  "games/burnout3-pal/tools/batches/batch-002.json",
+                                                                  "sha256":  "2e5437570104c239263d467e36ad90823d896a19b4cca9e71656615fa181b18b",
+                                                                  "verified_addresses":  [
+                                                                                             "0x00103CC0",
+                                                                                             "0x002372E8",
+                                                                                             "0x0040B940",
+                                                                                             "0x002C30F0",
+                                                                                             "0x00400488",
+                                                                                             "0x002149B0",
+                                                                                             "0x002CECD0",
+                                                                                             "0x0019E9D0",
+                                                                                             "0x003EA890",
+                                                                                             "0x003F6070"
+                                                                                         ]
+                                                              }
+                                            },
+                       "candidates":  [
+                                          {
+                                              "address":  "0x004004D8",
+                                              "classification":  "regression_eligible",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x004004D8",
+                                                                 "end":  "0x00400538",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "called",
+                                                                     "callers":  [
+                                                                                     "0x00400B44"
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   false,
+                                                                   0,
+                                                                   0,
+                                                                   -1,
+                                                                   1,
+                                                                   96,
+                                                                   4195544
+                                                               ],
+                                              "selected":  true
+                                          },
+                                          {
+                                              "address":  "0x003F60C0",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x003F60C0",
+                                                                 "end":  "0x003F611C",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "called",
+                                                                     "callers":  [
+                                                                                     "0x0039E830",
+                                                                                     "0x0039EEDC",
+                                                                                     "0x004335AC",
+                                                                                     "0x00434714",
+                                                                                     "0x00455E8C"
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "Branch/conditional-move representative coverage pending; no path solver."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   0,
+                                                                   1,
+                                                                   -5,
+                                                                   1,
+                                                                   92,
+                                                                   4153536
+                                                               ],
+                                              "selected":  true
+                                          },
+                                          {
+                                              "address":  "0x002D02B0",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x002D02B0",
+                                                                 "end":  "0x002D0304",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "called",
+                                                                     "callers":  [
+                                                                                     "0x002CEF8C",
+                                                                                     "0x002CF094"
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "Branch/conditional-move representative coverage pending; no path solver."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   0,
+                                                                   1,
+                                                                   -2,
+                                                                   1,
+                                                                   84,
+                                                                   2949808
+                                                               ],
+                                              "selected":  true
+                                          },
+                                          {
+                                              "address":  "0x003382A0",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x003382A0",
+                                                                 "end":  "0x003382B0",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "pointer",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   1,
+                                                                   1,
+                                                                   0,
+                                                                   1,
+                                                                   16,
+                                                                   3375776
+                                                               ],
+                                              "selected":  true
+                                          },
+                                          {
+                                              "address":  "0x002D4DF0",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x002D4DF0",
+                                                                 "end":  "0x002D4E08",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "recovered: adjacent",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   2,
+                                                                   1,
+                                                                   0,
+                                                                   1,
+                                                                   24,
+                                                                   2969072
+                                                               ],
+                                              "selected":  true
+                                          },
+                                          {
+                                              "address":  "0x00400470",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x00400470",
+                                                                 "end":  "0x00400488",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "recovered: adjacent",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   2,
+                                                                   1,
+                                                                   0,
+                                                                   1,
+                                                                   24,
+                                                                   4195440
+                                                               ],
+                                              "selected":  false
+                                          },
+                                          {
+                                              "address":  "0x004004C0",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x004004C0",
+                                                                 "end":  "0x004004D8",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "recovered: adjacent",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   2,
+                                                                   1,
+                                                                   0,
+                                                                   1,
+                                                                   24,
+                                                                   4195520
+                                                               ],
+                                              "selected":  false
+                                          },
+                                          {
+                                              "address":  "0x002D4DB8",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x002D4DB8",
+                                                                 "end":  "0x002D4DE4",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "recovered: adjacent",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   2,
+                                                                   1,
+                                                                   0,
+                                                                   1,
+                                                                   44,
+                                                                   2969016
+                                                               ],
+                                              "selected":  false
+                                          },
+                                          {
+                                              "address":  "0x00485518",
+                                              "classification":  "exploratory",
+                                              "verified":  false,
+                                              "boundary_source":  "game.database_path: functions addr/end/chunks",
+                                              "boundaries":  {
+                                                                 "start":  "0x00485518",
+                                                                 "end":  "0x00485534",
+                                                                 "chunks":  [
+
+                                                                            ]
+                                                             },
+                                              "identification":  {
+                                                                     "confidence":  "recovered: adjacent",
+                                                                     "callers":  [
+
+                                                                                 ]
+                                                                 },
+                                              "criteria":  {
+                                                               "difficulty_level":  1,
+                                                               "admitted_profile":  "acyclic_registers_s32_return",
+                                                               "acyclic_cfg_and_return_delay_slots":  "runner static admission",
+                                                               "representative_inputs":  "unchanged entry comparisons plus deterministic u64 anchors"
+                                                           },
+                                              "case_count":  8,
+                                              "case_nature":  "synthetic u64 registers; no return oracle; s32 return ABI",
+                                              "comparisons":  [
+                                                                  {
+                                                                      "address":  "0x00485518",
+                                                                      "operation":  "slt",
+                                                                      "signed":  true,
+                                                                      "width_bits":  64,
+                                                                      "operands":  [
+                                                                                       "arg1",
+                                                                                       "arg0"
+                                                                                   ],
+                                                                      "limitation":  null,
+                                                                      "status":  "pending_execution",
+                                                                      "planned_relations":  [
+                                                                                                "equal",
+                                                                                                "greater",
+                                                                                                "less"
+                                                                                            ]
+                                                                  }
+                                                              ],
+                                              "warnings":  [
+                                                               "No called-entry identification with recorded callers; boundaries need confirmation.",
+                                                               "Branch/conditional-move representative coverage pending; no path solver."
+                                                           ],
+                                              "inventory_uncertainties":  [
+                                                                              "No reachability proof or dynamic equivalence.",
+                                                                              "Pointer provenance, device/DMA use and aliasing unproved.",
+                                                                              "Interpreter support is not translation support."
+                                                                          ],
+                                              "priority_key":  [
+                                                                   true,
+                                                                   2,
+                                                                   2,
+                                                                   0,
+                                                                   1,
+                                                                   28,
+                                                                   4740376
+                                                               ],
+                                              "selected":  false
+                                          }
+                                      ],
+                       "deferred":  [
+                                        {
+                                            "address":  "0x00400470",
+                                            "reason":  "Outside requested limit",
+                                            "classification":  "exploratory"
+                                        },
+                                        {
+                                            "address":  "0x004004C0",
+                                            "reason":  "Outside requested limit",
+                                            "classification":  "exploratory"
+                                        },
+                                        {
+                                            "address":  "0x002D4DB8",
+                                            "reason":  "Outside requested limit",
+                                            "classification":  "exploratory"
+                                        },
+                                        {
+                                            "address":  "0x00485518",
+                                            "reason":  "Outside requested limit",
+                                            "classification":  "exploratory"
+                                        }
+                                    ],
+                       "discarded":  [
+                                         {
+                                             "address":  "0x0024AF08",
+                                             "reason":  "0x0024AF08: outside register profile (including HI/LO/system): mult"
+                                         },
+                                         {
+                                             "address":  "0x004213F0",
+                                             "reason":  "0x004213F0: outside register profile (including HI/LO/system): mult"
+                                         },
+                                         {
+                                             "address":  "0x002B6F30",
+                                             "reason":  "0x002B6F30: outside register profile (including HI/LO/system): mult"
+                                         },
+                                         {
+                                             "address":  "0x0011D630",
+                                             "reason":  "0x0011D630: outside register profile (including HI/LO/system): dsra32"
+                                         },
+                                         {
+                                             "address":  "0x0011D8C8",
+                                             "reason":  "0x0011D8C8: outside register profile (including HI/LO/system): dsll32"
+                                         },
+                                         {
+                                             "address":  "0x0011D4C0",
+                                             "reason":  "0x0011D4C0: outside register profile (including HI/LO/system): dsra32"
+                                         },
+                                         {
+                                             "address":  "0x0011D880",
+                                             "reason":  "0x0011D880: outside register profile (including HI/LO/system): dsll32"
+                                         },
+                                         {
+                                             "address":  "0x002CEBE8",
+                                             "reason":  "0x002CEBE8: outside register profile (including HI/LO/system): beql"
+                                         }
+                                     ],
+                       "expected_coverage":  [
+                                                 {
+                                                     "address":  "0x004004D8",
+                                                     "profile":  "acyclic_registers_s32_return",
+                                                     "input_arguments":  [
+                                                                             "arg0",
+                                                                             "arg2"
+                                                                         ],
+                                                     "branches":  [
+
+                                                                  ],
+                                                     "conditional_moves":  [
+
+                                                                           ],
+                                                     "return_delay_slots":  {
+                                                                                "required":  true,
+                                                                                "status":  "pending_execution"
+                                                                            },
+                                                     "entry_confidence":  "called",
+                                                     "note":  "Static admission only; generated cases may fail strict coverage. Runner coverage is never relaxed."
+                                                 },
+                                                 {
+                                                     "address":  "0x003F60C0",
+                                                     "profile":  "acyclic_registers_s32_return",
+                                                     "input_arguments":  [
+                                                                             "arg0",
+                                                                             "arg1"
+                                                                         ],
+                                                     "branches":  [
+                                                                      {
+                                                                          "address":  "0x003F60C4",
+                                                                          "expected_outcomes":  [
+                                                                                                    false,
+                                                                                                    true
+                                                                                                ],
+                                                                          "status":  "pending_execution"
+                                                                      },
+                                                                      {
+                                                                          "address":  "0x003F60D0",
+                                                                          "expected_outcomes":  [
+                                                                                                    false,
+                                                                                                    true
+                                                                                                ],
+                                                                          "status":  "pending_execution"
+                                                                      },
+                                                                      {
+                                                                          "address":  "0x003F60D8",
+                                                                          "expected_outcomes":  [
+                                                                                                    false,
+                                                                                                    true
+                                                                                                ],
+                                                                          "status":  "pending_execution"
+                                                                      }
+                                                                  ],
+                                                     "conditional_moves":  [
+                                                                               {
+                                                                                   "address":  "0x003F60F4",
+                                                                                   "expected_outcomes":  [
+                                                                                                             false,
+                                                                                                             true
+                                                                                                         ],
+                                                                                   "status":  "pending_execution"
+                                                                               },
+                                                                               {
+                                                                                   "address":  "0x003F6104",
+                                                                                   "expected_outcomes":  [
+                                                                                                             false,
+                                                                                                             true
+                                                                                                         ],
+                                                                                   "status":  "pending_execution"
+                                                                               },
+                                                                               {
+                                                                                   "address":  "0x003F6110",
+                                                                                   "expected_outcomes":  [
+                                                                                                             false,
+                                                                                                             true
+                                                                                                         ],
+                                                                                   "status":  "pending_execution"
+                                                                               }
+                                                                           ],
+                                                     "return_delay_slots":  {
+                                                                                "required":  true,
+                                                                                "status":  "pending_execution"
+                                                                            },
+                                                     "entry_confidence":  "called",
+                                                     "note":  "Static admission only; generated cases may fail strict coverage. Runner coverage is never relaxed."
+                                                 },
+                                                 {
+                                                     "address":  "0x002D02B0",
+                                                     "profile":  "acyclic_registers_s32_return",
+                                                     "input_arguments":  [
+                                                                             "arg0",
+                                                                             "arg1",
+                                                                             "arg2"
+                                                                         ],
+                                                     "branches":  [
+                                                                      {
+                                                                          "address":  "0x002D02CC",
+                                                                          "expected_outcomes":  [
+                                                                                                    false,
+                                                                                                    true
+                                                                                                ],
+                                                                          "status":  "pending_execution"
+                                                                      }
+                                                                  ],
+                                                     "conditional_moves":  [
+                                                                               {
+                                                                                   "address":  "0x002D02DC",
+                                                                                   "expected_outcomes":  [
+                                                                                                             false,
+                                                                                                             true
+                                                                                                         ],
+                                                                                   "status":  "pending_execution"
+                                                                               },
+                                                                               {
+                                                                                   "address":  "0x002D0300",
+                                                                                   "expected_outcomes":  [
+                                                                                                             false,
+                                                                                                             true
+                                                                                                         ],
+                                                                                   "status":  "pending_execution"
+                                                                               }
+                                                                           ],
+                                                     "return_delay_slots":  {
+                                                                                "required":  true,
+                                                                                "status":  "pending_execution"
+                                                                            },
+                                                     "entry_confidence":  "called",
+                                                     "note":  "Static admission only; generated cases may fail strict coverage. Runner coverage is never relaxed."
+                                                 },
+                                                 {
+                                                     "address":  "0x003382A0",
+                                                     "profile":  "acyclic_registers_s32_return",
+                                                     "input_arguments":  [
+                                                                             "arg0",
+                                                                             "arg1"
+                                                                         ],
+                                                     "branches":  [
+
+                                                                  ],
+                                                     "conditional_moves":  [
+
+                                                                           ],
+                                                     "return_delay_slots":  {
+                                                                                "required":  true,
+                                                                                "status":  "pending_execution"
+                                                                            },
+                                                     "entry_confidence":  "pointer",
+                                                     "note":  "Static admission only; generated cases may fail strict coverage. Runner coverage is never relaxed."
+                                                 },
+                                                 {
+                                                     "address":  "0x002D4DF0",
+                                                     "profile":  "acyclic_registers_s32_return",
+                                                     "input_arguments":  [
+                                                                             "arg0"
+                                                                         ],
+                                                     "branches":  [
+
+                                                                  ],
+                                                     "conditional_moves":  [
+
+                                                                           ],
+                                                     "return_delay_slots":  {
+                                                                                "required":  true,
+                                                                                "status":  "pending_execution"
+                                                                            },
+                                                     "entry_confidence":  "recovered: adjacent",
+                                                     "note":  "Static admission only; generated cases may fail strict coverage. Runner coverage is never relaxed."
+                                                 }
+                                             ],
+                       "case_policy":  "Up to eight cases: direct entry comparison relations first, then seeded u64 anchors; omitted arguments zero; no oracle.",
+                       "limitations":  [
+                                           "Only current runner register profile; return ABI s32.",
+                                           "Historical regression addresses require current native evidence; additional proven addresses are excluded without a fixed count.",
+                                           "Coverage pending execution, not proved by generation/validation.",
+                                           "Independent compile timeout remains unimplemented."
+                                       ],
+                       "manual_coverage_adjustments":  [
+                                                           "0x002D02B0: case-07 replaced with arg0=0, arg1=0, arg2=0.",
+                                                           "0x003F60C0: case-01 through case-05 adjusted to exercise branch and movz outcomes."
+                                                       ],
+                       "verified_pipeline_report":  "games/burnout3-pal/build/pipeline/run-9b58cc99362a4b8fafb00b74dccabc57/summary.json"
+                   },
+    "functions":  [
+                      {
+                          "address":  "0x004004D8",
+                          "expected_case_count":  8,
+                          "memory_contract":  {
+                                                  "reads":  [
+
+                                                            ],
+                                                  "writes":  [
+
+                                                             ]
+                                              },
+                          "coverage":  {
+                                           "all_return_delay_slots":  true
+                                       },
+                          "cases":  [
+                                        {
+                                            "id":  "case-01",
+                                            "arguments":  {
+                                                              "arg0":  "0xAAAAAAAA55555555",
+                                                              "arg2":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-02",
+                                            "arguments":  {
+                                                              "arg0":  "0x000000007FFFFFFF",
+                                                              "arg2":  "0x000000007FFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-03",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFF80000000",
+                                                              "arg2":  "0xAAAAAAAA55555555"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-04",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg2":  "0xFFFFFFFF80000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-05",
+                                            "arguments":  {
+                                                              "arg0":  "0x00000000FFFFFFFF",
+                                                              "arg2":  "0x8000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-06",
+                                            "arguments":  {
+                                                              "arg0":  "0x7FFFFFFFFFFFFFFF",
+                                                              "arg2":  "0x7FFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-07",
+                                            "arguments":  {
+                                                              "arg0":  "0x8000000000000000",
+                                                              "arg2":  "0xFFFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-08",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFFFFFFFFFF",
+                                                              "arg2":  "0x00000000FFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        }
+                                    ]
+                      },
+                      {
+                          "address":  "0x003F60C0",
+                          "expected_case_count":  8,
+                          "memory_contract":  {
+                                                  "reads":  [
+
+                                                            ],
+                                                  "writes":  [
+
+                                                             ]
+                                              },
+                          "coverage":  {
+                                           "all_return_delay_slots":  true
+                                       },
+                          "cases":  [
+                                        {
+                                            "id":  "case-01",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg1":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-02",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000001",
+                                                              "arg1":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-03",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000001",
+                                                              "arg1":  "0x0000000000000001"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-04",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000002",
+                                                              "arg1":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-05",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000002",
+                                                              "arg1":  "0x0000000000000001"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-06",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg1":  "0xAAAAAAAA55555555"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-07",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFFFFFFFFFF",
+                                                              "arg1":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-08",
+                                            "arguments":  {
+                                                              "arg0":  "0x8000000000000000",
+                                                              "arg1":  "0x8000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        }
+                                    ]
+                      },
+                      {
+                          "address":  "0x002D02B0",
+                          "expected_case_count":  8,
+                          "memory_contract":  {
+                                                  "reads":  [
+
+                                                            ],
+                                                  "writes":  [
+
+                                                             ]
+                                              },
+                          "coverage":  {
+                                           "all_return_delay_slots":  true
+                                       },
+                          "cases":  [
+                                        {
+                                            "id":  "case-01",
+                                            "arguments":  {
+                                                              "arg0":  "0x000000007FFFFFFF",
+                                                              "arg1":  "0x7FFFFFFFFFFFFFFF",
+                                                              "arg2":  "0x000000007FFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-02",
+                                            "arguments":  {
+                                                              "arg0":  "0x00000000FFFFFFFF",
+                                                              "arg1":  "0xFFFFFFFFFFFFFFFF",
+                                                              "arg2":  "0x8000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-03",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFF80000000",
+                                                              "arg1":  "0x0000000000000000",
+                                                              "arg2":  "0xFFFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-04",
+                                            "arguments":  {
+                                                              "arg0":  "0xAAAAAAAA55555555",
+                                                              "arg1":  "0xAAAAAAAA55555555",
+                                                              "arg2":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-05",
+                                            "arguments":  {
+                                                              "arg0":  "0x7FFFFFFFFFFFFFFF",
+                                                              "arg1":  "0xFFFFFFFF80000000",
+                                                              "arg2":  "0x00000000FFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-06",
+                                            "arguments":  {
+                                                              "arg0":  "0x8000000000000000",
+                                                              "arg1":  "0x8000000000000000",
+                                                              "arg2":  "0xAAAAAAAA55555555"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-07",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg1":  "0x0000000000000000",
+                                                              "arg2":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-08",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg1":  "0x00000000FFFFFFFF",
+                                                              "arg2":  "0x7FFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        }
+                                    ]
+                      },
+                      {
+                          "address":  "0x003382A0",
+                          "expected_case_count":  8,
+                          "memory_contract":  {
+                                                  "reads":  [
+
+                                                            ],
+                                                  "writes":  [
+
+                                                             ]
+                                              },
+                          "coverage":  {
+                                           "all_return_delay_slots":  true
+                                       },
+                          "cases":  [
+                                        {
+                                            "id":  "case-01",
+                                            "arguments":  {
+                                                              "arg0":  "0x8000000000000000",
+                                                              "arg1":  "0xFFFFFFFF80000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-02",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFFFFFFFFFF",
+                                                              "arg1":  "0x000000007FFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-03",
+                                            "arguments":  {
+                                                              "arg0":  "0xAAAAAAAA55555555",
+                                                              "arg1":  "0xFFFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-04",
+                                            "arguments":  {
+                                                              "arg0":  "0x00000000FFFFFFFF",
+                                                              "arg1":  "0xAAAAAAAA55555555"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-05",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000",
+                                                              "arg1":  "0x7FFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-06",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFF80000000",
+                                                              "arg1":  "0x8000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-07",
+                                            "arguments":  {
+                                                              "arg0":  "0x000000007FFFFFFF",
+                                                              "arg1":  "0x00000000FFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-08",
+                                            "arguments":  {
+                                                              "arg0":  "0x7FFFFFFFFFFFFFFF",
+                                                              "arg1":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        }
+                                    ]
+                      },
+                      {
+                          "address":  "0x002D4DF0",
+                          "expected_case_count":  8,
+                          "memory_contract":  {
+                                                  "reads":  [
+
+                                                            ],
+                                                  "writes":  [
+
+                                                             ]
+                                              },
+                          "coverage":  {
+                                           "all_return_delay_slots":  true
+                                       },
+                          "cases":  [
+                                        {
+                                            "id":  "case-01",
+                                            "arguments":  {
+                                                              "arg0":  "0xAAAAAAAA55555555"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-02",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFF80000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-03",
+                                            "arguments":  {
+                                                              "arg0":  "0x0000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-04",
+                                            "arguments":  {
+                                                              "arg0":  "0x00000000FFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-05",
+                                            "arguments":  {
+                                                              "arg0":  "0x8000000000000000"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-06",
+                                            "arguments":  {
+                                                              "arg0":  "0x7FFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-07",
+                                            "arguments":  {
+                                                              "arg0":  "0xFFFFFFFFFFFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        },
+                                        {
+                                            "id":  "case-08",
+                                            "arguments":  {
+                                                              "arg0":  "0x000000007FFFFFFF"
+                                                          },
+                                            "objects":  [
+
+                                                        ]
+                                        }
+                                    ]
+                      }
+                  ]
+}
