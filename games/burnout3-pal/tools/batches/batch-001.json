@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "id": "batch-001",
+  "mode": "explicit",
+  "provenance": {
+    "source_report": "games/burnout3-pal/build/batches/batch-001/run-4afac079092f42e5af823c3c767069a6/results.json",
+    "sha256": "085c7f9ff7ec4b98142ea9bc8d3de0c5427c42a715fee26b52b871aea5689184",
+    "description": "Exact eight a0/a1 register bit patterns per function from the successful derivation report; omitted registers default to zero."
+  },
+  "limits": {
+    "max_passes": 1,
+    "instruction_budget": 100000,
+    "function_timeout_seconds": 60,
+    "compile_timeout_seconds": 120,
+    "batch_timeout_seconds": 600
+  },
+  "functions": [
+    {
+      "address": "0x00237310",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x0000000012345678",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x0000000100000001",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x800000000000ABCD",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x0026C920",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF",
+            "arg1": "0xFFFFFFFF80000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x0000000012345678",
+            "arg1": "0x0000000000000100"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x0000000100000001",
+            "arg1": "0x00000001000000FF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555",
+            "arg1": "0x55555555AAAAAAAA"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0xFFFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002C34C8",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true,
+        "slt_relations": [
+          "less",
+          "equal",
+          "greater"
+        ],
+        "movn_conditions": [
+          false,
+          true
+        ]
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x0000000100000000",
+            "arg1": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x0000000000000001",
+            "arg1": "0x0000000100000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x1234567887654321",
+            "arg1": "0x1234567887654321"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x8000000000000000",
+            "arg1": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0x8000000000000000"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x002C34D8",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true,
+        "slt_relations": [
+          "less",
+          "equal",
+          "greater"
+        ],
+        "movn_conditions": [
+          false,
+          true
+        ]
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x000000007FFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x0000000100000000",
+            "arg1": "0x0000000000000001"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0x0000000000000001",
+            "arg1": "0x0000000100000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x1234567887654321",
+            "arg1": "0x1234567887654321"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x8000000000000000",
+            "arg1": "0x7FFFFFFFFFFFFFFF"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0x8000000000000000"
+          },
+          "objects": []
+        }
+      ]
+    },
+    {
+      "address": "0x003E9140",
+      "expected_case_count": 8,
+      "memory_contract": {
+        "reads": [],
+        "writes": []
+      },
+      "coverage": {
+        "all_return_delay_slots": true
+      },
+      "cases": [
+        {
+          "id": "case-01",
+          "arguments": {
+            "arg0": "0x0000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-02",
+          "arguments": {
+            "arg0": "0xFFFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-03",
+          "arguments": {
+            "arg0": "0xFFFFFFFF80000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-04",
+          "arguments": {
+            "arg0": "0x000000007FFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-05",
+          "arguments": {
+            "arg0": "0xAAAAAAAA55555555",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-06",
+          "arguments": {
+            "arg0": "0x0000000100000001",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-07",
+          "arguments": {
+            "arg0": "0x8000000000000000",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        },
+        {
+          "id": "case-08",
+          "arguments": {
+            "arg0": "0x7FFFFFFFFFFFFFFF",
+            "arg1": "0x0000000000000000"
+          },
+          "objects": []
+        }
+      ]
+    }
+  ]
+}
