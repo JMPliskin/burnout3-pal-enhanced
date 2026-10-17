@@ -19,6 +19,17 @@ endif()
 
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../../engine/host ${CMAKE_BINARY_DIR}/ps2host)
 
+# PC SETTINGS' MODS: the functions the mods change, lifted with them
+# (tools/lift_mods.py) from the player's executable - the game's code, so
+# made here rather than kept in the repository.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(MODS_LIFTED ${CMAKE_BINARY_DIR}/mods_lifted.cpp)
+add_custom_command(OUTPUT ${MODS_LIFTED}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/lift_mods.py
+            --game ${CMAKE_CURRENT_LIST_DIR}/.. --out ${MODS_LIFTED}
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/tools/lift_mods.py
+    COMMENT "Lifting the mods' functions")
+
 ps2_add_port(burnout3
     GAME ${CMAKE_CURRENT_LIST_DIR}/..
     GENERATED ${PS2_GENERATED_DIR}
@@ -30,4 +41,6 @@ ps2_add_port(burnout3
             ${CMAKE_CURRENT_LIST_DIR}/prompts.cpp
             ${CMAKE_CURRENT_LIST_DIR}/controls.cpp
             ${CMAKE_CURRENT_LIST_DIR}/sixty_fps.cpp
-            ${CMAKE_CURRENT_LIST_DIR}/dev_menu.cpp)
+            ${CMAKE_CURRENT_LIST_DIR}/dev_menu.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/mods.cpp
+            ${MODS_LIFTED})

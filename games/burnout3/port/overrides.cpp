@@ -250,7 +250,7 @@ constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
    set up with them; a seventh shifts the main menu up): a page with more
    scrolls, Up past the top row or Down past the bottom one bringing the
    next into view. */
-enum class Page { kMainMenu, kPcSettings, kVideo, kGraphics, kControls, kBindings };
+enum class Page { kMainMenu, kPcSettings, kVideo, kGraphics, kControls, kMods, kBindings };
 struct PageInfo {
     Page page;
     const char* name;
@@ -260,6 +260,7 @@ const PageInfo kPages[] = {
     {Page::kVideo, "VIDEO", "THE WINDOW, RESOLUTION, PICTURE SHAPE AND SMOOTHING"},
     {Page::kGraphics, "GRAPHICS", "THE GAME'S OWN EFFECTS"},
     {Page::kControls, "CONTROLS", "YOUR KEYS AND BUTTONS, AND THE BUTTONS SHOWN"},
+    {Page::kMods, "MODS", "NEHALEM'S MODS: KM/H, THE HORN, MIRROR MODE AND MORE"},
 };
 constexpr u32 kPageCount = sizeof kPages / sizeof kPages[0];
 
@@ -302,6 +303,16 @@ int ButtonPrompts() { return Among("button_prompts", kPromptStyles); }
 void SetButtonPrompts(int which) { ps2host::SetSetting("button_prompts", kPromptStyles[which]); }
 int TriggerEffects() { return ps2host::SettingOn("trigger_effects", true) ? 1 : 0; }
 void SetTriggerEffects(int on) { ps2host::SetSettingOn("trigger_effects", on != 0); }
+// MODS (mods.cpp): each a setting, off unless the player turns it on.
+template <const char* kKey>
+int Mod() { return ps2host::SettingOn(kKey, false) ? 1 : 0; }
+template <const char* kKey>
+void SetMod(int on) { ps2host::SetSettingOn(kKey, on != 0); }
+constexpr char kModKph[] = "mod.kph", kModHorn[] = "mod.horn", kModMirror[] = "mod.mirror",
+               kModNoTraffic[] = "mod.no_traffic", kModCrashBreaker[] = "mod.crash_breaker",
+               kModHeadlights[] = "mod.headlights", kModHeavyweights[] = "mod.heavyweights";
+int Traffic() { return 1 - Mod<kModNoTraffic>(); }
+void SetTraffic(int on) { SetMod<kModNoTraffic>(1 - on); }
 const Option kOptions[] = {
     {Page::kVideo, "FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {Page::kVideo, "VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
@@ -314,6 +325,20 @@ const Option kOptions[] = {
     {Page::kVideo, "ANTIALIASING", "EDGES AS DRAWN, SMOOTHED (FXAA), OR SUPERSAMPLED (SSAA)",
      AntiAliasing, SetAntiAliasing, {"OFF", "FXAA", "SSAA 2X", "SSAA 4X"}, 4},
     {Page::kGraphics, "BLUR", "THE SPEED BLUR AND GLOW, OR A CLEAR PICTURE", Blur, SetBlur, {"ORIGINAL", "OFF"}, 2},
+    {Page::kMods, "SPEEDOMETER", "THE SPEED IN MILES OR IN KILOMETRES AN HOUR", Mod<kModKph>, SetMod<kModKph>,
+     {"MPH", "KM/H"}, 2},
+    {Page::kMods, "HORN", "HONK (CONTROLS: HORN), THE HEADLIGHTS ON WHILE IT IS HELD", Mod<kModHorn>,
+     SetMod<kModHorn>, {"OFF", "ON"}, 2},
+    {Page::kMods, "MIRROR MODE", "EVERY TRACK MIRRORED, LEFT FOR RIGHT", Mod<kModMirror>, SetMod<kModMirror>,
+     {"OFF", "ON"}, 2},
+    {Page::kMods, "TRAFFIC", "THE ROADS' TRAFFIC, OR EMPTY ROADS (FROM THE NEXT RACE)", Traffic, SetTraffic,
+     {"OFF", "ON"}, 2},
+    {Page::kMods, "CRASH BREAKER", "SET OFF IN CRASH MODE ONLY, OR IN EVERY MODE (CONTROLS)",
+     Mod<kModCrashBreaker>, SetMod<kModCrashBreaker>, {"CRASH MODE", "ALL MODES"}, 2},
+    {Page::kMods, "HEADLIGHTS", "AS THE TRACK HAS THEM, OR EVERY RACE CAR'S ALWAYS ON", Mod<kModHeadlights>,
+     SetMod<kModHeadlights>, {"ORIGINAL", "ALWAYS ON"}, 2},
+    {Page::kMods, "HEAVYWEIGHTS", "THE HEAVYWEIGHT CARS IN THE GARAGE IN EVERY MODE", Mod<kModHeavyweights>,
+     SetMod<kModHeavyweights>, {"ORIGINAL", "ALL MODES"}, 2},
     {Page::kControls, "BUTTON PROMPTS", "THE BUTTONS SHOWN: YOUR CONTROLLER'S, PLAYSTATION OR XBOX", ButtonPrompts,
      SetButtonPrompts, {"AUTO", "PLAYSTATION", "XBOX"}, 3},
     {Page::kControls, "TRIGGER EFFECTS", "DUALSENSE: THE TRIGGERS PUSH BACK WHEN THEY DRIVE", TriggerEffects,
@@ -882,6 +907,7 @@ void RegisterMouse();              // mouse.cpp
 void RegisterControls();           // controls.cpp
 void RegisterSixtyFps();           // sixty_fps.cpp
 void RegisterDevMenu();            // dev_menu.cpp
+void RegisterMods();               // mods.cpp
 
 void RegisterGameOverrides() {
     // VU1's fast mode: every scripted run draws every picture as the exact
@@ -898,6 +924,7 @@ void RegisterGameOverrides() {
     RegisterControls();
     RegisterSixtyFps();
     RegisterDevMenu();
+    RegisterMods();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");
