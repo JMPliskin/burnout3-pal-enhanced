@@ -393,9 +393,15 @@ def verify_success(summary_path, job, pins=None):
     require(execution['status']=='passed' and execution['exit_code']==0 and execution['dynamic_execution'] is True, 'Missing successful execution')
     supervisor=read_evidence(execution['report'],pins,BUILD/'batches',reuse)
     require(pins[str(Path(execution['report']).resolve())]==execution['report_sha256'], 'Supervisor hash conflict')
+    # The runner reserializes JSON into its own execution snapshot. Its byte
+    # hash need not equal the source snapshot's (whitespace/newlines may differ).
+    execution_manifest_path=Path(execution['report']).resolve().parent/'manifest.json'
+    execution_manifest=read_evidence(execution_manifest_path,pins,BUILD/'batches',reuse)
+    require(supervisor['manifest_sha256']==pins[str(execution_manifest_path)], 'Execution manifest hash conflict')
+    require(execution_manifest==manifest, 'Execution manifest differs from planned snapshot')
     require(supervisor['status']=='passed' and supervisor['expected_functions']==len(expected) and
-            supervisor['expected_cases']==total and supervisor['cases_executed']==supervisor['cases_passed']==total and
-            supervisor['manifest_sha256']==job['snapshot']['sha256'], 'Incomplete supervisor success')
+            supervisor['expected_cases']==total and supervisor['cases_executed']==supervisor['cases_passed']==total,
+            'Incomplete supervisor success')
     require(summary['cases_executed']==execution['cases_executed']==execution['cases_passed']==total, 'Pipeline count conflict')
     rows=supervisor['results'];entries=batch['functions']
     require(len(rows)==len(entries)==len(expected) and {r['address'] for r in rows}==set(expected) and

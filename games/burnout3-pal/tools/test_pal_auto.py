@@ -69,7 +69,7 @@ class QueueTests(unittest.TestCase):
                          {'address':f['address'],'status':outcome} for f in manifest['functions']]}]}
             (out/'summary.json').write_text(json.dumps(summary));row['exit_code']=1;return
         execution=self.build/'batches'/manifest['id']/('run-%d'%number);execution.mkdir(parents=True)
-        executed=execution/'manifest.json';executed.write_bytes(snapshot.read_bytes())
+        executed=execution/'manifest.json';auto.runner.write_report(executed,manifest)
         workers=[];entries=[]
         for entry in manifest['functions']:
             address=entry['address'];directory=execution/('function-'+address[2:]);directory.mkdir()
@@ -198,6 +198,42 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(auto.execute_plan(path,resume=True),0);self.assertEqual(len(self.calls),1)
         self.assertEqual(self.source.read_bytes(),Path(p['jobs'][0]['snapshot']['path']).read_bytes())
         self.assertEqual(list((self.tools/'batches').glob('*.json')),[self.source])
+
+    def test_runner_reserialized_manifest_has_distinct_hash_and_valid_evidence(self):
+        path=self.plan();self.assertEqual(auto.execute_plan(path),0)
+        job=self.load(path)['jobs'][0];attempt=job['attempts'][0]
+        summary=self.load(Path(attempt['report']))
+        supervisor_path=Path(summary['batches'][0]['execution']['report'])
+        executed=supervisor_path.parent/'manifest.json';snapshot=Path(job['snapshot']['path'])
+        self.assertNotEqual(executed.read_bytes(),snapshot.read_bytes())
+        self.assertEqual(self.load(executed),self.load(snapshot))
+        self.assertNotEqual(auto.pipeline.digest(executed),job['snapshot']['sha256'])
+        self.assertEqual(self.load(supervisor_path)['manifest_sha256'],auto.pipeline.digest(executed))
+        self.assertEqual(attempt['evidence_sha256'][str(executed.resolve())],auto.pipeline.digest(executed))
+        self.assertEqual(auto.execute_plan(path,resume=True),0);self.assertEqual(len(self.calls),1)
+
+    def test_supervisor_hash_must_match_execution_manifest_bytes(self):
+        path=self.plan();auto.execute_plan(path);job=self.load(path)['jobs'][0]
+        summary_path=Path(job['attempts'][0]['report']);summary=self.load(summary_path)
+        execution=summary['batches'][0]['execution'];supervisor_path=Path(execution['report'])
+        supervisor=self.load(supervisor_path);supervisor['manifest_sha256']=job['snapshot']['sha256']
+        supervisor_path.write_text(json.dumps(supervisor))
+        execution['report_sha256']=auto.pipeline.digest(supervisor_path);summary_path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(ValueError,'Execution manifest hash conflict'):
+            auto.verify_success(summary_path,job)
+
+    def test_execution_manifest_content_cannot_differ_from_planned_snapshot(self):
+        path=self.plan();auto.execute_plan(path);job=self.load(path)['jobs'][0]
+        summary_path=Path(job['attempts'][0]['report']);summary=self.load(summary_path)
+        execution=summary['batches'][0]['execution'];supervisor_path=Path(execution['report'])
+        executed=supervisor_path.parent/'manifest.json';manifest=self.load(executed)
+        manifest['functions'][0]['cases'][0]['arguments']['arg0']='0x0000000000001234'
+        executed.write_text(json.dumps(manifest))
+        supervisor=self.load(supervisor_path);supervisor['manifest_sha256']=auto.pipeline.digest(executed)
+        supervisor_path.write_text(json.dumps(supervisor))
+        execution['report_sha256']=auto.pipeline.digest(supervisor_path);summary_path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(ValueError,'Execution manifest differs from planned snapshot'):
+            auto.verify_success(summary_path,job)
 
     def test_summary_alone_never_passes(self):
         path=self.plan()
