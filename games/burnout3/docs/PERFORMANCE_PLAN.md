@@ -442,11 +442,13 @@ Done (engine, every Burnout 3 GPU run as recorded after each):
 | Drew: inside the marked rectangle, what moves alone (42dc6c5) | -1.5% |
 | the draw's state made past the fast path only (a81ac9c) | -1.3% |
 | texture contents hashed with XXH3 (dc310c6) | -1.7% |
+| a batch's state compared byte for byte first (8191ca0) | -1.2% |
 | now | ~39 (-15%; the machine drifts: compare alternated) |
 
-Real time, the splitscreen race at 2x, two runs each: dropped 60, 74 -> 28,
-18; the median interval 17.9-18.3 -> 16.82 ms; the GS thread 99% -> 92%
-busy. The one-player race on four threads at 1x: late 28, 25 -> 15, 7; the
+Real time, the splitscreen race at 2x: dropped 60, 74 (the start) -> 28,
+18 (the first four changes) -> 0, 22, 15 (all of them; the race differs from
+run to run in real time); the median interval 17.9-18.3 -> 16.7-16.75 ms;
+the GS thread 99% -> 83-89% busy, VIF1's worker 90-97%. The one-player race on four threads at 1x: late 28, 25 -> 15, 7; the
 GS thread 57% -> 48-49%; 1.49-1.53 -> 1.43-1.44 cores.
 
 Tried and dropped: the sprite neighbour search (up to 256 back, at 2x and
