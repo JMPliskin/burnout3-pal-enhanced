@@ -14,13 +14,17 @@ HARNESS = r'''
 #include <cstring>
 #include <stdexcept>
 #include <cstdio>
+#include <map>
 #include "ps2host/host.h"
 namespace generated {
 u8* ram_base=nullptr; bool ram_watched=false; u8* scratchpad_base=nullptr;
 static u32 address; static u64 value; static u32 size; static int writes;
+static std::map<u32,u8> memory;
+u64 PortRead(u32 a,u32 n,bool sign) {u64 v=0;for(u32 i=0;i<n;++i)v|=u64(memory[a+i])<<(8*i);return v;}
 void PortWrite(u32 a,u64 v,u32 n) {
  if(a==0xdead0000u) throw std::runtime_error("synthetic memory fault");
  address=a;value=v;size=n;++writes;
+ for(u32 i=0;i<n;++i)memory[a+i]=u8(v>>(8*i));
 }
 }
 namespace ps2host {
@@ -28,15 +32,34 @@ static GuestFunction target=nullptr;
 static RpcServer rpc;
 static u32 rpc_id=0;
 static int registrations=0;
+static u16 held=0;
+u16 PadButtonsHeld() {return held;}
+static std::vector<std::pair<u32,GuestFunction>> bindings;
 void RegisterRpcServer(u32 id,RpcServer f) {rpc_id=id;rpc=f;++registrations;}
-void Override(u32 a,GuestFunction f,const char*) {assert(a==0x001156C0u);target=f;}
+void Override(u32 a,GuestFunction f,const char*) {if(a==0x001156C0u)target=f;else bindings.push_back({a,f});}
 }
 namespace ps2host { namespace iop {
 static int rwa_registrations=0;
 static std::vector<std::string> module_names;
 void RunModule(const std::string& name) {module_names.push_back(name);++rwa_registrations;}
 }}
+namespace ps2host { namespace mc2 {
+static std::string directory;
+static int host_hit=0, game_hit=0;
+const std::string& CardDirectory() {return directory;}
+void SetCardDirectory(const std::string& d) {directory=d;}
+#define MC_STUB(Name,N) void Name(lifted::Context& c) {host_hit=N;c.r[2]=N;}
+MC_STUB(GetInfo,1) MC_STUB(Format,2) MC_STUB(ReadFile,3) MC_STUB(WriteFile,4)
+MC_STUB(Create,5) MC_STUB(GetDir,6) MC_STUB(Lookup,7)
+#undef MC_STUB
+}}
+#define GAME_STUB(Name,N) void Name(lifted::Context& c) {ps2host::mc2::game_hit=N;c.r[2]=N+100;}
+GAME_STUB(F_00244208,1) GAME_STUB(F_002445C0,2) GAME_STUB(F_00246578,3)
+GAME_STUB(F_00246778,4) GAME_STUB(F_00245FB0,5) GAME_STUB(F_002470C8,6) GAME_STUB(F_00245388,7)
+#undef GAME_STUB
 void RegisterGameOverrides();
+static int movie_calls=0;
+void F_00131410(lifted::Context& c) {++movie_calls;c.r[2]=0x55;}
 int main() {
  RegisterGameOverrides();assert(ps2host::target);
  assert(ps2host::iop::rwa_registrations==2);

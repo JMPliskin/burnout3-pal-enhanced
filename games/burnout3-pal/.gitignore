@@ -1,0 +1,2 @@
+# Persistent local PAL virtual memory cards; never package or commit saves.
+/memcards/

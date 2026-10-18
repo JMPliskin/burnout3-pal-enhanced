@@ -144,7 +144,62 @@ def database(ninja,base,rule):
     return json.loads(result.stdout)
 
 
-def prepare(base,paths):
+def complete_function(game,sources,directory,start,end):
+    """Explicitly restore an omitted switch body; never edit published sources."""
+    functions=game.load_database()['functions']
+    rows=[f for f in functions if f['addr']==start]
+    if len(rows)!=1 or end<=rows[0]['end'] or start%4 or end%4:
+        raise ValueError('Invalid explicit function completion')
+    if any(start<f['addr']<end for f in functions):
+        raise ValueError('Completion overlaps another function')
+    chunks=rows[0].get('chunks',[])
+    if not chunks or max(b for a,b in chunks)!=end:
+        raise ValueError('Completion must end at the existing terminal chunk')
+    elf=game.load_elf();section=elf.exec_sections[0];image=elf.section_data(section)
+    if not section.addr<=start<end<=section.addr+len(image):
+        raise ValueError('Completion outside executable section')
+    symbol=f'void F_{start:08X}(lifted::Context& c) {{'
+    matches=[p for p in sources.glob('*.cpp') if symbol in p.read_text()]
+    if len(matches)!=1:raise ValueError('Completion requires one existing symbol')
+    original=matches[0];text=original.read_text();lo=text.index(symbol)
+    brace=text.index('{',lo);depth=1;hi=brace+1
+    while depth and hi<len(text):
+        depth+=(text[hi]=='{')-(text[hi]=='}');hi+=1
+    if depth:raise ValueError('Incomplete original generated function')
+    port.lift.use_sections([(elf.section_data(s),s.addr) for s in elf.sections if s.is_alloc and s.size and s.type!=8])
+    code=port.lift.lift_function(image,section.addr,start,end)
+    replacement='/* NOT VERIFIED: explicit switch extent completion; no dynamic equivalence verdict. */\n'+code
+    target=directory/original.name
+    with target.open('x',encoding='utf-8',newline='\n') as out:out.write(text[:lo]+replacement+text[hi:])
+    return original,target,{'start':start,'end':end,'original_sha256':digest(original),'replacement_sha256':digest(target),'verification':'NOT VERIFIED'}
+
+
+def stage_vu_manifest(source,directory):
+    """Pin an immutable PAL capture; reject records the engine parser would skip."""
+    source=inside(source);raw=source.read_bytes();lines=raw.decode('ascii').splitlines()
+    if not lines or len(lines)!=len(set(lines)):raise ValueError('Empty or duplicate VU capture')
+    for line in lines:
+        if not re.fullmatch(r'vu[01] [0-9A-Fa-f]+ [0-9A-Fa-f]+:[0-9A-Fa-f]+(?:,[0-9A-Fa-f]+)*(?:;[0-9A-Fa-f]+:[0-9A-Fa-f]+(?:,[0-9A-Fa-f]+)*)*',line):
+            raise ValueError('Invalid VU record')
+        unit,entry,code=line.split();limit=16384 if unit=='vu1' else 4096;seen=set()
+        for run in code.split(';'):
+            base,words=run.split(':');base=int(base,16);words=words.split(',')
+            if base%8 or len(words)%2 or base+len(words)*4>limit or any(int(w,16)>0xffffffff for w in words):raise ValueError('Invalid VU code extent')
+            addresses=set(range(base,base+len(words)*4,8))
+            if seen&addresses:raise ValueError('Overlapping VU code runs')
+            seen.update(addresses)
+        if int(entry,16) not in seen:raise ValueError('VU entry outside captured code')
+    programs=port.vurecomp.read_manifest(str(source))
+    if not programs:raise ValueError('No VU programs')
+    target=directory/'vu_programs.txt'
+    with target.open('xb') as out:out.write(raw)
+    if digest(source)!=digest(target):raise ValueError('VU capture changed while staging')
+    return {'source':str(source),'manifest':str(target),'sha256':digest(target),'records':len(lines),
+            'programs':len(programs),'vu0':sum(u==0 for u,e,p in programs),'vu1':sum(u==1 for u,e,p in programs),
+            'pairs':sum(len(p) for u,e,p in programs),'mode':'exact','dynamic_equivalence':'not established for capture'}
+
+
+def prepare(base,paths,completions=(),vu_manifest=None):
     base=inside(base);old=base/'port/cmake';old_report=json.loads((base/'build.json').read_bytes())
     sources=inside(old_report['sources'])
     for name,sha in old_report['sha256'].items():
@@ -153,6 +208,12 @@ def prepare(base,paths):
     static=set(port.translated_functions(str(sources)))
     if static&pairs.keys():raise ValueError('Discovered address collides with existing translation')
     directory=GAME/'build/native-relocated'/('run-'+uuid.uuid4().hex[:12]);directory.mkdir(parents=True)
+    vu=stage_vu_manifest(vu_manifest,directory) if vu_manifest else None
+    replacements={};completion_evidence=[]
+    for start,end in completions:
+        original,target,record=complete_function(game,sources,directory,start,end)
+        if original in replacements:raise ValueError('Multiple completions in one unit are not supported')
+        replacements[original]=target;completion_evidence.append(record)
     game.build=str(directory.relative_to(GAME));game.generated=str(sources.parent/'generated')
     pairfile=directory/'port/discovered.txt';pairfile.parent.mkdir()
     pairfile.write_text(''.join(f'{run:08X} {source:08X}\n' for run,source in sorted(pairs.items())))
@@ -176,6 +237,7 @@ def prepare(base,paths):
             replacement=generated/source.name
             if not replacement.exists():raise ValueError('Missing generated unit')
         elif source==GAME/'port/overrides.cpp':replacement=source
+        elif source in replacements:replacement=replacements[source]
         changed=replacement is not None and (source.name=='overrides.cpp' or digest(source)!=digest(replacement))
         if changed:
             target=directory/(source.name+'.obj')
@@ -183,6 +245,12 @@ def prepare(base,paths):
             commands.append(args);outputs[str(original_obj.resolve())]=str(target)
         else:pins[str(original_obj.resolve())]=digest(original_obj)
     template=next(x for x in compdb if Path(x['file']).name=='discovered.cpp')
+    extra_objects=[]
+    existing_names={Path(x['file']).name for x in compdb if Path(x['file']).parent==base/'port/generated'}
+    for source in sorted(generated.glob('vu_blocks_*.cpp')):
+        if source.name in existing_names:continue
+        obj=directory/(source.name+'.obj')
+        commands.append(compile_arguments(template,source,obj,directory));extra_objects.append(str(obj))
     target=directory/'relocation_audit.cpp.obj'
     commands.append(compile_arguments(template,generated/'relocation_audit.cpp',target,directory))
     raw=link[0]['command'];parts=raw.split(' && ')
@@ -201,14 +269,71 @@ def prepare(base,paths):
             elif path.exists():inputs.append(str(path));pins[str(path)]=digest(path)
             elif '\\' in x or '/' in x:raise ValueError('Missing original link input: '+x)
             else:inputs.append(x)
-    inputs.append(str(target));rsp=directory/'link-inputs.rsp';rsp.write_text(subprocess.list2cmdline(inputs),encoding='utf-8')
+    inputs.extend(extra_objects);inputs.append(str(target));rsp=directory/'link-inputs.rsp';rsp.write_text(subprocess.list2cmdline(inputs),encoding='utf-8')
     commands.append(rebased+['@'+str(rsp)]+options)
     for f in [GAME/'game.json',Path(game.elf_path),Path(game.database_path),Path(__file__),GAME/'port/overrides.cpp',Path(port.__file__),old/'build.ninja',*(generated.glob('*.cpp'))]:pins[str(f)]=digest(f)
     config={'schema':1,'directory':str(directory),'base':str(base),'sources':str(sources),'commands':commands,'pins':pins,
             'metadata':{str(a):m for a,m in metadata.items()},'original_functions':len(static),'verification':'NOT VERIFIED',
             'host_tests':str(old/'ps2host/ps2host_tests.exe'),'vcvars':port.cppcheck.find_vcvars()}
     config['pins'][config['host_tests']]=digest(config['host_tests'])
+    config['completions']=list(completions);config['completion_evidence']=completion_evidence
+    if vu:
+        config['vu']=vu
+        for name in (vu['source'],vu['manifest'],port.vurecomp.__file__):config['pins'][str(name)]=digest(name)
+    for original,target in replacements.items():
+        config['pins'][str(original)]=digest(original);config['pins'][str(target)]=digest(target)
     atomic_json(directory/'work.json',config);return directory/'work.json'
+
+
+def prepare_override_update(previous):
+    """Relink an audited VU build after changing only PAL overrides/tools.
+
+    No generator is invoked; EE and VU objects remain immutable inputs.
+    """
+    import autotest
+    previous=inside(previous)
+    selected=autotest.confirmed(previous);old=selected['manifest'].parent
+    config=json.loads((old/'work.json').read_bytes())
+    proof=old/'differential3.json'
+    validation=json.loads(proof.read_bytes())
+    if validation.get('status')!='passed' or validation.get('executable_sha256')!=digest(selected['executable']):
+        raise ValueError('Missing compatible VU differential evidence')
+    if len(validation.get('commands',[]))!=3 or any(c.get('exit_code')!=0 for c in validation['commands']):
+        raise ValueError('Incomplete VU differential evidence')
+    for name,sha in validation['vu_objects_sha256'].items():
+        if digest(inside(name))!=sha:raise ValueError('Compiled VU object changed')
+    override=GAME/'port/overrides.cpp'
+    template=next(c for c in config['commands'] if str(override) in c)
+    outputs=[a[3:] for a in template if a.lower().startswith('/fo')]
+    if len(outputs)!=1:raise ValueError('Ambiguous previous override object')
+    directory=GAME/'build/native-relocated'/('run-'+uuid.uuid4().hex[:12]);directory.mkdir(parents=True)
+    obj=directory/'overrides.cpp.obj'
+    entry={'file':str(override),'command':subprocess.list2cmdline([x for x in template if x!='/DPAL_RELOCATION_AUDIT'])}
+    compile=compile_arguments(entry,override,obj,directory)
+    inputs=argv((old/'link-inputs.rsp').read_text())
+    if inputs.count(outputs[0])!=1:raise ValueError('Previous override object not unique in link')
+    inputs=[str(obj) if x==outputs[0] else x for x in inputs]
+    rsp=directory/'link-inputs.rsp';rsp.write_text(subprocess.list2cmdline(inputs),encoding='utf-8')
+    link=[]
+    for x in config['commands'][-1]:
+        if x.startswith('@'):x='@'+str(rsp)
+        elif x.startswith('--intdir='):x='--intdir='+str(directory/'link-work')
+        elif x.lower().startswith(('/out:','/implib:','/pdb:')):x=x.split(':',1)[0]+':'+str(directory/Path(x.split(':',1)[1]).name)
+        link.append(x)
+    (directory/'link-work').mkdir()
+    pins=dict(config['pins'])
+    for name in pins:
+        path=Path(name)
+        if digest(path)!=pins[name]:
+            if path!=override and not path.is_relative_to(GAME/'tools'):raise ValueError('Immutable build input changed')
+            pins[name]=digest(path)
+    for f in [override,Path(__file__),previous,old/'work.json',old/'link-inputs.rsp',proof,rsp]:pins[str(f)]=digest(f)
+    for f in inputs:
+        if Path(f).is_file():pins[f]=digest(f)
+    config.update(directory=str(directory),commands=[compile,link],pins=pins,
+                  reused_build=str(previous),vu_reuse={'validation':str(proof),'objects':validation['vu_objects_sha256']})
+    atomic_json(directory/'work.json',config)
+    return directory/'work.json'
 
 
 def worker(path):
@@ -241,10 +366,17 @@ def worker(path):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--base-build',type=Path);parser.add_argument('--discoveries',type=Path,action='append');parser.add_argument('--_worker',type=Path)
+    parser.add_argument('--complete-function',action='append',default=[],help='Audited START:END switch extent (hex); staged replacement only')
+    parser.add_argument('--vu-manifest',type=Path,help='PAL runtime capture; immutable copy in this build, exact VU mode')
+    parser.add_argument('--reuse-build',type=Path,help='Audited VU build.json: compile only PAL overrides, reuse all EE/VU objects')
     args=parser.parse_args()
     if args._worker:return worker(inside(args._worker))
-    if not args.base_build or not args.discoveries:parser.error('Select --base-build and one or more --discoveries')
-    path=prepare(args.base_build,args.discoveries);print(path.parent,flush=True)
+    if args.reuse_build and (args.base_build or args.discoveries or args.complete_function or args.vu_manifest):parser.error('--reuse-build is exclusive')
+    if not args.reuse_build and (not args.base_build or not args.discoveries):parser.error('Select --base-build and one or more --discoveries')
+    completions=[tuple(int(x,16) for x in spec.split(':')) for spec in args.complete_function]
+    if any(len(x)!=2 for x in completions):parser.error('Expected START:END')
+    path=prepare_override_update(args.reuse_build) if args.reuse_build else prepare(args.base_build,args.discoveries,completions,args.vu_manifest)
+    print(path.parent,flush=True)
     row={};runner.run_windows_job([sys.executable,'-B',str(Path(__file__).resolve()),'--_worker',str(path)],600,row)
     atomic_json(path.parent/'containment.json',row)
     print(json.dumps({k:row.get(k) for k in ('exit_code','timeout_detected','cleanup_succeeded','active_processes_after_cleanup')}),flush=True)

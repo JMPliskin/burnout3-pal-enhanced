@@ -1,5 +1,11 @@
 # Burnout 3 PAL Enhanced: estado y continuidad
 
+> Actualizacion de continuidad (2026-10-18): el estado historico siguiente
+> es anterior al arranque jugable. El usuario confirma perfil persistente,
+> carrera completada, VU compilado, SkipMovie y ajustes graficos funcionales.
+> Estado y reconstruccion local actuales: games/burnout3-pal/port/RECOVERY.md
+> y ADAPTATIONS.md. No equivale a verificar todo el ejecutable PAL.
+
 Fecha de revisión: 2026-10-17. Rama comprobada: `pal-enhanced`.
 HEAD previo a esta actualizacion: `aacc07bc4aa78afb13d6b1256a27dd9035de82e2`. Los cambios generalizados se preparan para commit en esta sesion.
 Este documento describe evidencia local, no certifica el juego completo.

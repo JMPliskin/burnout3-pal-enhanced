@@ -401,3 +401,240 @@ streams RWA/EA Trax, pero su equivalencia concreta con esta fase no est? probada
 ?nica siguiente acci?n: diagnosticar esa consulta sobre RAM/logs existentes y
 comparar inicializaci?n de audio NTSC-U, sin activar B3ROUTE por sospecha.
 Resumen con evidencias: build/gtfs-integration/run-152816064c6c/summary.json.
+
+
+### Selecci?n espa?ola y switch libmc2 PAL recuperado
+
+Informes pal-spanish-diagnostics/select-6290a60964a4 y confirm-186638d96d33:
+cursor01E89EB0 (lista01E89E68+48):0 ingl?s,1 neerland?s,2 espa?ol (bandera
+resaltada1450). down1200-1211, down1300-1311, cross1500-1511 confirma idioma5
+en004E2E98; t?tulo en RAM "Selecciona idioma", rutas GlobalSp.bin/HeadSp.bin.
+La primera confirmaci?n encontr? destino242AC8 no cubierto.
+
+NTSC-U FINDINGS documenta trabajador libmc2/comando menos2/tabla4BB320 y
+GetInfo244218; PAL usa tabla4BB880 con99 entradas y GetInfo244208. jr242AC0,
+delay slot nop242AC4, llega leg?timamente al caso242AC8. DB conserva inicio
+242A50..242AC8 y chunk242D40..242D50: faltan los casos intermedios del trabajador.
+No es una nueva funci?n independiente ni un puntero incorrecto demostrado.
+
+relocate_native --complete-function 00242A50:00242D50 usa lifter original con
+secciones ELF completas, mismo s?mbolo y copia bajo build; rechaza solapamientos
+y extremo distinto del chunk final conocido. AutoTest FULL conserva esa opci?n.
+No se modifica fuente publicada ni cuerpos de otras funciones (la copia a?ade
+un separador de l?nea);9383 s?mbolos originales. Sigue NOT VERIFIED, sin
+verificaci?n diferencial completa. Tests:5 switch,13 relocation,19 AutoTest.
+Una compilaci?n incremental native-relocated/run-3a1758905dab; host suite passed.
+
+Validaci?n GPU ?nica, misma secuencia espa?ola: frame2200,1895 funciones;
+242AC8 desaparece. Captura1600 acredita di?logo en espa?ol de memory card
+ausente, opciones S?/No (No resaltado). No se acredita50/60; no se pulsa nada
+m?s. Captura2000 pierde texto: incidencia gr?fica conservada. Sin nuevo fallo,
+Job limpio. Motor/NTSC-U intactos. Pr?xima acci?n: revisar una respuesta
+reproducible al di?logo de memory card y comprobar qu? pantalla PAL sigue.
+Evidencia: build/switch-integration/run-e00fbcdc0efa/summary.json.
+
+
+### Tarjeta virtual PAL: CardOr y primera pantalla50/60
+
+Reutilizaci?n directa de ps2host::mc2 y patr?n CardOr NTSC-U. Direcciones PAL
+obtenidas de jal/slots/tabla004BB880, no copiadas por desplazamiento:
+GetInfo US244218->PAL244208; Format2445D0->2445C0; Read246588->246578;
+Write246788->246778; Create/Mkdir245FC0->245FB0; GetDir2470D8->2470C8;
+Lookup245398->245388. Contratos a0 socket,a1 info/nombre; Read/Write a?aden
+a2 buffer,a3 offset,t0 tama?o; Create a2 modo; GetDir a2 offset,a3 maxent,
+t0 entries,t1 count. SearchFile conserva conversi?n original raw-entry y errores.
+Con --memcard ejecutan host; sin opci?n ejecutan handler PAL original. Cola,
+worker/polling y extensi?n242A50..242D50 permanecen; FULL conserva completion.
+
+Pruebas:3 memory-card (14 rutas sint?ticas con/sin directorio, ABI/slots PAL,
+completion),1 kernel,5 Logitech,19 AutoTest. Una compilaci?n incremental
+native-relocated/run-a9a2554c61d4, suite host passed incluidas pruebas reales
+mc2 de archivos/errores. No equivale a guardar/cargar un perfil PAL en el juego.
+Una integraci?n GPU ?nica hasta2200, misma secuencia de Espa?ol,1898 funciones.
+GetInfo2 llamadas retorna0; RAM518BF0={2,1,7998}: PS2,formateada,KB libres.
+GetDir1 llamada retorna0/count0 para BESLES-52584 (nombre guardado PAL).
+Aviso sin tarjeta desaparece y frame1600 acredita selecci?n50Hz/60Hz espa?ola,
+50Hz resaltado sin confirmar. Idioma efectivo5. Job limpio, sin nuevo fallo.
+
+Directorio persistente separado, fuera de build e ignorado por PAL .gitignore:
+memcards/test-e123ea986bc5. Sigue vac?o y existe tras salir. Reutilizar con
+--memcard games/burnout3-pal/memcards/test-e123ea986bc5. No se sobrescribi?
+ninguna partida. Guardado y recarga de perfil siguen pendientes; no segunda
+prueba porque no se ha escrito perfil. Incidencia gr?fica de texto desaparecido
+persiste en captura2000, sin investigaci?n adicional.
+Informe: build/memcard-integration/run-1e685a0bddcb/summary.json.
+Pr?xima acci?n: revisar selecci?n expl?cita de modo de v?deo para continuar
+hacia creaci?n de perfil; no afirmar persistencia funcional hasta recarga nueva.
+
+
+### Selecci?n60Hz PAL: prueba y confirmaci?n adicional
+
+Dos ejecuciones sin recompilar con la misma tarjeta test-e123ea986bc5.
+Secuencia espa?ola anterior +down1800-1811: select-1f7eecc7c3e1/frame1950
+acredita60Hz resaltado, cursor01E89EB0=1 (en esta lista,0=50Hz).
+Segunda ejecuci?n a?ade cross2000-2011; estado01E989EC pasa0->1->2.
+Frame2400/2800 muestra "?Se mostr? correctamente la pantalla de prueba?",
+S?(USAR60Hz)/No(USAR50Hz), No resaltado. No se confirma ese di?logo.
+Elegir60Hz inicialmente funciona, pero su aceptaci?n definitiva sigue pendiente;
+no afirmar60Hz guardado/aplicado definitivamente. El patr?n de prueba no qued?
+capturado en estos tres frames. No se alter? manualmente el reloj del host.
+1924 funciones, frame2800, sin fallo nuevo y Job limpio. Espa?ol5 y tarjeta
+{2,1,7998} conservados; solo GetInfo2/GetDir1, ning?n Create/Write ni archivo.
+No se alcanza perfil a?n. Informe: build/pal-60hz-diagnostics/confirm-5c0f71f31b10/summary.json.
+Siguiente acci?n: verificar patr?n de prueba y preparar respuesta expl?cita
+S?(USAR60Hz); evitar confirmar por defecto No(USAR50Hz).
+
+
+### Primera carrera manual y diagn?stico inicial de rendimiento
+
+Hito comunicado por el usuario: espa?ol/60Hz confirmados, perfil creado/guardado,
+Carrera Libre/coche/tutorial/carrera, aceleraci?n/direcci?n y audio funcional.
+Sesi?n manual run-2f30715f8dda sale0;3529 funciones. Tarjeta manual contiene
+BESLES-52584(61772), icon.sys(964), view.ico(15234). Recarga tras reiniciar
+no comprobada aqu?. No inferir carrera funcional solo del n?mero de funciones.
+
+Log confirma --gpu/Vulkan RTX3070TiLaptop y build Release/O2.366.2s, ?ltimo
+VBLANK registrado20400 (~55.7/s global; NO FPS espec?ficos de carrera).
+2764065587 pares VU,0 compilados/0 entradas; vu_programs.cpp tiene0 programas.
+VU1 25%, VU0 3.2%, GPU/memoria24.8%, esperaGS20.4%; readback63.8s/18374.
+Son tiempos de toda la sesi?n con hilos/escenas: no sumar como partes exclusivas.
+Cuello mixto: interpretaci?n VU y sincronizaci?n; no demuestra problema IOP.
+No hay --frame-times ni sampler/race input grabado: falta medici?n por escena.
+
+NTSC/motor ya ofrecen --vu-record, --vu-interpret, vurecomp y comprobaci?n por
+bytes contra el programa cargado. No copiar microc?digo NTSC. El adaptador PAL
+crea build nuevo y busca all? vu_programs.txt: debe recibir/pinear un manifiesto
+PAL capturado para no compilar siempre0 programas. No se implement? ni compil?.
+Tri?ngulo ya llega por V del teclado o bot?n norte(SDL, XboxY/PS Triangle).
+NTSC distingue Back en men?s y ChangeCamera en carrera. No remapear globalmente
+c?rculo/tri?ngulo ni copiar direcciones de detecci?n de carrera sin validaci?n.
+Informe: build/performance-audits/run-38fdaa2368fd/summary.json.
+
+
+### Primera compilacion VU PAL: captura manual de 97 programas
+
+Captura original build/vu-captures/run-1d27d7abf9a5/vu_programs.txt:
+SHA256 deff4afda9b0d277532c222ff8e56919d5829743a850122c0ef1d10cf98d1a82.
+97 programas (24 VU0,73 VU1),17008 pares,sin registros duplicados.
+Origen PAL acreditado por launch.json y hash ELF; captura original intacta.
+El usuario confirma ahora tambien recarga del perfil tras reiniciar.
+
+Reutilizado port.generate -> vu_manifest_path -> vurecomp.main, como NTSC-U.
+relocate_native --vu-manifest copia/pinea la captura en el build exclusivo y
+compila/enlaza todos los vu_blocks adicionales. AutoTest FULL conserva la entrada.
+No cambios en engine,NTSC-U,EE publicado ni microcodigo original. No vu-fast.
+Build native-relocated/run-180cb57a8a54:61 unidades VU,13.1MB C++,359056 lineas;
+compilacion secuencial Release/O2,308.641s,host tests passed,TEMP exclusivo.
+Se conserva /arch:AVX2 del arbol original: la frase SSE2 de PORTING esta
+atrasada respecto al CMake actual; no se cambio este ajuste.
+
+64 pruebas Python passed (5 integracion,13 discovery,19 AutoTest,17 VU,10 VU0).
+Arnes local reutiliza PrepareVuRun/VuCompiledIsTheInterpreter del host y objetos
+VU del juego:97 programas,582 estados sinteticos,0 diferencias en registros,
+memoria,pipelines,ciclos;582 ejecuciones entraron en codigo compilado.
+Fallback por entrada ausente y microcodigo modificado:passed. No equivale a
+validacion completa PS2 ni a estados reales de carrera. Primeros intentos del
+arnes fallaron por nombre de regla Ninja y cabecera vu_core; se conservaron.
+
+Unico probe GPU/audio/tiempo virtual:1841 funciones,actividad GS,timeout del
+host esperado a12s (13.7s registrados),Job limpio,sin error nuevo confirmado.
+No escena3D:VU1 total0,compilado0,entradas0,stale0. Validacion real3D PENDIENTE.
+Captura,9383 funciones publicadas,ejecutable anterior y tarjeta manual intactos
+por hashes. Incidencia historica C0000409 no reproducida; causa aun pendiente.
+Informe:build/native-relocated/run-180cb57a8a54/vu-validation-summary.json.
+
+Launcher independiente: Jugar Burnout 3 PAL VU compilado.bat,binario fijado;
+Jugar Burnout 3 PAL anterior.bat vuelve a run-a9a2554c61d4. Launcher normal
+sin editar:su selector existente encuentra el nuevo build validado.
+GPU/audio,tarjeta manual-playtest,sin entradas programadas/virtual-time/VU-fast.
+
+Referencia PC:memcards/pc_settings.ini ausente;valores por defecto pacing On,
+VSync Off,resolucion Original(escala1),ventana1280x896,aspect4:3,AA Off.
+F9/L3+R3 esta integrado en pc_menu/window compartido;apertura visual aun no
+probada en esta sesion. No portar PC SETTINGS NTSC. Pacing solo programa la
+presentacion en tiempo real;no interpretar como mayor FPS de simulacion.
+Preparada comparacion manual posterior:launcher VU --pacing=on / --pacing=off
+usa --setting del host y --frame-times,con otros ajustes de referencia iguales.
+No escribe pc_settings.ini por si solo;no cambiar ajustes en F9 durante la
+comparacion. No se ha ejecutado ni medido esta comparacion.
+Siguiente accion unica:probar carrera con launcher VU,comprobar F9 sin cambiar
+ajustes,cerrar normalmente y recuperar contadores VU/log antes de comparar pacing.
+
+Comprobacion adicional:4 combinaciones de los launchers nuevo/anterior con
+pacing On/Off pasaron con subprocess/filesystem simulados (launcher-checks.json);
+ninguna carrera adicional ejecutada. Preferencias y partidas sin cambios.
+
+
+### Carrera manual con VU compilado y salto PAL de FMV mediante Start
+
+Usuario acredita carrera completada,takedowns,coleccionables,mayor fluidez,
+16:9 y cambios de resolucion funcionales. Sesion manual vu-compiled-e90ddb21ea36
+identificada por launch.json/hash del ejecutable run-180cb57a8a54;salida0.
+VU1:40174902433 pares totales,40173411573 compilados,1490860 interpretados;
+99.996289% compilado,60711910 entradas,4663 candidatos stale (fallback por
+microcodigo cambiado,no discrepancias de equivalencia). Son contadores de toda
+la sesion con carrera,no una medicion aislada de carrera.937.4s;VU1 29.7%,
+VU0 3.1%,GPU bookkeeping6.1%,GPU draw CPU0.5%,GPU/memoria44.3%,esperaGS63.2%.
+Tiempos solapados,no sumables ni FPS comparables entre sesiones distintas.
+Dos lineas MPEG slice_start_code/Skip next picture;el juego continua y sale0.
+No comparador diferencial activo durante la partida:no equivalencia global.
+
+Referencia NTSC-U:SkipMovie001313C0 y FINDINGS "Skipping movies". No ELF NTSC
+local;comparacion contractual,NO igualdad de bytes entre regiones. En ELF PAL:
+00131410..001314C8 guarda a0 en s0,comprueba estado pantalla+2F8=17 y llama
+003251B0 con a0=pantalla+1C8 en delay slot00131448. Flags pelicula48=activa,
+49=terminada,4A=parada solicitada,4B=bucle.00325050 escribe1 en4A en delay
+slot00325058.003251B0 lee48/4A,consulta stream+6C/metodo24 y cancela con
+metodo0C si corresponde;003252AC..003252BC completa/baja flags originales.
+003253A8 comprueba4B para reiniciar el stream al final. Llamadores PAL
+00130CC0/00131150 usan las mismas rutinas originales de parada y actualizacion.
+
+Overrides PAL:SkipMovie registrado00131410,flanco de Start (PadButtonsHeld,
+bit3 confirmado en dbc.cpp),solo pelicula activa/no terminada/no pendiente/
+no loop. Escribe exclusivamente solicitud4A,conserva actualizacion original;
+no consume input ni escribe49. PS2HOST_MOVIE_LOG registra solo la solicitud.
+Tests:2 SkipMovie(8 escenarios sinteticos y contrato ELF),3 mc2,1 KernelStore,
+5 Logitech,7 integracion VU/reuse,13 discovery:31 metodos passed. Continuacion
+original comprobada con callback sintetico,no con reproduccion real de FMV.
+
+Para cumplir sin recompilar VU/EE:relocate_native --reuse-build apunta al build
+VU con evidencia diferencial directa,verifica los61 objetos VU y reutiliza
+los objetos/link originales;solo compila overrides.cpp y reenlaza. Pruebas
+comprueban ausencia de generador y rechazo de objeto VU modificado.
+Build Release run-75fc2363eedf passed,host tests passed,Job limpio. Captura,
+objetosVU,binario anterior y tarjeta manual inalterados por hashes.
+No ejecucion de juego adicional:la secuencia automatizada acreditada no llega
+a logos/tutorial;validacion visual real del salto queda PENDIENTE.
+
+Jugar Burnout 3 PAL FMV.bat fija el nuevo binario,GPU/audio/tarjeta manual y
+preferencias existentes,sin entradas automaticas ni flags interpret/fast.
+Jugar Burnout 3 PAL VU compilado.bat conserva el binario anterior;se permite
+su lanzamiento historico tras cambios de fuente,pero siguen verificandose
+binario,inputs inmutables y evidencia diferencial de ese build.
+Informe:build/movie-audit/run-33c4d90f641b/summary.json y summary.md.
+Siguiente accion unica:probar Start en logo/tutorial no-loop con launcher FMV,
+comprobar que continua por el flujo original y recuperar stdout/stderr al salir.
+
+
+### Recuperacion funcional y auditoria grafica (2026-10-18)
+
+Usuario confirma SkipMovie real,perfil recargado,carrera completada y mayor
+suavidad con Frame Pacing On. Esto actualiza los pendientes manuales anteriores.
+Ultima sesion fmv-skip-0d77722ceaef:salida0,Vulkan,4x,16:9,VSyncOff,pacingOn;
+solicitudes de parada originales para peliculas7,9,0,24 registradas.
+151.4s,VU1 28.0%,GPU/memoria42.3%,esperaGS54.5%;10402 readbacks48.2s,
+GPUbusy48.8s. Son metricas solapadas de sesion,no de carrera aislada.
+
+Receta --reuse-build validada de nuevo sin compilar:2 comandos,todos los hashes
+compatibles,61 objetosVU reutilizables. Manifiesto97 intacto y excluido de Git.
+RECOVERY.md documenta rutas/hash/recetas y dependencia de artefactos locales;
+no prometer reconstruccion desde un checkout sin los datos del usuario.
+PERFORMANCE_AUDIT.md inventaria optimizaciones compartidas/especificas y limites.
+
+Revision detecta --frame-times sin intervalo en modos --pacing:corregido a120.
+Launcher anterior permite binario historico tras cambios de fuente,con evidencia
+inmutable de su build;no se declara compatible con los overrides nuevos.
+FMV --medir usa --frame-times120 y pacingOn,conservando los otros ajustes.
+No se ejecuta nueva carrera ni se modifica runtime,GS,GPU,DMA o preferencias.
+Siguiente ajuste candidato:comparar4x/2x en el mismo tramo,pacingOn,constantes
+los demas ajustes;calidad/coste,no mejora de FPS demostrada ni aplicada.

@@ -141,7 +141,7 @@ def main():
   selected=select(args.build_manifest)
   manifest['initial_build_manifest']=str(selected['manifest'])
   if args.mode=='FULL':
-   for test in ['test_autotest.py','test_relocate_native.py','test_kernel_store.py','test_logitech.py']:
+   for test in ['test_autotest.py','test_relocate_native.py','test_kernel_store.py','test_logitech.py','test_memcard.py','test_switch_completion.py']:
     row=launch(directory/test.removesuffix('.py'),[sys.executable,'-B',str(TOOLS/test),'-v'],120)
     if not clean(row) or row.get('exit_code')!=0:summary.update(status='test_error',failed_test=test);raise ValueError('Specific tests failed')
    if not selected['compatible']:
@@ -149,6 +149,8 @@ def main():
     paths=[Path(p) for p in work['pins'] if Path(p).name=='discovered.txt']
     if not paths:raise ValueError('No pinned runtime discoveries for incremental build')
     for p in paths:command+=['--discoveries',str(p)]
+    for start,end in work.get('completions',[]):command+=['--complete-function',f'{start:08X}:{end:08X}']
+    if work.get('vu'):command+=['--vu-manifest',work['vu']['manifest']]
     row=launch(directory/'build',command,660)
     if not clean(row) or row.get('exit_code')!=0:
      text='\n'.join(p.read_text(errors='replace') for p in (directory/'build').glob('*std*.log'))
