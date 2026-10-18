@@ -51,7 +51,11 @@ MODS = [
     ("mod.headlights", [(0x001C4930, 0x8E430CC0, 4), (0x001C4934, 0x24040004, 4),
                         (0x001C4940, 0xA0640058, 4)]),
     # No pause menu after five idle minutes.
-    ("always", [(0x003954E8, 0x00000000, 4)]),
+    ("always", [(0x003954E8, 0x00000000, 4),
+                # EA Trax in splitscreen: the music's update each frame
+                # (0x003F8C30) stops the music (0x003FC470) with two players or
+                # more (0x0064D3A0) - with three or more now (slti 2 -> 3).
+                (0x003F8C54, 0x28410003, 4)]),
 ]
 
 # The mods' own code, at the address their calls name.

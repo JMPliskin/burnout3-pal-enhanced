@@ -2133,6 +2133,32 @@ opens; racing, each drives its own port alone; in every menu every device
 drives both - player 1's controls as in one-player games, and player 2's
 screens answering any. The main menu clears the seats.
 
+**Player 2's picture.** Both players draw into the picture's frame (FBP
+0x46, 640 wide): player 1 rows 0-224, player 2 rows 224-448. Player 2's post
+effects (the glow's threshold in alpha through a 16-bit view, its PSMT8H
+samples, the colour passes) address a frame based at FBP 0x8C - row 224 of
+0x46 - with their depth buffer at ZBP 0x118, row 224 of the race's at 0xD2.
+The GPU bridge took 0x8C for a buffer of its own and reconciled the two
+through local memory, at 1x: player 2's half lost the internal resolution.
+gpu_bridge.cpp's Containing now draws (and samples) such a buffer in the one
+it lies in, its rows (and its depth buffer's) further down - the same
+pixels at 1x (runs/splitscreen as recorded without the music), player 2 as
+sharp as player 1 at 2x.
+
+**No music.** The EA Trax update each frame (0x003F8C30, the player object
+0x01E7A888) stops the music (0x003FC470, `a1` 5) when the number of players
+(0x0064D3A0) is 2 or more: `slti $at, $v0, 2` at 0x003F8C54. The port's
+lift_mods.py has it 3 (always): two players hear the music, the song's banner
+at the race's start included; three or more (PARTY CRASH) as before.
+
+**Speed.** The game asks for a picture every blank in splitscreen too
+(0x001F4290 with 1, from the main loop at 0x00132D1C). Two views double the
+VU1 work and the GS thread's: in real time (i7-13620H, 2x) both run 95-100%
+busy, about 88,000 primitives a frame and 200 write-backs and reloads (the
+one-player race: 70,000 and 75), 76 of 3,000 pictures dropped. The speed
+blur's strips (D2/D3/E0 in the depth buffer's memory) are run per view: BLUR
+off drops 51.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
