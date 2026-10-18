@@ -7,22 +7,49 @@ and [ps2-port-engine](https://github.com/danielgomesvieira2000/ps2-port-engine).
 
 ## How to Play
 
-**v0.1.0-alpha has passed functional validation. Binary publication is pending distribution review.**
-Use the Windows ZIP from [GitHub Releases](https://github.com/JMPliskin/burnout3-pal-enhanced/releases)
-once published. GitHub's Source Code download cannot be launched as a game.
+1. Open the [v0.1.0-alpha Release](https://github.com/JMPliskin/burnout3-pal-enhanced/releases/tag/v0.1.0-alpha).
+2. Under **Assets**, download `Burnout3-PAL-Enhanced-0.1.0-alpha-windows-x64.zip`.
+3. Extract the ZIP into a folder of your choice.
+4. Double-click `Burnout3-PAL-Enhanced.exe`.
+5. On first launch, select an ISO from your own compatible European PS2 copy of
+   Burnout 3: Takedown, identified as `SLES_525.84`.
+6. Choose your language and 50/60 Hz mode, then play normally.
 
-For an approved Windows package:
+**Use the Windows ZIP from Releases, not Code > Download ZIP**, which contains
+only source code. You do not need Python, CMD, PowerShell or a BAT launcher.
 
-1. Extract it into a folder and open `Burnout3-PAL-Enhanced.exe`.
-2. Select an ISO made from your own compatible European PS2 disc (`SLES_525.84`).
-3. Choose your language and video mode using a controller or keyboard.
+Requirements: Windows 10 1903 or newer (x64), an AVX2 CPU and a Vulkan-capable GPU
+with current drivers.
 
-The player remembers your ISO. If it moves, you will be asked to select it again.
-No Python or BAT launcher is required. Windows 10 1903 or newer (x64), an AVX2 CPU
-and a Vulkan-capable GPU with current drivers are required.
+The player remembers your ISO's location and reuses it while the file remains
+available and compatible. If you move or rename the ISO, or it becomes
+unavailable, the file selector opens again. Changing the ISO path does not remove
+your saves. The player does not move, copy or search your computer for the ISO.
 
-Settings and saves are stored in `%LOCALAPPDATA%/Burnout3-PAL-Enhanced/`.
-Back up the `memcard` folder before importing saves or changing builds.
+### Saves and Settings
+
+Persistent data is stored in `%LOCALAPPDATA%\Burnout3-PAL-Enhanced\`, not inside
+the downloaded ZIP or normally beside the EXE:
+
+| Item | Contents |
+| --- | --- |
+| `pc_settings.ini` | Settings and the selected ISO's location |
+| `memcard\` | Virtual memory card, profiles and saves |
+| `logs\` | Local program logs |
+
+### Moving or Updating the Game
+
+You can move the extracted game folder elsewhere. Settings and saves stay in
+LocalAppData and are reused by the same Windows user. If your ISO is still in its
+usual location, you will not need to select it again.
+
+For a future update, extract the new package and use its compatible EXE without
+deleting your personal data. Back up `memcard` before updating or importing saves,
+and check that version's compatibility notes; compatibility across all future
+versions or save formats is not guaranteed.
+
+Data belongs to your Windows user profile. Moving the EXE to another computer
+does not automatically transfer your saves or settings.
 
 ## Features
 
