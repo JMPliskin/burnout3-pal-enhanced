@@ -441,7 +441,8 @@ Done (engine, every Burnout 3 GPU run as recorded after each):
 | the renderer's batch vertices written in place, not push_back (2da7126) | -3.7% |
 | Drew: inside the marked rectangle, what moves alone (42dc6c5) | -1.5% |
 | the draw's state made past the fast path only (a81ac9c) | -1.3% |
-| now | 39.0-39.2 (-15%) |
+| texture contents hashed with XXH3 (dc310c6) | -1.7% |
+| now | ~39 (-15%; the machine drifts: compare alternated) |
 
 Real time, the splitscreen race at 2x, two runs each: dropped 60, 74 -> 28,
 18; the median interval 17.9-18.3 -> 16.82 ms; the GS thread 99% -> 92%
