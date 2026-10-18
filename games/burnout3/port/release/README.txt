@@ -107,13 +107,13 @@ PC settings
 In the main menu, PC SETTINGS (where ONLINE used to be - EA's servers are
 long gone) has three pages (Triangle goes back):
 
-  VIDEO      fullscreen, vertical sync, frame pacing, the internal
-             resolution (original, twice as sharp, or as sharp as your
-             screen - up to 4x), the aspect ratio (4:3, 16:9 or your
-             window's), and anti-aliasing: off, FXAA (edges smoothed,
-             almost free), or SSAA 2X / 4X (drawn 2 or 4 times as sharp and
-             averaged down - the cleanest, and the heaviest on the GPU;
-             with the resolution at DISPLAY, SSAA 4X can be too much)
+  VIDEO      fullscreen, vertical sync, the internal resolution
+             (original, twice as sharp, or as sharp as your screen - up to
+             4x), the aspect ratio (4:3, 16:9 or your window's), and
+             anti-aliasing: off, FXAA (edges smoothed, almost free), SMAA
+             (edges smoothed more carefully, still light), or SSAA 2X
+             (drawn twice as sharp and averaged down - the cleanest, and
+             the heaviest on the GPU)
   GRAPHICS   the speed blur
   CONTROLS   KEYBOARD (RACING), KEYBOARD (MENUS), CONTROLLER (RACING),
              CONTROLLER (MENUS): every key and button (see "Controls");

@@ -45,12 +45,13 @@ wrong, press **F12** at that moment and attach the folder it writes to
   menus and in the race - with PlayStation or Xbox marks (automatic by
   controller), all drawn by the port.
 - **PC settings** in the game's own main menu (where ONLINE used to be), in
-  pages: VIDEO (fullscreen, vertical sync, frame pacing, resolution, the
-  aspect ratio, anti-aliasing: FXAA or SSAA 2x/4x), GRAPHICS (the speed blur),
+  pages: VIDEO (fullscreen, vertical sync, resolution, the aspect ratio,
+  anti-aliasing: FXAA, SMAA or SSAA 2x), GRAPHICS (the speed blur),
   CONTROLS (the keyboard's and the controller's bindings, racing and menus;
   button prompts; DualSense trigger effects). Saved in `pc_settings.ini`; QUIT GAME in the main menu.
-- **Smooth frames**: frame pacing, and 120 Hz in fullscreen on a 144 Hz
-  screen so that 60 frames a second show evenly.
+- **Smooth frames**: 120 Hz in fullscreen on a 144 Hz screen so that 60
+  frames a second show evenly (frame pacing off by default:
+  `frame_pacing=on` in `pc_settings.ini` turns it on).
 - **Controls**: any controller SDL knows (Xbox, PlayStation, ...) as a
   DualShock 2, with **rumble**; the keyboard; the **mouse in the menus**
   (point, click, right-click to go back, wheel).
