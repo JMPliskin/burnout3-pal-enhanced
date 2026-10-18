@@ -413,3 +413,52 @@ Found, not fixed: at 3x the race's frames ~18,600-18,900 (63,000 GS
 primitives a frame, against 27,000-47,000 after) leave the GS thread 70%
 busy, its image reloads waiting on the GPU up to 12 ms; some runs (either
 build) show a cluster of up to 20 late frames there, others none.
+
+## Splitscreen at 60 pictures a second (2026-10-18, day)
+
+Two players' views double the VU1 work and the GS thread's: the game asks for
+a picture every blank in splitscreen too. In real time (i7-13620H, RTX 4070,
+2x) both the GS thread and VIF1's worker were 95-100% busy, ~88,000 GS
+primitives and ~200 write-backs and reloads a frame (the one-player race:
+~70,000 and ~75), 60-76 of 3,000 pictures dropped, the median interval
+17.9-18.3 ms. VIF1's worker waited on the GS thread ~16% of its time: the GS
+thread was the bound.
+
+The GS thread's work timed alone, the same every run: a capture of the
+splitscreen race replayed (`--gs-replay`, `PS2HOST_REPLAY_GPU=1
+PS2HOST_REPLAY_SCALE=2 PS2HOST_REPLAY_REPEAT=50`, engine 7cd7ca4), builds
+alternated - the machine drifts a few percent between runs. Sampled
+(`PS2HOST_REPLAY_SAMPLE=1`, ps2gpu now with symbols): the driver's command
+recording ~13%, the bridge's per-primitive work (OnDraw, Triangles, Drew)
+~25%, GIF parsing ~15%, image transfers into local memory ~13%.
+
+Done (engine, every Burnout 3 GPU run as recorded after each):
+
+| change | ms a pass (two frames, 2x) |
+| --- | --- |
+| the start (SMAA, 7afc79c) | 45.8-46.9 |
+| image transfers: 32/16-bit pixels moved whole (7cd7ca4) | -2-6% |
+| the renderer's batch vertices written in place, not push_back (2da7126) | -3.7% |
+| Drew: inside the marked rectangle, what moves alone (42dc6c5) | -1.5% |
+| the draw's state made past the fast path only (a81ac9c) | -1.3% |
+| now | 39.0-39.2 (-15%) |
+
+Real time, the splitscreen race at 2x, two runs each: dropped 60, 74 -> 28,
+18; the median interval 17.9-18.3 -> 16.82 ms; the GS thread 99% -> 92%
+busy. The one-player race on four threads at 1x: late 28, 25 -> 15, 7; the
+GS thread 57% -> 48-49%; 1.49-1.53 -> 1.43-1.44 cores.
+
+Tried and dropped: the sprite neighbour search (up to 256 back, at 2x and
+over) - within noise; Convert's reciprocals hoisted - the compiler had;
+Issue landing Q and P inline, not LandNow - exact (the VU bench's hashes the
+same) but no faster; the PATH3 queue's release copy - 88% of its words go
+in partial releases, which must copy (the sink may hold more); the
+splitscreen's pipelines - none the hints lack.
+
+What is left: VIF1's worker (97%) bounds the heavy moments now - VU1 40-56 ms
+in two frames' windows; one 50 ms "GPU bookkeeping" span in 45 s,
+unexplained. The renderer records ~4,000 draws, ~530 rendering passes, ~150
+feedback copies, ~1,000 transitions and ~400 dispatches a splitscreen frame:
+fewer passes (the blur's strips, the feedback copies) is the GS thread's next
+lever; the open engine pull request's renderer thread (#1) takes the
+recording off it altogether.
