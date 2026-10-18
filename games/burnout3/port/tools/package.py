@@ -46,6 +46,10 @@ HEADER_LICENCES = [
     ("bcdec", "bcdec.h", "This software is available under 2 licenses"),
     ("stb_image", "stb_image.h", "This software is available under 2 licenses"),
 ]
+# Files of the engine's own third-party code: (name, path from the repository).
+FILE_LICENCES = [
+    ("SMAA", os.path.join("engine", "gpu", "third_party", "smaa", "LICENSE.txt")),
+]
 TEXTURE_PACK_README = """Put a PCSX2 texture pack for Burnout 3: Takedown (SLUS-21050) in this
 folder: the pack's files (.dds or .png, named as PCSX2 names them), in
 folders of their own if the pack has them. The game finds them when it
@@ -113,6 +117,12 @@ def main():
             notices += ["-" * 72, name, "-" * 72, f.read().strip(), ""]
     for name, header, start in HEADER_LICENCES:
         notices += ["-" * 72, name, "-" * 72, header_licence(header, start), ""]
+    for name, relative in FILE_LICENCES:
+        path = os.path.join(ROOT, relative)
+        if not os.path.exists(path):
+            fail("no licence for %s at %s" % (name, path))
+        with open(path, encoding="utf-8", errors="replace") as f:
+            notices += ["-" * 72, name, "-" * 72, f.read().strip(), ""]
     with open(os.path.join(GAME, "port", "release", "README.txt"), encoding="utf-8") as f:
         readme = f.read().replace("{version}", version)
     name = "Burnout3-PC-%s" % version

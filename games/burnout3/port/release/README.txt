@@ -200,8 +200,27 @@ Known issues
   the loudest moments can crackle; tell us if you hear it.
 
 
+Credits
+-------
+
+LAN play, the GPU renderer's own thread: PaPe (github.com/nynjardin).
+
+The 60 FPS menus and crashes, the DEVELOPER MENU, the no-idle-pause fix
+and the MODS page come from PCSX2 patches for the game, from Nehalem's
+PS2-Game-Mods (github.com/Nahelam/PS2-Game-Mods):
+  Nehalem      60 FPS Menus, 60 FPS Crashes, Development Menu, mph2kph,
+               horn, headlights_hold, partial_mirror_mode, disable_traffic,
+               crashbreaker_in_all_modes, perma_headlights,
+               vertical_split_screen, disable_idle_check
+  escape209    heavyweights_always_available (the original SLUS patch;
+               ported to the other releases by Nehalem)
+
+SMAA: Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and
+Diego Gutierrez (github.com/iryoku/smaa).
+
+
 Licences
 --------
 
-The port uses SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec and
-stb_image: their licences are in THIRD-PARTY-NOTICES.txt.
+The port uses SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec,
+stb_image and SMAA: their licences are in THIRD-PARTY-NOTICES.txt.

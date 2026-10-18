@@ -190,6 +190,60 @@ games/burnout3/
   tests/, tools/            the game's own tests and tools
 ```
 
+## Credits
+
+### Contributors
+
+- **PaPe** ([@nynjardin](https://github.com/nynjardin)) - **LAN play**: the
+  game's online mode on the PC's network, its lobby served by the game itself
+  and found on the network, the race between players
+  ([lan.cpp](games/burnout3/port/lan.cpp),
+  [lan_lobby.cpp](games/burnout3/port/lan_lobby.cpp),
+  [lan_libnet.cpp](games/burnout3/port/lan_libnet.cpp); game pull request
+  [#4](https://github.com/danielgomesvieira2000/burnout3-pc/pull/4)), and in
+  the engine Sony's inet on the PC's sockets, the IOP's fixes for EA's
+  network module, the **GPU renderer on a thread of its own** and a fix to
+  the sampler (engine pull request
+  [#1](https://github.com/danielgomesvieira2000/ps2-port-engine/pull/1)).
+
+### Game patches
+
+The port's 60 FPS menus and crashes, its DEVELOPER MENU and the PC SETTINGS
+MODS page come from PCSX2 patches made for the game, brought into the port
+(the port runs the game's code translated, so each is lifted again with the
+patch in: [lift_mods.py](games/burnout3/port/tools/lift_mods.py),
+[mods.cpp](games/burnout3/port/mods.cpp),
+[sixty_fps.cpp](games/burnout3/port/sixty_fps.cpp),
+[dev_menu.cpp](games/burnout3/port/dev_menu.cpp)). From
+[Nehalem's PS2-Game-Mods](https://github.com/Nahelam/PS2-Game-Mods)
+(Burnout 3: Takedown, SLUS-21050):
+
+| In the port | Patch | Author |
+| --- | --- | --- |
+| 60 FPS menus, movies and crashes (always on) | Graphics: 60 FPS Menus, 60 FPS Crashes | Nehalem ([@Nahelam](https://github.com/Nahelam)) |
+| PC SETTINGS: DEVELOPER MENU | Development Menu (dev_menu) | Nehalem |
+| MODS: SPEEDOMETER (KM/H) | mph2kph | Nehalem |
+| MODS: HORN, the headlights while it sounds | horn, headlights_hold | Nehalem |
+| MODS: MIRROR MODE | partial_mirror_mode | Nehalem |
+| MODS: TRAFFIC (off) | disable_traffic | Nehalem |
+| MODS: CRASH BREAKER (all modes) | crashbreaker_in_all_modes | Nehalem |
+| MODS: HEADLIGHTS (always on) | perma_headlights | Nehalem |
+| MODS: HEAVYWEIGHTS (all modes) | heavyweights_always_available | [escape209](https://github.com/escape209) (the original SLUS patch; ported to the other releases by Nehalem) |
+| MODS: SPLITSCREEN (vertical) | vertical_split_screen | Nehalem |
+| No pause after five idle minutes (always on) | disable_idle_check | Nehalem |
+
+### Third-party software
+
+[SDL 3](https://github.com/libsdl-org/SDL), [volk](https://github.com/zeux/volk),
+[glslang](https://github.com/KhronosGroup/glslang), the
+[Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers),
+[xxHash](https://github.com/Cyan4973/xxHash),
+[bcdec](https://github.com/iOrange/bcdec),
+[stb_image](https://github.com/nothings/stb) and
+[SMAA](https://github.com/iryoku/smaa) (Jorge Jimenez, Jose I. Echevarria,
+Belen Masia, Fernando Navarro, Diego Gutierrez), each under its own licence.
+[PCSX2](https://pcsx2.net) was the reference the port was checked against.
+
 ## Legal
 
 This repository contains **no game assets, no disc images or BIOS files, and
@@ -210,5 +264,6 @@ substitute for the commercial product. "Burnout" is a trademark of Electronic
 Arts Inc.
 
 The project's own code is under the MIT licence ([LICENSE](LICENSE)). The port
-is built with SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec and
-stb_image, under their own licences (the release's THIRD-PARTY-NOTICES.txt).
+is built with SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec,
+stb_image and SMAA, under their own licences (the release's
+THIRD-PARTY-NOTICES.txt; see Credits).
