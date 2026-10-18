@@ -1,169 +1,94 @@
-# Burnout 3: Takedown - PC port
+# Burnout 3: Takedown — PAL Enhanced
 
-**Burnout 3: Takedown, native on Windows.** The PS2 game's program translated
-to C++ and compiled for the PC - not emulated: 60 frames a second at up to 4x
-the PS2's resolution, widescreen with the HUD kept in place, PC settings in the
-game's own menu, a mouse in the menus, controllers with rumble.
+**European PAL adaptation of the unofficial Burnout 3: Takedown PC port.**
 
-> **Unofficial and fan-made.** Not affiliated with, endorsed or sponsored by
-> Electronic Arts or Criterion Games. You need your own copy of the game: a
-> disc image made from your own Burnout 3: Takedown disc (NTSC-U, SLUS-21050).
-> No game content is in this repository or in the release.
+A community-driven project dedicated to bringing the European PlayStation 2 version of Burnout 3: Takedown to modern Windows PCs using native recompilation.
 
-## Playing it
+Based on the original [burnout3-pc](https://github.com/danielgomesvieira2000/burnout3-pc) project by Daniel Gomes Vieira.
 
-Download `Burnout3-PC-<version>-windows-x64.zip` from
-[Releases](../../releases), unzip it somewhere you can write to, run
-`burnout3.exe` and choose your disc image. It needs Windows 10 or 11 (64-bit),
-a processor with AVX2 and a Vulkan 1.3 graphics driver - nothing to install.
-The README in the zip has the controls, the PC settings and the known issues
-([games/burnout3/port/release/README.txt](games/burnout3/port/release/README.txt)).
+## Development Status
 
-This is an **alpha**: please report problems in Issues, with the
-`burnout3.log` written beside the executable. For a picture that looks
-wrong, press **F12** at that moment and attach the folder it writes to
-`captures/` beside the executable (it replays the frame exactly).
+**Work in progress — experimental playable builds available locally.**
 
-## What it does
+Recent development checkpoints report native VU compilation,
+save functionality and movie skipping.
 
-- **The whole game, natively**: the PS2 program translated to C++ and
-  compiled for x64 - menus, races, crash mode, the career, saves - with its
-  sound and music, reading everything from your own disc image.
-- **A GPU renderer (Vulkan)**: the PS2's graphics drawn on your graphics
-  card, at the PS2's resolution, twice it, or as sharp as your screen (up to
-  4x).
-- **Widescreen**: 4:3, 16:9 or the window's own shape, with the HUD kept in
-  place - and a HUD editor (**F10**) to anchor each HUD element left, right,
-  centred or stretched.
-- **Rebindable controls**: every key and controller button, with racing and
-  menu controls set apart (Cross can choose in the menus without
-  accelerating); a CLASSIC or MODERN (triggers) racing layout.
-- **Button icons that follow you**: the game's button prompts show the keys,
-  mouse buttons or controller buttons you use - as you bound them, in the
-  menus and in the race - with PlayStation or Xbox marks (automatic by
-  controller), all drawn by the port.
-- **PC settings** in the game's own main menu (where ONLINE used to be), in
-  pages: VIDEO (fullscreen, vertical sync, frame pacing, resolution, the
-  aspect ratio, anti-aliasing: FXAA or SSAA 2x/4x), GRAPHICS (the speed blur),
-  CONTROLS (the keyboard's and the controller's bindings, racing and menus;
-  button prompts; DualSense trigger effects). Saved in `pc_settings.ini`; QUIT GAME in the main menu.
-- **Smooth frames**: frame pacing, and 120 Hz in fullscreen on a 144 Hz
-  screen so that 60 frames a second show evenly.
-- **Controls**: any controller SDL knows (Xbox, PlayStation, ...) as a
-  DualShock 2, with **rumble**; the keyboard; the **mouse in the menus**
-  (point, click, right-click to go back, wheel).
-- **Texture packs**: PCSX2 texture packs for the game work as they are
-  (below); **Tab** turns one off and on.
-- **Saves** on a memory card folder beside the executable; the disc image
-  chosen once and remembered; Alt+Enter for fullscreen.
-- **Bug reports**: a log of every run, and F12 captures of a frame; an FPS
-  counter on **F1**.
+These capabilities require further validation before a
+public release. Game compatibility is not yet guaranteed.
 
-## Texture packs
+The PAL version is currently being adapted to the existing PC port architecture. Significant compatibility and startup work remains.
 
-A texture pack made for PCSX2 (for Burnout 3: Takedown, SLUS-21050) works
-here too:
+This repository is intended for development, research, documentation and collaboration.
 
-1. Put the pack's files - the `.dds` or `.png` files PCSX2 keeps in
-   `textures/SLUS-21050/replacements/` - in the **`texture pack`** folder
-   beside `burnout3.exe`. Folders inside it are fine; only the files' names
-   count (they name the texture each replaces, as PCSX2 names them).
-2. Start the game. Its log says how many textures it found.
-3. Press **Tab** to turn the pack off and on while you play (the choice is
-   kept in `pc_settings.ini`).
+## Objectives
 
-A texture is replaced the first time it is drawn, a moment after it first
-appears (its file is read in the background). Texture packs are made by
-their authors from the game's textures: none is included or linked here.
+- Support the European PAL release (SLES-52584).
+- Preserve the original European language selection.
+- Support Spanish and other PAL localizations.
+- Restore region-specific functionality, including the original 50/60 Hz selection sequence.
+- Maintain compatibility with applicable upstream PC improvements.
+- Preserve the original game logic and experience.
+- Explore additional PC enhancements and customization.
 
-## AI usage
+## Current Progress
 
-**This port was made with AI.** It is built and maintained by
-[Claude Code](https://claude.com/claude-code) (Anthropic's Claude), directed,
-playtested and reviewed by the repository's author. The engine's tools
-translate the game's program automatically; the rest - the runtime, the GPU
-renderer, the PC features, the fixes, the tests and these documents - was
-written by Claude, working from the game itself, PCSX2 as a reference and
-its own test runs. Commits carry a `Co-Authored-By: Claude` line. The
-workflow it follows is in the engine's skills (`engine/.claude/skills`).
+Initial development has focused on:
 
-## To do
+- European executable analysis.
+- PAL-specific recompilation configuration.
+- Initial Spanish localization integration.
+- Investigation of the startup sequence.
+- Identification of missing PAL boot-flow handling.
+- Development of reproducible validation procedures.
 
-- More playtesting: whole careers, every event type, every track.
-- Higher frame-rate settings (beyond the game's 60 frames a second).
-- More controls: button remapping, DualSense haptics, steering wheels with
-  force feedback.
-- Graphical mods and options (beyond texture packs).
-- Better performance on slower machines.
-- Linux, macOS and Android ports.
+These items represent ongoing research and integration work, not completed game compatibility.
 
-## Building it
+## Technical Approach
 
-The port is made with [ps2-port-engine](https://github.com/danielgomesvieira2000/ps2-port-engine),
-the game-independent toolchain and runtime, which is this repository's
-`engine/` submodule (pinned to a tag):
+The project uses the original European MIPS executable as the reference for PAL-specific game behaviour.
 
-```sh
-git clone --recursive https://github.com/danielgomesvieira2000/burnout3-pc
-cd burnout3-pc
-# your disc image: "Burnout 3 - Takedown.iso" beside games/ (game.json's "iso")
-python engine/tools/isotool.py extract "Burnout 3 - Takedown.iso" SLUS_210.50 -o games/burnout3/extracted/
-python engine/tools/analyze.py --game games/burnout3
-python engine/tools/derive.py  --game games/burnout3 --emit --csv
-python engine/tools/lift.py    --game games/burnout3 --structure --emit --csv
-python engine/tools/port.py    --game games/burnout3 build
-python games/burnout3/port/tools/package.py        # the release zip
-```
+Game logic and state validation are kept separate from graphics validation, since the original PC port contains rendering improvements that may differ visually from the PlayStation 2 release.
 
-For full speed, record the game's VU microprograms once and build again - they
-are compiled ahead of time from that list (without it they run interpreted,
-VU1 about 1.5x slower): run `port/runs/car_select.args` and
-`port/runs/race_training.args` with `--vu-interpret --vu-record
-games/burnout3/build/vu_programs.txt` (the engine's docs/PORTING.md, "VU
-microprograms compiled ahead of time").
+Where practical, local scripts and reproducible tooling are preferred over manual processes.
 
-The game's code in C++ is generated on your machine from your disc image and
-never committed. Building needs Visual Studio 2022 with C++ (its MSVC, CMake
-and Ninja) and Python 3.10+ (Pillow for the art scripts). See the engine's
-[docs/PORTING.md](https://github.com/danielgomesvieira2000/ps2-port-engine/blob/master/docs/PORTING.md)
-for every option of the port, and its skills (`engine/.claude/skills`) for the
-workflow Claude Code follows here.
+## Planned Enhancements
 
-## What is where
+Long-term ideas under investigation include:
 
-```
-engine/                     ps2-port-engine (submodule)
-games/burnout3/
-  game.json                 the game: its disc, executable, title, version
-  port/                     the port: overrides.cpp (the game's own functions,
-                            the host's way: PC SETTINGS, quit, movies, loading),
-                            widescreen.cpp, mouse.cpp, the icon and pointer
-                            (original art, drawn by tools/), release/, runs/
-                            (the scripted test runs and their pictures' CRCs)
-  config/                   the function table, names, syscalls
-  docs/                     FINDINGS (what the game taught), PROGRESS, plans
-  tests/, tools/            the game's own tests and tools
-```
+- Custom soundtrack support and music replacement tools.
+- Improved configuration and localization.
+- Additional display and rendering options.
+- Higher frame rates, subject to engine compatibility.
+- Further gameplay and quality-of-life improvements.
 
-## Legal
+These features are not currently implemented or guaranteed.
 
-This repository contains **no game assets, no disc images or BIOS files, and
-none of the game's code.** The game's code in C++ - lifted, derived or
-reconstructed - is generated on your own machine from your own disc image and
-never committed (`.gitignore`). What the repository holds is original: the
-port's code, the PC features and their art, documentation of how the game
-works (addresses, function names, findings) and checksums of test pictures.
+## Documentation
 
-The Windows release contains the game's program translated to C++ and
-compiled, with no game assets: it reads everything it plays from the player's
-own disc image, and refuses an image that is not the game's disc.
+Technical research, development status and validation methodology are maintained in `docs/pal/`.
 
-Reverse engineering for interoperability and preservation is protected in many
-jurisdictions. This project follows the conventions of the wider game
-preservation community: it redistributes no game assets and does not try to
-substitute for the commercial product. "Burnout" is a trademark of Electronic
-Arts Inc.
+## Credits
 
-The project's own code is under the MIT licence ([LICENSE](LICENSE)). The port
-is built with SDL 3, volk, glslang, the Vulkan headers, xxHash, bcdec and
-stb_image, under their own licences (the release's THIRD-PARTY-NOTICES.txt).
+**Original PC port:** [Daniel Gomes Vieira](https://github.com/danielgomesvieira2000)
+
+**PAL adaptation:** [JMPliskin](https://github.com/JMPliskin)
+
+Special thanks to the contributors of the upstream project and the PS2 recompilation toolchain.
+
+Please refer to the original repository for the full list of contributors and third-party acknowledgements.
+
+## Legal Notice
+
+This is an unofficial, non-commercial fan project and is not affiliated with Electronic Arts or Criterion Games.
+
+This repository is not intended to distribute original game assets, disc images, extracted game executables or generated game-derived code.
+
+Users must provide their own legally obtained copy of Burnout 3: Takedown.
+
+Burnout is a trademark of Electronic Arts Inc.
+
+## License
+
+The original project's source code is distributed under the MIT License. Existing copyright notices and third-party licenses are retained.
+
+See [LICENSE](LICENSE) for details.

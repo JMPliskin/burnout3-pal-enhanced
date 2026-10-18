@@ -34,3 +34,34 @@ games/*/include/*/
 replacements/
 texture pack/
 texture_pack/
+
+# Burnout 3 PAL Enhanced
+# Private game data and generated content
+
+# Disc images
+*.iso
+*.ISO
+*.chd
+*.CHD
+
+# PAL original executable
+SLES_525.84
+SLES_525.84.*
+
+# Locally extracted game data
+games/burnout3-pal/extracted/
+games/burnout3-pal/build/
+games/burnout3-pal/generated/
+
+# Local backups
+*.bak
+*.backup
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs and crash dumps
+*.log
+*.dmp
