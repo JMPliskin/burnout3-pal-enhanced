@@ -88,6 +88,10 @@ void MovieRate(lifted::Context& c) {
 
 }  // namespace
 
+// The movie screen's start as registered here, for lan.cpp's debug probe of
+// the same function to call in turn.
+void SixtyFpsMovieRate(lifted::Context& c) { MovieRate(c); }
+
 void RegisterSixtyFps() {
     ps2host::Override(0x001D3EE0u, MenuRate, "a frontend screen's frame rate: 60 FPS menus");
     ps2host::Override(0x00132090u, CrashRate, "a crash's slow motion: at 60 FPS");
