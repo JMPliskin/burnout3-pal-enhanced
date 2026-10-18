@@ -278,8 +278,6 @@ int Fullscreen() { return ps2host::WindowFullscreen() ? 1 : 0; }
 void SetFullscreen(int on) { ps2host::SetWindowFullscreen(on != 0); }
 int Vsync() { return ps2host::WindowVsync() ? 1 : 0; }
 void SetVsync(int on) { ps2host::SetWindowVsync(on != 0); }
-int FramePacing() { return ps2host::SettingOn("frame_pacing", true) ? 1 : 0; }
-void SetFramePacing(int on) { ps2host::SetSettingOn("frame_pacing", on != 0); }
 /* A setting's value among `values` (its index; the first if it is none of them). */
 template <std::size_t N>
 int Among(const char* key, const char* const (&values)[N]) {
@@ -318,8 +316,6 @@ void SetTraffic(int on) { SetMod<kModNoTraffic>(1 - on); }
 const Option kOptions[] = {
     {Page::kVideo, "FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {Page::kVideo, "VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
-    {Page::kVideo, "FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacing, SetFramePacing,
-     {"OFF", "ON"}, 2},
     {Page::kVideo, "RESOLUTION", "DRAWN AS THE PS2 DID, TWICE AS SHARP, OR AS SHARP AS THE SCREEN", Resolution,
      SetResolution, {"ORIGINAL", "2X", "DISPLAY"}, 3},
     {Page::kVideo, "ASPECT RATIO", "THE PICTURE'S SHAPE: A TELEVISION'S, WIDESCREEN, OR THE SCREEN'S OWN", Aspect,
@@ -1079,6 +1075,9 @@ void RegisterGameOverrides() {
     // VU does (regress.py --vu-fast), for ~15% less of VIF1's worker - the
     // busiest thread on a slow machine.
     ps2host::SetVuFastDefault(true);
+    // Frame pacing off (no PC SETTINGS row): the least delay; frame_pacing=on
+    // in the settings file still turns it on.
+    ps2host::SetFramePacingDefault(false);
     // The GPU pipelines the game draws with, made in the background from the
     // start: none made in the middle of a player's first race (up to 0.7 s
     // each on an integrated GPU's cold driver).
