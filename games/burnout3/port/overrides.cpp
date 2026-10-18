@@ -311,7 +311,8 @@ template <const char* kKey>
 void SetMod(int on) { ps2host::SetSettingOn(kKey, on != 0); }
 constexpr char kModKph[] = "mod.kph", kModHorn[] = "mod.horn", kModMirror[] = "mod.mirror",
                kModNoTraffic[] = "mod.no_traffic", kModCrashBreaker[] = "mod.crash_breaker",
-               kModHeadlights[] = "mod.headlights", kModHeavyweights[] = "mod.heavyweights";
+               kModHeadlights[] = "mod.headlights", kModHeavyweights[] = "mod.heavyweights",
+               kModVerticalSplit[] = "mod.vertical_split";
 int Traffic() { return 1 - Mod<kModNoTraffic>(); }
 void SetTraffic(int on) { SetMod<kModNoTraffic>(1 - on); }
 const Option kOptions[] = {
@@ -340,6 +341,8 @@ const Option kOptions[] = {
      SetMod<kModHeadlights>, {"ORIGINAL", "ALWAYS ON"}, 2},
     {Page::kMods, "HEAVYWEIGHTS", "THE HEAVYWEIGHT CARS IN THE GARAGE IN EVERY MODE", Mod<kModHeavyweights>,
      SetMod<kModHeavyweights>, {"ORIGINAL", "ALL MODES"}, 2},
+    {Page::kMods, "SPLITSCREEN", "TWO PLAYERS' VIEWS ONE ABOVE THE OTHER, OR SIDE BY SIDE", Mod<kModVerticalSplit>,
+     SetMod<kModVerticalSplit>, {"HORIZONTAL", "VERTICAL"}, 2},
     {Page::kControls, "BUTTON PROMPTS", "THE BUTTONS SHOWN: YOUR CONTROLLER'S, PLAYSTATION OR XBOX", ButtonPrompts,
      SetButtonPrompts, {"AUTO", "PLAYSTATION", "XBOX"}, 3},
     {Page::kControls, "TRIGGER EFFECTS", "DUALSENSE: THE TRIGGERS PUSH BACK WHEN THEY DRIVE", TriggerEffects,

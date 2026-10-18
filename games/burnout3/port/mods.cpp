@@ -74,11 +74,14 @@ void Frame(lifted::Context& c) {
 /* 0x0019EE40(race): a race set up - its +0xC (0, the view as the track is)
    1 for MIRROR MODE: everything mirrored, the controls as they were. The
    patch (0x0019EFA4 sb s2) writes its caller's s2, whatever that holds,
-   where the race sets 0 - here a 1, after the function. */
+   where the race sets 0 - here a 1, after the function. Its +0xF (0, a
+   splitscreen race's views one above the other) 1 for SPLITSCREEN VERTICAL:
+   side by side - the patch (0x0019EFAC sb s2) the same way. */
 void RaceSetUp(lifted::Context& c) {
     const u32 race = u32(c.r[4]);
     F_0019EE40(c);
     if (On("mod.mirror")) generated::Write8(race + 0xCu, 1);
+    if (On("mod.vertical_split")) generated::Write8(race + 0xFu, 1);
 }
 
 }  // namespace
@@ -89,6 +92,6 @@ bool ModOn(int mod) { return mod >= 0 && mod < kMaxMods && g_on[mod]; }
 void RegisterMods() {
     Refresh();
     RegisterModFunctions();
-    ps2host::Override(0x0019EE40u, RaceSetUp, "a race set up: MIRROR MODE (PC SETTINGS, MODS)");
+    ps2host::Override(0x0019EE40u, RaceSetUp, "a race set up: MIRROR MODE, SPLITSCREEN (PC SETTINGS, MODS)");
     ps2host::Override(0x001F43B0u, Frame, "the display's frame step: MODS' memory (PC SETTINGS)");
 }
