@@ -92,3 +92,7 @@ Burnout is a trademark of Electronic Arts Inc.
 The original project's source code is distributed under the MIT License. Existing copyright notices and third-party licenses are retained.
 
 See [LICENSE](LICENSE) for details.
+
+## Upstream integration
+
+The experimental integration branch retains the USA history and its coherent engine revision. PAL-specific validation and pending features are tracked in [docs/pal/UPSTREAM_INTEGRATION.md](docs/pal/UPSTREAM_INTEGRATION.md). USA feature availability does not imply PAL support.

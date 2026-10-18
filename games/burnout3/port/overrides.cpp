@@ -8,6 +8,7 @@
  */
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "controls.h"
+#include "gpu_pipelines.h"
 #include "ps2host/host.h"
 #include "ps2host/mc2.h"
 #include "ps2host/run.h"
@@ -28,6 +30,9 @@
 
 // prompts.cpp: whether the controller's prompts show (the controller used last).
 bool ControllerPrompts();
+// dev_menu.cpp: the game's development menu opened, and back from it.
+void OpenDevMenu(lifted::Context& c);
+bool DevMenuReturned();
 
 // libmc2's handlers as the game has them, for when no card is given.
 void F_00244218(lifted::Context& c);
@@ -56,6 +61,10 @@ void F_0031C350(lifted::Context& c);
 // A menu's selector: Up and Down (see SelectorMove).
 void F_00319360(lifted::Context& c);
 void F_00319330(lifted::Context& c);
+
+bool LanEnabled();                 // iop_servers.cpp: the LAN, on unless B3_LAN=0
+void LanPresetLogin();             // lan.cpp: SELECT EA ACCOUNT logs in by itself
+void LanStopLobby();               // lan_lobby.cpp: the lobby this game served, closed
 
 namespace {
 
@@ -236,7 +245,7 @@ struct GuestText {
 constexpr u32 kMainMenuOnline = 0xB8;       // "ONLINE"
 constexpr u32 kOnlineHelp = 0xEC;           // "PLAY BURNOUT 3 ONLINE", its description
 constexpr u32 kEntries = 6;                 // the game's five, and QUIT GAME
-constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
+constexpr u32 kMultiplayerEntry = 2, kPcSettingsEntry = 3, kQuitEntry = 5;
 
 /* PC SETTINGS' pages: first VIDEO, GRAPHICS and CONTROLS, Cross on one
    showing its rows - settings, each a few values, Cross going to the next
@@ -246,7 +255,7 @@ constexpr u32 kPcSettingsEntry = 3, kQuitEntry = 5;
    set up with them; a seventh shifts the main menu up): a page with more
    scrolls, Up past the top row or Down past the bottom one bringing the
    next into view. */
-enum class Page { kMainMenu, kPcSettings, kVideo, kGraphics, kControls, kBindings };
+enum class Page { kMainMenu, kPcSettings, kVideo, kGraphics, kControls, kMods, kBindings, kMultiplayer, kPlayers };
 struct PageInfo {
     Page page;
     const char* name;
@@ -256,6 +265,7 @@ const PageInfo kPages[] = {
     {Page::kVideo, "VIDEO", "THE WINDOW, RESOLUTION, PICTURE SHAPE AND SMOOTHING"},
     {Page::kGraphics, "GRAPHICS", "THE GAME'S OWN EFFECTS"},
     {Page::kControls, "CONTROLS", "YOUR KEYS AND BUTTONS, AND THE BUTTONS SHOWN"},
+    {Page::kMods, "MODS", "NEHALEM'S MODS: KM/H, THE HORN, MIRROR MODE AND MORE"},
 };
 constexpr u32 kPageCount = sizeof kPages / sizeof kPages[0];
 
@@ -272,8 +282,6 @@ int Fullscreen() { return ps2host::WindowFullscreen() ? 1 : 0; }
 void SetFullscreen(int on) { ps2host::SetWindowFullscreen(on != 0); }
 int Vsync() { return ps2host::WindowVsync() ? 1 : 0; }
 void SetVsync(int on) { ps2host::SetWindowVsync(on != 0); }
-int FramePacing() { return ps2host::SettingOn("frame_pacing", true) ? 1 : 0; }
-void SetFramePacing(int on) { ps2host::SetSettingOn("frame_pacing", on != 0); }
 /* A setting's value among `values` (its index; the first if it is none of them). */
 template <std::size_t N>
 int Among(const char* key, const char* const (&values)[N]) {
@@ -290,7 +298,7 @@ void SetBlur(int off) { ps2host::SetSetting("blur", off ? "off" : "original"); }
 const char* const kAspects[] = {"4:3", "16:9", "auto"};
 int Aspect() { return Among("aspect", kAspects); }
 void SetAspect(int which) { ps2host::SetWindowAspect(kAspects[which]); }
-const char* const kAntiAliasings[] = {"off", "fxaa", "ssaa2", "ssaa4"};
+const char* const kAntiAliasings[] = {"off", "fxaa", "smaa", "ssaa2"};
 int AntiAliasing() { return Among("antialiasing", kAntiAliasings); }
 void SetAntiAliasing(int which) { ps2host::SetWindowAntiAliasing(kAntiAliasings[which]); }
 const char* const kPromptStyles[] = {"auto", "playstation", "xbox"};
@@ -298,18 +306,43 @@ int ButtonPrompts() { return Among("button_prompts", kPromptStyles); }
 void SetButtonPrompts(int which) { ps2host::SetSetting("button_prompts", kPromptStyles[which]); }
 int TriggerEffects() { return ps2host::SettingOn("trigger_effects", true) ? 1 : 0; }
 void SetTriggerEffects(int on) { ps2host::SetSettingOn("trigger_effects", on != 0); }
+// MODS (mods.cpp): each a setting, off unless the player turns it on.
+template <const char* kKey>
+int Mod() { return ps2host::SettingOn(kKey, false) ? 1 : 0; }
+template <const char* kKey>
+void SetMod(int on) { ps2host::SetSettingOn(kKey, on != 0); }
+constexpr char kModKph[] = "mod.kph", kModHorn[] = "mod.horn", kModMirror[] = "mod.mirror",
+               kModNoTraffic[] = "mod.no_traffic", kModCrashBreaker[] = "mod.crash_breaker",
+               kModHeadlights[] = "mod.headlights", kModHeavyweights[] = "mod.heavyweights",
+               kModVerticalSplit[] = "mod.vertical_split";
+int Traffic() { return 1 - Mod<kModNoTraffic>(); }
+void SetTraffic(int on) { SetMod<kModNoTraffic>(1 - on); }
 const Option kOptions[] = {
     {Page::kVideo, "FULLSCREEN", "THE WHOLE SCREEN OR A WINDOW (ALT+ENTER)", Fullscreen, SetFullscreen, {"OFF", "ON"}, 2},
     {Page::kVideo, "VERTICAL SYNC", "NO TEARING, OR THE LEAST DELAY", Vsync, SetVsync, {"OFF", "ON"}, 2},
-    {Page::kVideo, "FRAME PACING", "PICTURES EVENLY SPACED, A LITTLE MORE DELAY", FramePacing, SetFramePacing,
-     {"OFF", "ON"}, 2},
     {Page::kVideo, "RESOLUTION", "DRAWN AS THE PS2 DID, TWICE AS SHARP, OR AS SHARP AS THE SCREEN", Resolution,
      SetResolution, {"ORIGINAL", "2X", "DISPLAY"}, 3},
     {Page::kVideo, "ASPECT RATIO", "THE PICTURE'S SHAPE: A TELEVISION'S, WIDESCREEN, OR THE SCREEN'S OWN", Aspect,
      SetAspect, {"ORIGINAL (4:3)", "WIDESCREEN (16:9)", "AUTO"}, 3},
-    {Page::kVideo, "ANTIALIASING", "EDGES AS DRAWN, SMOOTHED (FXAA), OR SUPERSAMPLED (SSAA)",
-     AntiAliasing, SetAntiAliasing, {"OFF", "FXAA", "SSAA 2X", "SSAA 4X"}, 4},
+    {Page::kVideo, "ANTIALIASING", "EDGES AS DRAWN, SMOOTHED (FXAA, SMAA), OR SUPERSAMPLED (SSAA)",
+     AntiAliasing, SetAntiAliasing, {"OFF", "FXAA", "SMAA", "SSAA 2X"}, 4},
     {Page::kGraphics, "BLUR", "THE SPEED BLUR AND GLOW, OR A CLEAR PICTURE", Blur, SetBlur, {"ORIGINAL", "OFF"}, 2},
+    {Page::kMods, "SPEEDOMETER", "THE SPEED IN MILES OR IN KILOMETRES AN HOUR", Mod<kModKph>, SetMod<kModKph>,
+     {"MPH", "KM/H"}, 2},
+    {Page::kMods, "HORN", "HONK (CONTROLS: HORN), THE HEADLIGHTS ON WHILE IT IS HELD", Mod<kModHorn>,
+     SetMod<kModHorn>, {"OFF", "ON"}, 2},
+    {Page::kMods, "MIRROR MODE", "EVERY TRACK MIRRORED, LEFT FOR RIGHT", Mod<kModMirror>, SetMod<kModMirror>,
+     {"OFF", "ON"}, 2},
+    {Page::kMods, "TRAFFIC", "THE ROADS' TRAFFIC, OR EMPTY ROADS (FROM THE NEXT RACE)", Traffic, SetTraffic,
+     {"OFF", "ON"}, 2},
+    {Page::kMods, "CRASH BREAKER", "SET OFF IN CRASH MODE ONLY, OR IN EVERY MODE (CONTROLS)",
+     Mod<kModCrashBreaker>, SetMod<kModCrashBreaker>, {"CRASH MODE", "ALL MODES"}, 2},
+    {Page::kMods, "HEADLIGHTS", "AS THE TRACK HAS THEM, OR EVERY RACE CAR'S ALWAYS ON", Mod<kModHeadlights>,
+     SetMod<kModHeadlights>, {"ORIGINAL", "ALWAYS ON"}, 2},
+    {Page::kMods, "HEAVYWEIGHTS", "THE HEAVYWEIGHT CARS IN THE GARAGE IN EVERY MODE", Mod<kModHeavyweights>,
+     SetMod<kModHeavyweights>, {"ORIGINAL", "ALL MODES"}, 2},
+    {Page::kMods, "SPLITSCREEN", "TWO PLAYERS' VIEWS ONE ABOVE THE OTHER, OR SIDE BY SIDE", Mod<kModVerticalSplit>,
+     SetMod<kModVerticalSplit>, {"HORIZONTAL", "VERTICAL"}, 2},   // (VERTICAL: parts of the HUD still wrong, FINDINGS)
     {Page::kControls, "BUTTON PROMPTS", "THE BUTTONS SHOWN: YOUR CONTROLLER'S, PLAYSTATION OR XBOX", ButtonPrompts,
      SetButtonPrompts, {"AUTO", "PLAYSTATION", "XBOX"}, 3},
     {Page::kControls, "TRIGGER EFFECTS", "DUALSENSE: THE TRIGGERS PUSH BACK WHEN THEY DRIVE", TriggerEffects,
@@ -335,10 +368,36 @@ const BindingsPage kBindingsPages[] = {
 };
 constexpr int kBindingsPageCount = sizeof kBindingsPages / sizeof kBindingsPages[0];
 
+/* MULTIPLAYER (the main menu's) first asks how: SPLITSCREEN - two players
+   on this PC - LAN (the game's online flow on the PC's network: lan.cpp) or
+   ONLINE (EA's servers are gone: greyed). SPLITSCREEN then seats the
+   players: each presses Start (Enter on the keyboard, or as bound) on the
+   device they play with, the first player 1, the next player 2; Cross takes
+   them to the game's own MULTIPLAYER, a second controller plugged in
+   (ps2host::SetPortDevices). In its menus every device - keyboard, mouse,
+   controllers - is still player 1's (and drives player 2's screens, its car's
+   choice, too); racing, each seat's device drives its own car alone
+   (controls.cpp: SetPortsSplit). The main menu again, the seats are gone. */
+struct Mode {
+    const char* name;
+    const char* help;
+    bool (*open)();
+};
+bool Always() { return true; }
+bool Never() { return false; }
+const Mode kModes[] = {
+    {"SPLITSCREEN", "TWO PLAYERS ON THIS PC, THE SCREEN SHARED", Always},
+    {"LAN", "RACE OTHER PCS ON YOUR NETWORK, OR OVER A VPN", LanEnabled},
+    {"ONLINE", "RACE OVER THE INTERNET: NOT YET", Never},
+};
+constexpr int kSplitscreenMode = 0, kLanMode = 1;
+constexpr int kModeCount = sizeof kModes / sizeof kModes[0];
+constexpr int kPlayers = 2;
+
 /* A row of a page, and what choosing it does. */
 struct Item {
-    enum Kind { kPageLink, kOption, kBindingsLink, kAction, kLayout, kReset } kind;
-    int index;                  // kPages', kOptions', kBindingsPages' or the page's actions' index
+    enum Kind { kPageLink, kOption, kBindingsLink, kAction, kLayout, kReset, kDevMenu, kMode, kPlayer, kPlay } kind;
+    int index;                  // kPages', kOptions', kBindingsPages', kModes', a player's or the page's actions' index
 };
 
 // The rows' words: the longest a row or a description may be.
@@ -363,6 +422,11 @@ struct MainMenuState {
     int seconds = -1;                       // the time it shows left
     bool made = false;
     Asking asking = Asking::kNone;
+    // PLAYERS: the devices seated (ps2host::HostDevices' ids), in the order
+    // they pressed Start, and what each device held the frame before.
+    std::vector<u32> seated;
+    std::map<u32, bool> start_before;
+    bool cross_before = true;
 };
 MainMenuState g_main;
 
@@ -411,6 +475,17 @@ const BindingsPage& Bindings() { return kBindingsPages[g_main.bindings]; }
 
 const char* const kLayouts[] = {"CLASSIC", "MODERN", "CUSTOM"};
 
+/* A seated device's name, as a row shows it. */
+std::string SeatName(u32 id) {
+    for (const ps2host::HostDevice& d : ps2host::HostDevices())
+        if (d.id == id) {
+            std::string name = d.name;
+            for (char& ch : name) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+            return name;
+        }
+    return "GONE";
+}
+
 /* A row's words and its description. */
 std::pair<std::string, std::string> ItemText(int item) {
     const Item& it = g_main.items[std::size_t(item)];
@@ -425,6 +500,21 @@ std::pair<std::string, std::string> ItemText(int item) {
                          : "THE GAME'S OWN (CLASSIC), OR R2 TO ACCELERATE AND L2 TO BRAKE (MODERN)"};
         }
         case Item::kReset: return {"RESET TO DEFAULTS", "EVERY KEY OR BUTTON ON THIS PAGE AS IT FIRST WAS"};
+        case Item::kDevMenu: return {"DEVELOPER MENU", "THE GAME'S HIDDEN MENU: UNLOCK ALL, LOCK ALL, THE AWARDS"};
+        case Item::kMode: return {kModes[it.index].name, kModes[it.index].help};
+        case Item::kPlayer: {
+            const std::string player = "PLAYER " + std::to_string(it.index + 1) + ": ";
+            if (it.index < int(g_main.seated.size())) {
+                const std::string name = SeatName(g_main.seated[std::size_t(it.index)]);
+                return {player + name.substr(0, kRowChars - player.size()),
+                        "JOINED. CONTINUE TO PLAY, OR BACK TO START AGAIN"};
+            }
+            const std::string key = controls::BoundName(controls::Device::kKeyboard, controls::Context::kMenus, 3);
+            return {player + "PRESS START", "PRESS START ON A CONTROLLER, OR " + key + " ON THE KEYBOARD, TO JOIN"};
+        }
+        case Item::kPlay:
+            return {"CONTINUE", g_main.seated.empty() ? "FIRST, PRESS START TO JOIN"
+                                                      : "TO MULTIPLAYER'S RACES WITH THESE PLAYERS"};
         case Item::kAction: break;
     }
     const BindingsPage& page = Bindings();
@@ -440,13 +530,29 @@ std::pair<std::string, std::string> ItemText(int item) {
     return {name + ": " + controls::BoundName(page.device, page.context, action.input), action.help};
 }
 
+/* Whether a row can be chosen (the list draws one that cannot greyed). */
+bool ItemOpen(int item) {
+    const Item& it = g_main.items[std::size_t(item)];
+    if (it.kind == Item::kMode) return kModes[it.index].open();
+    if (it.kind == Item::kPlay) return !g_main.seated.empty();
+    return true;
+}
+
 /* The page's rows (g_main.items). */
 void BuildItems() {
     std::vector<Item>& items = g_main.items;
     items.clear();
     switch (g_main.page) {
+        case Page::kMultiplayer:
+            for (int i = 0; i < kModeCount; ++i) items.push_back({Item::kMode, i});
+            break;
+        case Page::kPlayers:
+            for (int i = 0; i < kPlayers; ++i) items.push_back({Item::kPlayer, i});
+            items.push_back({Item::kPlay, 0});
+            break;
         case Page::kPcSettings:
             for (u32 i = 0; i < kPageCount; ++i) items.push_back({Item::kPageLink, int(i)});
+            items.push_back({Item::kDevMenu, 0});
             break;
         case Page::kBindings: {
             const BindingsPage& page = Bindings();
@@ -484,11 +590,12 @@ void Render(lifted::Context& c) {
             g_main.row_helps[row].Set(help);
             generated::Write32(g_main.entries + 8 * row, g_main.row_names[row].at);
             generated::Write32(g_main.helps + 4 * row, g_main.row_helps[row].at);
+            generated::Write32(g_main.entries + 8 * row + 4, ItemOpen(item) ? 0 : 1);
         } else {
             generated::Write32(g_main.entries + 8 * row, g_main.blank.at);
             generated::Write32(g_main.helps + 4 * row, g_main.blank.at);
+            generated::Write32(g_main.entries + 8 * row + 4, 0);
         }
-        generated::Write32(g_main.entries + 8 * row + 4, 0);
     }
     RefreshList(c);
     // The highlight's brackets are placed when the selection moves
@@ -579,7 +686,9 @@ u32 GuestCall(lifted::Context& c, u32 target, std::initializer_list<u32> argumen
 }
 
 void RefreshList(lifted::Context& c) {
-    for (u32 row = 0; row < kEntries; ++row) GuestCall(c, 0x0031FE40u, {kList, row, 1});
+    // Each row enabled, or greyed: its entry's disabled byte.
+    for (u32 row = 0; row < kEntries; ++row)
+        GuestCall(c, 0x0031FE40u, {kList, row, generated::ReadU8(g_main.entries + 8 * row + 4) ? 0u : 1u});
 }
 
 /* 0x00321470(list, &index, entries): the main menu's list (0x00318340 sets
@@ -602,6 +711,8 @@ void MenuList(lifted::Context& c) {
             g_main.asking = Asking::kNone;
             if (controls::Capturing()) controls::CancelCapture();
             g_main.capturing = -1;
+            ps2host::ResetPortDevices();        // back from MULTIPLAYER: every device player 1's again
+            if (LanEnabled()) LanStopLobby();   // back from LAN: the lobby this game served, closed
         }
     }
     F_00321470(c);
@@ -620,7 +731,8 @@ void MenuHelps(lifted::Context& c) {
 }
 
 /* A page of PC SETTINGS in the list's rows (the main menu's kept to come
-   back to), the item `highlighted` picked and in view; or the main menu again. */
+   back to), the item `highlighted` picked and in view; or the main menu
+   again, its entry `highlighted` picked. */
 void ShowPage(lifted::Context& c, Page page, int highlighted = 0) {
     const u32 menu = g_main.menu;
     const bool was_main = g_main.page == Page::kMainMenu, on = page != Page::kMainMenu;
@@ -649,7 +761,7 @@ void ShowPage(lifted::Context& c, Page page, int highlighted = 0) {
             generated::Write32(g_main.helps + 4 * i, g_main.game_helps[i]);
         }
         generated::Write16(menu + 0x16, kEntries);
-        generated::Write16(menu + 0x14, kPcSettingsEntry);
+        generated::Write16(menu + 0x14, u16(highlighted));
         g_main.page = page;
         RefreshList(c);
         if (generated::ReadU32(kList + 0xA4u) == generated::ReadU16(menu + 0x14)) generated::Write32(kList + 0xA4u, ~0u);
@@ -736,7 +848,9 @@ bool TrianglePressed() {
 void GoBack(lifted::Context& c) {
     switch (g_main.page) {
         case Page::kBindings: ShowPage(c, Page::kControls, g_main.bindings); return;
-        case Page::kPcSettings: ShowPage(c, Page::kMainMenu); return;
+        case Page::kPcSettings: ShowPage(c, Page::kMainMenu, kPcSettingsEntry); return;
+        case Page::kMultiplayer: ShowPage(c, Page::kMainMenu, kMultiplayerEntry); return;
+        case Page::kPlayers: ShowPage(c, Page::kMultiplayer); return;
         default: {
             int from = 0;
             for (u32 i = 0; i < kPageCount; ++i)
@@ -746,10 +860,89 @@ void GoBack(lifted::Context& c) {
     }
 }
 
+/* PLAYERS shown, no one seated yet; what each device holds now taken as
+   held before (a Start held on the way in joins no one). */
+void ShowPlayers(lifted::Context& c) {
+    g_main.seated.clear();
+    g_main.start_before.clear();
+    g_main.cross_before = true;
+    ShowPage(c, Page::kPlayers);
+}
+
+/* Whether a device holds Start, as the player's menu controls have it. */
+bool HoldsStart(u32 id) {
+    if (id == ps2host::kKeyboardDevice) {
+        const int key = controls::MenuBinding(controls::Device::kKeyboard, 3);
+        return key > 0 && (ps2host::WindowFocused() || ps2host::KeysScripted()) && ps2host::HostKeyDown(key);
+    }
+    ps2host::HostPadState pad;
+    if (!ps2host::HostDevicePad(id, &pad)) return false;
+    const int button = id >= ps2host::kScriptedDevice ? 3 : controls::MenuBinding(controls::Device::kController, 3);
+    return button >= 0 && (pad.buttons & (1u << button)) != 0;
+}
+
+/* PLAYERS, each frame: a device pressing Start takes the next seat. */
+void SeatPlayers(lifted::Context& c) {
+    bool changed = false;
+    for (const ps2host::HostDevice& d : ps2host::HostDevices()) {
+        const bool held = HoldsStart(d.id);
+        const auto before = g_main.start_before.find(d.id);
+        const bool pressed = held && before != g_main.start_before.end() && !before->second;
+        g_main.start_before[d.id] = held;
+        if (!pressed || int(g_main.seated.size()) >= kPlayers) continue;
+        if (std::find(g_main.seated.begin(), g_main.seated.end(), d.id) != g_main.seated.end()) continue;
+        g_main.seated.push_back(d.id);
+        std::fprintf(stderr, "[players] player %d: %s\n", int(g_main.seated.size()), d.name.c_str());
+        changed = true;
+    }
+    // A seat whose controller is unplugged is free again.
+    const std::vector<ps2host::HostDevice> devices = ps2host::HostDevices();
+    for (auto seat = g_main.seated.begin(); seat != g_main.seated.end();) {
+        const bool there = std::any_of(devices.begin(), devices.end(),
+                                       [&](const ps2host::HostDevice& d) { return d.id == *seat; });
+        if (there) {
+            ++seat;
+        } else {
+            seat = g_main.seated.erase(seat);
+            changed = true;
+        }
+    }
+    if (changed) Render(c);
+}
+
+/* CONTINUE: each seated player's device on their controller port, and on to
+   the game's own MULTIPLAYER - as the main menu's Cross on it goes (its
+   entry at menu+4, then the frontend's fade, 0x0030D560). */
+void PlaySplitscreen(lifted::Context& c) {
+    if (g_main.seated.empty()) return;
+    for (int player = 0; player < kPlayers; ++player)
+        ps2host::SetPortDevices(u32(player), player < int(g_main.seated.size())
+                                                 ? std::vector<u32>{g_main.seated[std::size_t(player)]}
+                                                 : std::vector<u32>{});
+    ShowPage(c, Page::kMainMenu, kMultiplayerEntry);
+    generated::Write32(g_main.menu + 0x4, kMultiplayerEntry);
+    GuestCall(c, 0x0030D560u, {0x01E90240u, 0, 0});
+}
+
+/* LAN: the game's own ONLINE, as the main menu's row 3 opens it - its exit
+   (0x0030E340) copies the profile's name, sets the main mode (3) and brings
+   the online flow up - on the PC's network (lan.cpp, lan_lobby.cpp, the
+   engine's iop_inet.cpp). Its first-time message (0x01E3D595 clear: string
+   0xF9D, European players on another television standard) is no LAN's. */
+void PlayLan(lifted::Context& c) {
+    LanPresetLogin();
+    ShowPage(c, Page::kMainMenu, kMultiplayerEntry);
+    generated::Write8(0x01E3D595u, 1);
+    generated::Write32(g_main.menu + 0x4, kPcSettingsEntry);   // ONLINE's row (PC SETTINGS in our list)
+    GuestCall(c, 0x0030D560u, {0x01E90240u, 0, 0});
+    std::fprintf(stderr, "[lan] MULTIPLAYER: LAN -> the online flow\n");
+}
+
 /* Cross on a row of a page. */
 void Choose(lifted::Context& c, int item) {
     if (item < 0 || item >= int(g_main.items.size())) return;
     const Item it = g_main.items[std::size_t(item)];
+    if (!ItemOpen(item)) return;
     switch (it.kind) {
         case Item::kPageLink: ShowPage(c, kPages[it.index].page); return;
         case Item::kBindingsLink:
@@ -773,6 +966,13 @@ void Choose(lifted::Context& c, int item) {
             Render(c);
             return;
         case Item::kReset: Ask(c, Asking::kReset, "Reset these controls?"); return;
+        case Item::kDevMenu: OpenDevMenu(c); return;
+        case Item::kMode:
+            if (it.index == kSplitscreenMode) ShowPlayers(c);
+            else if (it.index == kLanMode) PlayLan(c);
+            return;
+        case Item::kPlayer:
+        case Item::kPlay: PlaySplitscreen(c); return;
         case Item::kAction: {
             const BindingsPage& page = Bindings();
             controls::BeginCapture(page.device, page.context, controls::ActionAt(page.device, page.context, it.index).input);
@@ -794,6 +994,12 @@ void MainMenuInput(lifted::Context& c) {
     const u32 menu = u32(c.r[4]);
     const bool ours = g_main.made && menu == g_main.menu;
     const bool back = TrianglePressed();
+    // Back from the development menu: PC SETTINGS again, DEVELOPER MENU picked.
+    if (ours && DevMenuReturned()) {
+        ShowPage(c, Page::kPcSettings, int(kPageCount));
+        c.r[2] = 1;
+        return;
+    }
     const bool settings = g_main.page != Page::kMainMenu;
     if (ours && settings && g_main.capturing >= 0) {
         // A binding being made has the input: its row shows how it stands.
@@ -816,6 +1022,20 @@ void MainMenuInput(lifted::Context& c) {
         c.r[2] = 1;
         return;
     }
+    // PLAYERS: Start seats a device; Cross (newly pressed - Start, which the
+    // game takes as Cross too, does not count) continues once one is.
+    if (ours && g_main.page == Page::kPlayers) {
+        SeatPlayers(c);
+        const bool cross = (ps2host::PadButtonsHeld() & (1u << 14)) != 0;
+        const bool pressed = cross && !g_main.cross_before;
+        g_main.cross_before = cross;
+        if (pressed && !g_main.seated.empty()) PlaySplitscreen(c);
+        // Up and Down still move the highlight.
+        if (GuestCall(c, 0x0022CEE0u, {0x004F50C0u, 0})) GuestCall(c, 0x00319360u, {menu + 0x14});
+        else if (GuestCall(c, 0x0022CE60u, {0x004F50C0u, 0})) GuestCall(c, 0x00319330u, {menu + 0x14});
+        c.r[2] = 1;
+        return;
+    }
     if (ours && GuestCall(c, 0x0022CFE0u, {0x004F50C0u, 0})) {
         const u32 entry = generated::ReadU16(menu + 0x14);
         if (settings) {
@@ -825,6 +1045,11 @@ void MainMenuInput(lifted::Context& c) {
         }
         if (entry == kPcSettingsEntry) {
             ShowPage(c, Page::kPcSettings);
+            c.r[2] = 1;
+            return;
+        }
+        if (entry == kMultiplayerEntry) {
+            ShowPage(c, Page::kMultiplayer);
             c.r[2] = 1;
             return;
         }
@@ -867,12 +1092,33 @@ void RegisterGameIopServers();     // iop_servers.cpp
 void RegisterWidescreen();         // widescreen.cpp
 void RegisterMouse();              // mouse.cpp
 void RegisterControls();           // controls.cpp
+void RegisterSixtyFps();           // sixty_fps.cpp
+void RegisterDevMenu();            // dev_menu.cpp
+void RegisterMods();               // mods.cpp
+void RegisterLan();                // lan.cpp
 
 void RegisterGameOverrides() {
+    // VU1's fast mode: every scripted run draws every picture as the exact
+    // VU does (regress.py --vu-fast), for ~15% less of VIF1's worker - the
+    // busiest thread on a slow machine.
+    ps2host::SetVuFastDefault(true);
+    // Frame pacing off (no PC SETTINGS row): the least delay; frame_pacing=on
+    // in the settings file still turns it on.
+    ps2host::SetFramePacingDefault(false);
+    // ANTIALIASING has no SSAA 4X any more: a settings file's is 2X.
+    if (ps2host::Setting("antialiasing", "off") == "ssaa4") ps2host::SetSetting("antialiasing", "ssaa2");
+    // The GPU pipelines the game draws with, made in the background from the
+    // start: none made in the middle of a player's first race (up to 0.7 s
+    // each on an integrated GPU's cold driver).
+    ps2host::SetGpuPipelineHints(kGpuPipelineHints, sizeof kGpuPipelineHints / sizeof kGpuPipelineHints[0]);
     RegisterGameIopServers();
     RegisterWidescreen();
     RegisterMouse();
     RegisterControls();
+    RegisterSixtyFps();
+    RegisterDevMenu();
+    RegisterMods();
+    RegisterLan();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");

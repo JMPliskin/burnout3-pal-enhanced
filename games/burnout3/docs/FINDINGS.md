@@ -2111,6 +2111,62 @@ SPU2 did that for any sweep), a race's mix clipped half of its samples - the
 crackle heard in races; swept as the hardware does (spu2.cpp's Level), they
 are silent, and the race's sound is clean but for a few loud moments.
 
+## Two players: the second controller port
+
+At boot the game opens a libdbc socket on each controller port (0 and 1) and
+on port 2 (DBC: socket 1 on port 1, its blocks at 0x004F51C0/0x004F5240;
+port 0's at 0x004F50C0, the pad the frontend's presses are asked of). With
+nothing on port 1, MULTIPLAYER greys RACE, ROAD RAGE, TEAM CRUSH and DOUBLE
+IMPACT: PARTY CRASH (pass the pad) alone is open. A DualShock 2 there opens
+them, as a second controller plugged in on the console does.
+
+The 2-player screens read their own player's port: P1 SELECT CAR port 0,
+P2 SELECT CAR port 1 alone (with port 1 present but pressed by nothing it
+never leaves). The mode list and P1's car choice read port 0 alone: with every
+device driving both ports in the menus a press still moves them once
+(`runs/splitscreen.args`: one Down, one Right). In the race each car is its
+port's.
+
+The port (overrides.cpp's MULTIPLAYER and PLAYERS pages, controls.cpp's
+SetPortsSplit): the players' devices are seated before the game's MULTIPLAYER
+opens; racing, each drives its own port alone; in every menu every device
+drives both - player 1's controls as in one-player games, and player 2's
+screens answering any. The main menu clears the seats.
+
+**Player 2's picture.** Both players draw into the picture's frame (FBP
+0x46, 640 wide): player 1 rows 0-224, player 2 rows 224-448. Player 2's post
+effects (the glow's threshold in alpha through a 16-bit view, its PSMT8H
+samples, the colour passes) address a frame based at FBP 0x8C - row 224 of
+0x46 - with their depth buffer at ZBP 0x118, row 224 of the race's at 0xD2.
+The GPU bridge took 0x8C for a buffer of its own and reconciled the two
+through local memory, at 1x: player 2's half lost the internal resolution.
+gpu_bridge.cpp's Containing now draws (and samples) such a buffer in the one
+it lies in, its rows (and its depth buffer's) further down - the same
+pixels at 1x (runs/splitscreen as recorded without the music), player 2 as
+sharp as player 1 at 2x.
+
+**No music.** The EA Trax update each frame (0x003F8C30, the player object
+0x01E7A888) stops the music (0x003FC470, `a1` 5) when the number of players
+(0x0064D3A0) is 2 or more: `slti $at, $v0, 2` at 0x003F8C54. The port's
+lift_mods.py has it 3 (always): two players hear the music, the song's banner
+at the race's start included; three or more (PARTY CRASH) as before.
+
+**Speed.** The game asks for a picture every blank in splitscreen too
+(0x001F4290 with 1, from the main loop at 0x00132D1C). Two views double the
+VU1 work and the GS thread's: in real time (i7-13620H, 2x) both run 95-100%
+busy, about 88,000 primitives a frame and 200 write-backs and reloads (the
+one-player race: 70,000 and 75), 76 of 3,000 pictures dropped. The speed
+blur's strips (D2/D3/E0 in the depth buffer's memory) are run per view: BLUR
+off drops 51.
+
+**Vertical splitscreen (MODS' SPLITSCREEN: VERTICAL).** The race's +0xF
+(see port/mods.cpp) puts the views side by side. Known issue, seen by the
+player and not yet looked into: parts of the HUD are drawn wrong with the
+views side by side. The game's own HUD layout for it (Nehalem's patch turns
+on a mode the shipped game never uses) and the port's widescreen HUD anchors
+(port/widescreen.cpp, laid out for one view, or two one above the other)
+are the first suspects.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
@@ -2118,5 +2174,7 @@ are silent, and the race's sound is clean but for a few loud moments.
 * Where exactly does code end and read-only data begin? The 81% figure is a
   lower bound - the traversal only marks bytes it can prove are reachable.
 * What is the `VDB.XML` container format?
+* Vertical splitscreen: which HUD elements break side by side, and whether
+  the game's layout or the port's widescreen anchors (see "Two players")?
 * How is the VU1 microcode stored and uploaded? 703 functions touch VU0 macro
   mode, but the VU1 microprograms are a separate problem and are not MIPS code.

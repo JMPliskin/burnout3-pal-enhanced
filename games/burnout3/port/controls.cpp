@@ -400,6 +400,8 @@ const Action kKeyboardRacing[] = {
     {kL1, "LOOK BACK", "HELD TO SEE WHAT IS BEHIND YOU"},
     {kL2, "NEXT SONG", "SKIPS TO THE NEXT EA TRAX SONG"},
     {kStart, "PAUSE", "THE PAUSE MENU"},
+    {kCircle, "HORN", "HONKS, WITH THE HORN MOD ON (PC SETTINGS, MODS)"},
+    {kR2, "CRASH BREAKER", "IN EVERY MODE WITH ITS MOD ON (PC SETTINGS, MODS)"},
 };
 const Action kControllerRacing[] = {
     {kCross, "ACCELERATE", "ON A TRIGGER: HOW FAR IT IS PULLED IS HOW FAST"},
@@ -409,6 +411,8 @@ const Action kControllerRacing[] = {
     {kL1, "LOOK BACK", "HELD TO SEE WHAT IS BEHIND YOU"},
     {kL2, "NEXT SONG", "SKIPS TO THE NEXT EA TRAX SONG"},
     {kStart, "PAUSE", "THE PAUSE MENU"},
+    {kCircle, "HORN", "HONKS, WITH THE HORN MOD ON (PC SETTINGS, MODS)"},
+    {kR2, "CRASH BREAKER", "IN EVERY MODE WITH ITS MOD ON (PC SETTINGS, MODS)"},
 };
 const Action kKeyboardMenus[] = {
     {kCross, "ACCEPT", "CHOOSES WHAT IS HIGHLIGHTED"},
@@ -605,6 +609,10 @@ void ControlsTick() {
     const bool racing = Racing();
     if (kLog && racing != g_racing) std::fprintf(stderr, "[controls] %s\n", racing ? "racing" : "menus");
     g_racing = racing;
+    // Splitscreen (overrides.cpp's PLAYERS): each player's device drives
+    // their own car while racing; in the menus, the pause's too, every
+    // device is player 1's as before.
+    ps2host::SetPortsSplit(racing);
     if (g_capture.active && g_tick >= g_capture.until) EndCapture(CaptureState::kCancelled);
     // The triggers' push, while racing with them (a DualSense's).
     ps2host::HostTriggerEffect left, right;

@@ -25,6 +25,9 @@ GAME = os.path.normpath(os.path.join(HERE, "..", ".."))
 ROOT = os.path.normpath(os.path.join(GAME, "..", ".."))
 BUILD = os.path.join(GAME, "build")
 EXE = os.path.join(BUILD, "port", "cmake", "burnout3.exe")
+# The build for processors without AVX2 (engine/tools/port.py build --sse4),
+# which burnout3.exe starts on one (engine/host/src/cpu_check.cpp).
+EXE_SSE4 = os.path.join(BUILD, "port", "cmake", "burnout3-sse4.exe")
 DEPS = os.path.join(BUILD, "port", "cmake", "_deps")
 sys.path.insert(0, os.path.join(ROOT, "engine"))
 
@@ -42,6 +45,10 @@ HEADER_LICENCES = [
     ("xxHash", "xxhash.h", "xxHash - Extremely Fast Hash algorithm"),
     ("bcdec", "bcdec.h", "This software is available under 2 licenses"),
     ("stb_image", "stb_image.h", "This software is available under 2 licenses"),
+]
+# Files of the engine's own third-party code: (name, path from the repository).
+FILE_LICENCES = [
+    ("SMAA", os.path.join("engine", "gpu", "third_party", "smaa", "LICENSE.txt")),
 ]
 TEXTURE_PACK_README = """Put a PCSX2 texture pack for Burnout 3: Takedown (SLUS-21050) in this
 folder: the pack's files (.dds or .png, named as PCSX2 names them), in
@@ -82,19 +89,25 @@ def main():
         version = json.load(f).get("version", "0.0.0")
     if not os.path.exists(EXE):
         fail("no build at %s: build first" % EXE)
+    if not os.path.exists(EXE_SSE4):
+        fail("no build at %s: build it (python engine/tools/port.py --game games/burnout3 build --sse4)" % EXE_SSE4)
+    if os.path.getmtime(EXE_SSE4) < os.path.getmtime(EXE) - 3600:
+        fail("%s is older than burnout3.exe: build it again (port.py build --sse4)" % EXE_SSE4)
     if os.path.exists(os.path.join(BUILD, "port", "icon.ico")):
         fail("build/port/icon.ico is the disc-made logo (EA's artwork): delete it, build again")
-    dlls = imports(EXE)
-    runtime = [d for d in dlls if d.startswith(("msvcp", "vcruntime", "ucrtbase", "api-ms-win-crt"))]
-    if runtime:
-        fail("the executable needs the Visual C++ runtime installed (%s): it must be linked in" % ", ".join(runtime))
-    data = open(EXE, "rb").read()
-    for folder in {os.path.expanduser("~"), ROOT}:
-        for form in (folder, folder.replace("\\", "/")):
-            if form.encode() in data or form.lower().encode() in data:
-                fail("the executable names a folder of this machine: %s" % form)
-    if re.search(rb"[A-Za-z]:\\Users\\[^\\\x00]{1,64}\\", data):
-        fail("the executable names a user's folder")
+    for exe in (EXE, EXE_SSE4):
+        dlls = imports(exe)
+        runtime = [d for d in dlls if d.startswith(("msvcp", "vcruntime", "ucrtbase", "api-ms-win-crt"))]
+        if runtime:
+            fail("%s needs the Visual C++ runtime installed (%s): it must be linked in"
+                 % (os.path.basename(exe), ", ".join(runtime)))
+        data = open(exe, "rb").read()
+        for folder in {os.path.expanduser("~"), ROOT}:
+            for form in (folder, folder.replace("\\", "/")):
+                if form.encode() in data or form.lower().encode() in data:
+                    fail("%s names a folder of this machine: %s" % (os.path.basename(exe), form))
+        if re.search(rb"[A-Za-z]:\\Users\\[^\\\x00]{1,64}\\", data):
+            fail("%s names a user's folder" % os.path.basename(exe))
     notices = ["Third-party software in the Burnout 3: Takedown PC port", "=" * 56, ""]
     for name, folder, files in LICENCES:
         path = next((os.path.join(DEPS, folder, f) for f in files if os.path.exists(os.path.join(DEPS, folder, f))), None)
@@ -104,6 +117,12 @@ def main():
             notices += ["-" * 72, name, "-" * 72, f.read().strip(), ""]
     for name, header, start in HEADER_LICENCES:
         notices += ["-" * 72, name, "-" * 72, header_licence(header, start), ""]
+    for name, relative in FILE_LICENCES:
+        path = os.path.join(ROOT, relative)
+        if not os.path.exists(path):
+            fail("no licence for %s at %s" % (name, path))
+        with open(path, encoding="utf-8", errors="replace") as f:
+            notices += ["-" * 72, name, "-" * 72, f.read().strip(), ""]
     with open(os.path.join(GAME, "port", "release", "README.txt"), encoding="utf-8") as f:
         readme = f.read().replace("{version}", version)
     name = "Burnout3-PC-%s" % version
@@ -112,6 +131,7 @@ def main():
     out = os.path.join(out_dir, "%s-windows-x64.zip" % name)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.write(EXE, "%s/burnout3.exe" % name)
+        z.write(EXE_SSE4, "%s/burnout3-sse4.exe" % name)
         z.writestr("%s/README.txt" % name, readme.replace("\n", "\r\n"))
         z.writestr("%s/THIRD-PARTY-NOTICES.txt" % name, "\r\n".join(notices))
         z.writestr("%s/texture pack/README.txt" % name, TEXTURE_PACK_README.replace("\n", "\r\n"))
