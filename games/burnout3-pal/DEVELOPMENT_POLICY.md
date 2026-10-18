@@ -29,7 +29,7 @@ de documentación histórica ni de recuentos de funciones.
 Usar AutoTest-PAL.bat y tools/autotest.py para trabajos autosuficientes con informes.
 Leer resúmenes JSON y fragmentos pertinentes; no supervisar continuamente CPU,
 RAM o porcentajes ni consultar repetitivamente logs completos. Mantener un máximo
-inicial de dos trabajos MSVC/Ninja; el adaptador actual compila secuencialmente.
+inicial de tres trabajos MSVC/Ninja; el adaptador actual compila secuencialmente.
 No confundir reutilización de objetos inmutables con un árbol CMake compatible;
 validar hashes, generador, parámetros y rutas antes de reutilizarlo.
 
@@ -64,3 +64,9 @@ artefactos, hacer push o activar parches SLUS sobre PAL. Revisar cambios de ABI,
 recompilar objetos incompatibles y conservar pruebas regionales. Promover a
 estable exige revisión. Procedimiento y alcance: docs/pal/UPSTREAM_INTEGRATION.md
 desde la raíz; hallazgos del arranque: docs/pal/BOOT_FLOW.md.
+
+Resource update authorized by the maintainer: subsequent Ninja/CMake builds
+may use up to `-j 3`. Reduce automatically to `-j 2` when excessive memory
+pressure, intensive paging or allocation errors are detected. Do not restart
+an active build to change this limit or launch extra builds just to test it.
+Test parallelism and all other restrictions remain unchanged.

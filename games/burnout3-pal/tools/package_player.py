@@ -30,11 +30,17 @@ def main():
         for form in [path,path.replace('\\','/'),path.replace('/','\\')]:
             if form.encode() in data or form.encode('utf-16le') in data:raise ValueError('Executable contains private build path')
     if re.search(rb'[A-Za-z]:\\Users\\[^\\\x00]{1,64}\\',data):raise ValueError('Executable contains a user directory')
-    notices=['Dependencies from the upstream USA package audit; no game assets.']
+    notices=['Port/runtime dependency notices. The executable also contains translated PAL game code; these notices do not license that original game code. No disc image or extracted game resources are bundled.']
     for name,folder,names in usa.LICENCES:
         path=next((cache/'_deps'/folder/n for n in names if (cache/'_deps'/folder/n).is_file()),None)
         if path is None:raise ValueError('Missing license: '+name)
         notices+=['\n'+name+'\n',path.read_text(encoding='utf8',errors='replace')]
+        if name=='Vulkan-Headers':
+            # LICENSE.md is only an overview; preserve both full alternatives.
+            for license_name in ['Apache-2.0.txt','MIT.txt']:
+                full=cache/'_deps'/folder/'LICENSES'/license_name
+                if not full.is_file():raise ValueError('Missing full Vulkan-Headers license: '+license_name)
+                notices+=['\nVulkan-Headers '+license_name+'\n',full.read_text(encoding='utf8')]
     for name,header,start in usa.HEADER_LICENCES:notices+=['\n'+name+'\n',usa.header_licence(header,start)]
     for name,relative in usa.FILE_LICENCES:notices+=['\n'+name+'\n',(ROOT/relative).read_text(encoding='utf8')]
     notices+=['\nps2-port-engine\n',(ROOT/'engine/LICENSE').read_text(encoding='utf8')]

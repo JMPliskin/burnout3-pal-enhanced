@@ -14,6 +14,28 @@ import port
 
 
 class SyncNativePathsTests(unittest.TestCase):
+    def test_historical_manifest_keeps_original_executable_and_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp);exe=directory/'burnout3-pal.exe'
+            exe.write_bytes(b'synthetic historical executable')
+            work=directory/'work.json'
+            sync.write(work,{'directory':str(directory),'vcvars':'synthetic',
+                            'pins':{},'configure':['cmake','synthetic'],
+                            'tests':['host.exe','gpu.exe'],'engine':'synthetic',
+                            'executable':str(exe)})
+            commands=[]
+            def run_job(command,timeout,row):
+                task=json.loads(Path(command[-1]).read_bytes());commands.append(task['command'])
+                Path(task['stdout']).write_text('host tests: all passed')
+                Path(task['stderr']).write_text('')
+                row.update(exit_code=0,timeout_detected=False,cleanup_succeeded=True)
+            with patch.object(sync.runner,'run_windows_job',side_effect=run_job),redirect_stdout(io.StringIO()):
+                sync.execute(work)
+            report=json.loads((directory/'build.json').read_bytes())
+            self.assertEqual(report['executable'],str(exe))
+            self.assertNotIn('pal_player_startup_tests',commands[1])
+            self.assertEqual(len(commands),4)
+
     def test_default_parent_unchanged(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(sync,'ROOT',Path(temp)):
             directory=sync.build_directory()
@@ -107,7 +129,7 @@ class SyncNativePathsTests(unittest.TestCase):
                 self.assertEqual(command[command.index('-B')+1],str(directory/'cmake'))
                 self.assertIn('-DPS2_GENERATED_DIR='+str(directory/'generated'),command)
                 self.assertIn('-DPS2_PAL_SOURCES_FILE='+str(directory/'pal_sources.txt'),command)
-                self.assertEqual(cfg['executable'],str(directory/'cmake/burnout3-pal.exe'))
+                self.assertEqual(cfg['executable'],str(directory/'cmake/Burnout3-PAL-Enhanced.exe'))
                 self.assertEqual(cfg['vu_manifest'],str(vu))
                 self.assertEqual((directory/'pal_sources.txt').read_text(),(sources/'synthetic.cpp').as_posix()+'\n')
                 generator.assert_called_once_with(['--manifest',str(directory/'vu_programs.txt'),'--out-dir',str(directory/'generated')])

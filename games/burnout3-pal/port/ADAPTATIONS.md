@@ -663,3 +663,17 @@ Carrera/recarga manual pendientes.
 Procedimiento: docs/pal/UPSTREAM_INTEGRATION.md desde raíz. Hallazgos del arranque:
 docs/pal/BOOT_FLOW.md. Evidencias locales: build/pal-upstream-ef97de2beb.
 Siguiente paso único: comparar captura GPU Thread Off con ese mismo binario/estado.
+
+### Clean Windows player reconstruction
+
+experimental/player-clean-build starts at a076ff78 with engine d7e6e023 and the
+public diagnostic patch applied in a separate checkout. Engine sources match
+the validated alpha after newline normalization. Fresh Release compilation from
+preserved EE sources and the original 97-program VU manifest passed host,
+renderer and 11 native startup tests; 10 adapter tests passed. The new executable
+name is recorded by sync_native; historical manifests retain their own paths.
+One GPU Thread On / no-trace startup reached the requested 2200 VBLANK and 1898
+functions with clean process containment. Subsequent maintainer tests confirmed
+racing with GPU Thread On, clean installation, new profile save/reload and ISO
+persistence. This is functional acceptance, not proof of full MIPS equivalence.
+See diagnostics/README.md for reproduction.

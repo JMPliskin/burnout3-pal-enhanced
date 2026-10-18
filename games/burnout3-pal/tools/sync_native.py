@@ -82,7 +82,8 @@ def prepare(reference,build_root=None):
     config={'schema':1,'directory':str(d),'reference':str(reference),'engine':engine,'upstream':upstream,
             'base':git('rev-parse','HEAD'),'vcvars':old['vcvars'],'configure':configure,'pins':pins,
             'vu_programs':len(programs),'vu_manifest':str(vu),'vu_sha256':sha(vu),'EE_functions':len(addresses),
-            'old_objects_reused':False,'executable':str(cmake/'burnout3-pal.exe'),
+            'old_objects_reused':False,'executable':str(cmake/'Burnout3-PAL-Enhanced.exe'),
+            'player_startup_test':str(cmake/'pal_player_startup_tests.exe'),
             'tests':[str(cmake/'ps2host/ps2host_tests.exe'),str(cmake/'ps2gpu/ps2gpu_tests.exe')]}
     write(d/'work.json',config)
     print(d/'work.json',flush=True)
@@ -112,8 +113,12 @@ def execute(path):
         for p,h in cfg['pins'].items():
             if sha(p)!=h:raise ValueError('Input changed: '+p)
         run('configure',cfg['configure'],180)
-        run('compile',['cmake','--build',str(d/'cmake'),'--target','burnout3-pal','ps2host_tests','ps2gpu_tests','-j','2'],2400)
+        targets=['burnout3-pal','ps2host_tests','ps2gpu_tests']
+        if cfg.get('player_startup_test'):targets.append('pal_player_startup_tests')
+        run('compile',['cmake','--build',str(d/'cmake'),'--target',*targets,'-j','3'],2400)
         for name,exe in zip(['host-tests','gpu-tests'],cfg['tests']):run(name,[exe],240)
+        if cfg.get('player_startup_test'):
+            run('player-startup-tests',[sys.executable,'-B',str(GAME/'tools/test_player_startup.py'),cfg['player_startup_test']],120)
         if 'host tests: all passed' not in (d/'host-tests.stdout.log').read_text():raise ValueError('Incomplete host test report')
         for p,h in cfg['pins'].items():
             if sha(p)!=h:raise ValueError('Input changed: '+p)

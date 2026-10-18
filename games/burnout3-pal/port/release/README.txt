@@ -1,38 +1,49 @@
-Burnout 3 PAL Enhanced 0.1.0-alpha - local player test
+Burnout 3: Takedown - PAL Enhanced 0.1.0-alpha
+FUNCTIONALLY VALIDATED ALPHA - PUBLIC BINARY DISTRIBUTION PENDING CLEARANCE
 
-Experimental Windows x64 player. Requires Windows 10 version 1903 or newer,
-an AVX2-capable CPU and a Vulkan-capable GPU/driver. Audio/controller support
-comes from the shared host. No separate Python, BAT or MSVC runtime is needed.
+Requirements
+Windows 10 version 1903 or newer (64-bit), an AVX2 CPU and a Vulkan-capable GPU
+with a current driver. Supply your own compatible European PS2 ISO, SLES_525.84.
+No Python or BAT is needed to play an approved Windows package.
 
-Extract the ZIP to a normal local folder. Double-click Burnout3-PAL-Enhanced.exe.
-Choose your own Burnout 3 PAL ISO, boot executable SLES_525.84. NTSC-U is rejected.
-Cancel exits cleanly. The disc path is remembered; if missing, select it again.
-No disc, extracted executable, modules or game assets are included.
+Getting started
+Extract the complete package into a normal local folder and double-click
+Burnout3-PAL-Enhanced.exe. Choose your PAL ISO when prompted. NTSC-U images and
+invalid images are rejected. Cancel closes the player. The ISO path is remembered;
+if you move or rename it, the player asks again. No game disc or assets included.
 
-Player data: %LOCALAPPDATA%/Burnout3-PAL-Enhanced/
-  pc_settings.ini: disc path and settings
-  memcard/: persistent saves
-  logs/run-*/: exclusive error log and the existing PAL relocation audit
-Do not delete this directory when replacing the EXE. Existing development cards
-are not automatically overwritten or imported. To import your own profile,
-close the game and copy it into memcard only after making a private backup.
+Choose your language and follow the original PAL 50/60 Hz selection screens.
+Use your controller or keyboard; F9 opens the shared PC settings panel. Press
+Start to request skipping a non-looping movie. Tested controller: Xbox One USB.
+Keyboard defaults: arrow keys for direction, X for Cross, C for Circle, V for Triangle
+(Back in PAL menus), and Enter for Start. Controller face-button labels follow
+the PS2 layout: Xbox A = Cross, B = Circle, Y = Triangle. F9 opens settings.
 
-First-run defaults: Vulkan GPU, audio, 2x, 16:9, Frame Pacing On, V-Sync/AA Off.
-The original PAL language and 50/60 Hz screens are preserved. F9 opens shared
-settings. Advanced host CLI options remain available when arguments are supplied.
+Player data
+%LOCALAPPDATA%/Burnout3-PAL-Enhanced/pc_settings.ini holds settings and ISO path.
+%LOCALAPPDATA%/Burnout3-PAL-Enhanced/memcard/ holds persistent saves.
+%LOCALAPPDATA%/Burnout3-PAL-Enhanced/logs/ holds per-run diagnostics.
+An existing card may load an existing profile. Installing or replacing the EXE
+does not clear this data. Back up saves before importing any files. Do not run
+two game instances using the same writable card.
 
-GPU Thread defaults On. This build retains diagnostic instrumentation even with
-logging absent. Earlier GPU Thread freezes remain unexplained; this is not a
-certified public Release. User testing passed ISO selection, path persistence,
-renamed-disc recovery, direct EXE startup and a complete race with GPU Thread On.
-A clean installation and memory-card location without pre-existing profiles
-still require validation before public distribution. An older profile loaded
-in development testing; its provenance has not been independently confirmed.
+Known limitations
+Early alpha: not all modes or hardware are tested. GPU diagnostic instrumentation
+remains compiled in, even without logging. An older GPU Thread freeze is still
+unexplained. The rebuilt player passed native tests and maintainer validation:
+racing with GPU Thread On, isolated installation without old profiles, creating
+and saving a new profile, ISO persistence and profile recovery after restarting.
+Performance can vary, especially in 3D. No fixed frame-rate guarantee is made.
 
-Manual acceptance: choose ISO, load/create profile, complete a race, close and
-reopen. Move/rename your ISO temporarily without changing its contents, then
-reselect it; verify settings and profile survive. Test cancellation and a wrong
-region image. Never run two instances against the same writable card.
-
-Based on burnout3-pc by Daniel Gomes Vieira and ps2-port-engine. See LICENSE and
-THIRD-PARTY-NOTICES.txt. Unofficial; not affiliated with EA or Criterion Games.
+Credits and distribution
+Based on the PC port and ps2-port-engine by Daniel Gomes Vieira and contributors.
+PAL adaptation by JMPliskin, with programming, reverse-engineering, testing and
+debugging assistance from OpenAI ChatGPT and Codex. The upstream project also
+uses AI-assisted tools. Development decisions and gameplay validation are
+directed and reviewed by the project maintainer. Retain LICENSE and
+THIRD-PARTY-NOTICES.txt and all other dependency notices.
+The port's MIT license does not license Burnout 3's original code or assets.
+This EXE includes code translated from the game. Supplying an ISO at runtime
+does not itself establish redistribution rights. No authorization from the
+original game's rights holders is claimed. Do not redistribute the game ISO.
+Unofficial; not affiliated with Electronic Arts or Criterion Games.
