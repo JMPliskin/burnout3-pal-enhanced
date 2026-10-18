@@ -115,3 +115,10 @@ games/burnout3-pal/**/vu_programs.txt
 /diagnostics/
 /memcards/
 /saves/
+
+# Historical private launchers remain on disk, outside the public source tree.
+/Jugar Burnout 3 PAL.bat
+/Jugar Burnout 3 PAL FMV.bat
+/Jugar Burnout 3 PAL VU compilado.bat
+/Jugar Burnout 3 PAL anterior.bat
+/Capturar VU Burnout 3 PAL.bat

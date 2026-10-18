@@ -39,3 +39,28 @@ ps2_add_port(burnout3-pal
 if(EXISTS "${PS2_GENERATED_DIR}/relocation_audit.cpp")
     target_compile_definitions(burnout3-pal PRIVATE PAL_RELOCATION_AUDIT)
 endif()
+
+# PAL Unicode player entry point reuses the shared host and disc/settings APIs.
+get_target_property(pal_target_sources burnout3-pal SOURCES)
+list(FILTER pal_target_sources EXCLUDE REGEX "engine/host/src/main[.]cpp$")
+set_property(TARGET burnout3-pal PROPERTY SOURCES "${pal_target_sources}")
+target_sources(burnout3-pal PRIVATE ${CMAKE_CURRENT_LIST_DIR}/windows_main.cpp)
+if(MSVC)
+    target_link_options(burnout3-pal PRIVATE "/MANIFESTINPUT:${CMAKE_CURRENT_LIST_DIR}/windows.manifest")
+endif()
+set_target_properties(burnout3-pal PROPERTIES OUTPUT_NAME "Burnout3-PAL-Enhanced")
+
+add_executable(pal_player_startup_tests tests/player_startup_tests.cpp)
+target_link_libraries(pal_player_startup_tests PRIVATE ps2host)
+target_compile_features(pal_player_startup_tests PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(pal_player_startup_tests PRIVATE /UNDEBUG)
+    target_link_options(pal_player_startup_tests PRIVATE "/MANIFESTINPUT:${CMAKE_CURRENT_LIST_DIR}/windows.manifest")
+endif()
+
+# SDL assertions must not embed the developer's dependency-cache location.
+if(MSVC AND TARGET SDL3-static)
+    get_target_property(pal_sdl_source SDL3-static SOURCE_DIR)
+    file(TO_NATIVE_PATH "${pal_sdl_source}/" pal_sdl_native)
+    target_compile_options(SDL3-static PRIVATE "/d1trimfile:${pal_sdl_native}")
+endif()

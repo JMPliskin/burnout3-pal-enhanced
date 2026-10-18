@@ -1,0 +1,124 @@
+diff --git a/gpu/src/threaded_renderer.cpp b/gpu/src/threaded_renderer.cpp
+index 391666e..114c001 100644
+--- a/gpu/src/threaded_renderer.cpp
++++ b/gpu/src/threaded_renderer.cpp
+@@ -11,0 +12 @@
++#include "ps2gpu/trace_probe.h"
+@@ -269 +270,4 @@ public:
+-        return inner_->DisplayTarget(fbp, fbw, psm, image, layout, width, height);
++        const bool answer=inner_->DisplayTarget(fbp, fbw, psm, image, layout, width, height);
++        static unsigned long long calls=0;const auto n=++calls;
++        if(trace_probe::Enabled() && trace_probe::Sample(n)) trace_probe::Record("display_target",n,(std::uint64_t(fbp)<<32)|(std::uint64_t(fbw)<<16)|psm,answer,answer?*width:0,answer?*height:0);
++        return answer;
+@@ -274 +278,4 @@ public:
+-        return inner_->ReadTarget(fbp, fbw, psm, pixels, width, height);
++        const bool answer=inner_->ReadTarget(fbp, fbw, psm, pixels, width, height);
++        static unsigned long long calls=0;const auto n=++calls;
++        if(trace_probe::Enabled() && trace_probe::Sample(n)) trace_probe::Record("read_target",n,(std::uint64_t(fbp)<<32)|(std::uint64_t(fbw)<<16)|psm,answer,answer?*width:0,answer?*height:0);
++        return answer;
+@@ -333,0 +341,2 @@ private:
++            ++submitted_;
++            if(trace_probe::Enabled() && trace_probe::Sample(submitted_)) trace_probe::Record("queue_submit",submitted_,completed_,full_.size(),busy_);
+@@ -349,0 +359,3 @@ private:
++        static std::atomic<unsigned long long> drains{0}; const auto drain=++drains;
++        const bool trace=trace_probe::Enabled() && trace_probe::Sample(drain);
++        if(trace) trace_probe::Record("drain_enter",drain,submitted_,completed_,full_.size(),why);
+@@ -350,0 +363 @@ private:
++        if(trace) trace_probe::Record("drain_return",drain,submitted_,completed_,full_.size(),why);
+@@ -353,0 +367 @@ private:
++        trace_probe::Record("worker_start");
+@@ -365,0 +380,2 @@ private:
++            ++completed_;
++            if(trace_probe::Enabled() && trace_probe::Sample(completed_)) trace_probe::Record("queue_complete",submitted_,completed_,full_.size());
+@@ -524,0 +541 @@ private:
++    mutable unsigned long long submitted_=0,completed_=0;
+diff --git a/gpu/src/vulkan_display.cpp b/gpu/src/vulkan_display.cpp
+index c5538cf..7faa18c 100644
+--- a/gpu/src/vulkan_display.cpp
++++ b/gpu/src/vulkan_display.cpp
+@@ -27,0 +28 @@
++#include "ps2gpu/trace_probe.h"
+@@ -713,0 +715,3 @@ bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
++    static std::atomic<unsigned long long> acquisitions{0}; const auto acquisition=++acquisitions;
++    const bool trace=trace_probe::Enabled() && trace_probe::Sample(acquisition);
++    if(trace) trace_probe::Record("acquire_enter",acquisition,(unsigned long long)swapchain_);
+@@ -714,0 +719 @@ bool VulkanDisplay::BeginPresent(std::uint32_t* index, bool* ok) {
++    if(trace || (trace_probe::Enabled() && r!=VK_SUCCESS)) trace_probe::Record("acquire_return",acquisition,(unsigned long long)r,*index,(unsigned long long)swapchain_);
+@@ -1184,0 +1190,2 @@ bool VulkanDisplay::FinishPresent(std::uint32_t index, VkImage source, std::uint
++    static std::atomic<unsigned long long> copies{0};const auto copy=++copies;
++    if(trace_probe::Enabled() && trace_probe::Sample(copy)) trace_probe::Record("present_copy",copy,(unsigned long long)source,(unsigned long long)images_[index],width,height);
+@@ -1555,0 +1563,3 @@ bool VulkanDisplay::Submit(std::uint32_t index) {
++        static unsigned long long presents=0;const auto n=++presents;
++        const bool trace=trace_probe::Enabled() && trace_probe::Sample(n);
++        if(trace) trace_probe::Record("present_enter",n,(unsigned long long)swapchain_,index);
+@@ -1556,0 +1567 @@ bool VulkanDisplay::Submit(std::uint32_t index) {
++        if(trace || (trace_probe::Enabled() && r!=VK_SUCCESS)) trace_probe::Record("present_return",n,(unsigned long long)r,index);
+diff --git a/host/src/gpu_bridge.cpp b/host/src/gpu_bridge.cpp
+index 5f476ca..074bdaf 100644
+--- a/host/src/gpu_bridge.cpp
++++ b/host/src/gpu_bridge.cpp
+@@ -45,0 +46 @@
++#include "ps2gpu/trace_probe.h"
+@@ -1657,0 +1659,2 @@ void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
++    static u64 calls=0; const u64 call=++calls;
++    const bool trace=ps2gpu::trace_probe::Enabled() && ps2gpu::trace_probe::Sample(call);
+@@ -1664,2 +1667,5 @@ void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
+-        if (found != g_bridge->owned.end() && !found->second.stale &&
+-            g_bridge->renderer->DisplayTarget(fbp, fbw, psm, &image, &layout, &w, &h)) {
++        const bool owned=found != g_bridge->owned.end();
++        const bool stale=owned && found->second.stale;
++        const bool target=owned && !stale && g_bridge->renderer->DisplayTarget(fbp, fbw, psm, &image, &layout, &w, &h);
++        if(trace) ps2gpu::trace_probe::Record("bridge_target",call,(u64(fbp)<<32)|(u64(fbw)<<16)|psm,owned|(stale<<1)|(target<<2),image,u64(layout));
++        if (target) {
+@@ -1670,2 +1676,3 @@ void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
+-            if (due_ns) display.PresentImageAt(image, layout, std::min(w, 640u * k), std::min(h, lines * k), due_ns);
+-            else display.PresentImage(image, layout, std::min(w, 640u * k), std::min(h, lines * k));
++            if(trace) ps2gpu::trace_probe::Record("bridge_present_enter",call,image,w,h,due_ns);
++            const bool accepted=due_ns ? display.PresentImageAt(image, layout, std::min(w, 640u * k), std::min(h, lines * k), due_ns) : display.PresentImage(image, layout, std::min(w, 640u * k), std::min(h, lines * k));
++            if(trace) ps2gpu::trace_probe::Record("bridge_present_return",call,image,accepted);
+@@ -1677 +1684,3 @@ void PresentGpuPicture(ps2gpu::Display& display, u64 due_ns) {
+-    if (gs::TheGs().Picture(&pixels, &w, &h)) display.Present(pixels.data(), w, h);
++    const bool picture=gs::TheGs().Picture(&pixels, &w, &h);
++    if(trace) ps2gpu::trace_probe::Record("bridge_fallback",call,picture,w,h);
++    if(picture) display.Present(pixels.data(), w, h);
+@@ -1930,0 +1940 @@ std::string GpuShadowSummary() {
++    ps2gpu::trace_probe::Dump();
+diff --git a/gpu/include/ps2gpu/trace_probe.h b/gpu/include/ps2gpu/trace_probe.h
+new file mode 100644
+--- /dev/null
++++ b/gpu/include/ps2gpu/trace_probe.h
+@@ -0,0 +1,34 @@
++#pragma once
++// Diagnostic only: bounded in-memory events, written at the host report.
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
++#include <thread>
++namespace ps2gpu { namespace trace_probe {
++struct Event { unsigned long long sequence, ns, thread, a, b, c, d, e; const char* tag; };
++inline std::array<Event,2048> history{};
++inline std::mutex mutex;
++inline unsigned long long sequence=0;
++inline bool Enabled() { static const bool enabled=std::getenv("PS2HOST_GPU_TRACE")!=nullptr; return enabled; }
++inline bool Sample(unsigned long long n) { return n<=8 || n%120==0; }
++inline void Record(const char* tag,unsigned long long a=0,unsigned long long b=0,unsigned long long c=0,unsigned long long d=0,unsigned long long e=0) {
++ if(!Enabled()) return;
++ const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++ const auto thread=std::hash<std::thread::id>{}(std::this_thread::get_id());
++ std::lock_guard<std::mutex> lock(mutex); const auto n=sequence++;
++ history[n%history.size()]={n,(unsigned long long)ns,(unsigned long long)thread,a,b,c,d,e,tag};
++}
++inline void Dump() {
++ if(!Enabled())return;
++ static std::atomic<bool> dumped{false}; if(dumped.exchange(true))return;
++ std::array<Event,2048> copy; unsigned long long end;
++ { std::lock_guard<std::mutex> lock(mutex);copy=history;end=sequence; }
++ FILE* file=std::fopen(std::getenv("PS2HOST_GPU_TRACE"),"wb");if(!file)return;
++ for(auto n=end>copy.size()?end-copy.size():0;n<end;++n){const auto& x=copy[n%copy.size()];
++ std::fprintf(file,"{\"seq\":%llu,\"ns\":%llu,\"thread\":%llu,\"event\":\"%s\",\"v\":[%llu,%llu,%llu,%llu,%llu]}\n",x.sequence,x.ns,x.thread,x.tag,x.a,x.b,x.c,x.d,x.e);}
++ std::fclose(file);
++}
++} }
