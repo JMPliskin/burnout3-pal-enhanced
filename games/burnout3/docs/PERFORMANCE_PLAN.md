@@ -377,3 +377,39 @@ readers out of reach) and left out (~5%); VF registers held in host
 registers across a block (fewer loads and stores, the clean checks once);
 the VIF's unpacking alongside VU1 on another thread, as the PS2 does it
 (~7% of the worker).
+
+### Later the same night
+
+* **A crash at a run's end (and a player's quitting):** StopGsThread
+  cleared the GS thread's feed while VIF1's worker could still be running
+  what the EE had queued (VU1's XGKICKs: GsWords between its check of the
+  feed and its use). Seen at the end of a real-time run in the garage,
+  whose VU1 keeps the worker busy to the last frame. The worker is drained
+  first now (engine a359684).
+* **The vertical blank timer's spin:** with cores to spare it spins the
+  last 700 us before each wake, for the blank's precision - and did so for
+  every 500 us retry of an interrupt the EE had not taken yet, so while the
+  EE waited (the garage: for VIF1's worker) the timer spun nearly all the
+  time. Retries sleep now (engine 01a93a3): the garage's timer 32% -> 6% of
+  a core at the same pacing; the race 7-8% -> 5-6%.
+* **The other games:** Mister Mosquito's six GPU runs and Resident Evil
+  Outbreak's seven as recorded with the night's VU changes (their engine
+  checked out at the candidate, then put back to their pin and rebuilt).
+
+The night's builds back to back (the starting one, then all of the night's
+engine changes), two runs each:
+
+| | starting build | the night's |
+| --- | --- | --- |
+| two cores, Intel UHD, the race (1x) | 42, 36 late; 99% 28.0, 26.1 ms; 1.40, 1.41 cores; VIF1 62% | 30, 18 late; 99% 25.5, 24.3 ms; 1.33, 1.36 cores; VIF1 55% |
+| RTX 4070, all cores, the menus at 3x | 0 late; 99.9% 23.1 ms | 0, 0 late; 99.9% 18.7, 18.9 ms |
+| the garage, VU1 frames a second (all cores) | ~52 | ~56 |
+
+(The starting build did worse tonight than its own numbers of the day
+before - 36-42 late against 7-18: the machine's state differs from night to
+night, so only builds run back to back compare.)
+
+Found, not fixed: at 3x the race's frames ~18,600-18,900 (63,000 GS
+primitives a frame, against 27,000-47,000 after) leave the GS thread 70%
+busy, its image reloads waiting on the GPU up to 12 ms; some runs (either
+build) show a cluster of up to 20 late frames there, others none.
