@@ -1070,7 +1070,8 @@ void RegisterLan() {
     ps2host::Override(0x00406E20u, LobbyProbe, "LAN: DEBUG the lobby's update");
     ps2host::Override(0x004032F8u, PeekProbe, "LAN: DEBUG ProtoAries' peek");
     ps2host::Override(0x00402FF8u, ControlProbe, "LAN: DEBUG ProtoAriesControl");
-    ps2host::Override(0x002176D0u, PostProbe, "LAN: DEBUG message posts");
+    // (Not 0x002176D0's message posts: dev_menu.cpp's override is there.)
+    (void)PostProbe;
     ps2host::Override(0x00403C30u, ReturnProbe<F_00403C30, 0x00403C30u>, "LAN: DEBUG mngl/crea");
     ps2host::Override(0x00403DA0u, ReturnProbe<F_00403DA0, 0x00403DA0u>, "LAN: DEBUG mngl/conn");
     ps2host::Override(0x00403E28u, ReturnProbe<F_00403E28, 0x00403E28u>, "LAN: DEBUG mngl/cmpl");

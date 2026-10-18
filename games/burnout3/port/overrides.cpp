@@ -62,6 +62,10 @@ void F_0031C350(lifted::Context& c);
 void F_00319360(lifted::Context& c);
 void F_00319330(lifted::Context& c);
 
+bool LanEnabled();                 // iop_servers.cpp: the LAN, on unless B3_LAN=0
+void LanPresetLogin();             // lan.cpp: SELECT EA ACCOUNT logs in by itself
+void LanStopLobby();               // lan_lobby.cpp: the lobby this game served, closed
+
 namespace {
 
 /* 0x001156C0, the SDK's kernel-mode store: it disables interrupts, enters kernel
@@ -365,7 +369,8 @@ const BindingsPage kBindingsPages[] = {
 constexpr int kBindingsPageCount = sizeof kBindingsPages / sizeof kBindingsPages[0];
 
 /* MULTIPLAYER (the main menu's) first asks how: SPLITSCREEN - two players
-   on this PC - LAN or ONLINE (not yet: greyed). SPLITSCREEN then seats the
+   on this PC - LAN (the game's online flow on the PC's network: lan.cpp) or
+   ONLINE (EA's servers are gone: greyed). SPLITSCREEN then seats the
    players: each presses Start (Enter on the keyboard, or as bound) on the
    device they play with, the first player 1, the next player 2; Cross takes
    them to the game's own MULTIPLAYER, a second controller plugged in
@@ -376,13 +381,16 @@ constexpr int kBindingsPageCount = sizeof kBindingsPages / sizeof kBindingsPages
 struct Mode {
     const char* name;
     const char* help;
-    bool open;
+    bool (*open)();
 };
+bool Always() { return true; }
+bool Never() { return false; }
 const Mode kModes[] = {
-    {"SPLITSCREEN", "TWO PLAYERS ON THIS PC, THE SCREEN SHARED", true},
-    {"LAN", "RACE OTHER PCS ON YOUR NETWORK: NOT YET", false},
-    {"ONLINE", "RACE OVER THE INTERNET: NOT YET", false},
+    {"SPLITSCREEN", "TWO PLAYERS ON THIS PC, THE SCREEN SHARED", Always},
+    {"LAN", "RACE OTHER PCS ON YOUR NETWORK, OR OVER A VPN", LanEnabled},
+    {"ONLINE", "RACE OVER THE INTERNET: NOT YET", Never},
 };
+constexpr int kSplitscreenMode = 0, kLanMode = 1;
 constexpr int kModeCount = sizeof kModes / sizeof kModes[0];
 constexpr int kPlayers = 2;
 
@@ -525,7 +533,7 @@ std::pair<std::string, std::string> ItemText(int item) {
 /* Whether a row can be chosen (the list draws one that cannot greyed). */
 bool ItemOpen(int item) {
     const Item& it = g_main.items[std::size_t(item)];
-    if (it.kind == Item::kMode) return kModes[it.index].open;
+    if (it.kind == Item::kMode) return kModes[it.index].open();
     if (it.kind == Item::kPlay) return !g_main.seated.empty();
     return true;
 }
@@ -704,6 +712,7 @@ void MenuList(lifted::Context& c) {
             if (controls::Capturing()) controls::CancelCapture();
             g_main.capturing = -1;
             ps2host::ResetPortDevices();        // back from MULTIPLAYER: every device player 1's again
+            if (LanEnabled()) LanStopLobby();   // back from LAN: the lobby this game served, closed
         }
     }
     F_00321470(c);
@@ -915,6 +924,20 @@ void PlaySplitscreen(lifted::Context& c) {
     GuestCall(c, 0x0030D560u, {0x01E90240u, 0, 0});
 }
 
+/* LAN: the game's own ONLINE, as the main menu's row 3 opens it - its exit
+   (0x0030E340) copies the profile's name, sets the main mode (3) and brings
+   the online flow up - on the PC's network (lan.cpp, lan_lobby.cpp, the
+   engine's iop_inet.cpp). Its first-time message (0x01E3D595 clear: string
+   0xF9D, European players on another television standard) is no LAN's. */
+void PlayLan(lifted::Context& c) {
+    LanPresetLogin();
+    ShowPage(c, Page::kMainMenu, kMultiplayerEntry);
+    generated::Write8(0x01E3D595u, 1);
+    generated::Write32(g_main.menu + 0x4, kPcSettingsEntry);   // ONLINE's row (PC SETTINGS in our list)
+    GuestCall(c, 0x0030D560u, {0x01E90240u, 0, 0});
+    std::fprintf(stderr, "[lan] MULTIPLAYER: LAN -> the online flow\n");
+}
+
 /* Cross on a row of a page. */
 void Choose(lifted::Context& c, int item) {
     if (item < 0 || item >= int(g_main.items.size())) return;
@@ -944,7 +967,10 @@ void Choose(lifted::Context& c, int item) {
             return;
         case Item::kReset: Ask(c, Asking::kReset, "Reset these controls?"); return;
         case Item::kDevMenu: OpenDevMenu(c); return;
-        case Item::kMode: ShowPlayers(c); return;      // SPLITSCREEN (the others greyed)
+        case Item::kMode:
+            if (it.index == kSplitscreenMode) ShowPlayers(c);
+            else if (it.index == kLanMode) PlayLan(c);
+            return;
         case Item::kPlayer:
         case Item::kPlay: PlaySplitscreen(c); return;
         case Item::kAction: {
@@ -1069,6 +1095,7 @@ void RegisterControls();           // controls.cpp
 void RegisterSixtyFps();           // sixty_fps.cpp
 void RegisterDevMenu();            // dev_menu.cpp
 void RegisterMods();               // mods.cpp
+void RegisterLan();                // lan.cpp
 
 void RegisterGameOverrides() {
     // VU1's fast mode: every scripted run draws every picture as the exact
@@ -1091,6 +1118,7 @@ void RegisterGameOverrides() {
     RegisterSixtyFps();
     RegisterDevMenu();
     RegisterMods();
+    RegisterLan();
     using namespace ps2host::mc2;
     ps2host::Override(0x00244218, CardOr<GetInfo, F_00244218>, "libmc2 GetInfo (host card)");
     ps2host::Override(0x002445D0, CardOr<Format, F_002445D0>, "libmc2 Format (host card)");
