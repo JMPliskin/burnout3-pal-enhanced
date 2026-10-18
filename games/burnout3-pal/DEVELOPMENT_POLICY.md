@@ -53,3 +53,14 @@ No modificar NTSC-U, actualizar engine o cambiar runtime compartido sin autoriza
 posterior específica. No alterar contenidos extraídos ni versionar sus derivados.
 No hacer staging, commit ni push sin autorización expresa. La eficiencia reduce
 supervisión y trabajo duplicado, no la calidad de validación.
+
+## Sincronización con upstream USA
+
+La estrategia acordada permite integrar el historial USA mediante merge en una
+rama y worktree experimentales, usando el motor coherente de su gitlink. No
+mezclar arbitrariamente revisiones ni mantener indefinidamente backports aislados.
+La autorización de integración no autoriza cambiar el checkout estable, publicar
+artefactos, hacer push o activar parches SLUS sobre PAL. Revisar cambios de ABI,
+recompilar objetos incompatibles y conservar pruebas regionales. Promover a
+estable exige revisión. Procedimiento y alcance: docs/pal/UPSTREAM_INTEGRATION.md
+desde la raíz; hallazgos del arranque: docs/pal/BOOT_FLOW.md.

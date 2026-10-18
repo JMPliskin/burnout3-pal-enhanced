@@ -1,5 +1,16 @@
 # Referencia de rendimiento PAL
 
+## Integración experimental de upstream
+
+Motor d7e6e023 en integration/upstream-20261018: build y pruebas VU/host/Vulkan
+pasados, sin medición de carrera. Captura frontend2400 negra frente a referencia
+visible: validar captura/renderizado antes de atribuir mejoras de rendimiento.
+Frame Pacing On conservado. Los números siguientes siguen perteneciendo al motor
+estable v0.9.0; no trasladarlos al nuevo. Ver docs/pal/UPSTREAM_INTEGRATION.md
+desde raíz y build/pal-upstream-ef97de2beb del worktree experimental.
+
+## Medición histórica estable
+
 Sesión manual `build/manual-play/fmv-skip-0d77722ceaef`: ejecutable con SkipMovie,
 Vulkan RTX 3070 Ti Laptop, salida 0. Captura de configuración al inicio y archivo
 actual coinciden: Frame Pacing On, V-Sync Off, resolución 4x, 16:9, ventana,

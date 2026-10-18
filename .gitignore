@@ -65,3 +65,53 @@ games/burnout3-pal/generated/
 # Logs and crash dumps
 *.log
 *.dmp
+*.mdmp
+ram.bin
+
+# Local native build outputs, including accidentally placed outputs outside build/.
+*.[eE][xX][eE]
+*.[dD][lL][lL]
+*.obj
+*.o
+*.pdb
+*.ilk
+*.pch
+*.lib
+*.exp
+*.tmp
+*.temp
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Original console executables/modules. Do not ignore arbitrary .bin/.json
+# or image fixtures: public manifests and synthetic tests must remain visible.
+*.[eE][lL][fF]
+*.[iI][rR][xX]
+SLUS_210.50
+
+# PAL runtime output locations and conventional generated VU filenames.
+games/burnout3-pal/port/generated/
+games/burnout3-pal/captures/
+games/burnout3-pal/diagnostics/
+games/burnout3-pal/saves/
+games/burnout3-pal/vu_programs.txt
+games/burnout3-pal/**/vu_blocks_*.cpp
+games/burnout3-pal/**/vu_programs.cpp
+games/burnout3-pal/**/vu_programs.txt
+
+# Private workspace/backups if created inside a checkout by mistake.
+/PAL-Workspace/
+/Archives/
+/.private/
+/backups/
+/captures/
+/diagnostics/
+/memcards/
+/saves/

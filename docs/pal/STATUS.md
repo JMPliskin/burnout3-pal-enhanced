@@ -1,103 +1,31 @@
-\# Burnout 3 PAL Enhanced - Status
+# Burnout 3 PAL Enhanced: estado comprobado
 
+> Integración experimental: Release, host/Vulkan y diferencial VU pasados.
+> Español/RWA/tarjeta conservados; captura frame2400 negra pendiente de aislar.
+> No promover todavía a estable. Detalles en UPSTREAM_INTEGRATION.md.
 
+Checkpoint jugable: d47b1328ffb0f301268247ae12ca0fffaa146187.
+Documentaci?n posterior del fork: 13f42950282d6167707d6ae1bbf9943f02098248.
+Motor estable: 28057a1a1ac2b83eb0982e2ffc0a9b9575213598 (v0.9.0).
 
-\## Target version
+- 9.384 funciones identificadas; 9.383 traducciones EE compiladas.
+- 6.460 verificadas por lifter; 2.923 NOT VERIFIED. Compilar/jugar no cambia esa clasificaci?n.
+- 97 programas VU PAL compilados; cobertura VU1 >99,99 % en la sesi?n de carrera registrada.
+- Espa?ol y recursos GlobalSp.bin/HeadSp.bin comprobados.
+- Pantallas originales de idioma, memory card y 50/60 Hz alcanzadas.
+- Usuario confirma 60 Hz, perfil guardado/recargado, carrera completada, controles, audio y SkipMovie.
 
+El antiguo bloqueo 0x00242AC8 est? resuelto: entrada de tabla de saltos libmc2.
+No es el bloqueo actual. No se certifican todos los modos ni equivalencia global.
 
+## Integraci?n actual
 
-European PlayStation 2 PAL release:
+Historial USA y motor coherente en rama/worktree experimental. La rama estable,
+sus binarios y los datos del usuario permanecen intactos.
 
-SLES-52584
+- [Integraci?n y pr?ximas sincronizaciones](UPSTREAM_INTEGRATION.md).
+- [Hallazgos del arranque](BOOT_FLOW.md).
+- [Recuperaci?n local](../../games/burnout3-pal/port/RECOVERY.md).
 
-
-
-\## Current development status
-
-
-
-Work in progress.
-
-
-
-Latest development checkpoint: d47b132.
-
-
-
-The checkpoint reports:
-
-\- Playable native VU build.
-
-\- Save functionality.
-
-\- Movie skipping.
-
-
-
-These features require further validation before release.
-
-
-
-\## Initial progress
-
-
-
-\- PAL-specific recompilation research.
-
-\- PAL game directory and configuration.
-
-\- Initial Spanish localization integration.
-
-\- Original startup sequence investigation.
-
-\- Identification of a missing dispatch stage.
-
-
-
-\## Current blocker
-
-
-
-Investigate PAL startup dispatch around
-
-MIPS address 0x00242AC8.
-
-
-
-The original European version displays
-
-the 50/60 Hz selection screen after
-
-language selection.
-
-
-
-The PAL PC port has not yet completed
-
-this startup sequence.
-
-
-
-\## Validation principles
-
-
-
-\- Reference original PAL MIPS behavior.
-
-\- Separate game logic from rendering tests.
-
-\- Do not require pixel-perfect matching
-
-&#x20; with the modified USA renderer.
-
-\- Automate reproducible tests locally.
-
-\- Do not distribute generated game code.
-
-
-
-\## Release status
-
-
-
-No playable public PAL release.
+Rendimiento 3D y compatibilidad general pendientes de validaci?n adicional.
+Sin release PAL p?blica certificada; no distribuir recursos ni c?digo derivado del juego.

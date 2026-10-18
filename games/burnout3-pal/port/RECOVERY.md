@@ -66,5 +66,15 @@ ausentes o modificados conservan el fallback interpretado. No se usa VU-fast.
 - `Jugar Burnout 3 PAL.bat`: selecciona el último build confirmado.
 - `--comprobar`: valida rutas/evidencia sin iniciar el juego.
 
+## Motor actualizado experimental
+
+Las recetas anteriores recuperan la referencia estable v0.9.0. No reutilizar
+sus objetos VU/runtime con el motor nuevo d7e6e023: cambian ABI/helpers VU.
+La rama integration/upstream-20261018 usa tools/sync_native.py y un árbol CMake
+nuevo; referencia las fuentes preservadas y regenera VU desde la captura original.
+Procedimiento/resultados: docs/pal/UPSTREAM_INTEGRATION.md desde la raíz.
+Build experimental compilado y tests pasados, pero captura negra pendiente de
+aislar: no sustituir launchers ni ejecutable estables todavía.
+
 No se versionan microcódigo, fuentes recompiladas, binarios, perfiles ni informes.
 Consultar [PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md) para la medición pendiente.

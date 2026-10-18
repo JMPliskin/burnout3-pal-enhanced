@@ -638,3 +638,28 @@ FMV --medir usa --frame-times120 y pacingOn,conservando los otros ajustes.
 No se ejecuta nueva carrera ni se modifica runtime,GS,GPU,DMA o preferencias.
 Siguiente ajuste candidato:comparar4x/2x en el mismo tramo,pacingOn,constantes
 los demas ajustes;calidad/coste,no mejora de FPS demostrada ni aplicada.
+
+### Integración coherente de upstream USA (2026-10-18)
+
+Rama experimental integration/upstream-20261018, merge b1b8858e8d49b149b3bd3a4353dafd4f94d71e10:
+USA5832c4a35a09b4e2fcb130a4e674ebfd5386cd2f y motor d7e6e023f261d9f95ad097fcd063ec95e40ca465.
+Estable permanece13f4295 (documentación posterior a d47b1328) y engine28057a1.
+Conflicto exclusivo README; identidad PAL conservada. Overrides/game.json PAL
+idénticos al estable. Código USA heredado por Git no se enlaza automáticamente.
+
+ABI/helpers VU cambiados: regenerados solo97 programas desde captura intacta.
+C++ EE preservado, incluida extensión libmc2; todo compilado en árbol nuevo,
+sin objetos/librerías antiguos.17 tests PAL, host y Vulkan passed.
+Diferencial582 estados PAL:0 diferencias,582 entradas compiladas; fallback passed.
+
+Build/pal-upstream-ef97de2beb del worktree experimental: prueba única hasta
+límite28s,32,1s reales,1908 funciones. Español5,RWA115,tarjeta{2,1,7919};
+GetInfo/GetDir/Read reales,Job limpio. Frame2400 NEGRO frente a referencia50/60Hz
+visible; misma tarjeta semilla y objeto de frecuencia conservado. Posible
+regresión de captura/renderizado sin aislar: no aprobar gráficos ni promover.
+Sin segunda prueba/corrección. No nuevos errores Vulkan/writeback observados.
+Carrera/recarga manual pendientes.
+
+Procedimiento: docs/pal/UPSTREAM_INTEGRATION.md desde raíz. Hallazgos del arranque:
+docs/pal/BOOT_FLOW.md. Evidencias locales: build/pal-upstream-ef97de2beb.
+Siguiente paso único: comparar captura GPU Thread Off con ese mismo binario/estado.
