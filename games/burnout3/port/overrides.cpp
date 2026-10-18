@@ -342,7 +342,7 @@ const Option kOptions[] = {
     {Page::kMods, "HEAVYWEIGHTS", "THE HEAVYWEIGHT CARS IN THE GARAGE IN EVERY MODE", Mod<kModHeavyweights>,
      SetMod<kModHeavyweights>, {"ORIGINAL", "ALL MODES"}, 2},
     {Page::kMods, "SPLITSCREEN", "TWO PLAYERS' VIEWS ONE ABOVE THE OTHER, OR SIDE BY SIDE", Mod<kModVerticalSplit>,
-     SetMod<kModVerticalSplit>, {"HORIZONTAL", "VERTICAL"}, 2},
+     SetMod<kModVerticalSplit>, {"HORIZONTAL", "VERTICAL"}, 2},   // (VERTICAL: parts of the HUD still wrong, FINDINGS)
     {Page::kControls, "BUTTON PROMPTS", "THE BUTTONS SHOWN: YOUR CONTROLLER'S, PLAYSTATION OR XBOX", ButtonPrompts,
      SetButtonPrompts, {"AUTO", "PLAYSTATION", "XBOX"}, 3},
     {Page::kControls, "TRIGGER EFFECTS", "DUALSENSE: THE TRIGGERS PUSH BACK WHEN THEY DRIVE", TriggerEffects,

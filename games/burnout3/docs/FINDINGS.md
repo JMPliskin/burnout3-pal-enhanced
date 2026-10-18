@@ -2159,6 +2159,14 @@ one-player race: 70,000 and 75), 76 of 3,000 pictures dropped. The speed
 blur's strips (D2/D3/E0 in the depth buffer's memory) are run per view: BLUR
 off drops 51.
 
+**Vertical splitscreen (MODS' SPLITSCREEN: VERTICAL).** The race's +0xF
+(see port/mods.cpp) puts the views side by side. Known issue, seen by the
+player and not yet looked into: parts of the HUD are drawn wrong with the
+views side by side. The game's own HUD layout for it (Nehalem's patch turns
+on a mode the shipped game never uses) and the port's widescreen HUD anchors
+(port/widescreen.cpp, laid out for one view, or two one above the other)
+are the first suspects.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
@@ -2166,5 +2174,7 @@ off drops 51.
 * Where exactly does code end and read-only data begin? The 81% figure is a
   lower bound - the traversal only marks bytes it can prove are reachable.
 * What is the `VDB.XML` container format?
+* Vertical splitscreen: which HUD elements break side by side, and whether
+  the game's layout or the port's widescreen anchors (see "Two players")?
 * How is the VU1 microcode stored and uploaded? 703 functions touch VU0 macro
   mode, but the VU1 microprograms are a separate problem and are not MIPS code.
