@@ -2111,6 +2111,28 @@ SPU2 did that for any sweep), a race's mix clipped half of its samples - the
 crackle heard in races; swept as the hardware does (spu2.cpp's Level), they
 are silent, and the race's sound is clean but for a few loud moments.
 
+## Two players: the second controller port
+
+At boot the game opens a libdbc socket on each controller port (0 and 1) and
+on port 2 (DBC: socket 1 on port 1, its blocks at 0x004F51C0/0x004F5240;
+port 0's at 0x004F50C0, the pad the frontend's presses are asked of). With
+nothing on port 1, MULTIPLAYER greys RACE, ROAD RAGE, TEAM CRUSH and DOUBLE
+IMPACT: PARTY CRASH (pass the pad) alone is open. A DualShock 2 there opens
+them, as a second controller plugged in on the console does.
+
+The 2-player screens read their own player's port: P1 SELECT CAR port 0,
+P2 SELECT CAR port 1 alone (with port 1 present but pressed by nothing it
+never leaves). The mode list and P1's car choice read port 0 alone: with every
+device driving both ports in the menus a press still moves them once
+(`runs/splitscreen.args`: one Down, one Right). In the race each car is its
+port's.
+
+The port (overrides.cpp's MULTIPLAYER and PLAYERS pages, controls.cpp's
+SetPortsSplit): the players' devices are seated before the game's MULTIPLAYER
+opens; racing, each drives its own port alone; in every menu every device
+drives both - player 1's controls as in one-player games, and player 2's
+screens answering any. The main menu clears the seats.
+
 ## Open questions
 
 * Which compiler and flags produced this binary? Unresolved, and it blocks all
