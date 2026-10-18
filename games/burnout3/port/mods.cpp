@@ -25,9 +25,8 @@
 void RegisterModFunctions();
 extern const char* const kModKeys[];
 extern const int kModCount;
-// The display's frame step (see Frame); a race set up (see RaceSetUp).
+// The display's frame step (see Frame).
 void F_001F43B0(lifted::Context& c);
-void F_0019EE40(lifted::Context& c);
 
 namespace {
 
@@ -47,6 +46,22 @@ bool g_heavyweights_set = false;
 u8 g_heavyweights_was = 0;
 
 bool On(const char* key) { return !g_all_off && ps2host::SettingOn(key, false); }
+
+/* The game's one race (0x00665EC0), set up once at boot (0x0019EE40): its
+   +0xC (0, the view as the track is) 1 for MIRROR MODE - everything
+   mirrored, the controls as they were - and its +0xF (0, a splitscreen
+   race's views one above the other) 1 for SPLITSCREEN VERTICAL, side by
+   side. The patches (0x0019EFA4 and 0x0019EFAC, sb s2) store their caller's
+   s2 in the set-up, whatever that holds: here a 1 each frame while the
+   setting is on (it changes in PC SETTINGS long after the set-up), the
+   game's 0 back once when it is turned off. */
+constexpr u32 kRace = 0x00665EC0u;
+struct RaceFlag {
+    const char* key;
+    u32 offset;
+    bool set = false;
+};
+RaceFlag g_race_flags[] = {{"mod.mirror", 0xCu}, {"mod.vertical_split", 0xFu}};
 
 /* The settings as they are now. */
 void Refresh() {
@@ -68,20 +83,16 @@ void Frame(lifted::Context& c) {
         g_heavyweights_set = false;
         generated::Write8(kHeavyweights, g_heavyweights_was);
     }
+    for (RaceFlag& f : g_race_flags) {
+        if (On(f.key)) {
+            generated::Write8(kRace + f.offset, 1);
+            f.set = true;
+        } else if (f.set) {
+            generated::Write8(kRace + f.offset, 0);
+            f.set = false;
+        }
+    }
     F_001F43B0(c);
-}
-
-/* 0x0019EE40(race): a race set up - its +0xC (0, the view as the track is)
-   1 for MIRROR MODE: everything mirrored, the controls as they were. The
-   patch (0x0019EFA4 sb s2) writes its caller's s2, whatever that holds,
-   where the race sets 0 - here a 1, after the function. Its +0xF (0, a
-   splitscreen race's views one above the other) 1 for SPLITSCREEN VERTICAL:
-   side by side - the patch (0x0019EFAC sb s2) the same way. */
-void RaceSetUp(lifted::Context& c) {
-    const u32 race = u32(c.r[4]);
-    F_0019EE40(c);
-    if (On("mod.mirror")) generated::Write8(race + 0xCu, 1);
-    if (On("mod.vertical_split")) generated::Write8(race + 0xFu, 1);
 }
 
 }  // namespace
@@ -92,6 +103,5 @@ bool ModOn(int mod) { return mod >= 0 && mod < kMaxMods && g_on[mod]; }
 void RegisterMods() {
     Refresh();
     RegisterModFunctions();
-    ps2host::Override(0x0019EE40u, RaceSetUp, "a race set up: MIRROR MODE, SPLITSCREEN (PC SETTINGS, MODS)");
     ps2host::Override(0x001F43B0u, Frame, "the display's frame step: MODS' memory (PC SETTINGS)");
 }
