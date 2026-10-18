@@ -324,3 +324,56 @@ checks the processor (code built without AVX) and starts
 both). Its cost on two cores and the Intel UHD: 1.30 cores against 1.27,
 0 dropped and 8 late against 7; every GPU recording the same through it.
 
+
+## The menus at 60 pictures a second (2026-10-18, night)
+
+Nehalem's "60 FPS Menus" patch (port/sixty_fps.cpp) draws the menus every
+blank. Measured (the car select, real time from frame 4000):
+
+* **Two physical cores and the Intel UHD, the PS2's resolution:** 30 and 60
+  per second alike - 0 dropped, 8-16 late at 60 (23-47 at 30, run to run);
+  0.46 cores against 0.35.
+* **The car select's 3D garage is VU1-bound at 60, on the fast CPU too.**
+  Its cars are VU1 programs 67-70: ~2.9 million instruction pairs a frame
+  (a PS2's VU1 does ~5 million). The EE waits for the VIF1 worker in
+  sceGsSyncPath (0x00102EA0: GIF_STAT read, 0x10003020 - found with
+  PS2HOST_JOIN_LOG), so a frame is as long as VU1's: ~52 frames a second of
+  the garage's 60, 100 of 500 frames past the period.
+
+### Compiled VU code, faster and exact
+
+A benchmark that replays recorded VU1 runs: `--vu-snapshot FILE FRAME
+6000` (with `--timeout`), then `--vu-bench FILE --vu-fast` - ns a pair and a
+hash of the end state, so a change is fast and exact or not. Two recordings:
+the garage (frame 8500 of car_select) and the race (18600 of race).
+
+| change (engine) | garage ns/pair | race ns/pair |
+| --- | --- | --- |
+| before | 4.96 | 4.40 |
+| ClampLanes for CleanLanes: DAZ and FTZ are on in a VU run (VuRounding), so the processor already makes denormals zeros of their sign; only exponent 255 is left to clamp | 4.34 | 4.20 |
+| an FMAC of all four fields stores (no blend); VI0 reset only after a block's first pair and COP2 fallbacks | 4.26 | 4.14 |
+| Q and P land at a pair's issue only where it can tell (reads Q/P, starts DIV/EFU, copies the VI file, waits) | 4.04 | 3.82 |
+| SQ of xyzw as one 16-byte move | 3.97 | 3.75 |
+| DIV and SQRT in single precision (one operation, rounded once: the same bits) | 3.93 | 3.67 |
+
+Every state hash the same; the host tests' compiled-against-interpreter
+comparisons pass; the regressions as recorded. The benchmark's own state
+restore is about a third of its time, so the VU code itself is ~25-30%
+faster. In real time: the garage 52 -> 55.8 VU1 frames a second (frames
+past the period ~100 -> ~55 of 500); the race on two cores and the Intel
+UHD, VIF1's worker 62% -> 55% busy, the process 1.40 -> 1.33 cores.
+
+Tried and dropped (measured): stall tracking left out entirely costs only
+~5% (and changes no state in these runs - stalls move timing, not values;
+leaving them out where provably unseen is the next lever); ACC held in a
+register through MADD chains (no change: the code is bound by its
+instructions, not their latency); blocks grouped into one function per 6 or
+24 blocks, switching inside it (slower - 4.02 / 3.92 ns - and 24 a group took
+MSVC nine minutes a file); clang-cl is not installed.
+
+What is left for the garage at a steady 60: ~7% more of VU1. The larger
+levers, each a project: stalls proven invisible per block (Q/P and CLIP
+readers out of reach) and left out (~5%); VF registers held in host
+registers across a block (fewer loads and stores, the clean checks once);
+the VIF's unpacking alongside VU1 on another thread, as the PS2 does it
+(~7% of the worker).
