@@ -1,9 +1,28 @@
 ﻿# PAL: adaptaciones NTSC-U y AutoTest
 
-Auditoría local del motor 28057a1 (v0.9.0). No se ha actualizado el motor ni
-modificado games/burnout3. Los registros bajo build son la evidencia de ejecución.
-No se ha alcanzado el menú. La documentación histórica PAL aún describe etapas
-anteriores; este documento no modifica sus recuentos de regresión.
+## Current source status (2026-10-19)
+
+The public Windows v0.1.0-alpha remains unchanged and gameplay-tested with its
+compiled GPU instrumentation. The selective development integration uses clean
+engine d7e6e023 and adds only the accepted camera/HUD widescreen hooks and tests.
+The maintainer separately accepted its 4:3, 16:9, Fill and main HUD with GPU
+Thread/HD Off. All 14 camera and 27 HUD regressions passed again before commit.
+No AA/HD experiment or engine patch is bundled; GPU Thread On in this clean
+build and the earlier frozen-image mechanism remain outside that acceptance.
+
+See [current status](../../../docs/pal/STATUS.md),
+[graphics/performance research](../../../docs/pal/GRAPHICS_PERFORMANCE.md),
+[HD trial](../../../docs/pal/HD_TEXTURE_PACK.md) and
+[texture comparison](../../../docs/pal/TEXTURE_COMPARISON.md).
+Compiled coverage, static matching and gameplay do not establish full guest
+semantic equivalence. The chronological entries below retain their original
+scope; old blockers and next-action notes are not the current task list.
+
+## Historical bootstrap snapshot: engine v0.9.0
+
+The initial audit used engine 28057a1. At that time the menu had not been reached.
+Later entries record how those blockers were resolved, followed by the newer
+engine/player/widescreen work. Preserve the individual test counts and evidence.
 
 | Prioridad / adaptación | Origen NTSC-U | PAL / evidencia | Dependencias y pruebas pendientes | Estado |
 |---|---|---|---|---|
@@ -11,10 +30,10 @@ anteriores; este documento no modifica sus recuentos de regresión.
 | P0 registro | RegisterGameOverrides, host/src/main.cpp | El host registra despacho, overlays y después overrides antes de Main | API compartida ps2host::Override; no requiere copiar direcciones | Existente |
 | P0 TtyWrite | port/overrides.cpp, 0010D3E8 | Candidata 0010D3E8 identificada por argumentos buffer/longitud y llamadas 0010CFE0/0010D010 a 0010C250 (envoltorios DECI2); no basta igualdad de dirección | Confirmar servicio 7C, estado de escritura, retorno y memoria. El host ya trata Deci2Call | Candidata, sin integrar |
 | P0 relocalización | engine/tools/port.py, discovered_pairs/functions | 004854E0 -> 80076000; 56 bytes de entrada, bloque copiado 740 hex; dumps idénticos al ELF | relocate_native.py conserva objetos. Nueva copia 004846A8 -> 80075000, tamaño registrado 330 hex, pendiente de delimitar/traducir | Primera integrada, NOT VERIFIED; segunda pendiente |
-| P1 RWA | NTSC-U iop_servers.cpp RunModule | PAL versi?n0115, SIF0/1 y handshake9; _start real en18C84, ocho hilos IOP observados | Ocho imports ausentes conservan trampas; ninguno invocado en esta prueba. No acredita audio funcional ni cobertura total | Registro integrado y QUICK avanza1297 funciones; handshake inferido por paso a fase2 |
+| P1 RWA | NTSC-U iop_servers.cpp RunModule | PAL versión0115, SIF0/1 y handshake9; _start real en18C84, ocho hilos IOP observados | Ocho imports ausentes conservan trampas; ninguno invocado en esta prueba. No acredita audio funcional ni cobertura total | Registro integrado y QUICK avanza1297 funciones; handshake inferido por paso a fase2 |
 | P1 GTFSCDVD | iop_servers.cpp, RPC 00475453 | IOP/GTFSCDVD.IRX PAL, 13056 bytes, versión 0101 | iop_vm/cdvdman/disco; comparar requests EE | Pendiente |
 | P1 B3ROUTE | iop_servers.cpp, RPC 00150276 | IOP/B3ROUTE.IRX PAL, 8520 bytes, campo versión 0000 | iop_vm, verificar protocolo EE | Pendiente |
-| P1 Logitech | iop_servers.cpp, RPC 046D046D, EE lgDevInit 004438E0 | PAL lgDevInit 00443D80: procedimiento 12, buffer 240 hex, versi?n 010B1B00 en +4; Enumerate 00444168 usa procedimiento 1 y retorno en +0 | Registro antes de Main; sin dispositivo devuelve 80000001; procedimientos no acreditados fallan expl?citamente | Integrados 12/1; cinco tests nativos sint?ticos; QUICK supera el bloqueo |
+| P1 Logitech | iop_servers.cpp, RPC 046D046D, EE lgDevInit 004438E0 | PAL lgDevInit 00443D80: procedimiento 12, buffer 240 hex, versión 010B1B00 en +4; Enumerate 00444168 usa procedimiento 1 y retorno en +0 | Registro antes de Main; sin dispositivo devuelve 80000001; procedimientos no acreditados fallan explícitamente | Integrados 12/1; cinco tests nativos sintéticos; QUICK supera el bloqueo |
 | P1 SDK gráfico | engine/host/src/sdk.cpp | Solo sceGsSyncPath se registra por nombre en esta revisión; config/names.csv PAL ausente | Identificar PAL por instrucciones/referencias, generar nombres trazables. No copiar 00102EA0 NTSC-U | Pendiente |
 | P1 kernel/servicios | engine/host/src/kernel.cpp, iop.cpp, devices.cpp, disc.cpp | Memoria KSEG, hilos, interrupciones, semáforos, temporizadores, alarmas, SIF, DMA/disco ya compartidos | Su existencia no demuestra compatibilidad completa PAL. Kernel conserva alarmas al rechazar parches FC/FD/FE/FF explícitamente | Existentes; integración parcial observada |
 | P2 libmc2 | overrides.cpp: GetInfo 00244218, Format 002445D0, Read 00246588, Write 00246788, Create 00245FC0, GetDir 002470D8, Lookup 00245398 | Sin equivalentes PAL acreditados | ps2host/mc2.h, CardOr delega al juego sin tarjeta; identificar siete handlers y contratos, después probar guardado | Pendiente, sin integrar |
@@ -186,12 +205,12 @@ activar la solución del motor. No se aplicó esa segunda corrección.
 Resumen trazable: build/native-relocated/run-1d102d4496ac/logitech-integration.json.
 La incidencia histórica host C0000409 sigue abierta; no reapareció en esta suite.
 
-## Correcci?n de identidad SDK: candidata rechazada
+## Corrección de identidad SDK: candidata rechazada
 
-La hip?tesis anterior sobre 00102E08 se refuta por instrucciones y por el
-analizador original naming.diagnostic_names. PAL sceGsSyncPath est? en 00102EA0,
+La hipótesis anterior sobre 00102E08 se refuta por instrucciones y por el
+analizador original naming.diagnostic_names. PAL sceGsSyncPath está en 00102EA0,
 788 bytes hasta 001031B4: referencia 00103004 a la cadena 004B1C38, espera DMA
-Ch1/Ch2 y estados VIF/GIF/VU. NTSC-U names.csv identifica tambi?n 00102EA0;
+Ch1/Ch2 y estados VIF/GIF/VU. NTSC-U names.csv identifica también 00102EA0;
 functions.csv distingue 00102E08. No se dispone de ELF NTSC-U para comparar bytes.
 
 00102E08 tiene 148 bytes hasta 00102E9C, usa contexto de 00102510 y no consume
@@ -200,17 +219,17 @@ helper espera D_STAT 1000F000 bit 4 en 0010C2F0. La candidata puede devolver el
 bit 13 del CSR GS 12001000. Forzar el retorno cero del override GsSyncPath no
 preserva ese contrato. El nombre real de 00102E08 no se declara demostrado.
 
-No se cambi? names.csv, despacho ni runtime; no se compil? ni repiti? QUICK.
-La l?nea base v?lida sigue en 1095 funciones. La comprobaci?n est?tica del
+No se cambió names.csv, despacho ni runtime; no se compiló ni repitió QUICK.
+La línea base válida sigue en 1095 funciones. La comprobación estática del
 analizador original identifica 00102EA0 y rechaza la identidad propuesta para
-00102E08; no se presenta como equivalencia din?mica.
+00102E08; no se presenta como equivalencia dinámica.
 
 Informe: build/sdk-diagnostics/run-2a2ed12a01e9/audit.json
 
-Siguiente acci?n ?nica: investigar el contrato de la espera 00102E08/0010C2B0
-y su interacci?n D_STAT/interrupts, contrastando primero la rutina NTSC-U
+Siguiente acción única: investigar el contrato de la espera 00102E08/0010C2B0
+y su interacción D_STAT/interrupts, contrastando primero la rutina NTSC-U
 separada y las soluciones DMA/vblank existentes. No activar overrides por
-coincidencia de direcci?n ni modificar manualmente el bit de estado.
+coincidencia de dirección ni modificar manualmente el bit de estado.
 
 ## Diagnóstico posterior: INTC/VBLANK, no bloqueo DMA demostrado
 
@@ -338,176 +357,176 @@ inválido, pero no demuestra su causa. Única siguiente acción: diagnosticar
 Resumen compacto: build/native-relocated/run-93951a1b8ffc/rwa-integration.json.
 
 
-### Diagn?stico dirigido: estructura PrgData y primer fotograma v?lido
+### Diagnóstico dirigido: estructura PrgData y primer fotograma válido
 
-Una sola ejecuci?n, sin compilaci?n: build/pointer-diagnostics/run-b652e437f453.
-1297 funciones, GS1661 primitivas/14706256 p?xeles, salida2, sin timeout y Job limpio.
+Una sola ejecución, sin compilación: build/pointer-diagnostics/run-b652e437f453.
+1297 funciones, GS1661 primitivas/14706256 píxeles, salida2, sin timeout y Job limpio.
 Watchpoint observa 004E31B8 <-0115 en 002AF430; RAM confirma0115.
-frames/frame_000010.bmp muestra pantalla de carga multiling?e coherente, no men?.
+frames/frame_000010.bmp muestra pantalla de carga multilingüe coherente, no menú.
 
 003E9EA0 sigue NOT VERIFIED (MemoryFault en perfiles del lifter). Original y C++
-contienen lw v1,34(v0) en003E9F24. Reproducci?n MIPS aislada sobre RAM capturada
-(a0=0, primera iteraci?n del llamador; no captura de registros nativos) llega
+contienen lw v1,34(v0) en003E9F24. Reproducción MIPS aislada sobre RAM capturada
+(a0=0, primera iteración del llamador; no captura de registros nativos) llega
 a8C620034; memory.cpp normaliza KSEG a0C620034, igual al fallo nativo.
 Cadena: [518C10]=7E6E00, [7E6E04]=7E6DFF, [7E6DFF]=0; count=7E6DFF00.
-El recorrido desde array0 alcanza registro75000 (?ndice4E00), c?digo del resolver
-TLB copiado; consume su instrucci?n8C620000 como puntero. No justifica un mapeo.
+El recorrido desde array0 alcanza registro75000 (índice4E00), código del resolver
+TLB copiado; consume su instrucción8C620000 como puntero. No justifica un mapeo.
 
-Watchpoint identifica001331F0 publicando ra?z7E6E00. La ruta usa nombre
+Watchpoint identifica001331F0 publicando raíz7E6E00. La ruta usa nombre
 Data/PrgData.bin (4B62A0) y llama368050 para fixups; sw368060 suma base al offset
-del campo+4. El valor final base-1 apunta a offset-1 previo, pero no se observ?
-directamente su ?ltima escritura: no atribuir a?n causalidad definitiva a GTFS.
-RPC00475453 s? se solicita y responde ceros sin servidor (procedimientos1,3,4);
-NTSC-U ejecuta GTFSCDVD.IRX y FINDINGS documenta PrgData con fixups. Pr?xima acci?n:
+del campo+4. El valor final base-1 apunta a offset-1 previo, pero no se observó
+directamente su última escritura: no atribuir aún causalidad definitiva a GTFS.
+RPC00475453 sí se solicita y responde ceros sin servidor (procedimientos1,3,4);
+NTSC-U ejecuta GTFSCDVD.IRX y FINDINGS documenta PrgData con fixups. Próxima acción:
 comprobar contrato de carga PrgData y compatibilidad/imports GTFS PAL antes de
-activar el m?dulo original. No se modific? runtime, c?digo generado ni m?dulos.
-Evidencias y hashes: summary.json; diagn?stico compacto: summary.md.
+activar el módulo original. No se modificó runtime, código generado ni módulos.
+Evidencias y hashes: summary.json; diagnóstico compacto: summary.md.
 
 
-### GTFS PAL: ejecuci?n real y carga de recursos
+### GTFS PAL: ejecución real y carga de recursos
 
-Integraci?n m?nima: RunModule("GTFSCDVD.IRX") tras RWA, como NTSC-U.
-Auditor?a build/gtfs-integration/run-152816064c6c/audit.json: ELF MIPS, entry224,
-13056 bytes, segmento37808 bytes, relocs2/4/5/6; ninguna importaci?n sin soporte
-seg?n tabla host actual. Trampas originales intactas. Registro comprobado en
-arn?s real del override; 3 tests GTFS, 1 kernel/registro (6 casos), 5 Logitech,
-19 AutoTest. AutoTest a?ade --dump-ram opcional bajo su propio directorio.
-Una compilaci?n incremental: native-relocated/run-20827551d59f, host tests passed.
+Integración mínima: RunModule("GTFSCDVD.IRX") tras RWA, como NTSC-U.
+Auditoría build/gtfs-integration/run-152816064c6c/audit.json: ELF MIPS, entry224,
+13056 bytes, segmento37808 bytes, relocs2/4/5/6; ninguna importación sin soporte
+según tabla host actual. Trampas originales intactas. Registro comprobado en
+arnés real del override; 3 tests GTFS, 1 kernel/registro (6 casos), 5 Logitech,
+19 AutoTest. AutoTest añade --dump-ram opcional bajo su propio directorio.
+Una compilación incremental: native-relocated/run-20827551d59f, host tests passed.
 Un QUICK10s: autotest/run-c5cac0f37416, 1394 funciones frente1297; GS15896
-primitivas/131043199 p?xeles; sin nueva captura ni men? acreditado. Salida2 por
-l?mite de tiempo entre hilos, ning?n hilo declarado en bucle, Job limpio.
+primitivas/131043199 píxeles; sin nueva captura ni menú acreditado. Salida2 por
+límite de tiempo entre hilos, ningún hilo declarado en bucle, Job limpio.
 
 GTFS ejecuta entry23B44 en base23920, servidor00475453 handler23D98. RPC1
-48/4 bytes; RPC3 64/16; RPC4 y5 16/0, servidos por el m?dulo. Solicitudes reales:
+48/4 bytes; RPC3 64/16; RPC4 y5 16/0, servidos por el módulo. Solicitudes reales:
 Data/Global.txd, Data/GlobalEn.bin, Data/HeadEn.bin, pveh/vlist.bin,
-Tracks/tlist.bin, Data/PrgData.bin. PAL est? usando En en esta ejecuci?n;
-no afirmar espa?ol activo. PrgData pide9 sectores hacia7E6E00 (18432 bytes).
-Ra?z518C10=7E6E00, campo+4=7E6E20, count+8=2, RWA flag4E31B8=115.
+Tracks/tlist.bin, Data/PrgData.bin. PAL está usando En en esta ejecución;
+no afirmar español activo. PrgData pide9 sectores hacia7E6E00 (18432 bytes).
+Raíz518C10=7E6E00, campo+4=7E6E20, count+8=2, RWA flag4E31B8=115.
 003E9EA0 se ejecuta73 veces sin el acceso0C620034 anterior.
 
 RAM final comparada con PrgData de disco: se deshicieron188 campos del fixup
-seg?n estructura final; diferencias13 bytes: seis palabras adicionales cumplen
+según estructura final; diferencias13 bytes: seis palabras adicionales cumplen
 exactamente offsetDisco+base (la lista actual tiene6 entradas frente7 en disco),
-y count en offset24 cambi?7->6. No hay captura previa a fixups y no se observ?
-la escritura de ese count; no afirmar igualdad ?ntegra antes de fixups ni
-atribuir sin evidencia la modificaci?n posterior. Resource-check.json guarda
-hashes y todas las diferencias. Global.txd tampoco se afirma id?ntico en RAM
-final despu?s del procesamiento. Los callbacks DMA existen en SetDmaIntr/Run
-original y el flujo EE contin?a; no hay traza individual que acredite cada uno.
+y count en offset24 cambió7->6. No hay captura previa a fixups y no se observó
+la escritura de ese count; no afirmar igualdad íntegra antes de fixups ni
+atribuir sin evidencia la modificación posterior. Resource-check.json guarda
+hashes y todas las diferencias. Global.txd tampoco se afirma idéntico en RAM
+final después del procesamiento. Los callbacks DMA existen en SetDmaIntr/Run
+original y el flujo EE continúa; no hay traza individual que acredite cada uno.
 
-Primera incidencia restante: l?mite temporal con fase de inicializaci?n9 en
+Primera incidencia restante: límite temporal con fase de inicialización9 en
 51C020; consulta repetida0028B3F0 desde001334CC. NTSC-U documenta esperas de
-streams RWA/EA Trax, pero su equivalencia concreta con esta fase no est? probada.
-?nica siguiente acci?n: diagnosticar esa consulta sobre RAM/logs existentes y
-comparar inicializaci?n de audio NTSC-U, sin activar B3ROUTE por sospecha.
+streams RWA/EA Trax, pero su equivalencia concreta con esta fase no está probada.
+única siguiente acción: diagnosticar esa consulta sobre RAM/logs existentes y
+comparar inicialización de audio NTSC-U, sin activar B3ROUTE por sospecha.
 Resumen con evidencias: build/gtfs-integration/run-152816064c6c/summary.json.
 
 
-### Selecci?n espa?ola y switch libmc2 PAL recuperado
+### Selección española y switch libmc2 PAL recuperado
 
 Informes pal-spanish-diagnostics/select-6290a60964a4 y confirm-186638d96d33:
-cursor01E89EB0 (lista01E89E68+48):0 ingl?s,1 neerland?s,2 espa?ol (bandera
+cursor01E89EB0 (lista01E89E68+48):0 inglés,1 neerlandés,2 español (bandera
 resaltada1450). down1200-1211, down1300-1311, cross1500-1511 confirma idioma5
-en004E2E98; t?tulo en RAM "Selecciona idioma", rutas GlobalSp.bin/HeadSp.bin.
-La primera confirmaci?n encontr? destino242AC8 no cubierto.
+en004E2E98; título en RAM "Selecciona idioma", rutas GlobalSp.bin/HeadSp.bin.
+La primera confirmación encontró destino242AC8 no cubierto.
 
 NTSC-U FINDINGS documenta trabajador libmc2/comando menos2/tabla4BB320 y
 GetInfo244218; PAL usa tabla4BB880 con99 entradas y GetInfo244208. jr242AC0,
-delay slot nop242AC4, llega leg?timamente al caso242AC8. DB conserva inicio
+delay slot nop242AC4, llega legítimamente al caso242AC8. DB conserva inicio
 242A50..242AC8 y chunk242D40..242D50: faltan los casos intermedios del trabajador.
-No es una nueva funci?n independiente ni un puntero incorrecto demostrado.
+No es una nueva función independiente ni un puntero incorrecto demostrado.
 
 relocate_native --complete-function 00242A50:00242D50 usa lifter original con
-secciones ELF completas, mismo s?mbolo y copia bajo build; rechaza solapamientos
-y extremo distinto del chunk final conocido. AutoTest FULL conserva esa opci?n.
-No se modifica fuente publicada ni cuerpos de otras funciones (la copia a?ade
-un separador de l?nea);9383 s?mbolos originales. Sigue NOT VERIFIED, sin
-verificaci?n diferencial completa. Tests:5 switch,13 relocation,19 AutoTest.
-Una compilaci?n incremental native-relocated/run-3a1758905dab; host suite passed.
+secciones ELF completas, mismo símbolo y copia bajo build; rechaza solapamientos
+y extremo distinto del chunk final conocido. AutoTest FULL conserva esa opción.
+No se modifica fuente publicada ni cuerpos de otras funciones (la copia añade
+un separador de línea);9383 símbolos originales. Sigue NOT VERIFIED, sin
+verificación diferencial completa. Tests:5 switch,13 relocation,19 AutoTest.
+Una compilación incremental native-relocated/run-3a1758905dab; host suite passed.
 
-Validaci?n GPU ?nica, misma secuencia espa?ola: frame2200,1895 funciones;
-242AC8 desaparece. Captura1600 acredita di?logo en espa?ol de memory card
-ausente, opciones S?/No (No resaltado). No se acredita50/60; no se pulsa nada
-m?s. Captura2000 pierde texto: incidencia gr?fica conservada. Sin nuevo fallo,
-Job limpio. Motor/NTSC-U intactos. Pr?xima acci?n: revisar una respuesta
-reproducible al di?logo de memory card y comprobar qu? pantalla PAL sigue.
+Validación GPU única, misma secuencia española: frame2200,1895 funciones;
+242AC8 desaparece. Captura1600 acredita diálogo en español de memory card
+ausente, opciones Sí/No (No resaltado). No se acredita50/60; no se pulsa nada
+más. Captura2000 pierde texto: incidencia gráfica conservada. Sin nuevo fallo,
+Job limpio. Motor/NTSC-U intactos. Próxima acción: revisar una respuesta
+reproducible al diálogo de memory card y comprobar qué pantalla PAL sigue.
 Evidencia: build/switch-integration/run-e00fbcdc0efa/summary.json.
 
 
 ### Tarjeta virtual PAL: CardOr y primera pantalla50/60
 
-Reutilizaci?n directa de ps2host::mc2 y patr?n CardOr NTSC-U. Direcciones PAL
+Reutilización directa de ps2host::mc2 y patrón CardOr NTSC-U. Direcciones PAL
 obtenidas de jal/slots/tabla004BB880, no copiadas por desplazamiento:
 GetInfo US244218->PAL244208; Format2445D0->2445C0; Read246588->246578;
 Write246788->246778; Create/Mkdir245FC0->245FB0; GetDir2470D8->2470C8;
-Lookup245398->245388. Contratos a0 socket,a1 info/nombre; Read/Write a?aden
-a2 buffer,a3 offset,t0 tama?o; Create a2 modo; GetDir a2 offset,a3 maxent,
-t0 entries,t1 count. SearchFile conserva conversi?n original raw-entry y errores.
-Con --memcard ejecutan host; sin opci?n ejecutan handler PAL original. Cola,
-worker/polling y extensi?n242A50..242D50 permanecen; FULL conserva completion.
+Lookup245398->245388. Contratos a0 socket,a1 info/nombre; Read/Write añaden
+a2 buffer,a3 offset,t0 tamaño; Create a2 modo; GetDir a2 offset,a3 maxent,
+t0 entries,t1 count. SearchFile conserva conversión original raw-entry y errores.
+Con --memcard ejecutan host; sin opción ejecutan handler PAL original. Cola,
+worker/polling y extensión242A50..242D50 permanecen; FULL conserva completion.
 
-Pruebas:3 memory-card (14 rutas sint?ticas con/sin directorio, ABI/slots PAL,
-completion),1 kernel,5 Logitech,19 AutoTest. Una compilaci?n incremental
+Pruebas:3 memory-card (14 rutas sintéticas con/sin directorio, ABI/slots PAL,
+completion),1 kernel,5 Logitech,19 AutoTest. Una compilación incremental
 native-relocated/run-a9a2554c61d4, suite host passed incluidas pruebas reales
 mc2 de archivos/errores. No equivale a guardar/cargar un perfil PAL en el juego.
-Una integraci?n GPU ?nica hasta2200, misma secuencia de Espa?ol,1898 funciones.
+Una integración GPU única hasta2200, misma secuencia de Español,1898 funciones.
 GetInfo2 llamadas retorna0; RAM518BF0={2,1,7998}: PS2,formateada,KB libres.
 GetDir1 llamada retorna0/count0 para BESLES-52584 (nombre guardado PAL).
-Aviso sin tarjeta desaparece y frame1600 acredita selecci?n50Hz/60Hz espa?ola,
+Aviso sin tarjeta desaparece y frame1600 acredita selección50Hz/60Hz española,
 50Hz resaltado sin confirmar. Idioma efectivo5. Job limpio, sin nuevo fallo.
 
 Directorio persistente separado, fuera de build e ignorado por PAL .gitignore:
-memcards/test-e123ea986bc5. Sigue vac?o y existe tras salir. Reutilizar con
---memcard games/burnout3-pal/memcards/test-e123ea986bc5. No se sobrescribi?
+memcards/test-e123ea986bc5. Sigue vacío y existe tras salir. Reutilizar con
+--memcard games/burnout3-pal/memcards/test-e123ea986bc5. No se sobrescribió
 ninguna partida. Guardado y recarga de perfil siguen pendientes; no segunda
-prueba porque no se ha escrito perfil. Incidencia gr?fica de texto desaparecido
-persiste en captura2000, sin investigaci?n adicional.
+prueba porque no se ha escrito perfil. Incidencia gráfica de texto desaparecido
+persiste en captura2000, sin investigación adicional.
 Informe: build/memcard-integration/run-1e685a0bddcb/summary.json.
-Pr?xima acci?n: revisar selecci?n expl?cita de modo de v?deo para continuar
-hacia creaci?n de perfil; no afirmar persistencia funcional hasta recarga nueva.
+Próxima acción: revisar selección explícita de modo de vídeo para continuar
+hacia creación de perfil; no afirmar persistencia funcional hasta recarga nueva.
 
 
-### Selecci?n60Hz PAL: prueba y confirmaci?n adicional
+### Selección60Hz PAL: prueba y confirmación adicional
 
 Dos ejecuciones sin recompilar con la misma tarjeta test-e123ea986bc5.
-Secuencia espa?ola anterior +down1800-1811: select-1f7eecc7c3e1/frame1950
+Secuencia española anterior +down1800-1811: select-1f7eecc7c3e1/frame1950
 acredita60Hz resaltado, cursor01E89EB0=1 (en esta lista,0=50Hz).
-Segunda ejecuci?n a?ade cross2000-2011; estado01E989EC pasa0->1->2.
-Frame2400/2800 muestra "?Se mostr? correctamente la pantalla de prueba?",
-S?(USAR60Hz)/No(USAR50Hz), No resaltado. No se confirma ese di?logo.
-Elegir60Hz inicialmente funciona, pero su aceptaci?n definitiva sigue pendiente;
-no afirmar60Hz guardado/aplicado definitivamente. El patr?n de prueba no qued?
-capturado en estos tres frames. No se alter? manualmente el reloj del host.
-1924 funciones, frame2800, sin fallo nuevo y Job limpio. Espa?ol5 y tarjeta
-{2,1,7998} conservados; solo GetInfo2/GetDir1, ning?n Create/Write ni archivo.
-No se alcanza perfil a?n. Informe: build/pal-60hz-diagnostics/confirm-5c0f71f31b10/summary.json.
-Siguiente acci?n: verificar patr?n de prueba y preparar respuesta expl?cita
-S?(USAR60Hz); evitar confirmar por defecto No(USAR50Hz).
+Segunda ejecución añade cross2000-2011; estado01E989EC pasa0->1->2.
+Frame2400/2800 muestra "¿Se mostró correctamente la pantalla de prueba?",
+Sí(USAR60Hz)/No(USAR50Hz), No resaltado. No se confirma ese diálogo.
+Elegir60Hz inicialmente funciona, pero su aceptación definitiva sigue pendiente;
+no afirmar60Hz guardado/aplicado definitivamente. El patrón de prueba no quedó
+capturado en estos tres frames. No se alteró manualmente el reloj del host.
+1924 funciones, frame2800, sin fallo nuevo y Job limpio. Español5 y tarjeta
+{2,1,7998} conservados; solo GetInfo2/GetDir1, ningún Create/Write ni archivo.
+No se alcanza perfil aún. Informe: build/pal-60hz-diagnostics/confirm-5c0f71f31b10/summary.json.
+Siguiente acción: verificar patrón de prueba y preparar respuesta explícita
+Sí(USAR60Hz); evitar confirmar por defecto No(USAR50Hz).
 
 
-### Primera carrera manual y diagn?stico inicial de rendimiento
+### Primera carrera manual y diagnóstico inicial de rendimiento
 
-Hito comunicado por el usuario: espa?ol/60Hz confirmados, perfil creado/guardado,
-Carrera Libre/coche/tutorial/carrera, aceleraci?n/direcci?n y audio funcional.
-Sesi?n manual run-2f30715f8dda sale0;3529 funciones. Tarjeta manual contiene
+Hito comunicado por el usuario: español/60Hz confirmados, perfil creado/guardado,
+Carrera Libre/coche/tutorial/carrera, aceleración/dirección y audio funcional.
+Sesión manual run-2f30715f8dda sale0;3529 funciones. Tarjeta manual contiene
 BESLES-52584(61772), icon.sys(964), view.ico(15234). Recarga tras reiniciar
-no comprobada aqu?. No inferir carrera funcional solo del n?mero de funciones.
+no comprobada aquí. No inferir carrera funcional solo del número de funciones.
 
-Log confirma --gpu/Vulkan RTX3070TiLaptop y build Release/O2.366.2s, ?ltimo
-VBLANK registrado20400 (~55.7/s global; NO FPS espec?ficos de carrera).
+Log confirma --gpu/Vulkan RTX3070TiLaptop y build Release/O2.366.2s, último
+VBLANK registrado20400 (~55.7/s global; NO FPS específicos de carrera).
 2764065587 pares VU,0 compilados/0 entradas; vu_programs.cpp tiene0 programas.
 VU1 25%, VU0 3.2%, GPU/memoria24.8%, esperaGS20.4%; readback63.8s/18374.
-Son tiempos de toda la sesi?n con hilos/escenas: no sumar como partes exclusivas.
-Cuello mixto: interpretaci?n VU y sincronizaci?n; no demuestra problema IOP.
-No hay --frame-times ni sampler/race input grabado: falta medici?n por escena.
+Son tiempos de toda la sesión con hilos/escenas: no sumar como partes exclusivas.
+Cuello mixto: interpretación VU y sincronización; no demuestra problema IOP.
+No hay --frame-times ni sampler/race input grabado: falta medición por escena.
 
-NTSC/motor ya ofrecen --vu-record, --vu-interpret, vurecomp y comprobaci?n por
-bytes contra el programa cargado. No copiar microc?digo NTSC. El adaptador PAL
-crea build nuevo y busca all? vu_programs.txt: debe recibir/pinear un manifiesto
-PAL capturado para no compilar siempre0 programas. No se implement? ni compil?.
-Tri?ngulo ya llega por V del teclado o bot?n norte(SDL, XboxY/PS Triangle).
-NTSC distingue Back en men?s y ChangeCamera en carrera. No remapear globalmente
-c?rculo/tri?ngulo ni copiar direcciones de detecci?n de carrera sin validaci?n.
+NTSC/motor ya ofrecen --vu-record, --vu-interpret, vurecomp y comprobación por
+bytes contra el programa cargado. No copiar microcódigo NTSC. El adaptador PAL
+crea build nuevo y busca allí vu_programs.txt: debe recibir/pinear un manifiesto
+PAL capturado para no compilar siempre0 programas. No se implementó ni compiló.
+Triángulo ya llega por V del teclado o botón norte(SDL, XboxY/PS Triangle).
+NTSC distingue Back en menús y ChangeCamera en carrera. No remapear globalmente
+círculo/triángulo ni copiar direcciones de detección de carrera sin validación.
 Informe: build/performance-audits/run-38fdaa2368fd/summary.json.
 
 

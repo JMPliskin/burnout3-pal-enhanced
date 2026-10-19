@@ -65,10 +65,15 @@ The rebuilt alpha has been tested through races with GPU Thread On. A clean
 installation, creating and saving a new profile, profile recovery after restart
 and remembering the ISO have been confirmed by the maintainer.
 
+Development source now also includes a separately tested Hor+ 3D widescreen
+camera and proportion-preserving HUD anchors for 4:3, 16:9 and Fill the window.
+These source changes are not part of the unchanged v0.1.0-alpha download.
+See the [development status](docs/pal/STATUS.md) for scope and validation.
+
 ## Known Limitations
 
 This is an early alpha. Performance varies and not every mode has been tested.
-The current build retains GPU diagnostic instrumentation; an older build's
+The v0.1.0-alpha executable retains GPU diagnostic instrumentation; an older build's
 GPU Thread freeze remains unexplained. The current rebuilt alpha passed manual
 gameplay validation; this does not establish compatibility with every system.
 
@@ -85,6 +90,9 @@ The current reconstruction workflow also requires preserved local generation
 artifacts and cached dependency sources; a fresh clone is not a turnkey build.
 Follow the [reconstruction guide](games/burnout3-pal/port/diagnostics/README.md)
 and [recovery documentation](games/burnout3-pal/port/RECOVERY.md).
+Reproducing the published alpha uses its documented diagnostic patch; the clean
+widescreen integration does not require it. Its optional regression targets are
+described in the [widescreen guide](docs/pal/WIDESCREEN_HUD.md).
 Technical notes and release preparation are kept in [docs/pal](docs/pal).
 
 ## AI-Assisted Development
