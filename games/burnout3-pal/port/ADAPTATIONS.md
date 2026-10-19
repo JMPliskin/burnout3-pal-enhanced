@@ -734,3 +734,12 @@ patches. The maintainer has now separately accepted the clean-engine player
 visually in 4:3, 16:9 and Fill, including the main HUD. Fourteen camera and 27 HUD
 regressions passed again without rebuilding. GPU Thread and HD were Off;
 this acceptance does not validate other modes or resolve historical GPU issues.
+
+### USA/PAL address mapping reference
+
+See [USA/PAL executable address mapping](../../../docs/pal/USA_PAL_ADDRESS_MAPPING.md).
+The audit distinguishes 1,233 strict static pairs from 44 previously reviewed
+identities/contracts. Two builder assignments and four caller bodies retain
+explicit uncertainty; gameplay acceptance does not resolve those certificates.
+The observed deltas are search hints, never a global relocation rule. No hooks,
+address constants or automatic resolver are changed by this documentation.
