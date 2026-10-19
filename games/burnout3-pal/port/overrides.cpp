@@ -80,7 +80,12 @@ std::vector<u8> LgDev(u32 procedure, const std::vector<u8>& data) {
 void RegisterRelocationAudits();
 #endif
 
+void RegisterPalWidescreenCamera();
+void RegisterPalWidescreenHud();
+
 void RegisterGameOverrides() {
+    RegisterPalWidescreenCamera();
+    RegisterPalWidescreenHud();
     // Same opt-in as NTSC-U: the original IRX runs when loadfile loads it.
     // Keep the shared loader's missing-import traps unchanged.
     ps2host::iop::RunModule("RWA.IRX");

@@ -35,7 +35,9 @@ ps2_add_port(burnout3-pal
     GAME ${CMAKE_CURRENT_LIST_DIR}/..
     GENERATED ${PS2_GENERATED_DIR}
     TRANSLATED ${pal_translated}
-    SOURCES ${CMAKE_CURRENT_LIST_DIR}/overrides.cpp ${pal_extra_sources})
+    SOURCES ${CMAKE_CURRENT_LIST_DIR}/overrides.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/widescreen_camera.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/widescreen_hud.cpp ${pal_extra_sources})
 if(EXISTS "${PS2_GENERATED_DIR}/relocation_audit.cpp")
     target_compile_definitions(burnout3-pal PRIVATE PAL_RELOCATION_AUDIT)
 endif()
@@ -63,4 +65,33 @@ if(MSVC AND TARGET SDL3-static)
     get_target_property(pal_sdl_source SDL3-static SOURCE_DIR)
     file(TO_NATIVE_PATH "${pal_sdl_source}/" pal_sdl_native)
     target_compile_options(SDL3-static PRIVATE "/d1trimfile:${pal_sdl_native}")
+endif()
+
+# Optional regression executables share only objects from this same build.
+# Existing translated inputs are required; no EE/VU generator is invoked.
+option(PAL_WIDESCREEN_TESTS "Build PAL camera and HUD regression tests" OFF)
+if(PAL_WIDESCREEN_TESTS)
+    get_target_property(pal_wide_sources burnout3-pal SOURCES)
+    set(pal_wide_core ${pal_wide_sources})
+    list(FILTER pal_wide_core EXCLUDE REGEX "(windows_main|widescreen_hud)[.]cpp$|[.]rc$")
+    add_library(pal_widescreen_core OBJECT ${pal_wide_core})
+    target_link_libraries(pal_widescreen_core PRIVATE ps2host)
+    get_target_property(pal_wide_definitions burnout3-pal COMPILE_DEFINITIONS)
+    target_compile_definitions(pal_widescreen_core PRIVATE ${pal_wide_definitions})
+    list(REMOVE_ITEM pal_wide_sources ${pal_wide_core})
+    set_property(TARGET burnout3-pal PROPERTY SOURCES "${pal_wide_sources};$<TARGET_OBJECTS:pal_widescreen_core>")
+    foreach(kind camera hud)
+        add_executable(pal_widescreen_${kind}_tests
+            tests/widescreen_${kind}_tests.cpp $<TARGET_OBJECTS:pal_widescreen_core>)
+        if(kind STREQUAL "camera")
+            target_sources(pal_widescreen_${kind}_tests PRIVATE widescreen_hud.cpp)
+        endif()
+        target_link_libraries(pal_widescreen_${kind}_tests PRIVATE ps2host)
+        if(MSVC)
+            target_compile_options(pal_widescreen_${kind}_tests PRIVATE /UNDEBUG)
+            target_link_libraries(pal_widescreen_${kind}_tests PRIVATE ps2_cpu_check)
+            target_link_options(pal_widescreen_${kind}_tests PRIVATE
+                "/MANIFESTINPUT:${CMAKE_CURRENT_LIST_DIR}/windows.manifest")
+        endif()
+    endforeach()
 endif()

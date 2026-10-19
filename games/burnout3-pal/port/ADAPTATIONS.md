@@ -677,3 +677,60 @@ functions with clean process containment. Subsequent maintainer tests confirmed
 racing with GPU Thread On, clean installation, new profile save/reload and ISO
 persistence. This is functional acceptance, not proof of full MIPS equivalence.
 See diagnostics/README.md for reproduction.
+
+### Camera-only Hor+ experiment (2026-10-19)
+
+Reused USA v0.4.0 SetViewWindow at PAL 001E2100. The 100-byte setter and its
+001E3FC0 notification target were mapped by instructions/callers; PAL 00211CB0
+supplies the vec2. Only the x component of a positive original 4:3 window is
+temporarily widened according to shared PictureAspect; y is retained, the
+original translation is called directly, and input bits are restored. Existing
+panoramic/offscreen windows pass through. Added finite/overflow guards and
+exception-safe restoration. CMake and RegisterGameOverrides include the PAL
+source; no generated dispatch/EE, HUD or shared engine modifications.
+
+Fourteen specific native cases passed using the preserved real F_001E2100,
+with only its frame notification replaced by a synthetic spy. They cover exact
+4:3 Context/selected-memory agreement with a direct original call, horizontal
+window/inverses, ABI, one notification, repeated calls, already wide/square/
+invalid windows, aspect changes/persistence and exception restoration. First
+fixture failed on a one-ULP difference between literal 4/3 and USA's aspect
+ratio expression; corrected the test expectation without changing the hook.
+Failure retained. This is not full interpreter equivalence or full frame-update
+validation. See docs/pal/WIDESCREEN_3D.md.
+
+Only the new hook, registration unit and test were compiled, then the player
+was independently linked against hash-verified existing EE/VU/host/GPU inputs.
+No engine build, EE/VU regeneration or game run. Private launcher starts 4:3,
+2x, AA Off, HD Off and GPU Thread Off, with isolated data and a verified copy
+of the previous private comparison card. The maintainer subsequently accepted the FOV visually;
+HUD/sprites remain explicitly outside this camera-only scope. Published and
+previous functional executables, stable worktree, original cards/ISO preserved.
+
+
+### PAL HUD / 2D widescreen experiment (2026-10-19)
+
+Maintainer accepted camera-only Hor+ visually; retained its source/object.
+Adapted USA v0.4.0 packet builders, Flush2D (PAL 0021A4E0), Sprites2D
+(PAL 00364B00) and regional caller/cell anchor IDs. The two sinks match the
+USA instructions except mapped JAL; builders preserve control flow/registers
+with relocated constant addresses/calls. Four anchor-caller identities require
+structural matching rather than claiming whole-function equivalence. No HUD
+editor/pause/mouse features or host viewport changes imported.
+
+27 synthetic 2D regression cases and the previous 14 real-camera cases passed.
+2D tests spy the draw/flush sinks; they do not establish original MIPS dynamic
+equivalence or visual correctness of every HUD element. New player linked
+incrementally with hash-checked existing EE/VU/host/GPU inputs; no regeneration
+or engine rebuild. Isolated launcher/card prepared for manual 4:3, 16:9 and Fill
+comparisons. GPU Thread/HD/AA Off, 2x, pacing On, vsync Off, blur Original.
+See docs/pal/WIDESCREEN_HUD.md for complete map and screenshot protocol.
+The maintainer subsequently accepted the main HUD in 4:3, 16:9 and Fill.
+Regional popups, replays and special modes remain unverified.
+
+
+Selective integration: clean engine d7e6e023, without local AA, HD or GPU trace
+patches. The maintainer has now separately accepted the clean-engine player
+visually in 4:3, 16:9 and Fill, including the main HUD. Fourteen camera and 27 HUD
+regressions passed again without rebuilding. GPU Thread and HD were Off;
+this acceptance does not validate other modes or resolve historical GPU issues.
