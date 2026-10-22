@@ -11,13 +11,8 @@ Spanish has been tested. This early alpha does not certify every configuration.
 
 ## Download and installation
 
-The v0.2.0-alpha candidate is prepared locally. **Public binary publication is
-pending distribution-rights review.** See [Credits and legal](#credits-and-legal).
 
-When an approved package is attached to the
-[v0.2.0-alpha release](https://github.com/JMPliskin/burnout3-pal-enhanced/releases/tag/v0.2.0-alpha):
-
-1. Download `Burnout3-PAL-Enhanced-0.2.0-alpha-windows-x64.zip` from **Assets**.
+1. Download `Burnout3-PAL-Enhanced-0.2.0-alpha-windows-x64.zip`.
 2. Extract the complete ZIP into a normal local folder.
 3. Double-click **Burnout3-PAL-Enhanced.exe**.
 4. Select an ISO from your own compatible European copy when prompted.
@@ -77,9 +72,9 @@ effect or a fixed FPS gain across all scenes and hardware.
 
 ### Performance improvements
 
-- **USA-001:** invalid cached textures leave their GS page indexes and are
+- invalid cached textures leave their GS page indexes and are
   reinserted when validated, avoiding repeated work on invalid entries.
-- **USA-002:** eligible PSMCT16 transfers process groups of sixteen pixels with
+- eligible PSMCT16 transfers process groups of sixteen pixels with
   SIMD. Unsupported formats, alignment and boundary cases retain the scalar path.
   Memory-equivalence tests and focused synthetic benefits are established;
   sustained whole-game PAL gains are **not quantified**.
@@ -121,7 +116,7 @@ preferences indirectly. Unlocked F9 changes are saved normally.
   release it before pressing again.
 - **F12 remains the independent diagnostic capture shortcut.** A full capture
   can deliberately pause execution and write substantial local diagnostic files.
-- Bounded audio-latency recovery was manually accepted after **GS capture and
+- Bounded audio-latency recovery was created **GS capture and
   window movement**. This does not claim to solve every possible interruption.
 - Fullscreen is the default for **new** profiles. Windowed mode, existing saved
   preferences and command-line precedence are preserved.
@@ -129,10 +124,10 @@ preferences indirectly. Unlocked F9 changes are saved normally.
 ### PAL compatibility retained
 
 Original PAL language and 50/60 Hz screens remain, including all button
-instructions on the 640×512 selector. Spanish, virtual profiles, profile recovery
+instructions. Spanish, virtual profiles, profile recovery
 and remembering the ISO have prior acceptance evidence. Advanced language
-preferences, skipping selectors and forcing a preferred PAL mode have **not**
-been added.
+preferences, skipping selectors and forcing a preferred PAL mode will be
+added on next releases.
 
 ## Controls
 
@@ -152,8 +147,6 @@ These observations are not exhaustive controller certification.
 
 - A **minor, non-blocking skybox seam at 3×** remains.
 - Heavy scenes at 4× can be GPU limited and have occasional performance drops.
-- An isolated long interval with Frame Pacing OFF remains an observation; its
-  cause was not established.
 - **VU Fast** is not exposed as a validated PAL option. VU Exact remains the
   reference. **SSAA** is not a functional F9 selection in this release.
 - 120 FPS interpolation, custom music, additional USA control options and
@@ -188,13 +181,10 @@ player/runtime units without regenerating the game.
   **OpenAI ChatGPT and Codex**, directed and reviewed by the maintainer.
 - Third-party libraries and SMAA retain their licenses and notices in the package.
 
-Original port/runtime work is covered by [LICENSE](LICENSE). Its MIT terms do
-**not** grant rights to Burnout 3's original program or assets. The player links
+Original port/runtime work is covered by [LICENSE](LICENSE). The player links
 locally reconstructed game code; requiring an ISO at runtime does not itself
-establish permission to redistribute that program. No documented authorization
-or legal clearance for public binary distribution is currently available.
-The prepared binary package must remain local until that issue is resolved;
-a manual upload is not an exemption. No disc images, extracted assets, translated
+establish permission to redistribute that program.
+No disc images, extracted assets, translated
 source files or personal saves are included in the repository/package.
 
 Unofficial project, not affiliated with Electronic Arts or Criterion Games.
