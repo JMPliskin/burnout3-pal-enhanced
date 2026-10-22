@@ -21,8 +21,6 @@
 
 #include "ps2host/disc.h"
 #include "player_startup.h"
-#undef PS2HOST_GAME_VERSION
-#define PS2HOST_GAME_VERSION "0.1.0-alpha"
 #include "ps2host/host.h"
 #include "ps2host/run.h"
 #include "ps2host/settings.h"
@@ -145,7 +143,7 @@ int main(int argc, char** argv) {
         return 70;
     }
 #ifdef PS2HOST_GAME_TITLE
-    ps2host::SetGameTitle(PS2HOST_GAME_TITLE);      // the window's (game.json's "title")
+    ps2host::SetGameTitle(std::string(PS2HOST_GAME_TITLE) + " v" + PS2HOST_GAME_VERSION);      // the window's (game.json's "title")
 #endif
 #ifdef PS2HOST_GAME_VERSION
     std::fprintf(stderr, "[port] %s, version %s\n", PS2HOST_GAME_TITLE, PS2HOST_GAME_VERSION);

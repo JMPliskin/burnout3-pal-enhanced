@@ -1,7 +1,7 @@
 {
     "name":  "Burnout 3: Takedown (PAL)",
-    "title":  "Burnout 3: Takedown",
-    "version":  "0.4.0-alpha",
+    "title":  "Burnout 3 PAL Enhanced",
+    "version":  "0.2.0-alpha",
     "iso":  "../../../ISOs/Burnout3_PAL.iso",
     "executable":  "SLES_525.84",
     "database":  "build/sles_525_84_clean.json",

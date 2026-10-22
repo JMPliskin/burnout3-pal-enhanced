@@ -52,6 +52,20 @@ if(MSVC)
 endif()
 set_target_properties(burnout3-pal PROPERTIES OUTPUT_NAME "Burnout3-PAL-Enhanced")
 
+# Version metadata without bundling an icon derived from the game disc.
+# If an explicit local icon exists, ps2_add_port already supplies VERSIONINFO.
+if(WIN32 AND NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/../build/port/icon.ico"
+         AND NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/icon.ico")
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/../game.json" pal_game_json)
+    string(JSON PAL_PLAYER_VERSION GET ${pal_game_json} version)
+    string(REGEX MATCHALL "[0-9]+" pal_version_numbers "${PAL_PLAYER_VERSION}")
+    list(APPEND pal_version_numbers 0 0 0 0)
+    list(SUBLIST pal_version_numbers 0 4 pal_version_numbers)
+    string(REPLACE ";" "," PAL_PLAYER_FIXED_VERSION "${pal_version_numbers}")
+    configure_file(windows_version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/pal_player_version.rc @ONLY)
+    target_sources(burnout3-pal PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/pal_player_version.rc)
+endif()
+
 add_executable(pal_player_startup_tests tests/player_startup_tests.cpp)
 target_link_libraries(pal_player_startup_tests PRIVATE ps2host)
 target_compile_features(pal_player_startup_tests PRIVATE cxx_std_17)
