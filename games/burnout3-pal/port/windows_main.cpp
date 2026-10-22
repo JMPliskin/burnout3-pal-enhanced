@@ -153,6 +153,7 @@ int main(int argc, char** argv) {
     ps2host::RegisterFunctions(kGuestFunctions, kGuestFunctionCount);
     ps2host::RegisterOverlays(kGuestOverlays, kGuestOverlayCount);
     RegisterGameOverrides();
+    ps2host::EnablePalRegionalPresentation();
     const int code = ps2host::Main(argc, argv);
     if (!play.empty() && code != 0) {         // closing the window ends a run with 0
         std::fflush(nullptr);
