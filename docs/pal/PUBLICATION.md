@@ -1,8 +1,54 @@
 # Publication checklist
 
-This repository publishes development source, synthetic tests, configuration,
-regional adaptation evidence and documentation. It does not publish the game
-or a self-contained playable package. See the root README for status and inputs.
+## v0.2.0-alpha candidate: current status
+
+The Windows x64 candidate is prepared and tested locally. The maintainer has
+confirmed that no documented authorization/legal review for redistribution of
+the reconstructed original game program is currently available. The port/engine
+MIT licenses do not supply those rights. Keep the EXE and ZIP local until that
+issue is resolved. Manual uploading does not remove this requirement.
+
+No push, remote tag or GitHub release is authorized by this preparation task.
+A local annotated tag is prepared on the exact final candidate commit.
+The previous release/tag and both public main branches must remain intact.
+
+### Git dependencies before using GitHub Releases
+
+After distribution review AND explicit authorization:
+
+1. Publish the engine branch containing
+   `bfad7255f17f7789a8bbb0a59a6e3a003535c548` to JMPliskin/ps2-port-engine.
+2. Verify that exact object can be fetched from the fork.
+3. Publish `release/v0.2.0-alpha-candidate` to JMPliskin/burnout3-pal-enhanced.
+4. Recheck remote `pal-enhanced`. Advance it to the audited candidate only when
+   the update is a normal fast-forward; stop if the remote changed unexpectedly.
+   The candidate already merges the accepted integration and the main commit
+   observed during preparation. Never force-push or rebase published history.
+5. Verify `git rev-parse v0.2.0-alpha^{commit}` equals the audited final game SHA,
+   then publish that explicit local tag. Never tag an implicit default-branch HEAD.
+6. Verify a fresh checkout can resolve `engine` through the JMPliskin .gitmodules URL.
+
+Exact SHAs, destinations, package hashes and proposed commands are recorded in
+the private release preparation dossier; verify them again before execution.
+
+### Manual steps on GitHub
+
+Once the prerequisites and publication authorization are satisfied:
+
+1. Open JMPliskin/burnout3-pal-enhanced, then **Releases > Draft a new release**.
+2. Select the already verified **v0.2.0-alpha** tag. Do not create it on master or
+   another default target. Confirm its commit matches the audited candidate SHA.
+3. Title: **Burnout 3 PAL Enhanced v0.2.0-alpha**.
+4. Paste `RELEASE_NOTES_v0.2.0-alpha.md` from that tagged revision.
+5. Attach `Burnout3-PAL-Enhanced-0.2.0-alpha-windows-x64.zip` and its `.zip.sha256`
+   checksum file. Check their recorded SHA-256 values before uploading.
+6. Enable **Set as a pre-release**. Do not mark this alpha as a stable latest release.
+7. Review tag/commit, notes, assets and rights clearance. Only then, with explicit
+   publication authorization, choose **Publish release**.
+8. Verify the public asset checksums/download links and README instructions.
+   Keep v0.1.0-alpha and all its assets/tags unchanged.
+
+The following audit is historical; it is not current binary distribution clearance.
 
 ## Audit checkpoint: 2026-10-18
 
