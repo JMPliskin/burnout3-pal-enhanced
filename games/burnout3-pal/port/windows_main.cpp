@@ -80,7 +80,7 @@ std::string PickDisc() {
 /* Started without arguments - from Explorer, a shortcut - the port plays its
    game from the player's own disc image: the one chosen before (kept in the
    PC settings, beside the executable), or asked for and checked to be the
-   game's disc; the memory card a directory beside it too. In a window, with
+   game's disc; the memory card a directory beside it too. Fullscreen by default, with
    sound, on the GPU, with no time limit (the default is for test runs).
    An empty list: the player gave none. */
 std::vector<std::string> PlayArguments(const char* self) {
@@ -94,7 +94,7 @@ std::vector<std::string> PlayArguments(const char* self) {
  std::ifstream in(settings);std::string line;bool saved=false;while(std::getline(in,line))if(line=="disc="+path)saved=true;
  if(!saved)throw std::runtime_error("Cannot save the selected disc path");});
  if(disc.empty())return {};
- for(const auto& pair:std::vector<std::pair<std::string,std::string>>{{"resolution","2x"},{"aspect","16:9"},{"frame_pacing","on"},{"vsync","off"},{"antialiasing","off"},{"fullscreen","off"}})
+ for(const auto& pair:std::vector<std::pair<std::string,std::string>>{{"resolution","2x"},{"aspect","16:9"},{"frame_pacing","on"},{"vsync","off"},{"antialiasing","off"},{"fullscreen","on"}})
  if(ps2host::Setting(pair.first).empty())ps2host::SetSetting(pair.first,pair.second);
  char* audit=nullptr;size_t size=0;_dupenv_s(&audit,&size,"PAL_RELOCATION_AUDIT_DIR");
  std::filesystem::path run;
@@ -154,6 +154,7 @@ int main(int argc, char** argv) {
     ps2host::RegisterOverlays(kGuestOverlays, kGuestOverlayCount);
     RegisterGameOverrides();
     ps2host::EnablePalRegionalPresentation();
+    ps2host::SetFullscreenDefault(true);
     const int code = ps2host::Main(argc, argv);
     if (!play.empty() && code != 0) {         // closing the window ends a run with 0
         std::fflush(nullptr);
