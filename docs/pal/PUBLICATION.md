@@ -10,6 +10,10 @@ issue is resolved. Manual uploading does not remove this requirement.
 
 No push, remote tag or GitHub release is authorized by this preparation task.
 A local annotated tag is prepared on the exact final candidate commit.
+The development repository already has an unrelated USA `v0.2.0-alpha` tag;
+preserve it. The PAL tag is prepared in the isolated local publication repository
+identified in the release dossier. Run the tag checks/push there, never publish
+the development repository's same-named USA tag.
 The previous release/tag and both public main branches must remain intact.
 
 ### Git dependencies before using GitHub Releases
@@ -42,7 +46,7 @@ Once the prerequisites and publication authorization are satisfied:
 4. Paste `RELEASE_NOTES_v0.2.0-alpha.md` from that tagged revision.
 5. Attach `Burnout3-PAL-Enhanced-0.2.0-alpha-windows-x64.zip` and its `.zip.sha256`
    checksum file. Check their recorded SHA-256 values before uploading.
-6. Enable **Set as a pre-release**. Do not mark this alpha as a stable latest release.
+6. Enable **This is a pre-release**. Do not mark this alpha as a stable latest release.
 7. Review tag/commit, notes, assets and rights clearance. Only then, with explicit
    publication authorization, choose **Publish release**.
 8. Verify the public asset checksums/download links and README instructions.
