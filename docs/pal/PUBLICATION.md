@@ -1,6 +1,6 @@
 # Publication checklist
 
-## v0.2.0-alpha candidate: current status
+## v0.2.0-alpha: source publication and binary gate
 
 The Windows x64 candidate is prepared and tested locally. The maintainer has
 confirmed that no documented authorization/legal review for redistribution of
@@ -8,23 +8,29 @@ the reconstructed original game program is currently available. The port/engine
 MIT licenses do not supply those rights. Keep the EXE and ZIP local until that
 issue is resolved. Manual uploading does not remove this requirement.
 
-No push, remote tag or GitHub release is authorized by this preparation task.
-A local annotated tag is prepared on the exact final candidate commit.
+The maintainer authorized publication of the accepted engine source, PAL
+`pal-enhanced` branch and exact `v0.2.0-alpha` tag on 22 October 2026. This does
+not authorize creating a GitHub Release or uploading the EXE/ZIP. Binary release
+publication is a separate manual step after the distribution-rights issue is
+resolved; manually uploading does not bypass that requirement.
+A local annotated PAL tag is prepared on the final source commit, including
+the documentation-only publication corrections. The tested EXE/ZIP are unchanged.
 The development repository already has an unrelated USA `v0.2.0-alpha` tag;
 preserve it. The PAL tag is prepared in the isolated local publication repository
 identified in the release dossier. Run the tag checks/push there, never publish
 the development repository's same-named USA tag.
-The previous release/tag and both public main branches must remain intact.
+The previous release/tags and both `master` branches remain intact. Only the
+authorized engine integration branch and PAL `pal-enhanced`/release tag are updated.
 
 ### Git dependencies before using GitHub Releases
 
-After distribution review AND explicit authorization:
+For the authorized source publication (no binary assets):
 
 1. Publish the engine branch containing
    `bfad7255f17f7789a8bbb0a59a6e3a003535c548` to JMPliskin/ps2-port-engine.
 2. Verify that exact object can be fetched from the fork.
-3. Publish `release/v0.2.0-alpha-candidate` to JMPliskin/burnout3-pal-enhanced.
-4. Recheck remote `pal-enhanced`. Advance it to the audited candidate only when
+3. Check the candidate ancestry, gitlink and documentation-only final changes.
+4. Recheck remote `pal-enhanced`. Advance it to the audited final source only when
    the update is a normal fast-forward; stop if the remote changed unexpectedly.
    The candidate already merges the accepted integration and the main commit
    observed during preparation. Never force-push or rebase published history.
@@ -37,7 +43,8 @@ the private release preparation dossier; verify them again before execution.
 
 ### Manual steps on GitHub
 
-Once the prerequisites and publication authorization are satisfied:
+Once source refs are published, distribution rights are resolved and the
+maintainer is authorized to publish the binary package:
 
 1. Open JMPliskin/burnout3-pal-enhanced, then **Releases > Draft a new release**.
 2. Select the already verified **v0.2.0-alpha** tag. Do not create it on master or
