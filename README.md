@@ -165,9 +165,10 @@ workflow uses Python 3.12 and preserved local EE/VU generation artifacts and
 dependency caches. **A fresh clone is not a turnkey source build.** Game-derived
 code and these local artifacts are not in the repository.
 
-See the [reconstruction guide](games/burnout3-pal/port/diagnostics/README.md),
+See the [reconstruction guide](https://github.com/JMPliskin/burnout3-pal-enhanced/blob/2aac9350af0a139771d8a5677d0863b216343efc/games/burnout3-pal/port/diagnostics/README.md),
 [recovery documentation](games/burnout3-pal/port/RECOVERY.md),
-[roadmap](docs/pal/ROADMAP.md) and [release notes](RELEASE_NOTES_v0.2.0-alpha.md).
+[roadmap](docs/pal/ROADMAP.md), [session handoff](docs/SESSION_HANDOFF.md) and
+[release notes](RELEASE_NOTES_v0.2.0-alpha.md).
 The submodule uses the JMPliskin fork; the original engine remains upstream.
 Release preparation reuses verified immutable EE/VU objects and rebuilds affected
 player/runtime units without regenerating the game.

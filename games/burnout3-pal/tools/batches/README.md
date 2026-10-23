@@ -1,19 +1,62 @@
-# PAL batch runner MVP
+# PAL batch execution and evidence
 
-Run from the repository root with Python 3.12:
+This supersedes the original MVP note that dynamic execution/Jobs were unavailable.
+The runner/pipeline/queue now implement explicit execution, containment and
+persistent recovery. Not all PAL functions are admitted or semantically verified.
+See the root docs/pal/VALIDATION.md and docs/SESSION_HANDOFF.md.
+
+## Explicit mode selection
+
+Run from a compatible repository root with Python 3.12 and legitimate local
+inputs when required. These examples do not authorize execution:
 
 ```powershell
-py -3.12 games/burnout3-pal/tools/run_batch.py --manifest games/burnout3-pal/tools/batches/batch-001.json --validate-only
+py -3.12 -B games/burnout3-pal/tools/run_batch.py --manifest games/burnout3-pal/tools/batches/batch-001.json --validate-only
+py -3.12 -B games/burnout3-pal/tools/run_pal_pipeline.py --batches batch-001 --validate-only
+py -3.12 -B games/burnout3-pal/tools/pal_auto.py --plan --manifest games/burnout3-pal/tools/batches/batch-001.json
 ```
 
-Manifest paths are relative to the shell; game and output paths are relative to the script. Validation writes only a new ignored `build/batches/<id>/validate-<UUID>/results.json`. Existing runs are never overwritten.
+Validate-only writes a new ignored result; it does not execute guest instructions,
+derive/compile or prove coverage/equivalence. Pipeline --execute enables actual
+batches. Queue --run PLAN and --resume PLAN use explicit immutable snapshots.
+There is no implicit run-all, automatic repair or promotion.
 
-`schema_version: 1` requires an explicit selection, unique addresses and cases, exact counts, limits, memory contracts and coverage requirements. u64 arguments use exactly sixteen hexadecimal digits. Omitted arg0..arg7 default to zero in the planned executor. Objects use scratch-relative offsets, power-of-two alignment, byte fill and nonoverlapping little-endian fields. Argument references identify an object and offset. Read contracts specify object, offset, width and sign; writes are forbidden in this MVP. Pointer provenance is not dynamically proved by validation.
+## Contracts and independent comparison
 
-The batch-001 manifest contains the exact 40 input pairs recovered from the successful report identified by its path and SHA-256. It embeds no return oracle, executable data or reconstructed function implementation. The report is local provenance and is not required on another checkout.
+Manifests require safe unique IDs, addresses/cases, exact counts, limits, hashed
+inputs/tools, synthetic initial memory and explicit coverage. Arguments retain
+u64 images; the historical return harness is s32. Full registers, HI/LO, 64-bit
+returns and arbitrary runtime pointer provenance are not thereby established.
 
-Explicit validation and exploration are separate: `explore` is recognized but rejected as unimplemented. Validation does not certify dynamic coverage, successful derivation, interpreter support or equivalence. Counts of eight or more satisfy the current collect harness minimum; no cases may be silently omitted in future execution.
+For admitted profiles, workers compare MIPS, derived expression and native DLL
+separately on restored memory, checking returns and required side effects. Cover
+branches, conditional selections and delay slots; never omit a failing case.
+No embedded game body or reconstructed return oracle belongs in a manifest.
+Scratch is isolated synthetic memory, not guaranteed free game heap space.
 
-Dynamic execution is intentionally unavailable. Without `--validate-only`, the runner exits nonzero with an explicit error, and does not import derive or compile anything. Planned execution uses one worker per function, scoped adapters restored at worker exit, collect(max_passes=1), strict emit count/signature checks and cppcheck.build, plus independent MIPS/symbolic/DLL runs on identical restored memory. Supervisor timeouts must cover workers and compiler descendants. These worker and timeout mechanisms are not implemented yet; limits are only validated and reported.
+## Supervision and persistent recovery
 
-Future results must distinguish rejection, mismatch, coverage failure, timeout, compilation error and structural error. No automatic repair or dropping failed functions. Return checking with the current DLL harness is s32; full 64-bit returns and HI/LO contracts are not supported.
+The Windows Job supervisor owns worker/descendants, assigns before resume, and
+records APIs/PID/errors, individual/global deadlines and cleanup. Timeouts never
+pass; a containing deadline does not prove an independent compiler deadline.
+Terminate only owned processes; no elevation or sandbox bypass.
+
+The pipeline sorts explicit manifests, checks Windows-safe identities and writes
+atomic checkpoints plus per-function/aggregate results. pal_auto validates plan
+semantics, input snapshots and attempt history before resume. Only
+--resume PLAN --retry-infrastructure permits one further infrastructure/interrupted
+attempt after confirmed cleanup. Equivalence, coverage, static rejection,
+compilation failures and timeouts are not automatically retried. Structural
+errors stop the authorized operation; keep every failed attempt.
+
+## Evidence and limits
+
+Batch-001's 40 cases and batch-002's 80 cases have retained dynamic reports.
+Repeated runs do not add unique historical coverage. The 37-batch lifter summary
+is a different evidence level, not complete semantic proof. Relevant existing
+tests include test_generate_batches.py, test_run_pal_pipeline.py, test_pal_auto.py
+and test_windows_job.py; select affected tests rather than a new framework.
+
+Use exclusive ignored build/batches, build/pipeline and build/auto outputs. Never
+modify previous runs, source manifests, ELF/maps or user saves to obtain a pass.
+The main checkout may lag the published code; read the handoff before testing.

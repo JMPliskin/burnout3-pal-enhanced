@@ -1,4 +1,69 @@
-# Registro de consolidación del roadmap y tracker
+# Planning changelog
+
+## 2026-10-23 - Consolidate documentation on the published README baseline
+
+- Reconcile the handoff against PAL a2e524e, preserving published installation/
+  licensing changes and engine bfad7255. Retain roadmap 0.1.19 and task states.
+- Repair obsolete branch URLs with permanent SHAs; retain historical provenance.
+- Validate document links, formatting, roadmap preservation and the complete diff;
+  no builds, gameplay or new functional claims.
+
+
+## 2026-10-23 - Final native-menu and PAL-070 handoff refinement
+
+- Roadmap schema 0.1.18 -> 0.1.19; no game-version or task-state changes.
+- Reused the preceding read-only source/ELF review: PAL has five original main
+  entries; target seven while retaining ONLINE and Multiplayer. Recorded external
+  arrays of at least 56 entry + 28 help bytes, alignment, lifetime, six-row USA
+  layout limits and callback requirements. No USA ONLINE donor memory reuse.
+- Required selected-PAL-language UTF-16 for new native labels/dialogues and a
+  separate pause-menu Quit to Desktop with confirmation and save-safe shutdown.
+  All native additions remain unimplemented.
+- Recorded PAL language init 0x00437740 and selection 0x004374C0; guest language=3
+  selects Spanish resources/internal ID 5. First milestone is persistent language
+  preference with original selection available; video preferences/skipping later.
+  Host argument transport and full selector/loading contracts remain unvalidated.
+- Identified the clean 2aac9350 / bfad7255 checkout from the previous baseline
+  review. Added only missing context-efficiency instructions; existing incremental
+  policy retained. No repeated audits, Git commands, builds, gameplay or commits.
+- Only existing root documents updated. Other worktrees and the earlier
+  planning-sync.patch remain untouched; that patch predates these refinements.
+
+## 2026-10-23 - Session handoff and roadmap consolidation
+
+- Roadmap schema 0.1.17 -> 0.1.18; game version remains 0.2.0-alpha. Current
+  technical documentation and instructions use English. Original historical
+  entries below are retained verbatim for provenance, not as current instructions.
+- Recorded verified 22 October source publication: engine bfad7255, PAL main
+  2aac9350, annotated PAL tag 830b9cb3. A fresh HTTPS recursive clone resolved the
+  exact fork gitlink. No GitHub Release or binary upload was performed by Codex;
+  later maintainer activity is not checked here. Binary-rights review stays separate.
+- Corrected the current baseline versus the old main checkout 13f4295 and stale
+  tracking ref e400b619. No branches/submodules were changed to hide that mismatch.
+- Added session handoff and architectural evidence, boot, regional-difference,
+  validation/build and current-status entry points. Preserved exact incremental
+  policy and translated durable instructions without removing existing safeguards.
+- Preserved completed PAL-010, USA-001/002, camera/HUD, F9-A/B, controls, bounded
+  audio recovery and fullscreen milestones. Closed duplicate pending AA/widescreen
+  wording; kept broader compatibility and VU Fast gaps explicit. 0x00242AC8 is a
+  recovered memory-card worker switch case, not an unresolved locale initializer.
+- Added scoped future PAL startup preferences, standalone soundtrack editing,
+  exploratory Spotify, original texture extraction/catalog/mapping, staged vehicle
+  import hypotheses and separate native main/pause-menu PC Settings/Quit phases.
+  Existing task IDs are retained; no feature implementation or new investigation.
+- Source/report inspection and documentation checks only. No build, game, replay,
+  benchmark, EE/VU regeneration, staging, commit, push or release operation.
+  Backups and local check evidence stay in the exclusive ignored session-handoff build.
+- Root AGENTS's preexisting incremental policy and unrelated user files are preserved.
+  Root roadmap/changelog are consolidated. Windows denied writes to the planning
+  worktree; its files and unrelated edits remain intact. A synchronization patch
+  is prepared in the ignored handoff build; no permissions were changed.
+
+## Retained historical entries through 22 October 2026
+
+The dated records below preserve their original wording and language. Later
+acceptance/publication above supersedes old pending/next-action statements; it
+does not rewrite their test results or authorize repeating their investigations.
 
 ## 2026-10-22 — Preparación local de v0.2.0-alpha
 
@@ -161,7 +226,7 @@
 - Roadmap 0.1.7 → 0.1.8. Publicada primero la rama
   [experimental/pal010-regional-engine](https://github.com/JMPliskin/ps2-port-engine/tree/experimental/pal010-regional-engine)
   en `720583cfa885b3bbc25a14302d0b4e0a779433bf`; después,
-  [integration/pal010-regional-accepted](https://github.com/JMPliskin/burnout3-pal-enhanced/tree/integration/pal010-regional-accepted)
+  [integration/pal010-regional-accepted](https://github.com/JMPliskin/burnout3-pal-enhanced/tree/d370c12d2451322136cb175da10c77878871b795)
   en `d370c12d2451322136cb175da10c77878871b795`.
 - `d370c12` modifica solo `.gitmodules` para que una clonación PAL obtenga el
   submódulo del fork; el gitlink sigue en `720583c`. Git verificó ambas ramas

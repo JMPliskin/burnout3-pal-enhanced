@@ -1,240 +1,299 @@
 # Burnout 3 PAL Enhanced — Development Roadmap
 
-Versión 0.1.17 · Revisión documental: 2026-10-22.
-Base: roadmap 0.1 del mantenedor; [correcciones trazables](PLANNING_CHANGELOG.md).
-Planificación técnica: **no autoriza implementación, compilación, integración ni publicación**.
+Document schema **0.1.19**, 23 October 2026; game version **0.2.0-alpha**.
+This is the existing PAL roadmap consolidated in English, not a second roadmap.
+This root-repository copy consolidates the existing planning worktree's 0.1.17
+roadmap. Updating that worktree was denied by Windows file permissions; its old
+copy is preserved and a synchronization patch is prepared in the ignored handoff
+build. This is one evolving plan, not independent roadmaps. Preserve existing IDs;
+new entries do not authorize implementation, builds or Git actions.
 
-## Visión y reglas
+Read [development continuity](../../PAL_DEVELOPMENT.md),
+[handoff](../SESSION_HANDOFF.md), [architecture/evidence](ARCHITECTURE_AND_EVIDENCE.md)
+and [changelog](PLANNING_CHANGELOG.md). Historical details remain in the
+[0.1.17 roadmap](https://github.com/JMPliskin/burnout3-pal-enhanced/blob/2aac9350af0a139771d8a5677d0863b216343efc/docs/pal/ROADMAP.md),
+[upstream tracker](https://github.com/JMPliskin/burnout3-pal-enhanced/blob/2aac9350af0a139771d8a5677d0863b216343efc/docs/pal/UPSTREAM_TRACKER.md)
+and [USA/PAL matrix](https://github.com/JMPliskin/burnout3-pal-enhanced/blob/2aac9350af0a139771d8a5677d0863b216343efc/docs/pal/UPSTREAM_PAL_MATRIX.md).
+Their old next-action statements are superseded here; original evidence is retained.
 
-Port nativo Windows de Burnout 3 PAL **SLES-52584 (1.01)**, conservando idiomas,
-selección de vídeo y comportamiento europeo. Precisión y estabilidad preceden al
-rendimiento. Reutilizar burnout3-pc/ps2-port-engine; un backend propio sigue
-siendo una posibilidad condicionada a evidencia de una limitación estructural.
+Current consolidation base: README-only PAL `a2e524e` on release source `2aac9350`;
+engine `bfad7255`. Task IDs/statuses are unchanged. Historical workspace paths
+and publication statements are scoped by the handoff consolidation update.
 
-1. Medir antes de optimizar; validar gráficos y comportamiento después.
-2. No suponer equivalencia USA/PAL ni aplicar offsets globales.
-3. Separar juego, vídeo regional, renderer y funciones PC.
-4. Conservar versiones estables, experimentos, resultados y decisiones.
-5. Consultar USA y motor por separado y fijar sus revisiones exactas.
-6. No hacer commit, push, cambios de submódulo o ampliaciones funcionales sin autorización.
-7. El roadmap registra decisiones; el mantenedor fija prioridades y autoriza cambios.
+## Principles and status vocabulary
 
-## Baselines y evidencia
+Accuracy and PAL behavior precede performance. Use SLES-52584 **1.01**, its original
+ELF, shared engine mechanisms and evidence-based regional mappings. PAL correctness
+does not require pixel-identical USA output: language, projection, timing and assets
+can differ legitimately. Do not apply global address offsets or loosen GS coherency.
+Keep game logic, presentation, audio and optional PC features separate.
 
-| Referencia | Identidad | Alcance |
-| --- | --- | --- |
-| Rama pública pal-enhanced | `3ad44e482c201097333dc79a452bfb6b8b4bc648` | HEAD remoto observado el 20/10; no contiene todavía la integración widescreen |
-| Integración publicada | `434a86c9a4bb8e9392fea5dea99e6967770aec18` | integration/pal-widescreen-20261019; base de esta documentación |
-| Motor de integración | `d7e6e023f261d9f95ad097fcd063ec95e40ca465` | Gitlink limpio, conservado |
-| Release protegida | [v0.1.0-alpha](https://github.com/JMPliskin/burnout3-pal-enhanced/releases/tag/v0.1.0-alpha) | No se altera el tag, ZIP ni receta histórica instrumentada |
-| Candidata v0.2.0-alpha | Rama local `release/v0.2.0-alpha-candidate`; motor `bfad7255` | Paquete x64 y prueba manual de inicio/F9/AA preparados; publicación bloqueada por revisión de derechos y autorización final; sin modificar la release anterior |
-| EXE experimental de diagnóstico | SHA-256 `12d2228832aa9c3b1c35f8ae12b171ec94c966a5f16c014ea133a9010748f08c` | Widescreen con instrumentación local; no confundir con build limpio |
-| USA revisado | `444b541b9919055af3ee97787e84de7c2ceed98f` | Tag v0.6.0-alpha; no es una referencia móvil a master |
-| Motor de USA 0.6.0 | `721c73cd00e21aa87349ad5ae092277dcd3b69fa` | Gitlink del tag comprobado; no incorporado a PAL |
+| State | Meaning |
+| --- | --- |
+| DONE | Implemented and verified/accepted within the stated PAL scope; not exhaustive certification |
+| TESTING | Implementation or tooling exists, but specified acceptance remains incomplete |
+| IN_PROGRESS | Actively authorized implementation; **none at this session close** |
+| READY | Bounded proposal prepared; execution still needs authorization |
+| RESEARCH | Open technical question with partial findings or a required investigation; not permission to run a broad audit |
+| BACKLOG | Planned work, including long-term ideas; no implementation claimed |
+| BLOCKED | Named external dependency, missing evidence or reverse engineering prevents adoption/publication |
+| REJECTED | Approach not adopted; preserve the reason/evidence |
 
-Las evidencias privadas se identifican sin publicar sus archivos ni rutas personales
-en el [índice de la matriz](UPSTREAM_PAL_MATRIX.md#evidencias-locales).
-El [tracker](UPSTREAM_TRACKER.md) conserva releases, commits y decisiones upstream.
-El [catálogo de investigación externa](EXTERNAL_ENGINE_RESEARCH.md) reúne métodos,
-revisiones, límites arquitectónicos y pruebas necesarias antes de cualquier adaptación.
+Claim labels **SOURCE / AUTO / MANUAL / OBSERVED / UNCONFIRMED / PLAN** are defined
+in PAL_DEVELOPMENT.md. AUTO means existing test records, not tests rerun today.
+Keep previously validated/unaffected, current validation, pending manual and
+not-covered evidence separate. Only reopen closed work for the triggers in AGENTS.md.
 
-### Estado demostrado y sus límites
+## Current baseline and completed milestones
 
-- Alpha: inicio Windows/ISO PAL, español, selección original 50/60 Hz, audio/FMV,
-  carreras, persistencia ISO y perfil nuevo guardado/recuperado, GPU Thread On.
-- Integración: Hor+ 3D, 4:3 original, Fill y HUD principal aceptados; 14 pruebas de
-  cámara y 27 de HUD. Aceptación del build limpio con GPU Thread Off y HD Off.
-- Experimento separado: F9 Off/FXAA/SMAA y persistencia aceptados a 2x/4x, con
-  GPU Thread On. No equivale a estar integrado en la rama pública.
-- HD333: sustituciones reales, pero calidad/rendimiento insatisfactorios. No homologado.
-- VU compilado: cobertura por sesión cercana o igual a 100%; no prueba equivalencia
-  completa ni activación de VU Fast.
-- GS Replay: 12 procesos y 13 pruebas sintéticas, estabilidad de muestras; diferencias
-  software/GPU pendientes. No reproduce PresentGpuPicture ni su fallback.
-- CLUT GPU CSM1 y decode activos. CSM2 usa CPU; su frecuencia/coste PAL no están atribuidos.
-- PAL-010 atribuyó en las trazas PAL60 las grandes lecturas de 560 KiB al
-  fallback de presentación observado. La integración regional pasó su alcance
-  experimental y aceptación manual; esto no certifica todos los efectos,
-  configuraciones o equipos. Fences y MemoryRead se contabilizan por separado.
-- No está certificada la precisión de todos los efectos en PAL50/PAL60. Conservar
-  la selección PAL50 no equivale a validar todas las funciones nuevas en ese modo.
+| Reference | Identity and scope |
+| --- | --- |
+| Published PAL main and tag | `2aac9350af0a139771d8a5677d0863b216343efc`; tag `v0.2.0-alpha` |
+| Published engine / gitlink | `bfad7255f17f7789a8bbb0a59a6e3a003535c548`, JMPliskin fork |
+| Main local checkout | `13f4295`, intentionally not moved through a dirty tree; documentation is newer than its code |
+| Prior public release | v0.1.0-alpha and its assets/tag unchanged |
+| Historical widescreen integration | `integration/pal-widescreen-20261019`, `434a86c9...`; engine `d7e6e023...` |
+| Historical USA reference | game `444b541b9919055af3ee97787e84de7c2ceed98f` (v0.6.0-alpha), engine `721c73cd00e21aa87349ad5ae092277dcd3b69fa`; not adopted wholesale |
 
-### PAL-010 — integración experimental aceptada (22/10/2026)
+Source publication and remote recursive cloning were verified on **22 October**.
+No GitHub Release/assets were created by Codex. Later maintainer publication has
+not been checked on 23 October. Binary distribution rights remain unresolved in
+the available evidence; source/tag publication is already complete.
 
-- La invalidación global stale provocaba fallbacks innecesarios aun cuando las
-  páginas visibles del target seguían válidas. La solución C comprueba región,
-  identidad, geometría, PSM, escala, inicialización y conflictos de coherencia;
-  presenta directamente solo si el layout PAL60 acreditado es seguro.
-- El worktree aislado sobre motor `d7e6e023` contiene la integración limpia en
-  `PresentGpuPicture`, activada solo por el puerto PAL y sin selector A/B/C.
-  El selector inicial 640×512 conserva el fallback original.
-- El usuario aceptó el nuevo EXE a 2× con Frame Pacing ON/OFF y a 3×/4× con
-  pacing ON. 2× con pacing ON es la configuración experimental recomendada;
-  OFF sigue disponible. Frame Pacing es independiente de C; no cambiaron reloj,
-  VBLANK ni simulación. Las cuatro sesiones terminaron con código 0.
-- Compilación incremental, predicado sintético y GS Replay corto pasaron. GS
-  Replay no prueba `PresentGpuPicture` en carrera; la aceptación manual cubre
-  el alcance experimental. EXE SHA-256:
-  `612719b36ad1103d71342b4d01b4da10a0d64640007f99115cbfd9beadf6940b`.
-  Esto no es una release pública ni certificación general de hardware o PAL50.
-- La política permanente de validación incremental está añadida al `AGENTS.md`
-  principal; la evidencia anterior y la del nuevo EXE quedan diferenciadas.
-- GPU Thread, VU Fast y AA mantienen pendientes sus validaciones e integración
-  propias; USA 0.5.2/0.5.3 requiere selección y pruebas PAL. 120 FPS sigue en
-  fase posterior. No cambian prioridades ni estados de esas tareas.
+- **SOURCE + MANUAL:** Windows startup, own PAL ISO selection/path persistence,
+  Spanish, original language and 50/60 Hz selection, profile save/reload, FMV,
+  Start skip, menus, controls, races and audio. Not every language/mode is certified.
+- **SOURCE + AUTO + MANUAL:** Hor+ camera, original 4:3, 16:9/fill and HUD;
+  14 camera and 27 HUD cases. Ultrawide is a separate future expansion.
+- **PAL-010 DONE:** global stale rejection caused unnecessary presentation fallback;
+  C validates visible pages, target identity, geometry/PSM, physical scale,
+  initialization and pending producers. Only certified PAL layout is enabled.
+  The 640x512 selector keeps its original fallback. Pacing remains independent.
+  Manual scope: 2x ON/OFF, 3x/4x ON; accepted EXE `612719b3...`.
+- **Engine reconciliation DONE:** `28057a1a` is an ancestor of `d7e6e023`:
+  35 reachable commits including one merge, 20 first-parent commits. This is
+  compatible ancestry, not a linear chain of 35. PAL-010 already used that base.
+- **USA-001/002 DONE:** commits `2fcc03d...` / `e966221...`; invalid texture removal/
+  reinsertion and eligible PSMCT16 SIMD accepted. Structural/synthetic improvements
+  are proven; sustained whole-game PAL gains and energy savings are not quantified.
+- **F9-A/B DONE:** requested/effective GPU Thread with restart notice; FPS F1/F9;
+  persistent settings and runtime locks; live OFF/FXAA/SMAA; pipeline warm-up and
+  safe overlay handoff; keyboard F9 and edge-triggered L3+R3; capture only on F12.
+- **PAL-011-AUDIO DONE within tested scope:** consumer-side bounded recovery after
+  capture/window interruptions, without changing simulation or WASAPI sizing.
+  New PAL profiles start fullscreen; saved window preference and CLI prevail.
+- **Release package AUTO + MANUAL:** EXE `a7122e87...`, ZIP `bf8cdc0c...`;
+  clean extraction/startup/PAL selector/F9/AA accepted, SMAA persisted and short
+  restart preserved INI. Full identities and private evidence map are in the handoff.
 
-### Reconciliación Git del motor para PAL-010 (22/10/2026)
+## Independent known limitations
 
-- El motor fijado en `pal-enhanced` (`28057a1a`) es ancestro de la base aceptada
-  `d7e6e023`: 35 commits alcanzables, incluido un merge (20 en primer padre).
-  Es una ascendencia compatible, no una secuencia lineal de 35 commits. El EXE
-  PAL-010 aceptado ya incluía esa base; no se reprodujeron sus commits.
-- Rama del motor `experimental/pal010-regional-engine`: commit
-  `720583cfa885b3bbc25a14302d0b4e0a779433bf` sobre `d7e6e023`, con la
-  implementación regional limpia. Rama PAL `integration/pal010-regional-accepted`:
-  commit `43a28f8e0f3b208bf596dfd9d25f780eb2124a53` sobre `434a86c9`, con
-  la activación PAL, el test sintético y el gitlink exacto al commit del motor.
-- Publicadas en orden: [rama del motor](https://github.com/JMPliskin/ps2-port-engine/tree/experimental/pal010-regional-engine)
-  (`720583c`) y [rama PAL](https://github.com/JMPliskin/burnout3-pal-enhanced/tree/integration/pal010-regional-accepted)
-  (`d370c12`). El segundo commit cambia solo `.gitmodules` al fork del motor,
-  conserva la URL original como upstream y mantiene el gitlink `720583c`.
-  Git confirmó ambas referencias remotas. `master` del fork del motor,
-  `pal-enhanced`, su gitlink `28057a1a` y la release siguen intactos.
-  Se reutiliza la aceptación PAL-010; no hubo nueva compilación ni prueba gráfica.
+- 3x skybox seam: **MINOR / NON-BLOCKING**, no investigation requested now.
+- Pacing OFF: isolated ~375.6 ms interval, no established cause or sustained graphics regression.
+- 4x: demanding scenes can be GPU limited; ~94% busy observed, not a regional regression.
+- Historical drag/capture stalls produced ~650–680 ms audio queues. Recovery is
+  accepted for tested interruptions, not all devices, callbacks or pause scenarios.
+- PAL50, all effects/languages/game modes and hardware combinations are not exhaustively validated.
+- VU Fast remains unexposed; compiled VU coverage is not flag/float equivalence.
 
-### Incidencias independientes de PAL-010
+## F0 — Infrastructure, recompilation and evidence
 
-- Skybox a 3×: discontinuidad visible, **MINOR / no bloqueante**; corrección
-  futura. No altera la aceptación de la presentación regional.
-- 2× con Frame Pacing OFF: un intervalo registró un present de 375,6 ms;
-  observación puntual de regularidad temporal, sin causa atribuida ni defecto
-  gráfico sostenido. La opción permanece disponible.
-- 4×: un intervalo registró GPU busy alrededor del 94 % y hay caídas en escenas
-  caóticas; limitación dependiente de carga, no regresión regional demostrada.
-- PAL-011-AUDIO: arrastrar la ventana interrumpe host/EE, pierde VBLANK y deja
-  unos 650–680 ms acumulados en la cola de audio con pacing ON/OFF. Diagnóstico
-  concluido; recuperación aceptada manualmente en captura GS y movimiento de
-  ventana. La aceptación cubre esos escenarios, no toda interrupción imaginable.
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-001 | P0 | TESTING | Persistent roadmap, tracker, matrix and handoff | Documentation/link checks; maintainer review pending, not a functional blocker |
+| PAL-001B | P0 | TESTING | Preserve external engine research and provenance | Reviews/revisions traceable; no functional import; retained historical catalog |
+| PAL-002 | P0 | TESTING | Existing finite GS replay library/automation; remaining software/GPU comparison coverage | Same starting GS state, isolated processes and quantitative differences; replay cannot validate live PresentGpuPicture |
+| PAL-003 | P2 | RESEARCH | Reversible bounded multi-frame F12 capture | Finite memory/storage and replay integrity; not a full save state |
+| PAL-004 | P1 | RESEARCH | Reuse targeted GS/game/HUD/audio/VU/performance results | Per-revision provenance; separate process, simulation, presentation and GPU metrics; no repeat-all default |
+| PAL-005 | P1 | TESTING | PAL native-recompilation pipeline and recovery | Original ELF authority; JSON maps, generated batches, MIPS/expression/DLL checks, explicit queue/resume; full semantic equivalence incomplete |
 
-## Estados y contratos de las tareas
+PAL-005 already has 9,384 analyzed entries and 9,383 translated EE functions in
+preserved inputs. The historical 37-batch report lists 6,460 lifter-classified
+verified entries, 2,923 unverified and one rejected entry; do not promote these
+classifications to universal MIPS/native equivalence. Preserve ELF, manifests,
+generated sources/objects and the synthetic scratch-versus-game-heap distinction.
 
-Estados permitidos: `DONE`, `TESTING`, `IN_PROGRESS`, `READY`, `RESEARCH`,
-`BACKLOG`, `BLOCKED`, `REJECTED`. Un único estado por tarea.
-`DONE` exige implementación y pruebas PAL de su alcance, no mera presencia USA.
-Para PAL-010 significa integración experimental aceptada, no release final.
-`READY` significa investigado para proponer ejecución, no autorizado.
+## F1 — GS, Vulkan, coherency and compatibility
 
-Las tablas conservan ID, prioridad, estado, dependencias, aceptación y referencias.
-Referencias `UP-*` y `EXT-*` apuntan al tracker; `E-*` al índice local de la matriz.
-Las dependencias propuestas son puertas de evidencia, no nuevos compromisos estratégicos.
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-010 | P0 | DONE | Accepted regional C, published in the engine baseline | Safe visible region, scale and selector fallback; manual scope above; no new fallback investigation |
+| PAL-010A | P0 | TESTING | Existing symbol proof study: 40 entries, 13 prior pairs revisited, no new identities | Names are not binary identity; causal-symbol utility still unvalidated, not a prerequisite for continuing development |
+| PAL-011 | P0 | BACKLOG | Any additional ownership/Use/Containing optimization beyond accepted C | The original fallback cause is closed; reopen only for new evidence, never accept overlap as validity |
+| PAL-012 | P0 | RESEARCH | Presentation timing, SetPresentAtBlankEnd, VBLANK/input latency | PAL50/60 and actual clocks measured separately; existing pacing is accepted and must remain intact |
+| PAL-013 | P0 | DONE | Original 560 KiB fallback-attribution investigation | Attributed in the measured PAL60 trace; unrelated byte/producer questions require a new concrete case, not another general audit |
+| PAL-014 | P1 | RESEARCH | CSM2/TEXCLUT and CBP/CBW/COU/COV/CPSM/CSA/TEXA | CSM1 GPU and decode already work; CSM2 CPU exists, frequency/cost unquantified; palette/region tests before any new GPU path |
+| PAL-015 | P1 | RESEARCH | Remaining sky/cloud/bloom/fog/alpha/color-depth alias compatibility | Keep ORIGINAL behavior; compare valid PAL references, not mandatory USA pixel identity; PAL50 explicit |
+| PAL-016 | P1 | RESEARCH | Selective additional transfer/render-target opportunities | Inventory inherited work first; USA-001/002 are already integrated, no wholesale upstream update |
+| PAL-016A | P1 | DONE | USA-001 valid texture page indexing, `2fcc03d...` | 2,000 differential operations, alias case, identical replay image/memory and manual acceptance; no quantified sustained PAL gain |
+| PAL-016B | P1 | DONE | USA-002 eligible PSMCT16 SIMD, `e966221...` | 1,504 differential cases per SIMD/scalar build, protected boundaries, replay identity and manual acceptance; other 16-bit formats stay scalar |
+| PAL-017 | P3 | BACKLOG | Possible alternative renderer/backend | Only after a demonstrated structural limitation, measured gain and explicit approval; no migration started |
 
-## F0 — Infraestructura y seguimiento
+## F2 — EE/VU, threading, CPU and compilation
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-001 | P0 | TESTING | Roadmap, tracker, matriz y lectura en AGENTS; pendiente revisión del mantenedor | Inventario coherente, trazable y actualización en tareas autorizadas | Esta documentación; UPSTREAM_PAL_MATRIX; E-GIT |
-| PAL-001B | P0 | TESTING | Consolidación externa preparada; revisión documental pendiente, sin integración funcional | Fuentes/revisiones, límites y pruebas trazables; enlaces y estados consistentes | [Catálogo externo](EXTERNAL_ENGINE_RESEARCH.md); E-DOSSIER/E-SYMBOLS/E-REPLAY |
-| PAL-002 | P0 | TESTING | Biblioteca GS; obtener primero PCSX2 Software PAL60 corto; después conducción, bloom, nubes, colisiones, menús; luego PAL50/USA | Estado inicial idéntico entre procesos, conversión real comprobada, diferencias visuales cuantificadas | E-REPLAY; no sustituye diagnóstico de presentación |
-| PAL-003 | P2 | RESEARCH | Estudiar F12 multifotograma reversible; depende de límites de PAL-002 | Captura finita, memoria limitada, integridad/replay; sin save state completo | E-REPLAY; UP-015 |
-| PAL-004 | P1 | RESEARCH | Unificar regresión GS, juego, HUD, cámara, audio, VU y benchmarks | Informe por revisión y vídeo que separe proceso, simulación, presentación y GPU | PAL-002/020; E-WIDE, E-GPU |
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-020 | P1 | RESEARCH | Comparable scene CPU/GPU/GS-thread baselines | Existing three-version analysis is sufficient for experimental adoption; no causal whole-game speedup claim |
+| PAL-021 | P1 | RESEARCH | VU Exact/Fast and selected later USA work | Exact stays default; validate flags/float results and cross-program consumers without regeneration |
+| PAL-022 | P1 | RESEARCH | clang-cl/LTO/PGO versus MSVC | Compatible ABI, explicit PAL profiles and targeted equivalence; not part of current accepted build |
+| PAL-023 | P2 | RESEARCH | GPU Thread queue/buffer/hint opportunities | Match scenes and inputs; separate first-use pipelines, CPU busy and GPU time; current thread mode is startup-latched |
+| PAL-024 | P3 | BACKLOG | Broader CPU/iGPU compatibility, including non-AVX2 | Actual build/runtime ISA coverage; shipped local x64 package currently requires AVX2 |
 
-## F1 — GPU, coherencia y precisión
+## F3 — Display, widescreen, effects and controls
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-010 | P0 | DONE | Integración regional C aceptada como base gráfica experimental; fallback 640×512 y pacing independiente | Compilación/test sintético/GS Replay corto y aceptación manual 2× ON/OFF, 3×/4× ON; no equivale a release | UP-001/002/006/007; expediente pal-regional-integration-20261021; EXE SHA-256 arriba |
-| PAL-010A | P0 | TESTING | Investigación estática de símbolos concluida; utilidad causal aún no validada. 40 entradas, 13 parejas previas reexaminadas, cero nuevas | Conservar proof de nombres separado de identidad binaria; atribución real requiere PAL-010 | [ER-10](EXTERNAL_ENGINE_RESEARCH.md#er-10--burnout3-symbols-y-pal-010a); expediente pal-symbols-audit-20261020 |
-| PAL-011 | P0 | RESEARCH | Exact lookup, stale, ownership, DisplayTarget, fallback, Use/Containing; depende de PAL-010 | Causa reproducible; no aceptar solapamiento como prueba de validez | UP-002/007; E-TRACE, E-DOSSIER |
-| PAL-012 | P0 | RESEARCH | SetPresentAtBlankEnd, copia del framebuffer, VBLANK e input; medir antes de adaptar | PAL60/PAL50, menús/FMV/carrera y GPU Off/On; temporización correcta | UP-002/020; E-DOSSIER |
-| PAL-013 | P0 | RESEARCH | Rango físico de los 560 KiB, 448/512 líneas PSMCT16S; depende de PAL-010 | Consumidor/región/bytes individuales, sin inferirlos del agregado | UP-001/004; E-COUNTERS |
-| PAL-014 | P1 | RESEARCH | CSM2, TEXCLUT, CBP/CBW/COU/COV/CPSM/CSA/TEXA; medir incidencia y cobertura | Tests sintéticos y equivalencia de paleta/regiones; ruta GPU solo si justificada | UP-006; E-DOSSIER |
-| PAL-015 | P1 | RESEARCH | Cielo/nubes, bloom/glow/fog, alfa, alias color/depth; conservar ORIGINAL | Replay y referencia gráfica, dependencias y coste por efecto; PAL50 explícito | UP-003/005; EXT-001/002; E-GRAPHICS |
-| PAL-016 | P1 | RESEARCH | Transferencias USA 0.4/0.5.2/0.5.3; inventariar lo ya heredado; dirty pages y búsquedas | Un mecanismo por prueba, precisión y beneficio A/B medidos | UP-001/003/004; PAL-010/015 |
-| PAL-016A | P1 | DONE | USA-001: ACCEPTED — Experimental optimization; performance gain not yet quantified. Índice de texturas por páginas GS conservado en commit local `2fcc03d` | Pruebas específicas anteriores reutilizadas y carrera aceptada por el usuario sin regresiones importantes, cadencia cercana a 60 FPS; beneficio sostenido sin cuantificar | Expediente privado pal-usa001-texture-page-index-20261022; base `720583c`; EXE `8e469c8f` (SHA-256 completo en expediente) |
-| PAL-016B | P1 | DONE | USA-002: transferencias PSMCT16 agrupadas, adaptación aislada de `01b9843`; commit local `e966221` sobre USA-001, aceptada experimentalmente | Pruebas diferenciales y replay previos reutilizados; aceptación visual/manual del mantenedor. Microbenchmark favorable; beneficio sostenido PAL sin cuantificación concluyente | Expediente privado pal-usa002-gs16-20261022; incluido en la línea local PC Settings aceptada |
-| PAL-017 | P3 | BACKLOG | Backend propio; estudiar referencias sin iniciar migración | Limitación estructural o mejora significativa demostrada, integración evaluada y autorización | EXT-005; PAL-002/010/016 |
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-030 | P2 | DONE | Live OFF/FXAA/SMAA integration | Consolidated with PAL-070B; not another pending AA integration task |
+| PAL-030-SSAA | P2 | RESEARCH | Genuine SSAA, separate from internal scale | Resolve/downsample behavior, cost and PAL correctness; not an available F9 method |
+| PAL-031 | P2 | DONE | Accepted Hor+ camera and HUD integration | 4:3 preserved; camera 0x001E2100 and HUD contracts; scoped automated/manual evidence |
+| PAL-031-U | P3 | BACKLOG | Ultrawide/32:9 and additional camera/HUD scenes | Do not infer from tested fill-window framing; validate anchors, cutscenes, clipping and proportions |
+| PAL-032 | P2 | BACKLOG | Optional bloom/blur/shadow/LOD/fog/particle controls | Preserve ORIGINAL, one effect and dependency set per task |
+| PAL-034 | P2 | BACKLOG | Rebinding, classic/modern controls, prompts, mouse, additional controller features, wheel/FFB | PAL device/menu/gameplay/persistence evidence; no assumed SLUS mappings |
+| PAL-035 | P3 | BACKLOG | Units/horn/traffic/lights/mirror/Crash Breaker/developer options | Each PAL address/contract must be established independently |
 
-## F2 — EE/VU, hilos y compilación
+## F4 — High frame rates and latency
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-020 | P1 | RESEARCH | Baseline juego completo, escenas/configuración iguales; no extrapolar replay | Frame time/CPU/GPU/audio/simulación y sincronización separados | E-GPU/COUNTERS; PAL-004 |
-| PAL-021 | P1 | RESEARCH | VU Exact/Fast y mejoras 0.5.3; mantener modo actual | Equivalencia numérica/geometría/secuencias entre programas y velocidad reproducible | UP-010/013; E-PERF |
-| PAL-022 | P1 | RESEARCH | clang-cl/LTO/PGO frente MSVC, sin mezclar ABI ni perfiles | Builds equivalentes, perfiles PAL identificados y validación funcional | UP-011/012; E-PERF |
-| PAL-023 | P2 | RESEARCH | GPU Thread, colas/buffers, pipeline hints/caché | Off/On con mismas entradas, métricas y coherencia; separar coste de primer uso | UP-015; E-GPU |
-| PAL-024 | P3 | BACKLOG | SSE4 sin AVX2, iGPU/dedicada | Matriz de compatibilidad y precisión, sin degradación silenciosa | UP-044; PAL-020/022 |
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-040 | P2 | RESEARCH | Separate simulation, presentation/interpolation, input sampling and audio timing | Do not accelerate physics/clocks. PAL50/60 support does not imply arbitrary-rate safety |
+| PAL-041 | P2 | BACKLOG | Independent experimental 120 FPS interpolation, then display-rate/uncapped feasibility | Race/crash/Impact Time/menu/FMV/splitscreen timing, latency and fallback; 144/165/240 are later hypotheses, not current features |
 
-## F3 — Gráficos, controles y mods
+Keep the accepted pacing, VSync, VBLANK and audio clocks unchanged until a bounded
+timing task is authorized. Do not sum synthetic optimization percentages into FPS.
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-030 | P2 | TESTING | Off/FXAA/SMAA ya aceptados en experimento; integración pendiente | Selector real, persistencia y regresión con bloom/blur/HUD; separar build público | UP-031; E-AA |
-| PAL-030-SSAA | P2 | RESEARCH | SSAA 2x, separado del selector ya probado | Distinguir supersampling, resolución interna, resolve y coste; validar PAL | UP-031; E-GRAPHICS |
-| PAL-031 | P2 | TESTING | Preservar Hor+/HUD aceptados; F10, 32:9 y escenas no cubiertas siguen por investigar | No acumulación, anclajes y proporciones; menús/FMV y modos probados separados | UP-030; E-WIDE |
-| PAL-032 | P2 | BACKLOG | Bloom, blur, sombras, LOD, fog/glow, partículas | Modo ORIGINAL conservado y cada opción verificada | UP-003/032; PAL-015 |
-| PAL-033 | P2 | TESTING | HD333/cargador/caché DDS/PNG; no ampliar paquete ahora | Sustituciones reales, imagen y coste aceptables por región; A/B HD Off/On | UP-031; E-HD |
-| PAL-033-MAP | P2 | RESEARCH | Correspondencias regionales e históricas; no convertir sin evidencia | Equivalencias separadas de candidatos, sin inferencia por prefijo | E-TEXTURES; PAL-033 |
-| PAL-034 | P2 | BACKLOG | Reasignación, clásico/moderno, prompts, ratón, DualSense/vibración/gatillos; futuro volante/FFB | Dispositivos/menús/carrera y persistencia probados en PAL | UP-033/034; PAL-071 |
-| PAL-035 | P3 | BACKLOG | km/h, bocina, tráfico, luces, mirror, Crash Breaker, developer menu | Cada función/dato PAL mapeado y probado; no usar direcciones SLUS | UP-035; E-MAPPING |
+## F5 — Audio and standalone soundtrack modding
 
-## F4 — Alta tasa de imágenes
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-050 | P2 | RESEARCH | Future local EA TRAX replacement/playlist behavior | Establish PAL original audio containers/codec, indexing, metadata, size/alignment/streaming limits before choosing an implementation |
+| PAL-050-TOOL | P3 | BACKLOG | Standalone soundtrack editor | Select original song, import audio, edit title/artist, replace or redirect entries, export/apply, back up and restore; no destructive ISO writes by default |
+| PAL-051 | P4 | BACKLOG | Exploratory Spotify application/supported-API integration | Review current official authentication/API/account/playback restrictions and licenses; playlist/next-track mapping and external sync must be proven; no implementation/credentials assumed |
+| PAL-052 | P2 | RESEARCH | Other car-engine/SPU2/crackle issues, only if reproducible | Voices/music/FMV and original game behavior preserved; no broad mixer refactor |
+| PAL-011-AUDIO | P1 | DONE | Bounded recovery after producer gaps of at least 250 ms | Existing synthetic/WASAPI tests and manual capture/window recovery accepted; not every imaginable interruption |
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-040 | P2 | RESEARCH | Simulación desacoplada de presentación; interpolar coche/tráfico/cámara sin acelerar lógica | Física/relojes/entrada correctos en PAL50/PAL60; baseline PAL-020 | UP-020; no copiar 60 pasos/s como supuesto PAL |
-| PAL-041 | P2 | BACKLOG | 60/120/DISPLAY, 144/165/240 y reducción automática; contemplar PAL50 | Carrera, choque, Impact Time, menús/FMV/splitscreen, latencia y fallback | UP-020/021; PAL-040 |
+The standalone tool and Spotify are independent proposals. Inspect legitimate
+local source data first; the soundtrack's actual format and writable metadata
+contracts have not been established in the evidence reviewed for this handoff.
 
-## F5 — Audio y música
+## F6 — Multiplayer
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-050 | P2 | RESEARCH | MP3 locales EA TRAX, nombres y listas Race/Menu/Off sin alterar ISO | Reproducción/avance/persistencia y todos los idiomas afectados | UP-040; PAL-071 |
-| PAL-051 | P4 | BACKLOG | Spotify u otros servicios según APIs/licencias; independiente de MP3 | Viabilidad y reglas acreditadas; no bloquear PAL-050 | Sin implementación revisada |
-| PAL-052 | P2 | RESEARCH | Motor de coches, SPU2 y crujidos; comparar cambios concretos | Audio de vehículos, voces, música y FMV sin regresión | UP-041; E-PERF |
-| PAL-011-AUDIO | P1 | DONE | Recuperación acotada del consumidor tras huecos ≥250 ms, conservando cola objetivo y crossfade; sin alterar simulación ni buffers WASAPI | Aceptación manual de recuperación en captura GS y movimiento de ventana sobre EXE 12772164; pruebas sintéticas/diferenciales previas reutilizadas. Alcance limitado a las interrupciones probadas | Motor local bfad725; expediente privado pal-f9-b-controls-audio-fullscreen-20261022 |
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-060 | P2 | RESEARCH | PAL splitscreen and inherited USA support | Both viewports, HUD/GS/audio/players and PAL timing; no new validation claimed |
+| PAL-061 | P3 | RESEARCH | PAL IOP/inet/lobby and LAN before VPN | Establish regional protocol and local operation; do not assume old EA servers exist |
 
-## F6 — Multijugador
+## F7 — PAL boot, localization, profiles and distribution
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-060 | P2 | RESEARCH | Splitscreen USA, HUD/GS/audio/mandos y pacing 30/60 PAL | Dos jugadores, ambos viewports y modos de vídeo verificados | UP-042; PAL-015/020/031 |
-| PAL-061 | P3 | RESEARCH | IOP/inet/lobby y funciones PAL; LAN antes de VPN | Protocolo regional y red local probados; sin requisito de servidores EA | UP-043; E-MAPPING |
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-070 | P1 | BACKLOG | First milestone: persistent preferred language with original selection behavior available; Spanish preference, all original SLES-52584 languages and existing PC settings integration | Reuse init 0x00437740 / selection 0x004374C0; guest language=3 selects Spanish resources/internal ID 5. Prove host-to-guest/selector contracts, defaults/INI/CLI and clean startup first; video preferences and screen skipping are later milestones |
+| PAL-070-BOOT | P1 | DONE | Historical missing dispatch around 0x00242AC8 | Recovered libmc2 switch case using completion 0x00242A50:0x00242D50; not an unresolved language dispatch or license to patch RAM |
+| PAL-070A | P2 | DONE | F9-A GPU Thread, CLI/environment locks and FPS F1/F9 | AUTO + MANUAL, accepted EXE `304821ee...`; no hot thread toggle |
+| PAL-070B | P2 | DONE | Live AA, warm-up/overlay and L3+R3/F12 separation | AUTO + MANUAL on `12772164...`; integrated/published, not pending again |
+| PAL-070B-FS | P2 | DONE | Fullscreen default for new PAL profiles | Saved window mode/CLI and diagnostic window launcher remain supported |
+| PAL-070B-VU | P2 | RESEARCH | VU Fast exposure decision | Existing comparison excludes MAC/STATUS by design; cross-program flag readers remain unchecked. No general F9 option |
+| PAL-071 | P1 | RESEARCH | All original PAL languages, accents and new PC labels | Spanish already works; per-language coverage and fallback remain necessary |
+| PAL-072 | P1 | TESTING | Existing ISO/profile/LocalAppData recovery plus broader migration coverage | Creation/save/reload and isolated package preference reuse accepted; do not claim all external card formats or concurrent writers |
+| PAL-073 | P1 | BACKLOG | Additional game-mode acceptance when relevant | Target missing race/Road Rage/Crash/World Tour/garage/FMV cases; no blanket cartesian regression after small changes |
+| PAL-074 | P2 | BLOCKED | Public binary release/distribution only | Local ZIP is ready/accepted; documented rights review is missing. Any later manual release is unverified here |
+| PAL-074-GIT | P1 | DONE | Publish engine, PAL main and exact v0.2.0-alpha tag | `bfad7255...` / `2aac9350...`, verified HTTPS recursive clone; no GitHub Release/assets created |
+| PAL-075 | P2 | READY | Contributor and issue-reporting guidance | Existing bug template; provide version/hardware/repro/logs without proprietary/personal data; build reproducibility limitations explicit |
 
-## F7 — Experiencia, localización y releases
+Game identity remains SLES-52584 1.01. Original PAL language and video-test screens
+work today; **automatic Spanish/60 Hz preference and screen skipping do not**.
+The prior read-only review identified En/Du/Sp/Sw resource paths (English, Dutch,
+Spanish, Swedish) and the original guest `language=` path. That is static evidence,
+not confirmation that `language=3` is accepted by the PC EXE CLI or that its direct
+initialization preserves a visible selector. Do not confuse guest argument 3 with
+internal Spanish ID 5. Preserve original resource loading and selection callbacks.
+Milestone 1 is language persistence with the original sequence available; later
+milestones cover preferred 60 Hz, video confirmation/fallback and optional skipping.
+Do not hardcode debug cursor addresses as the final implementation or require an
+unrelated save. See [boot evidence](BOOT_FLOW.md) for the confirmed historical flow.
 
-| ID | Prioridad | Estado | Trabajo / dependencias | Aceptación | Referencias y evidencia |
-| --- | --- | --- | --- | --- | --- |
-| PAL-070 | P2 | BACKLOG | Preferencia español/60 Hz, omitir o mostrar pantallas; F9/PC Settings | Acceso a selección original conservado; no cambiar defaults ahora | PAL-071/072 |
-| PAL-070A | P2 | DONE | F9-A aceptado manualmente: GPU Thread, preferencia tras reinicio, bloqueos CLI y FPS/F1 | Aceptación del mantenedor sobre EXE SHA-256 304821eecce85b986cca8bd72e9a5cf1f89c3a18ca4aa189b49b915ee64117d1; pruebas previas reutilizadas | Base PAL d370c12 + motor USA-002 e966221; expediente privado pal-f9-a-20261022 |
-| PAL-070B | P2 | DONE | F9-B aceptado manualmente: OFF/FXAA/SMAA en caliente, warm-up, overlay y separación L3+R3/F9 de captura F12; configuración persistente y CLI conservados | EXE SHA-256 12772164da2b71557d61e3097ec2fc18c946020cc505a7993886181f7870b2e4; aceptación del mantenedor y pruebas focalizadas anteriores reutilizadas, sin repetirlas | Motor bfad725; PAL funcional 0d08394; ramas locales integration/pc-settings-accepted-engine e integration/pc-settings-accepted; sin publicación |
-| PAL-070B-FS | P2 | DONE | Fullscreen predeterminado solo para perfiles PAL nuevos, incluido arranque sin argumentos; ventana guardada y CLI prevalecen; mismo modo fullscreen del motor | Aceptación manual del mantenedor y pruebas nativas previas de estado inicial, cambio F9, persistencia y CLI | PAL-070B; perfil diagnóstico en ventana conservado |
-| PAL-070B-VU | P2 | RESEARCH | F9-B / VU Fast: backend y bloques PAL disponibles; no expuesto en F9 | Comparación Exact/Fast existente pasa excluyendo MAC/STATUS por diseño; falta validar transiciones entre programas que lean flags anteriores. Exact conservado, sin regeneración | PAL-070B; evaluación acotada, sin nueva investigación ni adopción general |
-| PAL-071 | P1 | RESEARCH | Todos los idiomas SLES, acentos, HUD, menús y textos nuevos | Cobertura por idioma documentada; español no certifica el resto | E-STATUS; UP-033/040 |
-| PAL-072 | P1 | RESEARCH | LocalAppData, perfiles, backups y actualizaciones | No pérdida de datos; instalaciones limpias y migraciones comprobadas por versión | E-STATUS; alpha inicial ya probada |
-| PAL-073 | P1 | BACKLOG | Carrera/Road Rage/Crash/World Tour/garaje/pausa/carga/FMV | Matriz PAL50/60, 4:3/wide, GPU Off/On, audio y persistencia | PAL-004/020/071/072 |
-| PAL-074 | P2 | BLOCKED | v0.2.0-alpha: candidata local integrada preservando ambas historias; motor bfad7255, versión/README/notas y ZIP x64 preparados | Inicio/selector/F9/AA aceptados sobre el nuevo ZIP; reinicio corto y conservación de INI pasan. Falta revisión documentada de distribución, publicación del motor y autorización final de push/tag/release | PAL-010/016A/016B/070A/070B completados; VU Fast y opciones PAL avanzadas pendientes; alpha anterior intacta |
+## F8 — PAL texture extraction, identification and HD replacement
 
-## Orden de trabajo conservado
+| ID | Priority | State | Work / dependencies | Acceptance and evidence |
+| --- | --- | --- | --- | --- |
+| PAL-033 | P2 | TESTING | Existing shared PNG/DDS loader and partial HD333 trials | Real replacements observed, but PAL quality/performance unsatisfactory; no approved HD pack or complete extraction pipeline |
+| PAL-033-MAP | P2 | RESEARCH | Original/replacement full-key correspondence | Separate exact identifiers, exact RGBA partners and perceptual candidates; preserve ambiguous/region-specific art |
+| PAL-033-EXTRACT | P3 | BACKLOG | Original PAL container parsing, extraction and catalog | Determine format, asset boundaries/indexing and original IDs from legitimate input; automate hashes/metadata/previews with provenance |
+| PAL-033-TOOLS | P3 | BACKLOG | External upscaling/replacement/injection workflow | Match runtime requests, alpha/palette, UV/clamp, mipmaps/filtering and upload path; reversible mappings, no original assets in Git |
 
-1. PAL-010 cerrado en su alcance experimental; seleccionar una mejora USA acotada
-   usando la matriz y la evidencia existente, sin actualizar el motor en bloque.
-2. PAL-002 sigue en validación como infraestructura auxiliar; no diagnostica el fallback.
-3. PAL-011/012/013: mantener su alcance separado; no reabrir el diagnóstico de
-   fallbacks de PAL-010 sin evidencia nueva o regresión reproducible.
-4. PAL-014/015/016: escoger un mecanismo respaldado por esas mediciones.
-5. Resto: prioridades originales conservadas; no adoptar mejoras por ser más recientes.
+The backend hashes GS texture data with XXH3-64 and includes palette/format/region
+metadata. A PNG/DDS filename prefix is not enough. The historical 333 direct-key
+trial and additional candidate maps do not mean a validated converter exists.
+Evaluate extraction, cataloging, mappings, replacement loading and visible correct
+rendering as distinct stages. Do not extend a failed pack trial by assumption.
 
-Las demás prioridades no cambian. Las incidencias independientes anteriores no
-reabren el diagnóstico de fallbacks ni bloquean el siguiente ciclo.
+## F9 — Vehicle Modding / Custom Car Import (long-term)
 
-## Cierre de tareas y relación con upstream
+All work here is **PLAN / UNCONFIRMED**, not a current importer. Investigate in
+order: **Burnout Legends (PSP)**, **Burnout Revenge (PS2)**, then
+**Burnout Dominator (PSP)**. Suspected Legends BGV compatibility and reported
+version **0x17** are user-reported hypotheses, not binary-validated facts.
 
-Antes: leer AGENTS, roadmap, tracker y evidencias; declarar ID, estado, alcance
-mínimo y pruebas. Después: registrar fecha, revisiones exactas, pruebas reales,
-limitaciones PAL50/60, resultados y bloqueos; actualizar tracker solo si corresponde.
-Un resultado no satisfactorio no se etiqueta DONE. Las optimizaciones exigen A/B
-y precisión. No actualizar globalmente el motor para adoptar un único cambio.
+| ID | Priority | State | Stage / dependency | Acceptance |
+| --- | --- | --- | --- | --- |
+| PAL-080 | P4 | BACKLOG | Inspect legitimate source/destination asset headers and BGV versions | Record exact bytes, endian/platform/layout differences; stop if compatibility premise fails |
+| PAL-081 | P4 | BACKLOG | Parse one Legends vehicle; validate geometry/material interpretation | Vertex buffers, hierarchy, UVs, texture references, materials, LODs and attachment/animation structures explained; then isolated static rendering |
+| PAL-082 | P4 | BACKLOG | Collision, deformation/damage meshes and platform differences | Establish physics/mesh contracts; geometric similarity alone is insufficient |
+| PAL-083 | P4 | BACKLOG | Isolated in-game import, then reusable import/export tool feasibility | Backups, bounded validation and correct rendering/collision/damage; no claim that import currently works |
 
-Las funciones existentes en motor, sus activaciones por juego y la validación PAL
-son tres comprobaciones distintas. Registrar ADOPT/ADAPT/DEFER/REJECT como decisión
-explicada, sin inferir autorización de integración. No borrar decisiones históricas.
+Do not distribute imported commercial assets. Only investigate conversion after
+parsing/semantic checks; no guessed shared structs or promised cross-game support.
+
+## F10 — Native Menu Integration and PC Settings
+
+The working F9 overlay is **SOURCE + AUTO + MANUAL** in the shared host. It is not
+an integration into Burnout 3's original menu structures. No native PC Settings or
+new Quit entry is claimed in the accepted PAL sources.
+
+| ID | Priority | State | Proposed work / dependencies | Targeted acceptance |
+| --- | --- | --- | --- | --- |
+| PAL-090 | P2 | RESEARCH | Partial static PAL map: constructor 0x003183E0, input 0x00318240, five original entries; pause-menu contracts still missing | Preserve selection/count/entry/help structure; validate seven-row layout and callbacks without assuming USA addresses or live correctness |
+| PAL-091 | P2 | BACKLOG | Append PC Settings and Quit Game: preserve all five original entries, including ONLINE and Multiplayer; target seven | Preserve original appearance/transitions/sounds/navigation; separately allocated entry/help arrays, bounds and string lifetime; no USA ONLINE donor storage |
+| PAL-092 | P2 | BACKLOG | Native PC Settings screen for implemented display/aspect/render/performance options | Reuse shared settings/CLI/restart semantics; decide whether F9 opens the same settings as an alternative shortcut |
+| PAL-093 | P2 | BACKLOG | Native pause-menu Quit to Desktop with confirmation | Preserve all pause choices; localized cancel/confirm and controller behavior; establish pending-save/IO completion and clean shutdown before accepting exit |
+| PAL-094 | P2 | RESEARCH | Localize every new native entry, help text and confirmation in the selected original PAL language | Real UTF-16 conversion, capacity/glyph/layout coverage and lifetime across language-resource reload; English literals/byte widening are insufficient |
+| PAL-095 | P2 | BACKLOG | Native access to staged language/video/startup preferences | Depends on PAL-070/071; persistent language first, video/skipping later; preserve original selectors, shared precedence and F9 compatibility |
+
+**Reused SOURCE evidence:** USA replaces ONLINE and adds Quit as entry six; PAL's
+original constructor creates five entries. The PAL requirement is seven, not a
+copy of the USA replacement. Seven external 8-byte entry records require **56
+bytes**, plus seven 4-byte help pointers (**28 bytes**), at least 84 bytes of new
+table storage before alignment and localized strings. Preserve 8-byte entry and
+4-byte help alignment; do not extend inline rows into the original help fields.
+USA uses a six-visible-row layout; seven PAL entries need a validated layout or
+original-style scrolling. Additional callbacks must handle the two new indices
+before delegating unchanged original indices to the PAL handler.
+
+USA's pool borrows ONLINE strings and initializes English text once. That is not
+safe for PAL's retained ONLINE or language reloads. Establish owned guest-visible
+storage and lifetime; the original synthetic scratch range is not free game memory.
+New labels, settings text and Yes/No questions must follow the selected PAL
+language with correct UTF-16, glyph coverage and nontruncating capacities.
+All seven-entry, localization and pause-Quit behavior remains **unimplemented**.
+
+Prefer the original UI system. Extend a single isolated entry first, then
+navigation/callback tests, then persistence/CLI/restart behavior and save-safe exit.
+Avoid replacing the native menus with external overlays unless an evidenced
+technical limitation requires it. This phase does not redesign or replace F9 now.
+
+## Next authorized-work proposal and stopping rule
+
+1. Review these uncommitted documentation changes and the main-checkout/baseline
+   discrepancy. Prepare a clean isolated baseline only with authorization.
+2. Recommend **PAL-070 milestone 1**: reuse the established language initializer,
+   selection callback and guest argument mapping; resolve only the remaining
+   host-to-guest and original-selector contracts. No repeated general audit.
+3. Implement persistent language preference only after those contracts and targeted
+   tests are agreed. Preserve original selection/loading. Video preferences and
+   skipping come later; native menus remain separate and F9 stays accepted.
+4. Revisit other opportunities only when selected by the maintainer. Completed
+   PAL-010, USA-001/002 and F9 work are reusable foundations, not pending tasks.
+
+At completion record exact revisions, actual tests/evidence, PAL50/60 limits and
+remaining risks. Reuse engine framediff/gsmem/timeline/replay/profiling and existing
+tests; do not build new instrumentation by default. A roadmap is not Git or build
+permission. Once the scoped acceptance criteria are met, stop.

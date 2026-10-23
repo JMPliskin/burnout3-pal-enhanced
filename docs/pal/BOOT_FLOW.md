@@ -1,40 +1,83 @@
-# Arranque PAL: hallazgos conservados
+# PAL boot flow: established contracts and remaining work
 
-Evidencias detalladas, tests e informes: [ADAPTATIONS.md](../../games/burnout3-pal/port/ADAPTATIONS.md).
-Los hitos manuales proceden del usuario; no certifican equivalencia global.
+Updated 23 October 2026. Labels follow [development continuity](../../PAL_DEVELOPMENT.md).
+This separates recovered boot blockers from proposed startup preferences.
 
-| Etapa | Contrato / resultado confirmado |
-|---|---|
-| Entrada EE | SLES_525.84, entrada 0x00100008. Se conservan 9.383 traducciones EE, sin stubs para completar el inventario. |
-| KernelStore | PAL 0x001156C0: escribe a1 en a0 mediante Write32 del host, preservando hooks y errores. Reutiliza el contrato USA acreditado. |
-| Código copiado | 0x004854E0 → 0x80076000; mecanismo original de descubrimiento, bytes contrastados. |
-| Extensión TLB | 816 bytes 0x004846A8–0x004849D8 → 0x80075000–0x80075330. Solo resolver 0x80075000–0x80075038 integrado; no se inventan tlbwr/tlbwi/tlbp/tlbr. |
-| Logitech | RPC 0x046D046D, procedimiento 12: versión 0x010B1B00 en +4. Procedimiento 1: ausencia de dispositivo. |
-| Sincronización | 0x1000F000 es INTC_STAT, no D_STAT. VBLANK y DMA GIF progresaban. PAL 0x00102E08 no es sceGsSyncPath: no renombrar ni forzar bits. |
-| Audio | RWA.IRX original en VM IOP; handshake SIF tipo 9, versión 0x115 observada en memoria. Imports ausentes conservan trampas. |
-| Recursos | GTFSCDVD.IRX, servidor 0x00475453, peticiones 1/3/4 y transferencias EE. PrgData.bin/fixups coherentes; desaparece 0x0C620034 sin corregir punteros manualmente. |
-| Frontend | Fase 9 superada naturalmente; fase 23/0x17 completada. Más tiempo reveló frontend, sin acreditar un bloqueo de audio. |
-| Español | down@1200-1211, down@1300-1311, cross@1500-1511. Cursor 0x01E89EB0+0x48: índice 2; idioma 5 en 0x004E2E98; GlobalSp.bin/HeadSp.bin. |
-| Memory card | 0x00242AC8: entrada de tabla de saltos. Extensión 0x00242A50–0x00242D50 y siete CardOr conservan trabajador/cola/polling. Sin --memcard: handlers originales; con tarjeta: ps2host::mc2 persistente. |
-| Vídeo PAL | Pantalla española 50/60 Hz tras idioma/tarjeta. 50 Hz inicialmente. Elegir 60 Hz lleva a segunda confirmación con No por defecto: elegir Sí. No forzar RAM ni omitir pantallas. |
-| Perfil/carrera | Usuario confirma guardado y recarga, carrera libre, coche, tutorial, conducción, colisiones, takedowns y audio. |
-| FMV | SkipMovie PAL 0x00131410 solicita parada +0x4A por flanco Start; no escribe terminada +0x49, no salta loops, ejecuta actualización original. |
+## Established flow
 
-## Interpretación de diagnósticos
+| Stage | Evidence and contract |
+| --- | --- |
+| Original program | SOURCE: SLES-52584 1.01, ELF `SLES_525.84`, entry `0x00100008`; preserve original game logic |
+| Runtime setup | SOURCE/AUTO: copied-code discovery, PAL relocation compatibility, kernel/devices and original PAL IOP modules |
+| Resources | OBSERVED: GTFSCDVD RPC and original resource fixups progressed; do not correct resource pointers by guessing |
+| Language | OBSERVED + MANUAL: original selection can activate Spanish, effective language 5 and GlobalSp.bin/HeadSp.bin in the recorded case |
+| Memory card | SOURCE/AUTO + MANUAL: recovered worker switch and seven PAL CardOr wrappers; profile creation/save/reload subsequently accepted |
+| PAL video | MANUAL: original 50/60 Hz screen remains; 60 Hz test requires explicit Yes confirmation, default No returns to 50 Hz |
+| Frontend/game | MANUAL: menus, FMV, original input, profiles and races work within tested scope |
+| Movie skipping | SOURCE/AUTO + MANUAL: PAL `0x00131410`, Start edge requests original stop; no fabricated completion |
 
-El backend software avanzaba aproximadamente 9,4 VBLANK/s frente a 63,8 con GPU
-en el diagnóstico de frontend: lentitud no equivalía a bloqueo. La pérdida de
-textos/banderas en algunas capturas no se tomó como prueba única de transición.
-El contador de funciones mide cobertura de ejecución, no corrección.
+### 0x00242AC8 is recovered, not the next unresolved boot task
 
-Se capturaron 97 programas VU durante juego PAL y se compilaron posteriormente;
-una sesión de carrera registró cobertura VU1 >99,99 %. Frame Pacing On mejoró
-la suavidad observada, sin demostrar mayor velocidad de simulación. GPU/GS y
-readbacks requieren medición por escena; los porcentajes solapados no se suman.
+The earlier JSON map covered entry `0x00242A50..0x00242AC8` and a separated chunk
+`0x00242D40..0x00242D50`. The original worker's indirect jump legitimately reached
+`0x00242AC8`. Completing `0x00242A50:0x00242D50` recovered the omitted switch cases.
+It was not a separate function, a demonstrated bad pointer, or the language/video
+initializer. Keep the original worker/queue/polling and table `0x004BB880`.
+This adaptation remains NOT VERIFIED for full MIPS/native equivalence; recovering
+execution and scoped synthetic/gameplay acceptance do not change that label.
 
-El experimento GPU Thread aislado previo alcanzó 50/60 Hz On/Off: 2.047 funciones,
-idioma 5 y tres capturas idénticas. Terminó por límite previsto; no valida carrera
-ni sustituye las pruebas de esta integración completa del motor.
+PAL CardOr targets are documented in [architecture/evidence](ARCHITECTURE_AND_EVIDENCE.md).
+Without a supplied virtual card they still call the original PAL functions;
+with one they use host mc2. Do not bypass the worker or force success to skip a dialog.
 
-Conservar el fallo histórico host 0xC0000409 y su minidump: otra ejecución con
-TEMP exclusivo pasó, pero no quedó demostrada la causa.
+### Historical selection observations, not implementation APIs
+
+The recorded language screen used cursor `0x01E89EB0`, index 2 for Spanish and
+language value 5 at `0x004E2E98`. In a later video screen the cursor value had
+different meaning. Frame-input sequences from those runs depend on startup timing.
+Do not reuse those frames/addresses as a production preference mechanism.
+
+### Established language entry points
+
+Reusing the prior SOURCE inspection: language initialization is `0x00437740`,
+selection processing `0x004374C0`. The original guest `language=3` path selects
+Spanish GlobalSp/HeadSp resources and internal ID 5; argument 3 and internal 5
+are not interchangeable. En/Du/Sp/Sw resource branches cover English, Dutch,
+Spanish and Swedish in the inspected SLES-52584 executable. Other PAL editions
+and complete runtime acceptance for all languages are not established here.
+
+The original startup parser recognizes `language=`; passing it through the host
+and its effect on a visible selector remain unvalidated. It is not an established
+PC CLI option. Preserve original loading, callbacks and state lifetime; do not
+replace them with direct RAM writes or assume direct initialization shows a selector.
+
+## Planned PAL-070: preferences and optional skipping
+
+Not implemented: preferred Spanish, preferred 60 Hz, all-language preference
+selection, optional selector skipping, or corresponding F9 controls.
+
+First milestone: persistent preferred language, with Spanish preferred and the
+original selection behavior available. Reuse the known language entry points;
+resolve the remaining host/selector/lifetime contracts rather than rediscovering
+them. Design defaults < INI < explicit CLI and shared F9 settings, with honest
+restart/effective-state semantics where needed. Preferred 60 Hz, video confirmation
+and optional startup-screen skipping are later milestones. Preserve:
+
+- All original PAL languages and both original refresh modes.
+- A user option to show the original startup selection screens.
+- Video-test confirmation and safe fallback, not arbitrary VBLANK-clock changes.
+- Existing Spanish profiles/cards and unforced configuration.
+- Clean startup/new profile without depending on an unrelated memory-card save.
+- The full-height 640x512 selector picture fallback and original button instructions.
+
+Native-menu integration is a later independent roadmap section; existing F9 is
+a host overlay. Adding a preference is not permission to port the USA SLUS menu.
+
+## Historical evidence and limits
+
+The [accepted chronology](https://github.com/JMPliskin/burnout3-pal-enhanced/blob/2aac9350af0a139771d8a5677d0863b216343efc/games/burnout3-pal/port/ADAPTATIONS.md)
+contains the Spanish switch/card/video reports and their exact isolated paths.
+Early software-backend slowness and disappearing text in captures did not by
+themselves prove a boot deadlock. Later manual acceptance supersedes their old
+"next action" statements without deleting the original observations.
+All-language and exhaustive PAL50 feature validation remain incomplete.
